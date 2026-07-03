@@ -55,6 +55,7 @@ def load_checkpoint(
     resume_from: str,
     device: torch.device,
 ) -> tuple[int, int, int]:
+    # torch.load uses pickle internally; only load checkpoints you trust.
     checkpoint = torch.load(resume_from, map_location=device)
     agent.load_state_dict(checkpoint["model_state_dict"])
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -237,11 +238,10 @@ def compute_gae(
 
     for t in reversed(range(rollout_steps)):
         if t == rollout_steps - 1:
-            nextnonterminal = 1.0 - rollout["dones"][t]
             nextvalues = next_value.reshape(-1)
         else:
-            nextnonterminal = 1.0 - rollout["dones"][t + 1]
             nextvalues = rollout["values"][t + 1]
+        nextnonterminal = 1.0 - rollout["dones"][t]
         delta = rollout["rewards"][t] + args.gamma * nextvalues * nextnonterminal - rollout["values"][t]
         advantages[t] = lastgaelam = (
             delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam

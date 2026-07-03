@@ -9,7 +9,7 @@ from riichi_parallel_env import AGENTS
 
 @dataclass
 class PPOConfig:
-    exp_name: str = os.path.basename("ppo.py").rstrip(".py")
+    exp_name: str = os.path.splitext(os.path.basename(__file__))[0]
     seed: int = 1
     torch_deterministic: bool = True
     cuda: bool = True
@@ -48,7 +48,10 @@ class PPOConfig:
 def parse_args() -> PPOConfig:
     parser = argparse.ArgumentParser()
     defaults = PPOConfig()
+    derived_fields = {"batch_size", "minibatch_size"}
     for field_name, field_value in asdict(defaults).items():
+        if field_name in derived_fields:
+            continue
         option = f"--{field_name.replace('_', '-')}"
         if isinstance(field_value, bool):
             parser.add_argument(option, action=argparse.BooleanOptionalAction, default=field_value)
@@ -60,8 +63,10 @@ def parse_args() -> PPOConfig:
 def finalize_config(config: PPOConfig) -> PPOConfig:
     if config.target_iterations <= 0:
         raise ValueError("target_iterations must be greater than 0")
+    if config.num_minibatches <= 0:
+        raise ValueError("num_minibatches must be greater than 0")
     config.batch_size = config.num_envs * len(AGENTS) * config.num_steps
-    config.minibatch_size = config.batch_size // config.num_minibatches
+    config.minibatch_size = max(config.batch_size // config.num_minibatches, 1)
     return config
 
 
