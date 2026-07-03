@@ -1,2 +1,7 @@
 numpy
 maturin
+gymnasium>=0.29
+pettingzoo>=1.24
+tensorboard>=2.11
+torch>=2.2
+wandb
