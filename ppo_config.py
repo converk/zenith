@@ -13,9 +13,6 @@ class PPOConfig:
     seed: int = 1
     torch_deterministic: bool = True
     cuda: bool = True
-    track: bool = False
-    wandb_project_name: str = "mahjong-ai"
-    wandb_entity: str | None = None
     capture_video: bool = False
 
     target_iterations: int = 5_000
