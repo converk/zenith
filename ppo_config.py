@@ -16,7 +16,7 @@ class PPOConfig:
 
     target_iterations: int = 100_000
     learning_rate: float = 1e-4
-    num_envs: int = 64
+    num_envs: int = 16
     num_steps: int = 128
     anneal_lr: bool = True
     gamma: float = 0.99

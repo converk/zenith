@@ -166,8 +166,9 @@ def collect_rollout(
     next_obs: Tensor,
     next_masks: Tensor,
     episode_returns: np.ndarray,
+    episode_lengths: np.ndarray,
     global_step: int,
-) -> tuple[dict[str, Tensor], Tensor, Tensor, np.ndarray, int, list[float]]:
+) -> tuple[dict[str, Tensor], Tensor, Tensor, np.ndarray, np.ndarray, int, list[float], list[int]]:
     num_actors = args.num_envs * len(AGENTS)
     obs: list[Tensor] = []
     legal_masks: list[Tensor] = []
@@ -177,6 +178,7 @@ def collect_rollout(
     dones: list[Tensor] = []
     values: list[Tensor] = []
     episodic_returns: list[float] = []
+    episodic_lengths: list[int] = []
     completed_envs_after_min_steps = np.zeros(args.num_envs, dtype=np.bool_)
 
     while True:
@@ -196,10 +198,13 @@ def collect_rollout(
         action_batch = action.reshape(args.num_envs, len(AGENTS)).detach().cpu().numpy()
         env_obs, env_masks, env_rewards, env_dones = env.step(action_batch)
         episode_returns += env_rewards
+        episode_lengths += 1
 
         for env_index in np.nonzero(env_dones)[0]:
             episodic_returns.append(float(np.mean(episode_returns[env_index])))
+            episodic_lengths.append(int(episode_lengths[env_index]))
             episode_returns[env_index] = 0.0
+            episode_lengths[env_index] = 0
 
         rewards.append(batchify_rewards(env_rewards, device))
         dones.append(batchify_dones(env_dones, device))
@@ -220,7 +225,16 @@ def collect_rollout(
         "dones": torch.stack(dones),
         "values": torch.stack(values),
     }
-    return rollout, next_obs, next_masks, episode_returns, global_step, episodic_returns
+    return (
+        rollout,
+        next_obs,
+        next_masks,
+        episode_returns,
+        episode_lengths,
+        global_step,
+        episodic_returns,
+        episodic_lengths,
+    )
 
 
 @torch.no_grad()
@@ -369,6 +383,7 @@ def train(args: PPOConfig) -> None:
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
     next_obs, next_masks = reset_env(env, device)
     episode_returns = np.zeros((args.num_envs, len(AGENTS)), dtype=np.float32)
+    episode_lengths = np.zeros(args.num_envs, dtype=np.int32)
     global_step = 0
     start_iteration = 1
     completed_episodes = 0
@@ -395,7 +410,16 @@ def train(args: PPOConfig) -> None:
             frac = 1.0 - (iteration - 1.0) / args.target_iterations
             optimizer.param_groups[0]["lr"] = frac * args.learning_rate
 
-        rollout, next_obs, next_masks, episode_returns, global_step, episodic_returns = collect_rollout(
+        (
+            rollout,
+            next_obs,
+            next_masks,
+            episode_returns,
+            episode_lengths,
+            global_step,
+            episodic_returns,
+            episodic_lengths,
+        ) = collect_rollout(
             env,
             agent,
             args,
@@ -403,6 +427,7 @@ def train(args: PPOConfig) -> None:
             next_obs,
             next_masks,
             episode_returns,
+            episode_lengths,
             global_step,
         )
         rollout_steps = rollout["rewards"].shape[0]
@@ -412,6 +437,8 @@ def train(args: PPOConfig) -> None:
 
         if episodic_returns:
             writer.add_scalar("charts/episodic_return", np.mean(episodic_returns), global_step)
+        if episodic_lengths:
+            writer.add_scalar("charts/episodic_length", np.mean(episodic_lengths), global_step)
         writer.add_scalar("charts/completed_episodes", completed_episodes, global_step)
         writer.add_scalar("charts/rollout_steps", rollout_steps, global_step)
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
@@ -430,10 +457,12 @@ def train(args: PPOConfig) -> None:
         sps = int(global_step / (time.time() - start_time))
         iteration_seconds = time.time() - iteration_start_time
         episodic_return = float(np.mean(episodic_returns)) if episodic_returns else float("nan")
+        episodic_length = float(np.mean(episodic_lengths)) if episodic_lengths else float("nan")
         print(
             f"iter={iteration}/{args.target_iterations} "
             f"global_step={global_step} rollout_steps={rollout_steps} "
             f"episodes={completed_episodes} episodic_return={episodic_return:.3f} "
+            f"episodic_length={episodic_length:.1f} "
             f"value_loss={metrics['value_loss']:.4f} "
             f"policy_loss={metrics['policy_loss']:.4f} "
             f"entropy={metrics['entropy']:.4f} "
