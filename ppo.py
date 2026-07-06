@@ -357,6 +357,12 @@ def train(args: PPOConfig) -> None:
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    print(
+        f"Starting run {run_name} on {device} | "
+        f"model_size={args.model_size} num_envs={args.num_envs} "
+        f"num_steps={args.num_steps} target_iterations={args.target_iterations}",
+        flush=True,
+    )
 
     env = make_env(args.num_envs, args.seed)
     agent = TileCountTransformerActorCritic(make_toy_ppo_config(args.model_size)).to(device)
@@ -373,10 +379,17 @@ def train(args: PPOConfig) -> None:
             args.resume_from,
             device,
         )
+        print(
+            f"Resumed from {args.resume_from} | "
+            f"global_step={global_step} start_iteration={start_iteration} "
+            f"completed_episodes={completed_episodes}",
+            flush=True,
+        )
     start_time = time.time()
 
     last_iteration = start_iteration - 1
     for iteration in range(start_iteration, args.target_iterations + 1):
+        iteration_start_time = time.time()
         last_iteration = iteration
         if args.anneal_lr:
             frac = 1.0 - (iteration - 1.0) / args.target_iterations
@@ -414,11 +427,30 @@ def train(args: PPOConfig) -> None:
             int(global_step / (time.time() - start_time)),
             global_step,
         )
+        sps = int(global_step / (time.time() - start_time))
+        iteration_seconds = time.time() - iteration_start_time
+        episodic_return = float(np.mean(episodic_returns)) if episodic_returns else float("nan")
+        print(
+            f"iter={iteration}/{args.target_iterations} "
+            f"global_step={global_step} rollout_steps={rollout_steps} "
+            f"episodes={completed_episodes} episodic_return={episodic_return:.3f} "
+            f"value_loss={metrics['value_loss']:.4f} "
+            f"policy_loss={metrics['policy_loss']:.4f} "
+            f"entropy={metrics['entropy']:.4f} "
+            f"approx_kl={metrics['approx_kl']:.5f} "
+            f"sps={sps} time={iteration_seconds:.1f}s",
+            flush=True,
+        )
         if args.eval_interval > 0 and iteration % args.eval_interval == 0:
             eval_return = evaluate(agent, args, device)
             writer.add_scalar("eval/episodic_return", eval_return, global_step)
+            print(
+                f"eval iteration={iteration} global_step={global_step} "
+                f"episodic_return={eval_return:.3f}",
+                flush=True,
+            )
         if args.save_interval > 0 and iteration % args.save_interval == 0:
-            save_checkpoint(
+            saved_path = save_checkpoint(
                 agent,
                 optimizer,
                 args,
@@ -427,7 +459,8 @@ def train(args: PPOConfig) -> None:
                 completed_episodes,
                 run_name,
             )
-    save_checkpoint(
+            print(f"saved checkpoint: {saved_path}", flush=True)
+    saved_path = save_checkpoint(
         agent,
         optimizer,
         args,
@@ -436,6 +469,7 @@ def train(args: PPOConfig) -> None:
         completed_episodes,
         run_name,
     )
+    print(f"finished run {run_name} | final checkpoint: {saved_path}", flush=True)
     env.close()
     writer.close()
 

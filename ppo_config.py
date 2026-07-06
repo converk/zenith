@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 from dataclasses import asdict, dataclass
 
 from riichi_parallel_env import AGENTS
@@ -9,34 +8,34 @@ from riichi_parallel_env import AGENTS
 
 @dataclass
 class PPOConfig:
-    exp_name: str = os.path.splitext(os.path.basename(__file__))[0]
+    exp_name: str = "mid_model_name"
     seed: int = 1
     torch_deterministic: bool = True
     cuda: bool = True
     capture_video: bool = False
 
-    target_iterations: int = 5_000
-    learning_rate: float = 3e-4
-    num_envs: int = 4
+    target_iterations: int = 100_000
+    learning_rate: float = 1e-4
+    num_envs: int = 64
     num_steps: int = 128
     anneal_lr: bool = True
     gamma: float = 0.99
-    gae_lambda: float = 0.95
+    gae_lambda: float = 0.98
     num_minibatches: int = 4
     update_epochs: int = 4
     norm_adv: bool = True
     clip_coef: float = 0.2
     clip_vloss: bool = True
-    ent_coef: float = 0.01
-    vf_coef: float = 0.5
+    ent_coef: float = 0.03
+    vf_coef: float = 1.0
     max_grad_norm: float = 0.5
-    target_kl: float | None = None
+    target_kl: float | None = 0.02
     model_size: str = "medium"
     checkpoint_dir: str = "checkpoints"
     save_interval: int = 10
     resume_from: str | None = None
     eval_interval: int = 10
-    eval_episodes: int = 8
+    eval_episodes: int = 32
 
     batch_size: int = 0
     minibatch_size: int = 0
@@ -53,7 +52,7 @@ def parse_args() -> PPOConfig:
         if isinstance(field_value, bool):
             parser.add_argument(option, action=argparse.BooleanOptionalAction, default=field_value)
         else:
-            parser.add_argument(option, type=_arg_type(field_value), default=field_value)
+            parser.add_argument(option, type=_arg_type(field_name, field_value), default=field_value)
     return finalize_config(PPOConfig(**vars(parser.parse_args())))
 
 
@@ -67,7 +66,9 @@ def finalize_config(config: PPOConfig) -> PPOConfig:
     return config
 
 
-def _arg_type(value: object):
+def _arg_type(field_name: str, value: object):
+    if field_name == "target_kl":
+        return float
     if value is None:
         return str
     return type(value)
