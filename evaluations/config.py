@@ -25,27 +25,29 @@ RUN_DIRS = (
 MATCH_LOGS_DIR = Path("evaluations/match_logs")
 SCHEDULED_STATE_PATH = MATCH_LOGS_DIR / "scheduled_state.json"
 
-# 每隔多少 global step 触发一次定时评测。
-STEP_INTERVAL = 6_000_000
-
 RANDOM_SEED = 1
 
-# 从当前 Elo 排行榜中随机抽取若干 checkpoint 对局。
-# 抽取场数随候选模型数量增长，最少 2 场、最多 6 场。
-RANKING_RANDOM_MIN_MATCHES = 2
-RANKING_RANDOM_MAX_MATCHES = 6
+# 每一轮处理完所有 runs 后的休息时间，避免常驻任务空转。
+LOOP_SLEEP_SECONDS = 3
+
+# batch 评测次数。每个小 match 都会重新抽取 4 个模型，每个小 match 只打 NUM_GAMES 局。
+# 常规 batch 每轮都会跑；new batch 只在发现 run 下出现更新的 checkpoint 时跑。
+REGULAR_SELF_MATCHES = 20
+REGULAR_RANKING_MATCHES = 40
+NEW_SELF_MATCHES = 10
+NEW_RANKING_MATCHES = 20
 
 # Elo 参数。
 INITIAL_ELO = 50.0
-K_FACTOR = 64.0
-K_BASE_SCORE = 50_000
-K_SCALE_CAP = 3.0
+K_FACTOR = 32.0
+K_BASE_SCORE = 100
+K_SCALE_CAP = 2.0
 
-# 定时任务参数。
-POLL_SECONDS = 30
-
-# 对局评测参数。
-NUM_GAMES = 75_000
+# 对局评测参数。这里的 NUM_GAMES 是每个小 match 的局数，不是整个 batch 的总局数。
+NUM_GAMES = 10
 NUM_ENVS = 256
 CUDA_DEVICE = "1"
+
+# 手动运行 evaluations.checkpoint_match 时，每多少局打印一次进度。
+# 自动 batch 评测内部会关闭单场进度打印。
 PROGRESS_INTERVAL = 5_000

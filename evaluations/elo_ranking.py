@@ -1,8 +1,9 @@
 """根据 match 日志计算 checkpoint Elo 排名。
 
 功能：
-    命令行入口。扫描 evaluations/match_logs/ 下的对局日志，把每个
-    checkpoint 当成独立选手，刷新 Elo 排名，并输出 JSON/CSV 文件。
+    命令行入口。扫描 evaluations/match_logs/ 下的新 batch 对局日志，
+    读取每一行 MATCH_RESULT，把每个 checkpoint 当成独立选手，刷新 Elo
+    排名，并输出 JSON/CSV 文件。
     默认日志目录、run 目录和 Elo 参数来自 evaluations/config.py。
 
 CSV 字段：

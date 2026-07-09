@@ -31,6 +31,7 @@ SCORE_A_RE = re.compile(r"^model A score:\s+(\d+)$", re.MULTILINE)
 SCORE_B_RE = re.compile(r"^model B score:\s+(\d+)$", re.MULTILINE)
 SEAT_CHECKPOINT_RE = re.compile(r"^seat (\d+) checkpoint:\s+(.+)$", re.MULTILINE)
 SEAT_SCORE_RE = re.compile(r"^seat (\d+) score:\s+(\d+)$", re.MULTILINE)
+MATCH_RESULT_RE = re.compile(r"^MATCH_RESULT\s+({.*})$", re.MULTILINE)
 TIMESTAMP_RE = re.compile(r"__(\d{8}_\d{6})\.log$")
 
 
@@ -104,8 +105,35 @@ def log_timestamp(path: Path) -> float:
     return path.stat().st_mtime
 
 
-def parse_match_log(path: Path, run_dirs: tuple[Path, ...]) -> MatchRecord | None:
-    text = path.read_text(errors="replace")
+def parse_batch_match_logs(path: Path, text: str, run_dirs: tuple[Path, ...]) -> list[MatchRecord]:
+    records: list[MatchRecord] = []
+    for match in MATCH_RESULT_RE.finditer(text):
+        try:
+            payload = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        checkpoints = payload.get("checkpoints")
+        scores = payload.get("scores")
+        if not isinstance(checkpoints, list) or not isinstance(scores, list):
+            continue
+        if len(checkpoints) != len(scores) or len(checkpoints) < 2:
+            continue
+        checkpoint_scores = tuple(
+            (str(checkpoint), int(score)) for checkpoint, score in zip(checkpoints, scores)
+        )
+        if not all(checkpoint_allowed(checkpoint, run_dirs) for checkpoint, _score in checkpoint_scores):
+            continue
+        records.append(
+            MatchRecord(
+                log_path=path,
+                checkpoint_scores=checkpoint_scores,
+                timestamp=log_timestamp(path),
+            )
+        )
+    return records
+
+
+def parse_single_match_log(path: Path, text: str, run_dirs: tuple[Path, ...]) -> MatchRecord | None:
     seat_checkpoints = {
         int(match.group(1)): match.group(2).strip()
         for match in SEAT_CHECKPOINT_RE.finditer(text)
@@ -150,11 +178,16 @@ def parse_match_log(path: Path, run_dirs: tuple[Path, ...]) -> MatchRecord | Non
     )
 
 
+def parse_match_logs(path: Path, run_dirs: tuple[Path, ...]) -> list[MatchRecord]:
+    text = path.read_text(errors="replace")
+    return parse_batch_match_logs(path, text, run_dirs)
+
+
 def load_match_logs(logs_dir: Path, run_dirs: tuple[Path, ...]) -> list[MatchRecord]:
     records = [
         record
         for path in logs_dir.glob("*.log")
-        if (record := parse_match_log(path, run_dirs)) is not None
+        for record in parse_match_logs(path, run_dirs)
     ]
     return sorted(records, key=lambda record: (record.timestamp, record.log_path.name))
 
