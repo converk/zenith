@@ -10,8 +10,13 @@ from torch import nn, optim
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 
+from model.mahjong_model import build_model
 from ppo.checkpoint import load_checkpoint, save_checkpoint
-from ppo.config import PPOConfig, parse_args
+from ppo.config import (
+    PPOConfig,
+    finalize_actor_batch_config,
+    parse_args,
+)
 from ppo.distributed import (
     cleanup_distributed,
     distributed_mean,
@@ -20,9 +25,16 @@ from ppo.distributed import (
     setup_distributed,
     unwrap_model,
 )
-from ppo.model import TileCountTransformerActorCritic, make_toy_ppo_config
-from ppo.rollout import collect_rollout, compute_gae, evaluate, make_env, reset_env, update_policy
-from riichi_parallel_env import AGENTS
+from ppo.rollout import (
+    NUM_PLAYERS,
+    collect_rollout,
+    compute_gae,
+    evaluate,
+    make_env,
+    make_state_machine,
+    reset_env,
+    update_policy,
+)
 
 
 def train(args: PPOConfig) -> None:
@@ -32,6 +44,7 @@ def train(args: PPOConfig) -> None:
         if distributed_state.enabled
         else ("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
     )
+    finalize_actor_batch_config(args, NUM_PLAYERS)
     run_name = make_run_name(args, device, distributed_state)
     writer = SummaryWriter(f"runs/{run_name}") if distributed_state.is_main else None
     if writer is not None:
@@ -39,6 +52,12 @@ def train(args: PPOConfig) -> None:
             "hyperparameters",
             "|param|value|\n|-|-|\n%s"
             % "\n".join([f"|{key}|{value}|" for key, value in vars(args).items()]),
+        )
+        writer.add_text(
+            "model",
+            "|param|value|\n|-|-|\n"
+            "|name|mahjong_model|\n"
+            f"|size|{args.model_size}|",
         )
 
     random.seed(args.seed + distributed_state.rank)
@@ -50,7 +69,8 @@ def train(args: PPOConfig) -> None:
     if distributed_state.is_main:
         print(
             f"Starting run {run_name} on {device} | "
-            f"model_size={args.model_size} num_envs_per_rank={args.num_envs} "
+            f"model=mahjong_model model_size={args.model_size} "
+            f"num_envs_per_rank={args.num_envs} "
             f"world_size={distributed_state.world_size} "
             f"num_steps={args.num_steps} target_iterations={args.target_iterations}",
             flush=True,
@@ -58,7 +78,8 @@ def train(args: PPOConfig) -> None:
 
     env_seed = args.seed + distributed_state.rank * 100_000
     env = make_env(args.num_envs, env_seed)
-    base_agent = TileCountTransformerActorCritic(make_toy_ppo_config(args.model_size)).to(device)
+    state_machine = make_state_machine(args.num_envs)
+    base_agent = build_model(args.model_size).to(device)
     agent: nn.Module = base_agent
     if distributed_state.enabled:
         agent = DDP(
@@ -69,8 +90,8 @@ def train(args: PPOConfig) -> None:
         )
     torch.manual_seed(args.seed + distributed_state.rank)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
-    next_obs, next_masks = reset_env(env, device)
-    episode_returns = np.zeros((args.num_envs, len(AGENTS)), dtype=np.float32)
+    next_obs, next_masks = reset_env(env, state_machine, device, args.num_envs)
+    episode_returns = np.zeros((args.num_envs, NUM_PLAYERS), dtype=np.float32)
     episode_lengths = np.zeros(args.num_envs, dtype=np.int32)
     global_step = 0
     start_iteration = 1
@@ -111,6 +132,7 @@ def train(args: PPOConfig) -> None:
                 episodic_lengths,
             ) = collect_rollout(
                 env,
+                state_machine,
                 agent,
                 args,
                 device,
@@ -228,7 +250,9 @@ def train(args: PPOConfig) -> None:
                 if distributed_state.enabled:
                     dist.barrier()
     finally:
-        env.close()
+        close = getattr(env, "close", None)
+        if close is not None:
+            close()
         if writer is not None:
             writer.close()
         cleanup_distributed(distributed_state)

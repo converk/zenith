@@ -18,10 +18,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import riichi
 import torch
+from torch import nn
 
-from ppo.model import TileCountTransformerActorCritic, make_toy_ppo_config
-from riichi_parallel_env import AGENTS
+from model.mahjong_model import build_model
+
+
+NUM_PLAYERS = 4
 
 
 @dataclass(frozen=True)
@@ -57,11 +61,16 @@ class MatchResult:
         return "tie"
 
 
-def load_agent(checkpoint_path: Path, device: torch.device) -> TileCountTransformerActorCritic:
+@dataclass(frozen=True)
+class LoadedAgent:
+    agent: nn.Module
+
+
+def load_agent(checkpoint_path: Path, device: torch.device) -> LoadedAgent:
     # torch.load uses pickle internally; only load checkpoints you trust.
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    model_size = checkpoint.get("args", {}).get("model_size", "medium")
-    agent = TileCountTransformerActorCritic(make_toy_ppo_config(model_size)).to(device)
+    model_size = str(checkpoint.get("args", {}).get("model_size", "mid"))
+    agent = build_model(model_size).to(device)
     model_state_dict = checkpoint["model_state_dict"]
     if next(iter(model_state_dict), "").startswith("module."):
         model_state_dict = {
@@ -69,34 +78,26 @@ def load_agent(checkpoint_path: Path, device: torch.device) -> TileCountTransfor
         }
     agent.load_state_dict(model_state_dict)
     agent.eval()
-    return agent
-
-
-def make_action_masks(observations: np.ndarray) -> np.ndarray:
-    return observations > 0
+    return LoadedAgent(agent=agent)
 
 
 @torch.no_grad()
 def choose_actions(
     observations: np.ndarray,
     action_masks: np.ndarray,
-    agents_by_seat: tuple[TileCountTransformerActorCritic, ...],
+    agents_by_seat: tuple[nn.Module, ...],
     device: torch.device,
 ) -> np.ndarray:
     num_envs = observations.shape[0]
-    actions = np.zeros((num_envs, len(AGENTS)), dtype=np.uint8)
+    actions = np.zeros((num_envs, NUM_PLAYERS), dtype=np.uint8)
 
     for seat, agent in enumerate(agents_by_seat):
         obs = torch.as_tensor(
-            observations[:, seat, :].reshape((-1, 34)),
-            dtype=torch.float32,
+            observations[:, seat, :],
+            dtype=torch.uint8,
             device=device,
         )
-        masks = torch.as_tensor(
-            action_masks[:, seat, :].reshape((-1, 34)),
-            dtype=torch.bool,
-            device=device,
-        )
+        masks = torch.as_tensor(action_masks[:, seat, :], dtype=torch.bool, device=device)
         logits = agent(obs, masks)["policy_logits"]
         actions[:, seat] = torch.argmax(logits, dim=-1).cpu().numpy().astype(np.uint8)
 
@@ -107,13 +108,13 @@ def choose_actions(
 def choose_two_model_actions(
     observations: np.ndarray,
     action_masks: np.ndarray,
-    agent_a: TileCountTransformerActorCritic,
-    agent_b: TileCountTransformerActorCritic,
+    agent_a: nn.Module,
+    agent_b: nn.Module,
     seats_a: tuple[int, int],
     device: torch.device,
 ) -> np.ndarray:
-    seats_b = tuple(seat for seat in range(len(AGENTS)) if seat not in seats_a)
-    agents_by_seat: list[TileCountTransformerActorCritic] = [agent_b for _seat in AGENTS]
+    seats_b = tuple(seat for seat in range(NUM_PLAYERS) if seat not in seats_a)
+    agents_by_seat: list[nn.Module] = [agent_b for _seat in range(NUM_PLAYERS)]
     for seat in seats_a:
         agents_by_seat[seat] = agent_a
     for seat in seats_b:
@@ -121,7 +122,7 @@ def choose_two_model_actions(
     return choose_actions(observations, action_masks, tuple(agents_by_seat), device)
 
 
-def parse_seats(text: str | tuple[int, int]) -> tuple[int, int]:
+def parse_seats(text: str | tuple[int, int], num_players: int) -> tuple[int, int]:
     if isinstance(text, tuple):
         seats = text
     else:
@@ -129,9 +130,11 @@ def parse_seats(text: str | tuple[int, int]) -> tuple[int, int]:
     if (
         len(seats) != 2
         or len(set(seats)) != 2
-        or any(seat < 0 or seat >= len(AGENTS) for seat in seats)
+        or any(seat < 0 or seat >= num_players for seat in seats)
     ):
-        raise ValueError("--seats-a must contain two distinct seat indexes from 0 to 3")
+        raise ValueError(
+            f"--seats-a must contain two distinct seat indexes from 0 to {num_players - 1}"
+        )
     return seats
 
 
@@ -153,24 +156,26 @@ def run_checkpoint_match(
 
     checkpoint_a = Path(checkpoint_a)
     checkpoint_b = Path(checkpoint_b)
-    seats_a = parse_seats(seats_a)
-    seats_b = tuple(seat for seat in range(len(AGENTS)) if seat not in seats_a)
     device = torch.device("cuda" if torch.cuda.is_available() and use_cuda else "cpu")
 
-    agent_a = load_agent(checkpoint_a, device)
-    agent_b = load_agent(checkpoint_b, device)
-
-    import riichi
+    loaded_a = load_agent(checkpoint_a, device)
+    loaded_b = load_agent(checkpoint_b, device)
+    seats_a = parse_seats(seats_a, NUM_PLAYERS)
+    seats_b = tuple(seat for seat in range(NUM_PLAYERS) if seat not in seats_a)
 
     raw_env = riichi.VecEnv(num_envs, seed)
-    observations = np.asarray(raw_env.reset(), dtype=np.uint8).reshape(num_envs, len(AGENTS), 34)
-    action_masks = make_action_masks(observations)
+    observations = np.asarray(raw_env.reset(), dtype=np.uint8).reshape(
+        num_envs,
+        NUM_PLAYERS,
+        -1,
+    )
+    action_masks = observations > 0
 
     games = 0
     draws = 0
     model_a_score = 0
     model_b_score = 0
-    seat_scores = np.zeros(len(AGENTS), dtype=np.int64)
+    seat_scores = np.zeros(NUM_PLAYERS, dtype=np.int64)
 
     log(f"model A: {checkpoint_a}")
     log(f"model B: {checkpoint_b}")
@@ -181,16 +186,20 @@ def run_checkpoint_match(
         actions = choose_two_model_actions(
             observations,
             action_masks,
-            agent_a,
-            agent_b,
+            loaded_a.agent,
+            loaded_b.agent,
             seats_a,
             device,
         )
         raw_obs, _raw_rewards, raw_dones, raw_winners = raw_env.step_with_winners(actions)
-        observations = np.asarray(raw_obs, dtype=np.uint8).reshape(num_envs, len(AGENTS), 34)
-        action_masks = make_action_masks(observations)
+        observations = np.asarray(raw_obs, dtype=np.uint8).reshape(
+            num_envs,
+            NUM_PLAYERS,
+            -1,
+        )
+        action_masks = observations > 0
         dones = np.asarray(raw_dones, dtype=np.bool_).reshape(num_envs)
-        winners = np.asarray(raw_winners, dtype=np.bool_).reshape(num_envs, len(AGENTS))
+        winners = np.asarray(raw_winners, dtype=np.bool_).reshape(num_envs, NUM_PLAYERS)
 
         done_indexes = np.nonzero(dones)[0]
         if done_indexes.size == 0:
@@ -241,8 +250,6 @@ def run_multi_checkpoint_match(
     progress_interval: int = 5_000,
     log: Callable[[str], None] = print,
 ) -> MatchResult:
-    if len(checkpoints) != len(AGENTS):
-        raise ValueError(f"expected {len(AGENTS)} checkpoints, got {len(checkpoints)}")
     if num_games <= 0:
         raise ValueError("num_games must be greater than 0")
     if num_envs <= 0:
@@ -250,17 +257,22 @@ def run_multi_checkpoint_match(
 
     checkpoint_paths = tuple(Path(checkpoint) for checkpoint in checkpoints)
     device = torch.device("cuda" if torch.cuda.is_available() and use_cuda else "cpu")
-    agents_by_seat = tuple(load_agent(checkpoint, device) for checkpoint in checkpoint_paths)
-
-    import riichi
+    loaded_agents = tuple(load_agent(checkpoint, device) for checkpoint in checkpoint_paths)
+    if len(checkpoints) != NUM_PLAYERS:
+        raise ValueError(f"expected {NUM_PLAYERS} checkpoints, got {len(checkpoints)}")
+    agents_by_seat = tuple(loaded.agent for loaded in loaded_agents)
 
     raw_env = riichi.VecEnv(num_envs, seed)
-    observations = np.asarray(raw_env.reset(), dtype=np.uint8).reshape(num_envs, len(AGENTS), 34)
-    action_masks = make_action_masks(observations)
+    observations = np.asarray(raw_env.reset(), dtype=np.uint8).reshape(
+        num_envs,
+        NUM_PLAYERS,
+        -1,
+    )
+    action_masks = observations > 0
 
     games = 0
     draws = 0
-    seat_scores = np.zeros(len(AGENTS), dtype=np.int64)
+    seat_scores = np.zeros(NUM_PLAYERS, dtype=np.int64)
 
     for seat, checkpoint in enumerate(checkpoint_paths):
         log(f"seat {seat} checkpoint: {checkpoint}")
@@ -269,10 +281,14 @@ def run_multi_checkpoint_match(
     while games < num_games:
         actions = choose_actions(observations, action_masks, agents_by_seat, device)
         raw_obs, _raw_rewards, raw_dones, raw_winners = raw_env.step_with_winners(actions)
-        observations = np.asarray(raw_obs, dtype=np.uint8).reshape(num_envs, len(AGENTS), 34)
-        action_masks = make_action_masks(observations)
+        observations = np.asarray(raw_obs, dtype=np.uint8).reshape(
+            num_envs,
+            NUM_PLAYERS,
+            -1,
+        )
+        action_masks = observations > 0
         dones = np.asarray(raw_dones, dtype=np.bool_).reshape(num_envs)
-        winners = np.asarray(raw_winners, dtype=np.bool_).reshape(num_envs, len(AGENTS))
+        winners = np.asarray(raw_winners, dtype=np.bool_).reshape(num_envs, NUM_PLAYERS)
 
         done_indexes = np.nonzero(dones)[0]
         if done_indexes.size == 0:

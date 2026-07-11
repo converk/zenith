@@ -17,7 +17,7 @@ from __future__ import annotations
 import argparse
 
 from evaluations import config as eval_config
-from evaluations.core.match import parse_seats, run_checkpoint_match, run_multi_checkpoint_match
+from evaluations.core.match import NUM_PLAYERS, parse_seats, run_checkpoint_match, run_multi_checkpoint_match
 
 
 def main() -> None:
@@ -39,7 +39,12 @@ def main() -> None:
     parser.add_argument("--num-games", type=int, default=eval_config.NUM_GAMES)
     parser.add_argument("--num-envs", type=int, default=eval_config.NUM_ENVS)
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--seats-a", type=parse_seats, default=(0, 2), help="two seats for model A")
+    parser.add_argument(
+        "--seats-a",
+        type=lambda value: parse_seats(value, NUM_PLAYERS),
+        default=(0, 2),
+        help="two seats for model A",
+    )
     parser.add_argument("--cuda", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--progress-interval", type=int, default=eval_config.PROGRESS_INTERVAL)
     args = parser.parse_args()

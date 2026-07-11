@@ -6,6 +6,8 @@ use std::{
 use rand::Rng;
 use rand_pcg::{rand_core::SeedableRng, Pcg32};
 
+use crate::reward::{distance_delta_reward, distance_delta_reward_with_completion};
+
 #[derive(Clone, Debug)]
 struct Form {
     pairs: [u8; 9],
@@ -162,7 +164,7 @@ impl Cache {
         cache
     }
 
-    fn completion_distance(&self, tiles: &[u8], num_pairs: u8, num_groups: u8) -> u8 {
+    pub(crate) fn completion_distance(&self, tiles: &[u8], num_pairs: u8, num_groups: u8) -> u8 {
         let mut distance = [14u8; 10];
         let honours = &tiles[27..34];
         let mut honour_forms = [0u8; 5];
@@ -293,6 +295,7 @@ impl State {
         self.player_tiles
     }
 
+    #[allow(dead_code)]
     fn enumerate_points(forms: &[&Vec<Form>], honours: &[u8]) -> f32 {
         let mut num_honour_pairs = 0;
         let mut num_honour_tris = 0;
@@ -329,6 +332,17 @@ impl State {
     }
 
     pub fn step(&mut self, discard: &[u8]) -> ([u8; 136], [f32; 4], bool) {
+        let (player_tiles, reward, done, _winners) = self.step_with_winners(discard);
+        (player_tiles, reward, done)
+    }
+
+    pub fn step_with_winners(&mut self, discard: &[u8]) -> ([u8; 136], [f32; 4], bool, [bool; 4]) {
+        let mut previous_distance = [0u8; 4];
+        for p in 0..4 {
+            let player_tiles = &self.player_tiles[p * 34..(p + 1) * 34];
+            previous_distance[p] = self.cache.completion_distance(player_tiles, 1, 4);
+        }
+
         for p in 0..4 {
             self.discard(discard[p]);
         }
@@ -337,27 +351,51 @@ impl State {
             let mut reward = [0f32; 4];
             for p in 0..4 {
                 let player_tiles = &self.player_tiles[p * 34..(p + 1) * 34];
-                reward[p] = -(self.cache.completion_distance(player_tiles, 1, 4) as f32);
+                reward[p] = distance_delta_reward(&self.cache, previous_distance[p], player_tiles);
             }
-            (self.reset(), reward, true)
+            (self.reset(), reward, true, [false; 4])
         } else {
             let mut reward = [0f32; 4];
             for _p in 0..4 {
                 self.draw();
             }
-            'player: for p in 0..4 {
+
+            let mut has_complete_hand = false;
+            let mut winners = [false; 4];
+            for p in 0..4 {
                 let player_tiles = &self.player_tiles[p * 34..(p + 1) * 34];
-                let mut forms = Vec::with_capacity(3);
-                for s in 0..3 {
-                    let suit_tiles = &player_tiles[s * 9..(s + 1) * 9];
-                    match self.cache.form_map.get(suit_tiles) {
-                        Some(v) => forms.push(v),
-                        None => continue 'player,
-                    }
-                }
-                reward[p] = State::enumerate_points(&forms, &player_tiles[27..34]);
+                let (player_reward, is_complete) = distance_delta_reward_with_completion(
+                    &self.cache,
+                    previous_distance[p],
+                    player_tiles,
+                );
+                reward[p] = player_reward;
+                has_complete_hand |= is_complete;
+                winners[p] = is_complete;
             }
-            (self.player_tiles, reward, false)
+
+            // Previous average discard reward:
+            // reward[p] = average_distance_after_discard(before_discard)
+            //     - completion_distance(after_discard_13_tiles);
+            //
+            // Previous distance reward:
+            // reward[p] = -completion_distance(after_discard_13_tiles)
+            //
+            // Original sparse reward:
+            // let mut forms = Vec::with_capacity(3);
+            // for s in 0..3 {
+            //     let suit_tiles = &player_tiles[s * 9..(s + 1) * 9];
+            //     match self.cache.form_map.get(suit_tiles) {
+            //         Some(v) => forms.push(v),
+            //         None => continue 'player,
+            //     }
+            // }
+            // reward[p] = State::enumerate_points(&forms, &player_tiles[27..34]);
+            if has_complete_hand {
+                (self.reset(), reward, true, winners)
+            } else {
+                (self.player_tiles, reward, false, winners)
+            }
         }
     }
 }
@@ -373,7 +411,7 @@ mod tests {
 
         let observation = state.reset();
         for chunk in observation.chunks_exact(34) {
-            assert_eq!(chunk.first_chunk::<34>().unwrap().iter().sum::<u8>(), 14);
+            assert_eq!(chunk.iter().sum::<u8>(), 14);
         }
 
         assert_eq!(
