@@ -6,14 +6,13 @@ pub struct MjaiKyokuStateMachineManager {
 #[pymethods]
 impl MjaiKyokuStateMachineManager {
     #[new]
-    #[pyo3(signature = (num_envs, reveal_opponent_initial_hands=true))]
-    fn new(num_envs: usize, reveal_opponent_initial_hands: bool) -> PyResult<Self> {
+    fn new(num_envs: usize) -> PyResult<Self> {
         if num_envs == 0 {
             return Err(PyValueError::new_err("num_envs must be greater than 0"));
         }
         Ok(Self {
             tables: (0..num_envs)
-                .map(|_| TableStateMachine::new(reveal_opponent_initial_hands))
+                .map(|_| TableStateMachine::new())
                 .collect(),
         })
     }
@@ -25,7 +24,7 @@ impl MjaiKyokuStateMachineManager {
     fn num_players(&self) -> usize { NUM_PLAYERS }
 
     #[getter]
-    fn token_dim(&self) -> usize { TOKEN_DIM }
+    fn board_tokens(&self) -> usize { BOARD_TOKENS }
 
     /// Apply one event delta per player for every selected table.
     ///
@@ -99,9 +98,8 @@ impl MjaiKyokuStateMachineManager {
         Ok((end_kyoku.into_pyarray(py), end_game.into_pyarray(py)).into_pyobject(py)?)
     }
 
-    /// Atomically records legal actions and materializes only active model
-    /// rows. Returns `(input_ids, attention_mask, sequence_lengths, mask,
-    /// history_lengths, history_generations)`.
+    /// Atomically records legal actions and materializes V4 rows.  Blocks are
+    /// pre-decoded u8 fields; the twelve board rows are temporary state.
     fn prepare_decisions<'py>(
         &mut self,
         py: Python<'py>,
@@ -130,42 +128,57 @@ impl MjaiKyokuStateMachineManager {
             let table = &mut self.tables[env_index];
             table.set_legal_action_jsons(player_index, actions).map_err(PyValueError::new_err)?;
             let player = &table.players[player_index as usize];
-            let snapshot_tokens = player.snapshot_tokens(&snapshot).map_err(PyValueError::new_err)?;
-            snapshots.push((row, batch_index, snapshot_tokens));
+            let board = player.board_tokens(&snapshot).map_err(PyValueError::new_err)?;
+            snapshots.push((row, batch_index, board));
         }
 
-        let max_length = snapshots.iter().map(|(_, batch_index, snapshot)| {
+        let max_length = snapshots.iter().map(|(_, batch_index, _)| {
             let table = &self.tables[*batch_index / NUM_PLAYERS];
-            table.players[*batch_index % NUM_PLAYERS].tokens.len() + snapshot.len()
+            table.players[*batch_index % NUM_PLAYERS].blocks.len()
         }).max().unwrap_or(0);
-        let mut input_ids = vec![TYPE_PAD; batch_size * max_length * TOKEN_DIM];
-        let mut attention_mask = vec![false; batch_size * max_length];
-        let mut sequence_lengths = vec![0i64; batch_size];
-        let mut history_lengths = vec![0i64; batch_size];
+        let mut block_kinds = vec![BLOCK_PAD; batch_size * max_length];
+        let mut turn_fields = vec![0u8; batch_size * max_length * 4 * 4];
+        let mut meld_fields = vec![0u8; batch_size * max_length * 8];
+        let mut board_fields = vec![0u8; batch_size * BOARD_TOKENS * BOARD_FIELDS];
+        let mut block_lengths = vec![0i64; batch_size];
         let mut history_generations = vec![0i64; batch_size];
         let mut masks = vec![false; batch_size * NUM_ACTIONS];
-        for (row, batch_index, snapshot) in snapshots {
+        for (row, batch_index, board) in snapshots {
             let table = &self.tables[batch_index / NUM_PLAYERS];
             let player = &table.players[batch_index % NUM_PLAYERS];
-            let length = player.tokens.len() + snapshot.len();
-            sequence_lengths[row] = length as i64;
-            history_lengths[row] = player.tokens.len() as i64;
+            block_lengths[row] = player.blocks.len() as i64;
             history_generations[row] = table.history_generations[batch_index % NUM_PLAYERS] as i64;
-            let input_offset = row * max_length * TOKEN_DIM;
-            for (token_index, token) in player.tokens.iter().chain(snapshot.iter()).enumerate() {
-                let offset = input_offset + token_index * TOKEN_DIM;
-                input_ids[offset..offset + TOKEN_DIM].copy_from_slice(token);
-                attention_mask[row * max_length + token_index] = true;
+            for (block_index, block) in player.blocks.iter().enumerate() {
+                let block_offset = row * max_length + block_index;
+                match block {
+                    EventBlock::Turn(micros) => {
+                        block_kinds[block_offset] = BLOCK_TURN;
+                        for (micro_index, micro) in micros.iter().enumerate() {
+                            let offset = (block_offset * 4 + micro_index) * 4;
+                            turn_fields[offset..offset + 4].copy_from_slice(&[micro.kind, micro.actor, micro.tile, micro.flag]);
+                        }
+                    }
+                    EventBlock::Meld { meld_kind, actor, target, pai, tiles } => {
+                        block_kinds[block_offset] = BLOCK_MELD;
+                        let offset = block_offset * 8;
+                        meld_fields[offset..offset + 8].copy_from_slice(&[*meld_kind, *actor, *target, *pai, tiles[0], tiles[1], tiles[2], tiles[3]]);
+                    }
+                }
+            }
+            for (token_index, token) in board.iter().enumerate() {
+                let offset = (row * BOARD_TOKENS + token_index) * BOARD_FIELDS;
+                board_fields[offset..offset + BOARD_FIELDS].copy_from_slice(token);
             }
             masks[row * NUM_ACTIONS..(row + 1) * NUM_ACTIONS]
                 .copy_from_slice(&table.action_mask((batch_index % NUM_PLAYERS) as u8));
         }
         Ok((
-            input_ids.into_pyarray(py).reshape((batch_size, max_length, TOKEN_DIM))?,
-            attention_mask.into_pyarray(py).reshape((batch_size, max_length))?,
-            sequence_lengths.into_pyarray(py),
+            block_kinds.into_pyarray(py).reshape((batch_size, max_length))?,
+            turn_fields.into_pyarray(py).reshape((batch_size, max_length, 4, 4))?,
+            meld_fields.into_pyarray(py).reshape((batch_size, max_length, 8))?,
+            board_fields.into_pyarray(py).reshape((batch_size, BOARD_TOKENS, BOARD_FIELDS))?,
+            block_lengths.into_pyarray(py),
             masks.into_pyarray(py).reshape((batch_size, NUM_ACTIONS))?,
-            history_lengths.into_pyarray(py),
             history_generations.into_pyarray(py),
         ).into_pyobject(py)?)
     }

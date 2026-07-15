@@ -1,5 +1,4 @@
 struct TableStateMachine {
-    reveal_opponent_initial_hands: bool,
     players: [PlayerKyokuStateMachine; NUM_PLAYERS],
     /// Monotonic cache epoch for each player history.  A new kyoku resets
     /// tokens, so a length alone is not sufficient to validate a rollout KV
@@ -17,9 +16,8 @@ struct ActionRequest {
 }
 
 impl TableStateMachine {
-    fn new(reveal_opponent_initial_hands: bool) -> Self {
+    fn new() -> Self {
         Self {
-            reveal_opponent_initial_hands,
             players: std::array::from_fn(|seat| PlayerKyokuStateMachine::new(seat as u8)),
             history_generations: [0; NUM_PLAYERS],
             pending_requests: std::array::from_fn(|_| None),
@@ -39,10 +37,7 @@ impl TableStateMachine {
             if matches!(event, MjaiEvent::StartKyoku { .. }) {
                 self.history_generations[player_index as usize] = self.history_generations[player_index as usize].wrapping_add(1);
             }
-            self.players[player_index as usize].apply_player_event(
-                &event,
-                self.reveal_opponent_initial_hands,
-            )?;
+            self.players[player_index as usize].apply_player_event(&event)?;
         }
         Ok(())
     }
@@ -55,11 +50,21 @@ impl TableStateMachine {
         if player_index >= NUM_PLAYERS as u8 {
             return Err("player_index must be in 0..4".to_owned());
         }
-        let mut possible_actions = std::array::from_fn(|_| None);
+        let mut possible_actions: [Option<String>; NUM_ACTIONS] = std::array::from_fn(|_| None);
         for action_json in action_jsons {
             let action: Value = serde_json::from_str(&action_json)
                 .map_err(|error| format!("invalid legal action JSON: {error}"))?;
             let action_id = action_id_from_mjai_value(&action)?;
+            if let Some(existing) = &possible_actions[action_id] {
+                let existing_value: Value = serde_json::from_str(existing)
+                    .map_err(|error| format!("stored legal action JSON became invalid: {error}"))?;
+                if existing_value != action {
+                    return Err(format!(
+                        "distinct RiichiEnv actions map to the same fixed action id {action_id}"
+                    ));
+                }
+                continue;
+            }
             possible_actions[action_id] = Some(action_json);
         }
         self.pending_requests[player_index as usize] = Some(ActionRequest { possible_actions });

@@ -10,9 +10,11 @@ import numpy as np
 
 @dataclass
 class Transition:
-    input_ids: np.ndarray
-    attention_mask: np.ndarray
-    length: int
+    event_kinds: np.ndarray
+    turn_fields: np.ndarray
+    meld_fields: np.ndarray
+    board_state: np.ndarray
+    block_length: int
     legal_mask: np.ndarray
     action: int
     logprob: float
@@ -21,9 +23,6 @@ class Transition:
     done: bool = False
     advantage: float = 0.0
     return_: float = 0.0
-    # Confirmed event-history prefix length.  The remaining input tokens are
-    # the per-decision snapshot; the model adds its learned decision token.
-    history_length: int = 0
 
 
 def finish_kyoku(

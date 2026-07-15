@@ -1,4 +1,4 @@
-"""Reusable validation helpers for the 4-player V3/241 integration boundary."""
+"""Reusable validation helpers for the 4-player V4/241 integration boundary."""
 
 from __future__ import annotations
 
@@ -18,14 +18,9 @@ EVENT_TYPES = frozenset({
     "end_kyoku", "end_game",
 })
 MODEL_EVENT_TYPES = frozenset({
-    "start_kyoku", "tsumo", "dahai", "chi", "pon", "daiminkan", "ankan", "kakan",
-    "dora", "reach", "reach_accepted", "hora", "ryukyoku",
+    "dahai", "chi", "pon", "daiminkan", "ankan", "kakan", "dora", "reach", "reach_accepted",
 })
-TOKEN_BY_EVENT = {
-    "start_kyoku": 26, "tsumo": 27, "dahai": 28, "chi": 29, "pon": 30,
-    "daiminkan": 31, "kakan": 32, "ankan": 33, "dora": 35, "reach": 36,
-    "reach_accepted": 37, "hora": 38, "ryukyoku": 39,
-}
+BLOCK_BY_EVENT = {name: (2 if name in {"chi", "pon", "daiminkan", "ankan", "kakan"} else 1) for name in MODEL_EVENT_TYPES}
 TILE34 = tuple(
     [f"{rank}{suit}" for suit in "mps" for rank in range(1, 10)] + ["E", "S", "W", "N", "P", "F", "C"]
 )
@@ -47,6 +42,24 @@ def _chi_pairs() -> list[tuple[str, str]]:
     return pairs
 
 
+def _chi_pai(pair: tuple[str, str]) -> str:
+    """Choose one valid called tile for a V2 chi-consumed pair.
+
+    A consumed pair can be valid for either end of two adjacent sequences.  The
+    fixed id is intentionally shared because the current discard determines
+    which one is legal at a real decision; this helper only needs one valid
+    template for static action-space coverage.
+    """
+    suit = pair[0][1]
+    ranks = sorted(int(tile[0]) for tile in pair)
+    for start in range(1, 8):
+        sequence = [start, start + 1, start + 2]
+        if all(rank in sequence for rank in ranks) and len(set(ranks)) == 2:
+            missing = next(rank for rank in sequence if rank not in ranks)
+            return f"{missing}{suit}"
+    raise AssertionError(f"invalid V2 chi pair {pair}")
+
+
 def suffix(suit: str) -> str:
     """Map m/p/s to the red-five spelling's suit character."""
     return suit
@@ -63,7 +76,7 @@ def all_action_templates() -> list[dict[str, Any]]:
     templates: list[dict[str, Any]] = [{"type": "none"}]
     templates.extend({"type": "dahai", "pai": tile, "tsumogiri": bool(mode)} for tile in TILE37 for mode in range(2))
     templates.append({"type": "reach"})
-    templates.extend({"type": "chi", "pai": "5m", "consumed": list(pair)} for pair in _chi_pairs())
+    templates.extend({"type": "chi", "pai": _chi_pai(pair), "consumed": list(pair)} for pair in _chi_pairs())
     templates.extend({"type": "pon", "pai": pair[0].replace("r", ""), "consumed": list(pair)} for pair in _pon_pairs())
     templates.append({"type": "daiminkan", "pai": "E", "consumed": ["E", "E", "E"]})
     templates.extend({"type": "ankan", "consumed": [tile] * 4} for tile in TILE34)
@@ -85,7 +98,7 @@ def fixture_snapshot() -> str:
 
 def assert_full_action_space(manager: Any) -> None:
     templates = all_action_templates()
-    _ids, _attention, _lengths, mask, _history_lengths, _history_generations = manager.prepare_decisions(
+    _kinds, _turn, _meld, _board, _lengths, mask, _history_generations = manager.prepare_decisions(
         [0], [[json.dumps(template, separators=(",", ":")) for template in templates]], [fixture_snapshot()]
     )
     mask = np.asarray(mask, dtype=bool)
@@ -100,7 +113,7 @@ def assert_full_action_space(manager: Any) -> None:
 def assert_observation_roundtrip(bridge: BatchedStateBridge, env_index: int, seat_id: int, observation: Any) -> set[int]:
     decision = Decision(env_index, seat_id, observation)
     expected = {canonical(value) for value in action_jsons(observation)}
-    _inputs, _attention, _lengths, masks, _history_lengths, _history_generations = bridge.prepare([decision])
+    _kinds, _turn, _meld, _board, _lengths, masks, _history_generations = bridge.prepare([decision])
     mask = masks[0]
     ids = set(np.flatnonzero(mask).tolist())
     if not ids:

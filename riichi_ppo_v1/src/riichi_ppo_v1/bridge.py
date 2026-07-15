@@ -59,7 +59,7 @@ def snapshot_json(observation: Any) -> str:
     pid = int(observation.player_id)
     hands = getattr(observation, "hands", None)
     if hands is None:
-        raise RuntimeError("Observation must expose all hands for the V3 snapshot bridge")
+        raise RuntimeError("Observation must expose all hands for the V4 state bridge")
     data = {
         "player_id": pid,
         "oya": int(observation.oya),
@@ -102,7 +102,7 @@ class BatchedStateBridge:
         with self.profiler.stage("state/boundary_array_convert"):
             return np.asarray(end_kyoku, dtype=np.bool_), np.asarray(end_game, dtype=np.bool_)
 
-    def prepare(self, decisions: list[Decision]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def prepare(self, decisions: list[Decision]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         if not decisions:
             raise ValueError("cannot prepare an empty decision batch")
         batch_indices = [decision.batch_index for decision in decisions]
@@ -111,23 +111,26 @@ class BatchedStateBridge:
         with self.profiler.stage("state/snapshot_json"):
             snapshots = [snapshot_json(decision.observation) for decision in decisions]
         with self.profiler.stage("state/rust_prepare_decisions"):
-            ids, attention, lengths, mask, history_lengths, history_generations = self.state_machine.prepare_decisions(batch_indices, legal_actions, snapshots)
+            kinds, turn, meld, board, block_lengths, mask, history_generations = self.state_machine.prepare_decisions(batch_indices, legal_actions, snapshots)
         with self.profiler.stage("state/numpy_array_convert"):
-            ids_a = np.asarray(ids, dtype=np.int64)
-            attention_a = np.asarray(attention, dtype=np.bool_)
-            lengths_a = np.asarray(lengths, dtype=np.int64)
+            kinds_a = np.asarray(kinds, dtype=np.uint8)
+            turn_a = np.asarray(turn, dtype=np.uint8)
+            meld_a = np.asarray(meld, dtype=np.uint8)
+            board_a = np.asarray(board, dtype=np.uint8)
+            block_lengths_a = np.asarray(block_lengths, dtype=np.int64)
             mask_a = np.asarray(mask, dtype=np.bool_)
-            history_lengths_a = np.asarray(history_lengths, dtype=np.int64)
             history_generations_a = np.asarray(history_generations, dtype=np.int64)
-        if ids_a.ndim != 3 or ids_a.shape[0] != len(decisions) or ids_a.shape[2] != 8:
-            raise RuntimeError(f"invalid batched state input shape {ids_a.shape}")
+        if kinds_a.ndim != 2 or turn_a.shape != (*kinds_a.shape, 4, 4) or meld_a.shape != (*kinds_a.shape, 8):
+            raise RuntimeError("invalid V4 event-block shapes")
+        if board_a.shape != (len(decisions), 12, 160):
+            raise RuntimeError(f"invalid V4 board shape {board_a.shape}")
         if mask_a.shape != (len(decisions), NUM_ACTIONS) or not np.all(mask_a.any(axis=1)):
             raise RuntimeError("state machine returned an empty or malformed decision mask")
-        if history_lengths_a.shape != (len(decisions),) or history_generations_a.shape != (len(decisions),):
+        if block_lengths_a.shape != (len(decisions),) or history_generations_a.shape != (len(decisions),):
             raise RuntimeError("state machine returned malformed cache metadata")
-        if np.any(history_lengths_a < 0) or np.any(history_lengths_a >= lengths_a):
-            raise RuntimeError("history length must be a strict prefix of the decision sequence")
-        return ids_a, attention_a, lengths_a, mask_a, history_lengths_a, history_generations_a
+        if np.any(block_lengths_a < 0) or np.any(block_lengths_a > kinds_a.shape[1]):
+            raise RuntimeError("invalid V4 block length")
+        return kinds_a, turn_a, meld_a, board_a, block_lengths_a, mask_a, history_generations_a
 
     def decode(self, decisions: list[Decision], action_ids: list[int]) -> list[Any]:
         if len(decisions) != len(action_ids):

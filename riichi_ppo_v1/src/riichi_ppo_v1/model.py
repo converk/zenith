@@ -1,4 +1,4 @@
-"""Causal Transformer actor-critic for KyokuEventTuple V3."""
+"""Causal Transformer actor-critic for V4 event blocks and board groups."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ from torch import Tensor, nn
 import torch.nn.functional as F
 
 NUM_ACTIONS = 241
-TOKEN_DIM = 8
+BOARD_TOKENS = 12
+BOARD_FIELDS = 160
 
 
 @dataclass(frozen=True)
@@ -81,34 +82,6 @@ class Attention(nn.Module):
         y = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=True)
         return self.out(y.transpose(1, 2).reshape(batch, length, width))
 
-    def forward_cached(
-        self, x: Tensor, positions: Tensor, past: tuple[Tensor, Tensor] | None,
-    ) -> tuple[Tensor, tuple[Tensor, Tensor]]:
-        """Incremental causal attention for a uniform-length KV prefix.
-
-        ``past`` contains RoPE-rotated K/V for confirmed event tokens only.
-        Callers deliberately never retain snapshot or decision-token K/V.
-        """
-        batch, length, width = x.shape
-        q, k, v = self.qkv(x).chunk(3, dim=-1)
-        def heads(t: Tensor) -> Tensor:
-            return t.view(batch, length, self.heads, self.head_dim).transpose(1, 2)
-        q, k, v = heads(q), heads(k), heads(v)
-        q, k = self.rope(q, positions), self.rope(k, positions)
-        if past is None:
-            keys, values, prefix = k, v, 0
-        else:
-            past_k, past_v = past
-            if past_k.shape[:2] != (batch, self.heads) or past_k.shape != past_v.shape:
-                raise ValueError("cached K/V shape is incompatible with the input batch")
-            keys, values, prefix = torch.cat((past_k, k), dim=2), torch.cat((past_v, v), dim=2), past_k.shape[2]
-        # Query i may see every prefix key and current keys 0..i.
-        causal = torch.arange(length, device=x.device).unsqueeze(1) >= (
-            torch.arange(prefix + length, device=x.device).unsqueeze(0) - prefix
-        )
-        y = F.scaled_dot_product_attention(q, keys, values, attn_mask=causal, dropout_p=0.0, is_causal=False)
-        return self.out(y.transpose(1, 2).reshape(batch, length, width)), (keys, values)
-
 
 class SwiGLU(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
@@ -133,30 +106,62 @@ class Block(nn.Module):
         x = x + self.attn(self.attn_norm(x), positions)
         return x + self.ffn(self.ffn_norm(x))
 
-    def forward_cached(
-        self, x: Tensor, positions: Tensor, past: tuple[Tensor, Tensor] | None,
-    ) -> tuple[Tensor, tuple[Tensor, Tensor]]:
-        attention, cache = self.attn.forward_cached(self.attn_norm(x), positions, past)
-        x = x + attention
-        return x + self.ffn(self.ffn_norm(x)), cache
 
-
-class EventEmbedding(nn.Module):
-    """The eight protocol fields have independent vocabularies and embeddings."""
-
-    VOCABS = (48, 5, 5, 39, 39, 39, 19, 32)
+class EventBlockEncoder(nn.Module):
+    """Embed V4's pre-decoded compact event fields, never a 64-bit vocabulary."""
 
     def __init__(self, dim: int) -> None:
         super().__init__()
-        self.tables = nn.ModuleList(
-            nn.Embedding(vocab, dim, padding_idx=0 if index == 0 else None)
-            for index, vocab in enumerate(self.VOCABS)
-        )
+        self.micro_kind = nn.Embedding(5, dim, padding_idx=0)
+        self.micro_actor = nn.Embedding(5, dim, padding_idx=0)
+        self.micro_tile = nn.Embedding(39, dim, padding_idx=0)
+        self.micro_flag = nn.Embedding(8, dim, padding_idx=0)
+        self.micro_position = nn.Embedding(4, dim)
+        self.meld_value = nn.Embedding(40, dim, padding_idx=0)
+        self.meld_position = nn.Embedding(8, dim)
+        self.turn_norm = RMSNorm(dim, 1e-6)
+        self.meld_norm = RMSNorm(dim, 1e-6)
 
-    def forward(self, ids: Tensor) -> Tensor:
-        if ids.ndim != 3 or ids.shape[-1] != TOKEN_DIM:
-            raise ValueError("input_ids must be [batch, length, 8]")
-        return sum(table(ids[..., field].long()) for field, table in enumerate(self.tables))
+    def forward(self, kinds: Tensor, turn: Tensor, meld: Tensor) -> Tensor:
+        if kinds.ndim != 2 or turn.shape != (*kinds.shape, 4, 4) or meld.shape != (*kinds.shape, 8):
+            raise ValueError("V4 event fields have incompatible shapes")
+        turn = turn.long()
+        micro = (
+            self.micro_kind(turn[..., 0])
+            + self.micro_actor(turn[..., 1])
+            + self.micro_tile(turn[..., 2])
+            + self.micro_flag(turn[..., 3])
+            + self.micro_position(torch.arange(4, device=kinds.device)).view(1, 1, 4, -1)
+        )
+        active = turn[..., 0].ne(0).unsqueeze(-1)
+        turn_embedding = self.turn_norm((micro * active).sum(-2) / active.sum(-2).clamp_min(1))
+        meld = meld.long()
+        meld_embedding = self.meld_value(meld) + self.meld_position(torch.arange(8, device=kinds.device)).view(1, 1, 8, -1)
+        meld_embedding = self.meld_norm(meld_embedding.sum(-2))
+        return torch.where(kinds.eq(1).unsqueeze(-1), turn_embedding, torch.where(kinds.eq(2).unsqueeze(-1), meld_embedding, torch.zeros_like(turn_embedding)))
+
+
+class BoardStateEncoder(nn.Module):
+    """Encode the twelve fixed V4 board groups from their raw u8 fields."""
+
+    def __init__(self, dim: int) -> None:
+        super().__init__()
+        self.value = nn.Embedding(64, dim, padding_idx=0)
+        self.field = nn.Embedding(BOARD_FIELDS, dim)
+        self.group = nn.Embedding(3, dim)
+        self.norm = RMSNorm(dim, 1e-6)
+
+    def forward(self, board: Tensor) -> Tensor:
+        if board.ndim != 3 or board.shape[1:] != (BOARD_TOKENS, BOARD_FIELDS):
+            raise ValueError(f"board_state must be [batch, {BOARD_TOKENS}, {BOARD_FIELDS}]")
+        board = board.long()
+        values = self.value(board)
+        fields = self.field(torch.arange(BOARD_FIELDS, device=board.device)).view(1, 1, BOARD_FIELDS, -1)
+        active = board.ne(0).unsqueeze(-1)
+        pooled = (values + fields) * active
+        pooled = pooled.sum(-2) / active.sum(-2).clamp_min(1)
+        groups = self.group((torch.arange(BOARD_TOKENS, device=board.device) % 3)).view(1, BOARD_TOKENS, -1)
+        return self.norm(pooled + groups)
 
 
 class KyokuTransformerActorCritic(nn.Module):
@@ -165,7 +170,8 @@ class KyokuTransformerActorCritic(nn.Module):
     def __init__(self, config: ModelConfig | None = None) -> None:
         super().__init__()
         self.config = config or ModelConfig.preset("mid")
-        self.embedding = EventEmbedding(self.config.d_embed)
+        self.event_embedding = EventBlockEncoder(self.config.d_embed)
+        self.board_embedding = BoardStateEncoder(self.config.d_embed)
         self.input_proj: nn.Module = (
             nn.Identity() if self.config.d_embed == self.config.d_model
             else nn.Linear(self.config.d_embed, self.config.d_model, bias=False)
@@ -179,22 +185,32 @@ class KyokuTransformerActorCritic(nn.Module):
 
     def forward(
         self,
-        input_ids: Tensor,
+        block_kinds: Tensor,
+        turn_fields: Tensor,
+        meld_fields: Tensor,
+        board_state: Tensor,
         legal_mask: Tensor | None = None,
-        attention_mask: Tensor | None = None,
-        sequence_lengths: Tensor | None = None,
+        block_lengths: Tensor | None = None,
     ) -> dict[str, Tensor]:
-        attention_mask, lengths = self._metadata(input_ids, attention_mask, sequence_lengths)
-        x = self.input_proj(self.embedding(input_ids))
-        batch, length, width = x.shape
-        extended = x.new_zeros((batch, length + 1, width))
-        extended[:, :length] = x
-        row = torch.arange(batch, device=x.device)
-        extended[row, lengths] = self.decision_token
-        positions = torch.arange(length + 1, device=x.device).expand(batch, -1)
+        lengths = self._metadata(block_kinds, turn_fields, meld_fields, board_state, block_lengths)
+        events = self.input_proj(self.event_embedding(block_kinds, turn_fields, meld_fields))
+        board = self.input_proj(self.board_embedding(board_state))
+        batch, length, width = events.shape
+        extended = events.new_zeros((batch, length + BOARD_TOKENS + 1, width))
+        # ``events`` is right-padded already, so the full assignment is valid
+        # for every row.  Keep the per-row board and decision positions on the
+        # device: converting ``lengths[index]`` to Python would synchronize
+        # once per decision in a rollout inference batch.
+        extended[:, :length] = events
+        row = torch.arange(batch, device=events.device)
+        board_positions = lengths.unsqueeze(1) + torch.arange(BOARD_TOKENS, device=events.device)
+        extended[row.unsqueeze(1), board_positions] = board
+        decision_index = lengths + BOARD_TOKENS
+        extended[row, decision_index] = self.decision_token
+        positions = torch.arange(extended.shape[1], device=events.device).expand(batch, -1)
         for block in self.blocks:
             extended = block(extended, positions)
-        hidden = self.norm(extended[row, lengths])
+        hidden = self.norm(extended[row, decision_index])
         raw = self.policy_head(hidden)
         if legal_mask is None:
             logits = raw
@@ -202,83 +218,18 @@ class KyokuTransformerActorCritic(nn.Module):
             if legal_mask.shape != (batch, NUM_ACTIONS):
                 raise ValueError("legal_mask must be [batch, 241]")
             legal_mask = legal_mask.to(device=raw.device, dtype=torch.bool)
-            if not legal_mask.any(dim=-1).all():
-                raise ValueError("every policy row must contain a legal action")
             logits = raw.masked_fill(~legal_mask, float("-inf"))
         return {"raw_policy_logits": raw, "policy_logits": logits, "value": self.value_head(hidden).squeeze(-1)}
 
-    def forward_cached(
-        self,
-        history_ids: Tensor,
-        snapshot_ids: Tensor,
-        legal_mask: Tensor,
-        past_key_values: tuple[tuple[Tensor, Tensor], ...] | None = None,
-        history_length: int = 0,
-    ) -> tuple[dict[str, Tensor], tuple[tuple[Tensor, Tensor], ...]]:
-        """Run one rollout decision with a cache of confirmed event history.
-
-        Inputs are unpadded and have a uniform length within their batch.  The
-        returned cache contains only ``history_ids`` appended to ``past``;
-        snapshot state and the learned decision token remain temporary.
-        """
-        if history_ids.ndim != 3 or snapshot_ids.ndim != 3 or history_ids.shape[0] != snapshot_ids.shape[0]:
-            raise ValueError("history_ids and snapshot_ids must be [batch, length, 8]")
-        if history_ids.shape[-1] != TOKEN_DIM or snapshot_ids.shape[-1] != TOKEN_DIM:
-            raise ValueError("cached inputs must use eight-field tokens")
-        batch = history_ids.shape[0]
-        if legal_mask.shape != (batch, NUM_ACTIONS):
-            raise ValueError("legal_mask must be [batch, 241]")
-        if past_key_values is not None and len(past_key_values) != len(self.blocks):
-            raise ValueError("past_key_values must have one entry per Transformer block")
-        cache = past_key_values
-        if history_ids.shape[1]:
-            history = self.input_proj(self.embedding(history_ids))
-            positions = torch.arange(history_length, history_length + history.shape[1], device=history.device).expand(batch, -1)
-            next_cache: list[tuple[Tensor, Tensor]] = []
-            for layer, block in enumerate(self.blocks):
-                history, layer_cache = block.forward_cached(history, positions, None if cache is None else cache[layer])
-                next_cache.append(layer_cache)
-            cache = tuple(next_cache)
-        if cache is None:
-            # A decision always has a snapshot, but retain a clear failure for
-            # malformed callers rather than silently using an empty prefix.
-            raise ValueError("cached forward requires a non-empty confirmed history")
-        snapshot = self.input_proj(self.embedding(snapshot_ids))
-        decision = self.decision_token.view(1, 1, -1).expand(batch, 1, -1)
-        suffix = torch.cat((snapshot, decision), dim=1)
-        positions = torch.arange(history_length + history_ids.shape[1], history_length + history_ids.shape[1] + suffix.shape[1], device=suffix.device).expand(batch, -1)
-        for layer, block in enumerate(self.blocks):
-            suffix, _temporary = block.forward_cached(suffix, positions, cache[layer])
-        hidden = self.norm(suffix[:, -1])
-        raw = self.policy_head(hidden)
-        mask = legal_mask.to(device=raw.device, dtype=torch.bool)
-        if not mask.any(dim=-1).all():
-            raise ValueError("every policy row must contain a legal action")
-        return {
-            "raw_policy_logits": raw,
-            "policy_logits": raw.masked_fill(~mask, float("-inf")),
-            "value": self.value_head(hidden).squeeze(-1),
-        }, cache
-
     @staticmethod
-    def _metadata(
-        ids: Tensor, attention: Tensor | None, lengths: Tensor | None
-    ) -> tuple[Tensor, Tensor]:
-        if ids.ndim != 3 or ids.shape[-1] != TOKEN_DIM:
-            raise ValueError("input_ids must be [batch, length, 8]")
-        batch, length, _ = ids.shape
-        if attention is None:
-            attention = ids[..., 0].ne(0)
-        attention = attention.to(device=ids.device, dtype=torch.bool)
-        if attention.shape != (batch, length):
-            raise ValueError("attention_mask must be [batch, length]")
-        inferred = attention.long().sum(-1)
-        expected = torch.arange(length, device=ids.device).unsqueeze(0) < inferred.unsqueeze(1)
-        if not torch.equal(attention, expected) or (inferred == 0).any():
-            raise ValueError("attention_mask must be non-empty right-side padding")
+    def _metadata(block_kinds: Tensor, turn: Tensor, meld: Tensor, board: Tensor, lengths: Tensor | None) -> Tensor:
+        if block_kinds.ndim != 2 or turn.shape != (*block_kinds.shape, 4, 4) or meld.shape != (*block_kinds.shape, 8):
+            raise ValueError("V4 event fields have incompatible shapes")
+        if board.shape != (block_kinds.shape[0], BOARD_TOKENS, BOARD_FIELDS):
+            raise ValueError("V4 board state has incompatible batch shape")
         if lengths is None:
-            lengths = inferred
-        lengths = lengths.to(device=ids.device, dtype=torch.long)
-        if lengths.shape != (batch,) or not torch.equal(lengths, inferred):
-            raise ValueError("sequence_lengths must equal attention token counts")
-        return attention, lengths
+            lengths = block_kinds.ne(0).long().sum(-1)
+        lengths = lengths.to(device=block_kinds.device, dtype=torch.long)
+        if lengths.shape != (block_kinds.shape[0],):
+            raise ValueError("block_lengths must have one entry per batch row")
+        return lengths

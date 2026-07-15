@@ -1,4 +1,4 @@
-"""Public Python API tests for every four-player MJAI event accepted by the state machine."""
+"""V4 matrix tests for the public Python state-machine API."""
 
 from __future__ import annotations
 
@@ -12,20 +12,21 @@ try:
 except ImportError:  # pragma: no cover
     riichi = None
 
-from riichi_ppo_v1.validation import TOKEN_BY_EVENT, fixture_snapshot
+from riichi_ppo_v1.validation import BLOCK_BY_EVENT, fixture_snapshot
 
 
 def start_kyoku() -> dict:
     return {
         "type": "start_kyoku", "bakaze": "E", "dora_marker": "2p", "kyoku": 1,
         "honba": 0, "kyotaku": 0, "oya": 0, "scores": [25000] * 4,
-        "tehais": [
-            ["1m", "1m", "2m", "3m", "4m", "5mr", "6m", "7p", "8p", "9p", "E", "S", "C"],
-            ["5m", "5m", "5m", "1p", "1p", "1p", "1p", "2p", "2p", "2p", "2p", "3p", "3p"],
-            ["1s", "2s", "3s", "4s", "5s", "6s", "7s", "8s", "9s", "E", "S", "W", "N"],
-            ["1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "P", "F", "C", "E"],
-        ],
+        "tehais": [["1m"] * 13, ["2m"] * 13, ["3m"] * 13, ["4m"] * 13],
     }
+
+
+def snapshot_for(player_id: int) -> str:
+    data = json.loads(fixture_snapshot())
+    data["player_id"] = player_id
+    return json.dumps(data, separators=(",", ":"))
 
 
 @unittest.skipUnless(riichi is not None, "local riichi extension is not installed")
@@ -35,72 +36,102 @@ class ProtocolMatrixTest(unittest.TestCase):
         self.apply_events([{"type": "start_game", "id": 0}, start_kyoku()])
 
     def apply_events(self, events: list[dict]) -> tuple[np.ndarray, np.ndarray]:
-        return self.manager.apply_events_batch(
-            [0], [[[json.dumps(event) for event in events], [], [], []]]
-        )
+        return self.manager.apply_events_batch([0], [[[json.dumps(event) for event in events], [], [], []]])
 
-    def apply(self, event: dict, expected_type: int | None) -> np.ndarray:
-        end_kyoku, end_game = self.apply_events([event])
-        ids, _attention, _lengths, _mask, _history_lengths, _history_generations = self.manager.prepare_decisions(
-            [0], [[json.dumps({"type": "none"})]], [fixture_snapshot()]
-        )
-        tokens = np.asarray(ids, dtype=np.int64)[0]
-        if expected_type is None:
-            self.assertEqual(bool(end_kyoku[0]), event["type"] == "end_kyoku")
-            self.assertEqual(bool(end_game[0]), event["type"] == "end_game")
-        else:
-            self.assertTrue((tokens[:, 0] == expected_type).any(), (event, tokens.tolist()))
-        self.assertEqual(tokens.ndim, 2)
-        self.assertEqual(tokens.shape[1], 8)
-        return tokens
+    def prepare(self):
+        return self.manager.prepare_decisions([0], [[json.dumps({"type": "none"})]], [fixture_snapshot()])
 
-    def test_all_event_types_and_protocol_branches(self) -> None:
-        self.assertGreater(len(self.apply({"type": "tsumo", "actor": 0, "pai": "1m"}, TOKEN_BY_EVENT["tsumo"])), 0)
-        cases = [
-            ({"type": "tsumo", "actor": 0, "pai": "5mr"}, "tsumo"),
-            ({"type": "tsumo", "actor": 1, "pai": "5p"}, "tsumo"),
-            ({"type": "dahai", "actor": 2, "pai": "5pr", "tsumogiri": True}, "dahai"),
-            ({"type": "dahai", "actor": 3, "pai": "1s", "tsumogiri": False}, "dahai"),
-            ({"type": "chi", "actor": 1, "target": 0, "pai": "5m", "consumed": ["3m", "4m"]}, "chi"),
-            ({"type": "chi", "actor": 1, "target": 0, "pai": "5m", "consumed": ["4m", "6m"]}, "chi"),
-            ({"type": "chi", "actor": 1, "target": 0, "pai": "5m", "consumed": ["6m", "7m"]}, "chi"),
-            ({"type": "pon", "actor": 2, "target": 1, "pai": "5m", "consumed": ["5m", "5mr"]}, "pon"),
-            ({"type": "daiminkan", "actor": 3, "target": 2, "pai": "E", "consumed": ["E", "E", "E"]}, "daiminkan"),
-            ({"type": "ankan", "actor": 0, "consumed": ["1s", "1s", "1s", "1s"]}, "ankan"),
-            ({"type": "kakan", "actor": 1, "pai": "5s", "consumed": ["5s", "5s", "5sr"]}, "kakan"),
-            ({"type": "dora", "dora_marker": "7s"}, "dora"),
-            ({"type": "reach", "actor": 2}, "reach"),
-            ({"type": "reach_accepted", "actor": 2}, "reach_accepted"),
-            ({"type": "hora", "actor": 0, "target": 0, "deltas": [12000, -4000, -4000, -4000], "ura_markers": ["3m", "5pr"]}, "hora"),
-            ({"type": "hora", "actor": 1, "target": 3}, "hora"),
-            ({"type": "ryukyoku", "deltas": [1500, 1500, -1500, -1500]}, "ryukyoku"),
-            ({"type": "ryukyoku"}, "ryukyoku"),
+    def test_draw_is_board_only_and_discard_flushes_into_v4_history(self) -> None:
+        self.apply_events([{"type": "tsumo", "actor": 0, "pai": "1m"}])
+        kinds, _turn, _meld, board, lengths, _mask, _generation = self.prepare()
+        self.assertEqual(int(np.asarray(lengths)[0]), 0)
+        self.assertEqual(np.asarray(board).shape, (1, 12, 160))
+        # A following meld flushes the pending discard then appends its own block.
+        self.apply_events([{"type": "dahai", "actor": 2, "pai": "3p", "tsumogiri": True}, {"type": "pon", "actor": 3, "target": 2, "pai": "3p", "consumed": ["3p", "3p"]}])
+        kinds, _turn, meld, _board, lengths, _mask, _generation = self.prepare()
+        self.assertEqual(int(np.asarray(lengths)[0]), 2)
+        self.assertEqual(np.asarray(kinds)[0, :2].tolist(), [1, 2])
+        self.assertEqual(np.asarray(meld)[0, 1, :6].tolist(), [2, 4, 3, 12, 12, 12])
+
+    def test_supported_events_have_the_expected_block_class(self) -> None:
+        for event_type, expected in BLOCK_BY_EVENT.items():
+            if event_type == "dahai":
+                event = {"type": event_type, "actor": 0, "pai": "1m", "tsumogiri": False}
+            elif event_type in {"reach", "reach_accepted"}:
+                event = {"type": event_type, "actor": 0}
+            elif event_type == "dora":
+                event = {"type": event_type, "dora_marker": "1m"}
+            elif event_type == "chi":
+                event = {"type": event_type, "actor": 1, "target": 0, "pai": "3m", "consumed": ["1m", "2m"]}
+            elif event_type == "pon":
+                event = {"type": event_type, "actor": 1, "target": 0, "pai": "3m", "consumed": ["3m", "3m"]}
+            elif event_type == "daiminkan":
+                event = {"type": event_type, "actor": 1, "target": 0, "pai": "3m", "consumed": ["3m"] * 3}
+            elif event_type == "ankan":
+                event = {"type": event_type, "actor": 1, "consumed": ["3m"] * 4}
+            else:
+                event = {"type": event_type, "actor": 1, "pai": "3m", "consumed": ["3m"] * 3}
+            self.apply_events([event])
+            if expected == 1:
+                self.apply_events([{"type": "ankan", "actor": 1, "consumed": ["4m"] * 4}])
+            kinds, *_ = self.prepare()
+            self.assertIn(expected, np.asarray(kinds)[0].tolist())
+
+    def test_all_four_views_accept_the_complete_event_lifecycle(self) -> None:
+        manager = riichi.MjaiKyokuStateMachineManager(1)
+        lifecycle = [
+            start_kyoku(),
+            {"type": "tsumo", "actor": 0, "pai": "5mr"},
+            {"type": "reach", "actor": 0},
+            {"type": "dahai", "actor": 0, "pai": "5mr", "tsumogiri": True},
+            {"type": "reach_accepted", "actor": 0},
+            {"type": "chi", "actor": 1, "target": 0, "pai": "3m", "consumed": ["4m", "5mr"]},
+            {"type": "pon", "actor": 2, "target": 1, "pai": "P", "consumed": ["P", "P"]},
+            {"type": "daiminkan", "actor": 3, "target": 2, "pai": "9s", "consumed": ["9s"] * 3},
+            {"type": "kakan", "actor": 3, "pai": "5pr", "consumed": ["5p", "5p", "5pr"]},
+            {"type": "ankan", "actor": 2, "consumed": ["5s", "5s", "5s", "5sr"]},
+            {"type": "dora", "dora_marker": "C"},
+            {"type": "hora", "actor": 1, "target": 0, "deltas": [-8000, 8000, 0, 0], "ura_markers": ["1m"]},
+            {"type": "ryukyoku", "deltas": [0, 0, 0, 0]},
+            {"type": "end_kyoku"},
+            {"type": "end_game"},
         ]
-        for event, name in cases:
-            self.apply(event, TOKEN_BY_EVENT[name])
-        self.apply({"type": "end_kyoku"}, None)
-        self.apply({"type": "end_game"}, None)
+        rows = []
+        for seat in range(4):
+            events = [{"type": "start_game", "id": seat}] + lifecycle
+            rows.append([json.dumps(event) for event in events])
+        end_kyoku, end_game = manager.apply_events_batch([0], [rows])
+        self.assertTrue(np.asarray(end_kyoku)[0])
+        self.assertTrue(np.asarray(end_game)[0])
+        kinds, turn, meld, board, lengths, masks, generations = manager.prepare_decisions(
+            [0, 1, 2, 3],
+            [[json.dumps({"type": "none"})] for _ in range(4)],
+            [snapshot_for(seat) for seat in range(4)],
+        )
+        self.assertEqual(np.asarray(kinds).shape[0], 4)
+        self.assertEqual(np.asarray(turn).shape, (*np.asarray(kinds).shape, 4, 4))
+        self.assertEqual(np.asarray(meld).shape, (*np.asarray(kinds).shape, 8))
+        self.assertEqual(np.asarray(board).shape, (4, 12, 160))
+        self.assertTrue(np.all(np.asarray(lengths) >= 5))
+        self.assertTrue(np.all(np.asarray(masks)[:, 0]))
+        self.assertTrue(np.all(np.asarray(masks).sum(axis=1) == 1))
+        self.assertTrue(np.all(np.asarray(generations) == 1))
 
-    def test_non_four_player_events_are_rejected(self) -> None:
+    def test_red_called_discard_and_riichi_flag_are_public(self) -> None:
+        self.apply_events([
+            {"type": "reach", "actor": 1},
+            {"type": "dahai", "actor": 1, "pai": "5mr", "tsumogiri": True},
+            {"type": "chi", "actor": 2, "target": 1, "pai": "3m", "consumed": ["4m", "5mr"]},
+        ])
+        _kinds, _turn, _meld, board, _lengths, _mask, _generation = self.prepare()
+        board = np.asarray(board)
+        # Shimocha's river has red five, tsumogiri, riichi discard and called flags.
+        self.assertEqual(int(board[0, 4, 20]), 35)
+        self.assertEqual(int(board[0, 4, 52]), 7)
+        # Toimen's chi exposes shimocha as source and preserves the red five.
+        self.assertEqual(board[0, 8, 20:27].tolist(), [1, 2, 3, 4, 35, 0, 0])
+
+    def test_three_player_only_events_are_rejected(self) -> None:
         for event in ({"type": "kita", "actor": 0, "pai": "N"}, {"type": "nukidora", "actor": 0, "pai": "N"}):
             with self.assertRaises(ValueError, msg=str(event)):
                 self.apply_events([event])
-
-    def test_decision_history_contains_all_confirmed_kyoku_events(self) -> None:
-        def prepared() -> tuple[np.ndarray, int]:
-            ids, _attention, _lengths, _mask, history_lengths, _history_generations = self.manager.prepare_decisions(
-                [0], [[json.dumps({"type": "none"})]], [fixture_snapshot()]
-            )
-            return np.asarray(ids, dtype=np.int64)[0], int(np.asarray(history_lengths)[0])
-
-        _initial, initial_history = prepared()
-        self.apply_events([{"type": "tsumo", "actor": 0, "pai": "1m"}])
-        _after_draw, draw_history = prepared()
-        self.apply_events([{"type": "dahai", "actor": 0, "pai": "1m", "tsumogiri": True}])
-        ids, discard_history = prepared()
-
-        self.assertLess(initial_history, draw_history)
-        self.assertLess(draw_history, discard_history)
-        history_types = ids[:discard_history, 0].tolist()
-        self.assertIn(TOKEN_BY_EVENT["tsumo"], history_types)
-        self.assertIn(TOKEN_BY_EVENT["dahai"], history_types)

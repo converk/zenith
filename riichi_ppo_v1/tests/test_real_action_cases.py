@@ -92,3 +92,77 @@ class RealActionCasesTest(unittest.TestCase):
         discards[0].append(0)
         env.discards = discards
         self.assert_window(env.get_observation(0), {"hora"})
+
+    def test_red_five_choices_and_kuikae_discard_mask(self) -> None:
+        # P0 discards 3m. P1 may chi with either a normal or red 5m; both
+        # templates must remain distinct 241-space actions and round-trip.
+        env = helper_setup_env(
+            hands=[
+                [8, 0, 4, 28, 32, 52, 56, 60, 64, 68, 92, 96, 100],
+                [12, 16, 17, 20, 24, 36, 40, 44, 48, 72, 76, 80, 84],
+                [], [],
+            ],
+            current_player=0,
+            active_players=[0],
+            drawn_tile=8,
+            wall=list(range(136)),
+        )
+        responses = env.step({0: Action(ActionType.DISCARD, tile=8)})
+        chi_observation = responses[1]
+        self.assert_window(chi_observation, {"none", "chi"})
+        chi_actions = [action for action in chi_observation.legal_actions() if action.action_type == ActionType.CHI]
+        self.assertGreaterEqual(len(chi_actions), 2)
+        self.assertTrue(any(16 in action.consume_tiles for action in chi_actions))
+        self.assertTrue(any(17 in action.consume_tiles for action in chi_actions))
+
+        # After choosing 4m+5m for 3m, kuikae blocks both 3m and 6m.  The
+        # V4 mask must exactly mirror that restricted post-call observation.
+        normal_chi = next(action for action in chi_actions if set(action.consume_tiles) == {12, 17})
+        next_observations = env.step({1: normal_chi})
+        post_chi = next_observations[1]
+        self.assert_window(post_chi, {"dahai"})
+        forbidden = {8, 20}
+        offered = {action.tile for action in post_chi.legal_actions() if action.action_type == ActionType.DISCARD}
+        self.assertTrue(forbidden.isdisjoint(offered), (forbidden, offered))
+
+    def test_riichi_stage_and_furiten_action_masks(self) -> None:
+        # During the reach declaration stage, ankan is removed even when the
+        # pre-reach hand offered it; only the resulting legal set may be set.
+        hand = [8, 9, 10, 12, 20, 40, 44, 48, 60, 61, 80, 84, 88]
+        env = helper_setup_env(
+            hands=[[0] * 13, [0] * 13, [0] * 13, hand],
+            current_player=3,
+            active_players=[3],
+            phase=Phase.WaitAct,
+            needs_tsumo=False,
+            drawn_tile=11,
+            riichi_declared=[False] * 4,
+            points=[25000] * 4,
+        )
+        before = env.get_observations()[3]
+        self.assert_window(before, {"dahai", "reach", "ankan"})
+        env.riichi_stage = [False, False, False, True]
+        after = env.get_observations()[3]
+        self.assert_window(after, {"dahai"})
+        after_types = {action.action_type for action in after.legal_actions()}
+        self.assertNotIn(ActionType.ANKAN, after_types)
+        self.assertNotIn(ActionType.RIICHI, after_types)
+
+        # A permanent furiten hand must not expose a ron id.  This combines an
+        # explicit negative rule assertion with V4 exact-mask round-tripping.
+        env = RiichiEnv(seed=42, game_mode="4p-red-half")
+        env.reset()
+        hands = env.hands
+        hands[0] = [4, 8, 52, 53, 60, 61, 62, 92, 93, 94, 108, 109, 110]
+        hands[1].append(12)
+        env.hands = hands
+        discards = env.discards
+        discards[0].append(0)
+        env.discards = discards
+        env.current_player = 1
+        env.active_players = [1]
+        env.phase = Phase.WaitAct
+        responses = env.step({1: Action(ActionType.DISCARD, tile=12)})
+        self.assertNotIn(0, responses)
+        for seat, observation in responses.items():
+            self.assert_window(observation, {"none"})

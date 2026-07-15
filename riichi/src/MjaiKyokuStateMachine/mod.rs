@@ -20,4 +20,4 @@ include!("manager.rs");
 include!("protocol.rs");
 
 #[cfg(test)]
-mod tests;
+mod tests_v4;

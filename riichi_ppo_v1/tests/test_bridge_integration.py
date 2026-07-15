@@ -34,7 +34,7 @@ class BridgeIntegrationTest(unittest.TestCase):
                     if not legal:
                         continue
                     decision = Decision(env_index, seat, observation)
-                    _ids, _attention, _lengths, masks, _history_lengths, _history_generations = bridge.prepare([decision])
+                    _kinds, _turn, _meld, _board, _lengths, masks, _history_generations = bridge.prepare([decision])
                     mask = masks[0]
                     self.assertEqual(mask.shape, (241,))
                     self.assertTrue(mask.any())

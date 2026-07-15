@@ -102,6 +102,31 @@ def print_timing_table(title: str, rows: dict[str, dict[str, float]]) -> None:
             )
 
 
+def print_worker_details(results: list[tuple[list[Any], dict[str, float]]]) -> None:
+    """Print non-aggregated rollout throughput and timing for every worker."""
+    print("rollout worker detail:", flush=True)
+    for worker_id, (transitions, stats) in enumerate(results):
+        elapsed = float(stats.get("rollout_s", 0.0))
+        model_decisions = float(stats.get("model_decisions", 0.0))
+        recorded_decisions = float(stats.get("recorded_decisions", len(transitions)))
+        print(
+            f"  worker={worker_id} kyokus={stats.get('kyokus', 0.0):.0f} "
+            f"transitions={len(transitions)} model_decisions={model_decisions:.0f} "
+            f"rollout_s={elapsed:.3f} transition_sps={len(transitions) / max(elapsed, 1e-9):.2f} "
+            f"model_decision_sps={model_decisions / max(elapsed, 1e-9):.2f} "
+            f"recorded_decision_sps={recorded_decisions / max(elapsed, 1e-9):.2f}",
+            flush=True,
+        )
+        for total_name in sorted(name for name in stats if name.startswith("timing/") and name.endswith("/total_s")):
+            stage = total_name.removeprefix("timing/").removesuffix("/total_s")
+            total = float(stats[total_name])
+            count = float(stats.get(total_name.removesuffix("/total_s") + "/count", 0.0))
+            print(
+                f"    {stage:<46} total_s={total:.4f} mean_ms={total * 1_000.0 / max(count, 1.0):.3f} count={count:.0f}",
+                flush=True,
+            )
+
+
 def run(config: dict[str, Any]) -> None:
     try:
         import ray
@@ -172,8 +197,11 @@ def run(config: dict[str, Any]) -> None:
             update_timing = timing_rows(metrics, "")
             env_step_s = float(worker_timing.get("env/step_batch_native", {}).get("worker_mean_total_s", 0.0))
             update_forward_s = float(metrics.get("timing/update/model_forward/total_s", 0.0))
-            print(f"iteration={iteration + 1} transitions={len(transitions)} model_decisions={model_decisions:.0f} recorded_decisions={recorded_decisions:.0f} kyokus={rollout_kyokus:.0f} reward={rollout_reward:.4f} worker_transitions_per_s={rollout_tps:.2f} algorithm_wall_s={algorithm_wall_s:.3f} sps={recorded_decisions / max(algorithm_wall_s, 1e-9):.2f} model_forward_sps={model_decisions / max(algorithm_wall_s, 1e-9):.2f} rollout_wall_s={rollout_wall_s:.3f} begin_rollout_s={begin_rollout_s:.3f} profile_summary_s={profile_summary_s:.3f} transition_assembly_s={transition_assembly_s:.3f} env_step_s={env_step_s:.3f} update_wall_s={update_wall_s:.3f} update_forward_s={update_forward_s:.3f} executed_samples={metrics['update/executed_transition_samples']:.0f} sequence_tokens_mean={metrics['update/executed_transition_sequence_tokens_mean']:.2f} snapshot_tokens_mean={metrics['update/executed_transition_snapshot_tokens_mean']:.2f} " + " ".join(f"{key}={value:.5f}" for key, value in metrics.items() if key in {"loss", "policy_loss", "value_loss", "entropy", "approx_kl", "clipfrac", "grad_norm"}), flush=True)
+            inference_rows = float(actor_profile.get("inference/full_forward_rows_mean", 0.0))
+            inference_dispatch_rows = float(actor_profile.get("inference/dispatch_rows_mean", 0.0))
+            print(f"iteration={iteration + 1} transitions={len(transitions)} model_decisions={model_decisions:.0f} recorded_decisions={recorded_decisions:.0f} kyokus={rollout_kyokus:.0f} reward={rollout_reward:.4f} worker_transitions_per_s={rollout_tps:.2f} algorithm_wall_s={algorithm_wall_s:.3f} sps={recorded_decisions / max(algorithm_wall_s, 1e-9):.2f} model_forward_sps={model_decisions / max(algorithm_wall_s, 1e-9):.2f} rollout_wall_s={rollout_wall_s:.3f} begin_rollout_s={begin_rollout_s:.3f} profile_summary_s={profile_summary_s:.3f} transition_assembly_s={transition_assembly_s:.3f} env_step_s={env_step_s:.3f} inference_rows_per_forward={inference_rows:.2f} inference_rows_per_dispatch={inference_dispatch_rows:.2f} update_wall_s={update_wall_s:.3f} update_forward_s={update_forward_s:.3f} epochs={metrics['update/epochs_completed']:.0f}/{metrics['update/configured_epochs']:.0f} minibatches={metrics['update/executed_minibatches']:.0f}/{metrics['update/planned_minibatches']:.0f} early_stop={bool(metrics['update/early_stop'])} executed_samples={metrics['update/executed_transition_samples']:.0f} event_blocks_mean={metrics['update/executed_transition_event_blocks_mean']:.2f} input_tokens_mean={metrics['update/executed_transition_input_tokens_mean']:.2f} " + " ".join(f"{key}={value:.5f}" for key, value in metrics.items() if key in {"loss", "policy_loss", "value_loss", "entropy", "approx_kl", "clipfrac", "grad_norm"}), flush=True)
             print_timing_table("rollout worker", worker_timing)
+            print_worker_details(results)
             print_timing_table("rollout inference actor", actor_timing)
             print_timing_table("PPO update", update_timing)
             writer.add_scalar("rollout/kyokus", rollout_kyokus, iteration + 1)
@@ -197,8 +225,7 @@ def run(config: dict[str, Any]) -> None:
             if (iteration + 1) % int(config["checkpoint_interval"]) == 0:
                 path = Path(config["checkpoint_dir"]) / f"iteration_{iteration + 1}.pt"
                 ray.get(inference.save.remote(str(path), config))
-                evaluation = ray.get(workers[0].evaluate.remote(int(config["eval_games"])))
-                print("checkpoint=" + str(path) + " " + " ".join(f"{k}={v:.4f}" for k, v in evaluation.items()), flush=True)
+                print("checkpoint=" + str(path), flush=True)
         ray.get(inference.save.remote(str(Path(config["checkpoint_dir"]) / "latest.pt"), config))
     finally:
         gpu_sampler.stop()
@@ -212,9 +239,30 @@ def _parser(smoke: bool = False) -> argparse.ArgumentParser:
     parser.add_argument("--device", default=None)
     parser.add_argument("--iterations", type=int, default=None)
     parser.add_argument("--checkpoint-dir", default=None)
+    if not smoke:
+        parser.add_argument("--num-workers", type=int, default=None)
+        parser.add_argument("--envs-per-worker", type=int, default=None)
+        parser.add_argument("--kyokus-per-worker", type=int, default=None)
+        parser.add_argument("--update-epochs", type=int, default=None)
+        parser.add_argument("--minibatch-size", type=int, default=None)
+        parser.add_argument("--target-kl", type=float, default=None)
+        parser.add_argument("--profile-cuda-sync", action=argparse.BooleanOptionalAction, default=None)
     if smoke:
         parser.add_argument("--kyokus", type=int, default=1)
     return parser
+
+
+def apply_cli_overrides(config: dict[str, Any], args: argparse.Namespace) -> None:
+    overrides = {
+        "num_workers": getattr(args, "num_workers", None),
+        "envs_per_worker": getattr(args, "envs_per_worker", None),
+        "kyokus_per_worker": getattr(args, "kyokus_per_worker", None),
+        "update_epochs": getattr(args, "update_epochs", None),
+        "minibatch_size": getattr(args, "minibatch_size", None),
+        "target_kl": getattr(args, "target_kl", None),
+        "profile_cuda_sync": getattr(args, "profile_cuda_sync", None),
+    }
+    config.update({name: value for name, value in overrides.items() if value is not None})
 
 
 def main() -> None:
@@ -226,17 +274,19 @@ def main() -> None:
         config["iterations"] = args.iterations
     if args.checkpoint_dir:
         config["checkpoint_dir"] = args.checkpoint_dir
+    apply_cli_overrides(config, args)
     run(config)
 
 
 def smoke_main() -> None:
     args = _parser(smoke=True).parse_args()
     config = load_config(args.config)
-    config.update({"device": args.device or "cpu", "num_workers": 1, "envs_per_worker": 1, "kyokus_per_worker": args.kyokus, "iterations": 1, "update_epochs": 1, "minibatch_size": 32, "checkpoint_interval": 1, "eval_games": 1, "checkpoint_dir": "checkpoints/riichi_ppo_v1_smoke"})
+    config.update({"device": args.device or "cpu", "num_workers": 1, "envs_per_worker": 1, "kyokus_per_worker": args.kyokus, "iterations": 1, "update_epochs": 1, "minibatch_size": 32, "checkpoint_interval": 1, "checkpoint_dir": "checkpoints/riichi_ppo_v1_smoke"})
     if args.iterations is not None:
         config["iterations"] = args.iterations
     if args.checkpoint_dir:
         config["checkpoint_dir"] = args.checkpoint_dir
+    apply_cli_overrides(config, args)
     run(config)
 
 

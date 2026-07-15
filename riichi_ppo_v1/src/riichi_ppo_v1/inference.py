@@ -1,9 +1,7 @@
-"""Single-GPU PPO actor with rollout inference and per-table KV caches."""
+"""Single-GPU PPO actor with cross-worker rollout inference batches."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from collections import defaultdict
 import asyncio
 from contextlib import contextmanager
 import time
@@ -23,11 +21,52 @@ from .profiling import StageProfiler
 from .trajectory import Transition
 
 
-@dataclass
-class _CacheEntry:
-    generation: int
-    history_length: int
-    key_values: tuple[tuple[torch.Tensor, torch.Tensor], ...]
+def dispatch_reason(worker_ids: list[int], target_workers: int, deadline: float, now: float) -> str | None:
+    """Return why a pending inference batch may flush, without clock I/O."""
+    if len(set(worker_ids)) >= max(1, target_workers):
+        return "target"
+    if now >= deadline:
+        return "timeout"
+    return None
+
+
+def collate_request_rows(
+    requests: list[dict[str, Any]], group: list[tuple[int, int]],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Host-pad selected request rows while preserving their request/row mapping."""
+    if not group:
+        raise ValueError("cannot collate an empty inference group")
+    lengths = np.asarray(
+        [requests[request_index]["block_lengths"][row] for request_index, row in group], dtype=np.int64,
+    )
+    max_length = int(lengths.max())
+    batch = len(group)
+    kinds = np.zeros((batch, max_length), dtype=np.uint8)
+    turn = np.zeros((batch, max_length, 4, 4), dtype=np.uint8)
+    meld = np.zeros((batch, max_length, 8), dtype=np.uint8)
+    board = np.empty((batch, 12, 160), dtype=np.uint8)
+    legal = np.empty((batch, 241), dtype=np.bool_)
+    for index, (request_index, row) in enumerate(group):
+        request = requests[request_index]
+        length = int(lengths[index])
+        kinds[index, :length] = request["block_kinds"][row, :length]
+        turn[index, :length] = request["turn_fields"][row, :length]
+        meld[index, :length] = request["meld_fields"][row, :length]
+        board[index] = request["board_state"][row]
+        legal[index] = request["legal_mask"][row]
+    return kinds, turn, meld, board, legal, lengths
+
+
+def assign_batch_outputs(
+    responses: list[dict[str, Any]], group: list[tuple[int, int]], actions: list[int], logprobs: list[float], values: list[float],
+) -> None:
+    """Route batched model outputs back to their original RPC and row."""
+    if not (len(group) == len(actions) == len(logprobs) == len(values)):
+        raise ValueError("inference output dimensions differ")
+    for index, (request_index, row) in enumerate(group):
+        responses[request_index]["action_ids"][row] = int(actions[index])
+        responses[request_index]["logprobs"][row] = float(logprobs[index])
+        responses[request_index]["values"][row] = float(values[index])
 
 
 if ray is not None:
@@ -35,9 +74,11 @@ if ray is not None:
     class RolloutInferenceActor:
         """The only process that owns the PPO model, optimizer and CUDA context.
 
-        Each RPC already contains all active decisions of one environment
-        worker.  Calls are serialized by this actor, which naturally batches
-        GPU work within that request and avoids competing CUDA contexts.
+        Workers submit their active decisions synchronously.  The actor waits
+        briefly for one request from each worker, then runs a single padded
+        full-sequence forward across all those requests.  This avoids the
+        tiny exact-length KV-cache buckets that previously serialized rollout
+        throughput into thousands of GPU launches.
         """
 
         def __init__(self, config: dict[str, Any]) -> None:
@@ -51,23 +92,20 @@ if ray is not None:
             if config.get("resume"):
                 self.learner.load(config["resume"])
             self.model = self.learner.model.eval()
-            self.cached_forward: Any | None = None
-            if bool(config.get("inference_compile", True)):
-                self.cached_forward = torch.compile(self.model.forward_cached, mode="reduce-overhead")
-            self.cache: dict[tuple[str, int, int], _CacheEntry] = {}
             self.profiler = StageProfiler(enabled=bool(config.get("profile_enabled", True)))
-            self.profile_cuda_sync = bool(config.get("profile_cuda_sync", True))
-            self.cache_hits = 0
-            self.cache_misses = 0
-            self.cache_resets = 0
-            self.cache_full_fallbacks = 0
-            self.full_fallback_valid_tokens = 0
-            self.full_fallback_padded_tokens = 0
-            self._profile_checkpoint = self.profiler.checkpoint()
-            self._profile_cache_checkpoint = (0, 0, 0, 0)
-            self._profile_fallback_token_checkpoint = (0, 0)
-            self._pending: list[tuple[dict[str, Any], asyncio.Future[dict[str, Any]]]] = []
+            self.profile_cuda_sync = bool(config.get("profile_cuda_sync", False))
+            self.cuda_event_interval = max(0, int(config.get("profile_cuda_event_interval", 100)))
+            self._forward_calls = 0
+            self._pending: list[tuple[dict[str, Any], asyncio.Future[dict[str, Any]], float]] = []
+            self._pending_event = asyncio.Event()
             self._drain_task: asyncio.Task[None] | None = None
+            self._profile_checkpoint = self.profiler.checkpoint()
+            self._counter_checkpoint: dict[str, float] = {}
+            self._counters: dict[str, float] = {}
+            # Kept only for the active rollout.  This is intentionally a
+            # compact list of scalar lengths (one entry per GPU forward), not
+            # per-row tracing data.
+            self._rollout_forward_max_event_blocks: list[int] = []
 
         def _sync_cuda(self) -> None:
             if self.profile_cuda_sync:
@@ -75,7 +113,7 @@ if ray is not None:
 
         @contextmanager
         def _gpu_stage(self, name: str):
-            """Measure the GPU work submitted in this stage, including its fence."""
+            """Measure submitted GPU work; exact fencing is diagnostic-only."""
             self._sync_cuda()
             with self.profiler.stage(name):
                 try:
@@ -83,17 +121,18 @@ if ray is not None:
                 finally:
                     self._sync_cuda()
 
+        def _add_counter(self, name: str, value: float = 1.0) -> None:
+            self._counters[name] = self._counters.get(name, 0.0) + float(value)
+
+        def _target_workers(self) -> int:
+            configured = int(self.config.get("inference_batch_target_workers", 0))
+            return max(1, configured or int(self.config.get("num_workers", 1)))
+
         def begin_rollout(self) -> None:
-            """Start a synchronous on-policy rollout using the current model weights."""
-            self.cache.clear()
-            self.cache_resets += 1
+            """Start an on-policy rollout using the current model weights."""
             self._profile_checkpoint = self.profiler.checkpoint()
-            self._profile_cache_checkpoint = (
-                self.cache_hits, self.cache_misses, self.cache_resets, self.cache_full_fallbacks,
-            )
-            self._profile_fallback_token_checkpoint = (
-                self.full_fallback_valid_tokens, self.full_fallback_padded_tokens,
-            )
+            self._counter_checkpoint = dict(self._counters)
+            self._rollout_forward_max_event_blocks = []
 
         def iteration(self) -> int:
             return int(self.learner.iteration)
@@ -102,40 +141,44 @@ if ray is not None:
             """Optimise the same model that served the completed rollout."""
             metrics = self.learner.update(transitions)
             self.model.eval()
-            # Cached keys/values were generated by the old policy parameters.
-            self.cache.clear()
-            self.cache_resets += 1
             return metrics
 
         def save(self, path: str, train_config: dict[str, Any]) -> None:
             self.learner.save(path, train_config)
 
-        def clear_namespace(self, namespace: str) -> None:
-            doomed = [key for key in self.cache if key[0] == namespace]
-            for key in doomed:
-                del self.cache[key]
-            self.cache_resets += len(doomed)
-
         def profile_summary(self) -> dict[str, float]:
             """Return one iteration's actor totals without RPC fan-out double counting."""
             stats = self.profiler.delta(self._profile_checkpoint, prefix="timing")
-            before = self._profile_cache_checkpoint
-            token_before = self._profile_fallback_token_checkpoint
-            valid_tokens = self.full_fallback_valid_tokens - token_before[0]
-            padded_tokens = self.full_fallback_padded_tokens - token_before[1]
-            stats.update({
-                "inference/cache_hits": float(self.cache_hits - before[0]),
-                "inference/cache_misses": float(self.cache_misses - before[1]),
-                "inference/cache_resets": float(self.cache_resets - before[2]),
-                "inference/cache_full_fallbacks": float(self.cache_full_fallbacks - before[3]),
-                "inference/cache_entries": float(len(self.cache)),
-                "inference/cache_tokens": float(sum(entry.history_length for entry in self.cache.values())),
-                "inference/full_fallback_valid_tokens": float(valid_tokens),
-                "inference/full_fallback_padded_tokens": float(padded_tokens),
-                "inference/full_fallback_padding_fraction": float(
-                    padded_tokens / max(valid_tokens + padded_tokens, 1)
-                ),
-            })
+            counters = {
+                name: value - self._counter_checkpoint.get(name, 0.0)
+                for name, value in self._counters.items()
+            }
+            dispatches = counters.get("inference/dispatches", 0.0)
+            forwards = counters.get("inference/full_forwards", 0.0)
+            stats.update(counters)
+            stats["inference/dispatch_rows_mean"] = counters.get("inference/dispatch_rows", 0.0) / max(dispatches, 1.0)
+            stats["inference/dispatch_workers_mean"] = counters.get("inference/dispatch_workers", 0.0) / max(dispatches, 1.0)
+            stats["inference/full_forward_rows_mean"] = counters.get("inference/full_forward_rows", 0.0) / max(forwards, 1.0)
+            effective_tokens = counters.get("inference/effective_input_tokens", 0.0)
+            padded_tokens = counters.get("inference/padded_input_tokens", 0.0)
+            padding_tokens = counters.get("inference/padding_input_tokens", 0.0)
+            stats["inference/padding_to_effective_token_ratio"] = padding_tokens / max(effective_tokens, 1.0)
+            stats["inference/padding_fraction_of_padded_tokens"] = padding_tokens / max(padded_tokens, 1.0)
+            if self._rollout_forward_max_event_blocks:
+                # The transformer receives 12 board tokens and one decision
+                # token after the padded event prefix for every row.
+                input_lengths = np.asarray(self._rollout_forward_max_event_blocks, dtype=np.int64) + 13
+                event_lengths = np.asarray(self._rollout_forward_max_event_blocks, dtype=np.int64)
+                for prefix, values in (
+                    ("inference/full_forward_max_input_tokens", input_lengths),
+                    ("inference/full_forward_max_event_blocks", event_lengths),
+                ):
+                    stats[f"{prefix}/min"] = float(values.min())
+                    stats[f"{prefix}/mean"] = float(values.mean())
+                    stats[f"{prefix}/p50"] = float(np.percentile(values, 50))
+                    stats[f"{prefix}/p90"] = float(np.percentile(values, 90))
+                    stats[f"{prefix}/p99"] = float(np.percentile(values, 99))
+                    stats[f"{prefix}/max"] = float(values.max())
             return stats
 
         async def infer(
@@ -144,145 +187,142 @@ if ray is not None:
             worker_id: int,
             namespace: str,
             batch_indices: list[int],
-            ids: np.ndarray,
-            lengths: np.ndarray,
+            block_kinds: np.ndarray,
+            turn_fields: np.ndarray,
+            meld_fields: np.ndarray,
+            board_state: np.ndarray,
             legal_mask: np.ndarray,
-            history_lengths: np.ndarray,
-            history_generations: np.ndarray,
+            block_lengths: np.ndarray,
             greedy: bool,
         ) -> dict[str, Any]:
+            if len(batch_indices) != len(block_lengths) or block_kinds.shape[0] != len(batch_indices):
+                raise ValueError("decision metadata batch dimensions differ")
             loop = asyncio.get_running_loop()
             future: asyncio.Future[dict[str, Any]] = loop.create_future()
             self._pending.append(({
-                "worker_id": worker_id, "namespace": namespace,
-                "batch_indices": batch_indices, "ids": ids, "lengths": lengths,
-                "legal_mask": legal_mask, "history_lengths": history_lengths,
-                "history_generations": history_generations, "greedy": greedy,
-            }, future))
+                "worker_id": int(worker_id), "namespace": str(namespace),
+                "batch_indices": batch_indices, "block_kinds": block_kinds,
+                "turn_fields": turn_fields, "meld_fields": meld_fields,
+                "board_state": board_state, "legal_mask": legal_mask,
+                "block_lengths": block_lengths, "greedy": bool(greedy),
+            }, future, time.perf_counter()))
+            self._pending_event.set()
             if self._drain_task is None:
                 self._drain_task = asyncio.create_task(self._drain_requests())
             return await future
 
         async def _drain_requests(self) -> None:
-            # A tiny window is sufficient for the four synchronous workers to
-            # arrive at the same decision tick.  GPU work then runs outside
-            # awaits while the actor owns a single CUDA context.
-            await asyncio.sleep(max(0.0, float(self.config.get("inference_batch_wait_ms", 1.0))) / 1_000.0)
-            while self._pending:
-                pending, self._pending = self._pending, []
-                try:
-                    results = self._infer_many([request for request, _future in pending])
-                    for (_request, future), result in zip(pending, results):
-                        if not future.done():
-                            future.set_result(result)
-                except Exception as exc:
-                    for _request, future in pending:
-                        if not future.done():
-                            future.set_exception(exc)
-            self._drain_task = None
+            try:
+                while self._pending:
+                    target_workers = self._target_workers()
+                    deadline = time.perf_counter() + max(0.0, float(self.config.get("inference_batch_wait_ms", 5.0))) / 1_000.0
+                    flush_reason: str | None = None
+                    while flush_reason is None:
+                        flush_reason = dispatch_reason(
+                            [request["worker_id"] for request, _future, _queued_at in self._pending],
+                            target_workers, deadline, time.perf_counter(),
+                        )
+                        if flush_reason is not None:
+                            break
+                        remaining = deadline - time.perf_counter()
+                        self._pending_event.clear()
+                        try:
+                            await asyncio.wait_for(self._pending_event.wait(), timeout=remaining)
+                        except asyncio.TimeoutError:
+                            pass
+                    pending, self._pending = self._pending, []
+                    now = time.perf_counter()
+                    workers = {request["worker_id"] for request, _future, _queued_at in pending}
+                    self._add_counter("inference/rpc_requests", len(pending))
+                    self._add_counter("inference/dispatches")
+                    self._add_counter("inference/dispatch_workers", len(workers))
+                    self._add_counter("inference/dispatch_rows", sum(len(request["batch_indices"]) for request, _future, _queued_at in pending))
+                    self._add_counter(f"inference/dispatch_{flush_reason or 'timeout'}")
+                    for _request, _future, queued_at in pending:
+                        self.profiler.add("inference/queue_wait", now - queued_at)
+                    try:
+                        results = self._infer_many([request for request, _future, _queued_at in pending])
+                        for (_request, future, _queued_at), result in zip(pending, results):
+                            if not future.done():
+                                future.set_result(result)
+                    except Exception as exc:
+                        for _request, future, _queued_at in pending:
+                            if not future.done():
+                                future.set_exception(exc)
+            finally:
+                self._drain_task = None
 
         def _infer_many(self, requests: list[dict[str, Any]]) -> list[dict[str, Any]]:
             started = time.perf_counter()
-            responses = [{"action_ids": [0] * len(request["batch_indices"]), "logprobs": [0.0] * len(request["batch_indices"]), "values": [0.0] * len(request["batch_indices"])} for request in requests]
-            # KV prefixes are ragged across tables.  Bucket equal prefix and
-            # suffix lengths so every bucket is a true GPU batch without
-            # requiring padded cache masks (which would disable fast SDPA).
-            buckets: dict[tuple[int, int, int, bool, bool], list[tuple[int, int, tuple[str, int, int], int, Any]]] = defaultdict(list)
+            responses = [
+                {"action_ids": [0] * len(request["batch_indices"]), "logprobs": [0.0] * len(request["batch_indices"]), "values": [0.0] * len(request["batch_indices"])}
+                for request in requests
+            ]
+            rows_by_greedy: dict[bool, list[tuple[int, int]]] = {False: [], True: []}
             for request_index, request in enumerate(requests):
-                if len(request["batch_indices"]) != len(request["lengths"]) or request["ids"].shape[0] != len(request["batch_indices"]):
-                    raise ValueError("decision metadata batch dimensions differ")
-                for row, batch_index in enumerate(request["batch_indices"]):
-                    key = (str(request["namespace"]), int(request["worker_id"]), int(batch_index))
-                    history_length = int(request["history_lengths"][row])
-                    generation = int(request["history_generations"][row])
-                    total_length = int(request["lengths"][row])
-                    entry = self.cache.get(key)
-                    valid = bool(self.config.get("rollout_kv_cache", True)) and entry is not None and entry.generation == generation and entry.history_length <= history_length
-                    if valid:
-                        self.cache_hits += 1
-                        base, past = entry.history_length, entry.key_values
-                    else:
-                        self.cache_misses += 1
-                        base, past = 0, None
-                    buckets[(base, history_length, total_length, past is not None, bool(request["greedy"]))].append((request_index, row, key, generation, past))
+                rows_by_greedy[bool(request["greedy"])].extend(
+                    (request_index, row) for row in range(len(request["batch_indices"]))
+                )
             max_batch = max(1, int(self.config.get("inference_max_batch_size", 512)))
-            # A small Transformer is faster on one full padded GPU batch than
-            # on many tiny ragged-cache kernels.  Keep cache semantics, but
-            # adaptively choose the full path when one worker tick fragments
-            # into too many distinct prefix lengths.
-            keys_per_request: dict[int, set[tuple[int, int, int, bool, bool]]] = defaultdict(set)
-            for key, rows in buckets.items():
-                for request_index, _row, _cache_key, _generation, _past in rows:
-                    keys_per_request[request_index].add(key)
-            max_buckets = max(1, int(self.config.get("inference_kv_max_buckets", 4)))
-            full_requests = {request_index for request_index, keys in keys_per_request.items() if len(keys) > max_buckets}
-            for request_index in full_requests:
-                request = requests[request_index]
-                total_length = int(request["ids"].shape[1])
-                batch_size = len(request["batch_indices"])
-                valid_tokens = int(np.asarray(request["lengths"], dtype=np.int64).sum())
-                self.full_fallback_valid_tokens += valid_tokens
-                self.full_fallback_padded_tokens += batch_size * total_length - valid_tokens
-                with self._gpu_stage("inference/full_sequence_fallback_h2d"):
-                    full_ids = torch.as_tensor(np.array(request["ids"], copy=True), device=self.device, dtype=torch.long)
-                    full_legal = torch.as_tensor(np.array(request["legal_mask"], copy=True), device=self.device, dtype=torch.bool)
-                    full_lengths = torch.as_tensor(np.array(request["lengths"], copy=True), device=self.device, dtype=torch.long)
-                    full_attention = torch.arange(total_length, device=self.device).unsqueeze(0) < full_lengths.unsqueeze(1)
-                with self._gpu_stage("inference/full_sequence_fallback_model_forward"):
-                    with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=self.dtype):
-                        output = self.model(full_ids, full_legal, full_attention, full_lengths)
-                with self._gpu_stage("inference/full_sequence_fallback_sample_and_d2h"):
-                    with torch.inference_mode():
-                        distribution = Categorical(logits=output["policy_logits"])
-                        chosen = output["policy_logits"].argmax(-1) if bool(request["greedy"]) else distribution.sample()
-                        for row, (action, logprob, value) in enumerate(zip(chosen.tolist(), distribution.log_prob(chosen).tolist(), output["value"].tolist())):
-                            responses[request_index]["action_ids"][row] = int(action)
-                            responses[request_index]["logprobs"][row] = float(logprob)
-                            responses[request_index]["values"][row] = float(value)
-                self.cache_full_fallbacks += 1
-            for (base, history_length, total_length, has_past, greedy), rows in buckets.items():
-                rows = [item for item in rows if item[0] not in full_requests]
-                if not rows:
-                    continue
+            for greedy, rows in rows_by_greedy.items():
                 for offset in range(0, len(rows), max_batch):
                     group = rows[offset:offset + max_batch]
-                    with self._gpu_stage("inference/h2d"):
-                        group_ids = torch.as_tensor(np.array([requests[request_index]["ids"][row, :total_length] for request_index, row, _key, _generation, _past in group], copy=True), device=self.device, dtype=torch.long)
-                        group_legal = torch.as_tensor(np.array([requests[request_index]["legal_mask"][row] for request_index, row, _key, _generation, _past in group], copy=True), device=self.device, dtype=torch.bool)
-                    if history_length == 0:
-                        # Protocol probes may construct a decision without
-                        # first replaying events. It is valid for mask
-                        # validation but has no append-only prefix to cache.
-                        self.cache_misses += 1
-                        with self._gpu_stage("inference/uncached_fallback"):
-                            with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=self.dtype):
-                                output = self.model(group_ids, group_legal, torch.ones((len(group), total_length), device=self.device, dtype=torch.bool), torch.full((len(group),), total_length, device=self.device, dtype=torch.long))
-                        next_cache = None
-                    else:
-                        history = group_ids[:, base:history_length]
-                        snapshot = group_ids[:, history_length:total_length]
-                        past = None
-                        if has_past:
-                            past = tuple((torch.cat([item[4][layer][0] for item in group], dim=0), torch.cat([item[4][layer][1] for item in group], dim=0)) for layer in range(len(self.model.blocks)))
-                        with self._gpu_stage("inference/cache_prefill" if past is None else "inference/cache_append"):
-                            with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=self.dtype):
-                                runner = self.cached_forward or self.model.forward_cached
-                                output, next_cache = runner(history, snapshot, group_legal, past, base)
-                        if bool(self.config.get("rollout_kv_cache", True)):
-                            for index, (_request_index, _row, key, generation, _past) in enumerate(group):
-                                split_cache = tuple((pair[0][index:index + 1].clone(), pair[1][index:index + 1].clone()) for pair in next_cache)
-                                self.cache[key] = _CacheEntry(generation, history_length, split_cache)
-                    with self._gpu_stage("inference/sample_and_d2h"):
-                        distribution = Categorical(logits=output["policy_logits"])
-                        chosen = output["policy_logits"].argmax(-1) if greedy else distribution.sample()
-                        chosen_cpu = chosen.tolist()
-                        logprob_cpu = distribution.log_prob(chosen).tolist()
-                        value_cpu = output["value"].tolist()
-                        for index, (request_index, row, _key, _generation, _past) in enumerate(group):
-                            responses[request_index]["action_ids"][row] = int(chosen_cpu[index])
-                            responses[request_index]["logprobs"][row] = float(logprob_cpu[index])
-                            responses[request_index]["values"][row] = float(value_cpu[index])
+                    self._run_full_forward(requests, responses, group, greedy)
             self.profiler.add("inference/rpc_total", time.perf_counter() - started)
             return responses
+
+        def _run_full_forward(
+            self,
+            requests: list[dict[str, Any]],
+            responses: list[dict[str, Any]],
+            group: list[tuple[int, int]],
+            greedy: bool,
+        ) -> None:
+            if not group:
+                return
+            with self.profiler.stage("inference/host_collate"):
+                kinds, turn, meld, board, legal, lengths = collate_request_rows(requests, group)
+            max_event_blocks = int(lengths.max())
+            # ``model.forward`` materializes [max_event_blocks + 12 board +
+            # 1 decision] positions for every row.  The latter thirteen are
+            # always real tokens, so only the event prefix contributes padding.
+            effective_input_tokens = int(lengths.sum()) + len(group) * 13
+            padded_input_tokens = len(group) * (max_event_blocks + 13)
+            self._add_counter("inference/effective_input_tokens", effective_input_tokens)
+            self._add_counter("inference/padded_input_tokens", padded_input_tokens)
+            self._add_counter("inference/padding_input_tokens", padded_input_tokens - effective_input_tokens)
+            self._rollout_forward_max_event_blocks.append(max_event_blocks)
+            with self._gpu_stage("inference/h2d"):
+                group_kinds = torch.as_tensor(kinds, device=self.device, dtype=torch.long)
+                group_turn = torch.as_tensor(turn, device=self.device, dtype=torch.long)
+                group_meld = torch.as_tensor(meld, device=self.device, dtype=torch.long)
+                group_board = torch.as_tensor(board, device=self.device, dtype=torch.long)
+                group_legal = torch.as_tensor(legal, device=self.device, dtype=torch.bool)
+                group_lengths = torch.as_tensor(lengths, device=self.device, dtype=torch.long)
+            self._forward_calls += 1
+            sample_cuda = (
+                self.profiler.enabled and self.cuda_event_interval > 0
+                and self._forward_calls % self.cuda_event_interval == 0
+            )
+            start_event = torch.cuda.Event(enable_timing=True) if sample_cuda else None
+            end_event = torch.cuda.Event(enable_timing=True) if sample_cuda else None
+            if start_event is not None:
+                start_event.record()
+            with self._gpu_stage("inference/full_forward"):
+                with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=self.dtype):
+                    output = self.model(group_kinds, group_turn, group_meld, group_board, group_legal, group_lengths)
+            if end_event is not None and start_event is not None:
+                end_event.record()
+                end_event.synchronize()
+                self.profiler.add("inference/full_forward_cuda_event", start_event.elapsed_time(end_event) / 1_000.0)
+            self._add_counter("inference/full_forwards")
+            self._add_counter("inference/full_forward_rows", len(group))
+            with self._gpu_stage("inference/sample_and_d2h"):
+                distribution = Categorical(logits=output["policy_logits"])
+                chosen = output["policy_logits"].argmax(-1) if greedy else distribution.sample()
+                chosen_cpu = chosen.tolist()
+                logprob_cpu = distribution.log_prob(chosen).tolist()
+                value_cpu = output["value"].tolist()
+            assign_batch_outputs(responses, group, chosen_cpu, logprob_cpu, value_cpu)
 else:
     RolloutInferenceActor = None

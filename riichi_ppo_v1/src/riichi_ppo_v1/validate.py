@@ -1,4 +1,4 @@
-"""Run strict real-environment validation for the V3 event and V2 action protocols."""
+"""Run strict real-environment validation for the V4 event and V2 action protocols."""
 
 from __future__ import annotations
 

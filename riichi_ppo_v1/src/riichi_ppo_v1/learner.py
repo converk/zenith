@@ -20,15 +20,13 @@ from .trajectory import Transition
 
 def transition_length_metrics(transitions: list[Transition], prefix: str = "update/buffer") -> dict[str, float]:
     """Describe the unpadded transition buffer supplied to a PPO update."""
-    lengths = np.asarray([transition.length for transition in transitions], dtype=np.int64)
-    history_lengths = np.asarray([transition.history_length for transition in transitions], dtype=np.int64)
-    if np.any(lengths <= 0) or np.any(history_lengths < 0) or np.any(history_lengths >= lengths):
-        raise ValueError("each transition must have a non-empty snapshot after its history prefix")
-    snapshot_lengths = lengths - history_lengths
+    lengths = np.asarray([transition.block_length for transition in transitions], dtype=np.int64)
+    if np.any(lengths < 0):
+        raise ValueError("V4 block length cannot be negative")
     return {
-        f"{prefix}_transition_sequence_tokens_mean": float(lengths.mean()),
-        f"{prefix}_transition_history_tokens_mean": float(history_lengths.mean()),
-        f"{prefix}_transition_snapshot_tokens_mean": float(snapshot_lengths.mean()),
+        f"{prefix}_transition_event_blocks_mean": float(lengths.mean()),
+        f"{prefix}_transition_input_tokens_mean": float(lengths.mean() + 12),
+        f"{prefix}_transition_board_tokens_mean": 12.0,
     }
 
 
@@ -37,21 +35,25 @@ def collate(transitions: list[Transition], device: torch.device, profiler: Stage
         raise ValueError("cannot collate an empty rollout")
     profile = profiler or StageProfiler(enabled=False)
     with profile.stage("update/collate_shape_and_allocate"):
-        max_length = max(t.length for t in transitions)
+        max_length = max(t.block_length for t in transitions)
         batch = len(transitions)
-        ids = np.zeros((batch, max_length, 8), dtype=np.int64)
-        attention = np.zeros((batch, max_length), dtype=np.bool_)
+        kinds = np.zeros((batch, max_length), dtype=np.uint8)
+        turn = np.zeros((batch, max_length, 4, 4), dtype=np.uint8)
+        meld = np.zeros((batch, max_length, 8), dtype=np.uint8)
+        board = np.stack([t.board_state for t in transitions])
     with profile.stage("update/collate_host_padding_copy"):
         for row, transition in enumerate(transitions):
-            ids[row, : transition.length] = transition.input_ids
-            attention[row, : transition.length] = transition.attention_mask
+            kinds[row, : transition.block_length] = transition.event_kinds
+            turn[row, : transition.block_length] = transition.turn_fields
+            meld[row, : transition.block_length] = transition.meld_fields
         legal = np.stack([t.legal_mask for t in transitions])
     with profile.stage("update/collate_h2d"):
         return {
-            "input_ids": torch.as_tensor(ids, device=device),
-            "attention_mask": torch.as_tensor(attention, device=device),
-            "sequence_lengths": torch.tensor([t.length for t in transitions], device=device),
-            "history_lengths": torch.tensor([t.history_length for t in transitions], device=device),
+            "block_kinds": torch.as_tensor(kinds, device=device),
+            "turn_fields": torch.as_tensor(turn, device=device),
+            "meld_fields": torch.as_tensor(meld, device=device),
+            "board_state": torch.as_tensor(board, device=device),
+            "block_lengths": torch.tensor([t.block_length for t in transitions], device=device),
             "legal_mask": torch.as_tensor(legal, device=device),
             "actions": torch.tensor([t.action for t in transitions], device=device, dtype=torch.long),
             "old_logprobs": torch.tensor([t.logprob for t in transitions], device=device),
@@ -69,7 +71,7 @@ class PPOLearner:
         self.hp = hyperparameters
         self.iteration = 0
         self.profiler = StageProfiler(enabled=bool(hyperparameters.get("profile_enabled", True)))
-        self.profile_cuda_sync = bool(hyperparameters.get("profile_cuda_sync", True))
+        self.profile_cuda_sync = bool(hyperparameters.get("profile_cuda_sync", False))
 
     def _sync_cuda(self) -> None:
         if self.profile_cuda_sync and self.device.type == "cuda":
@@ -103,27 +105,31 @@ class PPOLearner:
         total = {"loss": 0.0, "policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0, "approx_kl": 0.0, "clipfrac": 0.0}
         updates = 0
         count = len(transitions)
+        configured_epochs = int(self.hp["update_epochs"])
+        minibatch_size = int(self.hp["minibatch_size"])
+        planned_minibatches_per_epoch = (count + minibatch_size - 1) // minibatch_size
+        epochs_started = 0
+        epochs_completed = 0
         executed_samples = 0
-        executed_sequence_tokens = torch.zeros((), device=self.device, dtype=torch.int64)
-        executed_snapshot_tokens = torch.zeros((), device=self.device, dtype=torch.int64)
+        executed_event_blocks = torch.zeros((), device=self.device, dtype=torch.int64)
         self.model.train()
         stop_early = False
-        for _ in range(int(self.hp["update_epochs"])):
+        for _ in range(configured_epochs):
+            epochs_started += 1
             with self._gpu_stage("update/shuffle_indices"):
                 order = torch.randperm(count, device=self.device)
-            for start in range(0, count, int(self.hp["minibatch_size"])):
+            for start in range(0, count, minibatch_size):
                 with self._gpu_stage("update/minibatch_index_select"):
-                    index = order[start : start + int(self.hp["minibatch_size"])]
-                    input_ids, legal_mask = batch["input_ids"][index], batch["legal_mask"][index]
-                    attention_mask, sequence_lengths = batch["attention_mask"][index], batch["sequence_lengths"][index]
-                    history_lengths = batch["history_lengths"][index]
+                    index = order[start : start + minibatch_size]
+                    block_kinds, legal_mask = batch["block_kinds"][index], batch["legal_mask"][index]
+                    turn_fields, meld_fields = batch["turn_fields"][index], batch["meld_fields"][index]
+                    board_state, block_lengths = batch["board_state"][index], batch["block_lengths"][index]
                     actions, old_logprobs = batch["actions"][index], batch["old_logprobs"][index]
                     adv, returns = batch["advantages"][index], batch["returns"][index]
                     executed_samples += int(index.numel())
-                    executed_sequence_tokens += sequence_lengths.sum()
-                    executed_snapshot_tokens += (sequence_lengths - history_lengths).sum()
+                    executed_event_blocks += block_lengths.sum()
                 with self._gpu_stage("update/model_forward"):
-                    output = self.model(input_ids, legal_mask, attention_mask, sequence_lengths)
+                    output = self.model(block_kinds, turn_fields, meld_fields, board_state, legal_mask, block_lengths)
                 with self._gpu_stage("update/distribution_and_loss"):
                     distribution = Categorical(logits=output["policy_logits"])
                     logprob = distribution.log_prob(actions)
@@ -154,13 +160,20 @@ class PPOLearner:
                     break
             if stop_early:
                 break
+            epochs_completed += 1
         self.iteration += 1
         if not executed_samples:
             raise RuntimeError("PPO update completed without a minibatch")
         length_metrics.update({
+            "update/configured_epochs": float(configured_epochs),
+            "update/epochs_started": float(epochs_started),
+            "update/epochs_completed": float(epochs_completed),
+            "update/planned_minibatches": float(configured_epochs * planned_minibatches_per_epoch),
+            "update/executed_minibatches": float(updates),
+            "update/early_stop": float(stop_early),
             "update/executed_transition_samples": float(executed_samples),
-            "update/executed_transition_sequence_tokens_mean": float(executed_sequence_tokens.item() / executed_samples),
-            "update/executed_transition_snapshot_tokens_mean": float(executed_snapshot_tokens.item() / executed_samples),
+            "update/executed_transition_event_blocks_mean": float(executed_event_blocks.item() / executed_samples),
+            "update/executed_transition_input_tokens_mean": float(executed_event_blocks.item() / executed_samples + 12),
         })
         result = {name: value / max(updates, 1) for name, value in total.items()} | {"transitions": float(count)} | length_metrics
         result.update(self.profiler.delta({}, prefix="timing"))

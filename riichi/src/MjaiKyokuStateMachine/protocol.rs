@@ -25,7 +25,11 @@ fn action_id_from_mjai_value(action: &Value) -> Result<usize, String> {
         }
         "reach" => Ok(75),
         "chi" => {
+            let pai = action_tile_field(action, "pai")?;
             let consumed = action_tiles_field::<2>(action, "consumed")?;
+            if !is_valid_chi(pai, &consumed)? {
+                return Err("chi pai and consumed tiles must form one suited sequence".to_owned());
+            }
             for index in 0..57 {
                 if same_tiles_unordered(&chi_consumed_pair(index)?, &consumed) {
                     return Ok(76 + index);
@@ -34,7 +38,11 @@ fn action_id_from_mjai_value(action: &Value) -> Result<usize, String> {
             Err("chi consumed tiles cannot be mapped to KyokuActionSpace V2".to_owned())
         }
         "pon" => {
+            let pai = action_tile_field(action, "pai")?;
             let consumed = action_tiles_field::<2>(action, "consumed")?;
+            if !all_same_tile34(pai, &consumed)? {
+                return Err("pon pai and consumed tiles must have the same tile type".to_owned());
+            }
             for index in 0..37 {
                 if same_tiles_unordered(&pon_consumed_pair(index)?, &consumed) {
                     return Ok(133 + index);
@@ -42,16 +50,39 @@ fn action_id_from_mjai_value(action: &Value) -> Result<usize, String> {
             }
             Err("pon consumed tiles cannot be mapped to KyokuActionSpace V2".to_owned())
         }
-        "daiminkan" => Ok(170),
+        "daiminkan" => {
+            let pai = action_tile_field(action, "pai")?;
+            let consumed = action_tiles_field::<3>(action, "consumed")?;
+            if !all_same_tile34(pai, &consumed)? {
+                return Err("daiminkan pai and consumed tiles must have the same tile type".to_owned());
+            }
+            Ok(170)
+        }
         "ankan" => {
             let consumed = action_tiles_field::<4>(action, "consumed")?;
-            Ok(171 + tile34_from_tile(consumed[0])?)
+            let tile34 = tile34_from_tile(consumed[0])?;
+            if consumed.iter().skip(1).any(|tile| tile34_from_tile(*tile) != Ok(tile34)) {
+                return Err("ankan consumed tiles must have the same tile type".to_owned());
+            }
+            if let Some(pai) = optional_action_tile_field(action, "pai")? {
+                if tile34_from_tile(pai)? != tile34 {
+                    return Err("ankan pai must match consumed tiles".to_owned());
+                }
+            }
+            Ok(171 + tile34)
         }
         "kakan" => {
-            let pai = action_tile_field(action, "pai").or_else(|_| {
-                action_tiles_field::<3>(action, "consumed").map(|consumed| consumed[0])
-            })?;
-            Ok(205 + tile34_from_tile(pai)?)
+            let consumed = action_tiles_field::<3>(action, "consumed")?;
+            let tile34 = tile34_from_tile(consumed[0])?;
+            if consumed.iter().skip(1).any(|tile| tile34_from_tile(*tile) != Ok(tile34)) {
+                return Err("kakan consumed tiles must have the same tile type".to_owned());
+            }
+            if let Some(pai) = optional_action_tile_field(action, "pai")? {
+                if tile34_from_tile(pai)? != tile34 {
+                    return Err("kakan pai must match consumed tiles".to_owned());
+                }
+            }
+            Ok(205 + tile34)
         }
         "hora" => Ok(239),
         "ryukyoku" => Ok(240),
@@ -65,6 +96,17 @@ fn action_tile_field(action: &Value, field: &str) -> Result<MjaiTile, String> {
         .and_then(Value::as_str)
         .ok_or_else(|| format!("possible action requires string field {field:?}"))?;
     tile_from_str(value).ok_or_else(|| format!("invalid MJAI tile {value:?}"))
+}
+
+fn optional_action_tile_field(action: &Value, field: &str) -> Result<Option<MjaiTile>, String> {
+    match action.get(field) {
+        None => Ok(None),
+        Some(value) => value
+            .as_str()
+            .and_then(tile_from_str)
+            .map(Some)
+            .ok_or_else(|| format!("invalid MJAI tile in optional field {field:?}")),
+    }
 }
 
 fn action_tiles_field<const N: usize>(action: &Value, field: &str) -> Result<[MjaiTile; N], String> {
@@ -101,6 +143,20 @@ fn tile34_from_tile(tile: MjaiTile) -> Result<usize, String> {
     } else {
         Err("tile cannot be mapped to TILE34".to_owned())
     }
+}
+
+fn all_same_tile34<const N: usize>(pai: MjaiTile, consumed: &[MjaiTile; N]) -> Result<bool, String> {
+    let tile34 = tile34_from_tile(pai)?;
+    consumed.iter().try_fold(true, |same, tile| Ok(same && tile34_from_tile(*tile)? == tile34))
+}
+
+fn is_valid_chi(pai: MjaiTile, consumed: &[MjaiTile; 2]) -> Result<bool, String> {
+    let mut tile34 = [tile34_from_tile(pai)?, tile34_from_tile(consumed[0])?, tile34_from_tile(consumed[1])?];
+    if tile34.iter().any(|tile| *tile >= 27) || tile34.iter().any(|tile| *tile / 9 != tile34[0] / 9) {
+        return Ok(false);
+    }
+    tile34.sort_unstable();
+    Ok(tile34[0] + 1 == tile34[1] && tile34[1] + 1 == tile34[2])
 }
 
 fn chi_consumed_pair(index: usize) -> Result<[MjaiTile; 2], String> {
@@ -245,42 +301,7 @@ const fn default_scores() -> [i32; NUM_PLAYERS] {
     [25_000; NUM_PLAYERS]
 }
 
-const fn token(
-    token_type: i64,
-    actor: i64,
-    target: i64,
-    tile: i64,
-    tile2: i64,
-    tile3: i64,
-    value: i64,
-    flag: i64,
-) -> Token {
-    [token_type, actor, target, tile, tile2, tile3, value, flag]
-}
-
-fn protocol_tile(tile: MjaiTile) -> i64 {
-    tile.as_u8() as i64 + 1
-}
-
-fn encode_value(value: u32) -> i64 {
-    (value as i64 + 1).min(18)
-}
-
 const fn jikaze_for(self_seat: u8, oya: u8) -> MjaiTile {
     let relative_oya = (oya + NUM_PLAYERS as u8 - self_seat) % NUM_PLAYERS as u8;
     MjaiTile(27 + (NUM_PLAYERS as u8 - relative_oya) % NUM_PLAYERS as u8)
-}
-
-fn chi_flag(pai: MjaiTile, consumed: [MjaiTile; 2]) -> i64 {
-    let pai_id = pai.deaka().as_u8();
-    let first = consumed[0].deaka().as_u8();
-    let second = consumed[1].deaka().as_u8();
-    let minimum = pai_id.min(first).min(second);
-    if pai_id == minimum {
-        FLAG_CHI_LOW
-    } else if pai_id == minimum + 1 {
-        FLAG_CHI_MID
-    } else {
-        FLAG_CHI_HIGH
-    }
 }

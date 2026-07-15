@@ -80,17 +80,18 @@ if ray is not None:
             self, decisions: list[Decision], namespace: str, greedy: bool, record: bool,
         ) -> tuple[list[Any], list[Transition | None]]:
             with self.profiler.stage("rollout/model_state_prepare"):
-                ids, attention, lengths, legal, history_lengths, history_generations = self.bridge.prepare(decisions)
+                kinds, turn, meld, board, block_lengths, legal, _history_generations = self.bridge.prepare(decisions)
             with self.profiler.stage("inference/rpc_wait"):
                 result = ray.get(self.inference.infer.remote(
                     worker_id=self.worker_id,
                     namespace=namespace,
                     batch_indices=[decision.batch_index for decision in decisions],
-                    ids=ids,
-                    lengths=lengths,
+                    block_kinds=kinds,
+                    turn_fields=turn,
+                    meld_fields=meld,
+                    board_state=board,
                     legal_mask=legal,
-                    history_lengths=history_lengths,
-                    history_generations=history_generations,
+                    block_lengths=block_lengths,
                     greedy=greedy,
                 ))
             action_ids = [int(value) for value in result["action_ids"]]
@@ -106,10 +107,10 @@ if ray is not None:
                         decision = decisions[row]
                         if not should_record_decision(decision, self.sampled_seats):
                             continue
-                        length = int(lengths[row])
                         transitions[row] = Transition(
-                            ids[row, :length].copy(), attention[row, :length].copy(), length, legal[row].copy(),
-                            action_id, logprobs[row], values[row], history_length=int(history_lengths[row]),
+                            kinds[row, : block_lengths[row]].copy(), turn[row, : block_lengths[row]].copy(),
+                            meld[row, : block_lengths[row]].copy(), board[row].copy(), int(block_lengths[row]),
+                            legal[row].copy(), action_id, logprobs[row], values[row],
                         )
                         self.recorded_decisions += 1
             return actions, transitions
@@ -241,13 +242,5 @@ if ray is not None:
             stats.update(self.profiler.delta({}, prefix="timing"))
             return transitions, stats
 
-        def evaluate(self, games: int) -> dict[str, float]:
-            rewards: list[float] = []
-            ranks: list[int] = []
-            while len(ranks) < games * 2:
-                _transitions, new_rewards, new_ranks, _kyokus, _ended, _done = self._advance_once(greedy=True, record=False)
-                rewards.extend(new_rewards)
-                ranks.extend(new_ranks)
-            return {"eval_kyoku_reward": float(np.mean(rewards)) if rewards else 0.0, "eval_rank": float(np.mean(ranks[: games * 2]))}
 else:
     RolloutWorker = None
