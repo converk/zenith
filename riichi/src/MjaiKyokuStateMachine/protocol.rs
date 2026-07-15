@@ -5,26 +5,6 @@ fn parse_event(event_json: &str) -> PyResult<MjaiEvent> {
     Ok(event)
 }
 
-fn parse_request_action(request_json: &str) -> PyResult<RiichiEnvRequestAction> {
-    serde_json::from_str::<RiichiEnvRequestAction>(request_json)
-        .map_err(|error| PyValueError::new_err(format!("invalid request_action message: {error}")))
-}
-
-fn message_type(message_json: &str) -> PyResult<String> {
-    let value = serde_json::from_str::<Value>(message_json)
-        .map_err(|error| PyValueError::new_err(format!("invalid JSON message: {error}")))?;
-    let message_type = value
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or_else(|| PyValueError::new_err("message must contain a string type field"))?;
-    Ok(message_type.to_owned())
-}
-
-fn serialize_mjai(value: serde_json::Value) -> Result<String, String> {
-    serde_json::to_string(&value)
-        .map_err(|error| format!("failed to serialize MJAI action: {error}"))
-}
-
 fn action_id_from_mjai_value(action: &Value) -> Result<usize, String> {
     let action_type = action
         .get("type")
@@ -79,56 +59,6 @@ fn action_id_from_mjai_value(action: &Value) -> Result<usize, String> {
     }
 }
 
-fn prepare_riichi_env_response(
-    action: &mut Value,
-    request_id: i64,
-    player_index: u8,
-    table: &TableStateMachine,
-) -> Result<(), String> {
-    let action_type = action
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "response action must contain a string type field".to_owned())?
-        .to_owned();
-    let object = action
-        .as_object_mut()
-        .ok_or_else(|| "response action must be a JSON object".to_owned())?;
-    object.insert("request_id".to_owned(), json!(request_id));
-    if action_type != "none" && !object.contains_key("actor") {
-        object.insert("actor".to_owned(), json!(player_index));
-    }
-
-    match action_type.as_str() {
-        "chi" | "pon" | "daiminkan" => {
-            if !object.contains_key("target") {
-                if let DecisionWindow::Reaction { target, .. } = table.decision_window {
-                    object.insert("target".to_owned(), json!(target));
-                }
-            }
-        }
-        "hora" => {
-            if !object.contains_key("target") {
-                match table.decision_window {
-                    DecisionWindow::SelfTurn { actor, .. } if actor == player_index => {
-                        object.insert("target".to_owned(), json!(player_index));
-                    }
-                    DecisionWindow::Reaction { target, .. } => {
-                        object.insert("target".to_owned(), json!(target));
-                    }
-                    _ => {}
-                }
-            }
-            if !object.contains_key("pai") {
-                if let DecisionWindow::Reaction { pai, .. } = table.decision_window {
-                    object.insert("pai".to_owned(), json!(tile_name(pai)?));
-                }
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
 fn action_tile_field(action: &Value, field: &str) -> Result<MjaiTile, String> {
     let value = action
         .get(field)
@@ -170,22 +100,6 @@ fn tile34_from_tile(tile: MjaiTile) -> Result<usize, String> {
         Ok(tile_id)
     } else {
         Err("tile cannot be mapped to TILE34".to_owned())
-    }
-}
-
-fn action_tile(index: usize) -> Result<MjaiTile, String> {
-    if index < 37 {
-        Ok(MjaiTile(index as u8))
-    } else {
-        Err("ACTION_TILE37 index must be in 0..37".to_owned())
-    }
-}
-
-fn tile34(index: usize) -> Result<MjaiTile, String> {
-    if index < 34 {
-        Ok(MjaiTile(index as u8))
-    } else {
-        Err("TILE34 index must be in 0..34".to_owned())
     }
 }
 
@@ -246,15 +160,6 @@ fn pon_consumed_pair(index: usize) -> Result<[MjaiTile; 2], String> {
     })
 }
 
-fn is_sequence(pai: MjaiTile, first: MjaiTile, second: MjaiTile) -> bool {
-    let mut tiles = [pai.deaka().as_u8(), first.deaka().as_u8(), second.deaka().as_u8()];
-    if tiles.iter().any(|tile| *tile >= 27) || tiles[0] / 9 != tiles[1] / 9 || tiles[0] / 9 != tiles[2] / 9 {
-        return false;
-    }
-    tiles.sort_unstable();
-    tiles[1] == tiles[0] + 1 && tiles[2] == tiles[1] + 1
-}
-
 fn validate_event(event: &MjaiEvent) -> Result<(), String> {
     let valid_actor = |actor: u8| actor < NUM_PLAYERS as u8;
     let valid_pair = |actor: u8, target: u8| valid_actor(actor) && valid_actor(target);
@@ -308,6 +213,7 @@ const MJAI_TILE_NAMES: [&str; 38] = [
     "9s", "E", "S", "W", "N", "P", "F", "C", "5mr", "5pr", "5sr", "?",
 ];
 
+#[cfg(test)]
 fn tile_name(tile: MjaiTile) -> Result<&'static str, String> {
     MJAI_TILE_NAMES
         .get(tile.as_usize())
@@ -323,6 +229,18 @@ fn tile_from_str(value: &str) -> Option<MjaiTile> {
         .map(|index| MjaiTile(index as u8))
 }
 
+fn snapshot_tile(value: &str) -> Result<MjaiTile, String> {
+    tile_from_str(value).ok_or_else(|| format!("invalid snapshot tile {value:?}"))
+}
+
+fn round_wind_tile(round_wind: u8) -> Result<MjaiTile, String> {
+    if round_wind < NUM_PLAYERS as u8 {
+        Ok(MjaiTile(27 + round_wind))
+    } else {
+        Err("snapshot.round_wind must be in 0..4".to_owned())
+    }
+}
+
 const fn default_scores() -> [i32; NUM_PLAYERS] {
     [25_000; NUM_PLAYERS]
 }
@@ -336,9 +254,8 @@ const fn token(
     tile3: i64,
     value: i64,
     flag: i64,
-    step: i64,
 ) -> Token {
-    [token_type, actor, target, tile, tile2, tile3, value, flag, step]
+    [token_type, actor, target, tile, tile2, tile3, value, flag]
 }
 
 fn protocol_tile(tile: MjaiTile) -> i64 {

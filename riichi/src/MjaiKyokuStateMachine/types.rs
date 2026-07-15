@@ -1,12 +1,10 @@
 const NUM_PLAYERS: usize = 4;
-const PLAYERS_PER_THREAD: usize = 8;
-const ENVS_PER_THREAD: usize = PLAYERS_PER_THREAD / NUM_PLAYERS;
-const TOKEN_DIM: usize = 9;
+const ENVS_PER_THREAD: usize = 8;
+const TOKEN_DIM: usize = 8;
 const NUM_ACTIONS: usize = 241;
 
 const TYPE_PAD: i64 = 0;
 const TYPE_SEP: i64 = 1;
-const TYPE_STATE_GAME_MODE: i64 = 2;
 const TYPE_STATE_BAKAZE: i64 = 3;
 const TYPE_STATE_JIKAZE: i64 = 4;
 const TYPE_STATE_OYA: i64 = 5;
@@ -17,6 +15,14 @@ const TYPE_STATE_SCORE: i64 = 9;
 const TYPE_STATE_LEFT_TILES: i64 = 11;
 const TYPE_STATE_DORA: i64 = 12;
 const TYPE_STATE_HAND: i64 = 13;
+const TYPE_STATE_SNAPSHOT_BEGIN: i64 = 14;
+const TYPE_STATE_SNAPSHOT_END: i64 = 15;
+const TYPE_STATE_SELF_ID: i64 = 16;
+const TYPE_STATE_RIICHI_STICKS: i64 = 17;
+const TYPE_STATE_DRAWN_TILE: i64 = 18;
+const TYPE_STATE_RIICHI_DECLARED: i64 = 19;
+const TYPE_STATE_LAST_DISCARD: i64 = 20;
+const TYPE_STATE_LAST_TEDASHI: i64 = 21;
 const TYPE_EVENT_START_KYOKU: i64 = 26;
 const TYPE_EVENT_DRAW: i64 = 27;
 const TYPE_EVENT_DISCARD: i64 = 28;
@@ -45,12 +51,9 @@ const TILE_UNKNOWN: i64 = 38;
 const VALUE_NONE: i64 = 0;
 
 const FLAG_NONE: i64 = 0;
-const FLAG_GAME_4P_EAST: i64 = 1;
-const FLAG_GAME_4P_SOUTH: i64 = 2;
 const FLAG_TSUMOGIRI: i64 = 3;
 const FLAG_TEDASHI: i64 = 4;
 const FLAG_REACH_DECLARE: i64 = 9;
-const FLAG_DOUBLE_REACH_DECLARE: i64 = 10;
 const FLAG_MELD_DAIMINKAN: i64 = 13;
 const FLAG_MELD_KAKAN: i64 = 14;
 const FLAG_MELD_ANKAN: i64 = 15;
@@ -92,8 +95,13 @@ impl MjaiTile {
 enum MjaiEvent {
     None,
     StartGame {
+        id: Option<u8>,
+        // RiichiEnv replay/test events may carry these fields. The state machine only
+        // needs `id`, but accepting them keeps event deserialization compatible.
+        #[allow(dead_code)]
         #[serde(default)]
         names: [String; NUM_PLAYERS],
+        #[allow(dead_code)]
         seed: Option<(u64, u64)>,
     },
     StartKyoku {
@@ -165,25 +173,19 @@ enum MjaiEvent {
     EndGame,
 }
 
-#[derive(Clone, Copy)]
-enum GameMode {
-    FourPlayerEast,
-    FourPlayerSouth,
-}
-
-impl GameMode {
-    fn from_flag(value: u8) -> Result<Self, String> {
-        match value {
-            1 => Ok(Self::FourPlayerEast),
-            2 => Ok(Self::FourPlayerSouth),
-            _ => Err("game_mode must be 1 (4p east) or 2 (4p south)".to_owned()),
-        }
-    }
-
-    const fn flag(self) -> i64 {
-        match self {
-            Self::FourPlayerEast => FLAG_GAME_4P_EAST,
-            Self::FourPlayerSouth => FLAG_GAME_4P_SOUTH,
-        }
-    }
+#[derive(Clone, Debug, Deserialize)]
+struct DecisionSnapshot {
+    player_id: u8,
+    oya: u8,
+    round_wind: u8,
+    kyoku_index: u8,
+    honba: u8,
+    riichi_sticks: u32,
+    scores: [i32; NUM_PLAYERS],
+    dora_indicators: Vec<String>,
+    hand: Vec<String>,
+    drawn_tile: Option<String>,
+    riichi_declared: [bool; NUM_PLAYERS],
+    last_discard: Option<String>,
+    last_tedashis: [Option<String>; NUM_PLAYERS],
 }

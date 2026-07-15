@@ -4,3 +4,4 @@ __pycache__/
 /*.log
 evaluations/match_logs
 .vscode/
+RiichiEnv/

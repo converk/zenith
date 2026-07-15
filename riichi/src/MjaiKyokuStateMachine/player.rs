@@ -1,35 +1,277 @@
 struct PlayerKyokuStateMachine {
     absolute_seat: u8,
-    hand_counts: [u8; 38],
-    open_melds: Vec<OpenMeld>,
     tokens: Vec<Token>,
-    dora_indicators: u8,
-}
-
-#[derive(Clone, Copy)]
-enum OpenMeld {
-    Chi,
-    Pon { tiles: [MjaiTile; 3] },
-    Daiminkan,
-    Kakan,
-    Ankan,
 }
 
 impl PlayerKyokuStateMachine {
     fn new(absolute_seat: u8) -> Self {
         Self {
             absolute_seat,
-            hand_counts: [0; 38],
-            open_melds: Vec::new(),
             tokens: Vec::new(),
-            dora_indicators: 0,
         }
+    }
+
+    fn apply_player_event(
+        &mut self,
+        event: &MjaiEvent,
+        reveal_opponent_initial_hands: bool,
+    ) -> Result<(), String> {
+        match event {
+            MjaiEvent::StartGame { id, .. } => {
+                if let Some(id) = id {
+                    if *id >= NUM_PLAYERS as u8 {
+                        return Err("start_game.id must be in 0..4".to_owned());
+                    }
+                    self.absolute_seat = *id;
+                }
+                Ok(())
+            }
+            MjaiEvent::StartKyoku { .. } => {
+                self.start_kyoku(event, reveal_opponent_initial_hands)
+            }
+            MjaiEvent::EndKyoku | MjaiEvent::EndGame => Ok(()),
+            _ => {
+                if self.tokens.is_empty() {
+                    return Ok(());
+                }
+                self.apply_event(event, 0)?;
+                Ok(())
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn tokens_with_snapshot(&self, snapshot: &DecisionSnapshot) -> Result<Vec<Token>, String> {
+        if snapshot.player_id >= NUM_PLAYERS as u8 {
+            return Err("snapshot.player_id must be in 0..4".to_owned());
+        }
+        if snapshot.oya >= NUM_PLAYERS as u8 {
+            return Err("snapshot.oya must be in 0..4".to_owned());
+        }
+        let mut tokens = self.tokens.clone();
+        tokens.extend(self.snapshot_tokens(snapshot)?);
+        Ok(tokens)
+    }
+
+    fn snapshot_tokens(&self, snapshot: &DecisionSnapshot) -> Result<Vec<Token>, String> {
+        let mut tokens = Vec::new();
+        let relative = |absolute_actor: u8| -> Result<i64, String> {
+            if absolute_actor >= NUM_PLAYERS as u8 {
+                return Err("snapshot actor must be in 0..4".to_owned());
+            }
+            Ok(self.relative(absolute_actor))
+        };
+
+        tokens.push(token(
+            TYPE_STATE_SNAPSHOT_BEGIN,
+            ACTOR_SELF,
+            ACTOR_NONE,
+            TILE_NONE,
+            TILE_NONE,
+            TILE_NONE,
+            VALUE_NONE,
+            FLAG_NONE,
+        ));
+        tokens.push(token(
+            TYPE_STATE_SELF_ID,
+            ACTOR_SELF,
+            ACTOR_NONE,
+            TILE_NONE,
+            TILE_NONE,
+            TILE_NONE,
+            encode_value(u32::from(snapshot.player_id)),
+            FLAG_NONE,
+        ));
+        tokens.push(token(
+            TYPE_STATE_OYA,
+            relative(snapshot.oya)?,
+            ACTOR_NONE,
+            TILE_NONE,
+            TILE_NONE,
+            TILE_NONE,
+            VALUE_NONE,
+            FLAG_NONE,
+        ));
+        tokens.push(token(
+            TYPE_STATE_JIKAZE,
+            ACTOR_SELF,
+            ACTOR_NONE,
+            protocol_tile(jikaze_for(snapshot.player_id, snapshot.oya)),
+            TILE_NONE,
+            TILE_NONE,
+            VALUE_NONE,
+            FLAG_NONE,
+        ));
+        tokens.push(token(
+            TYPE_STATE_BAKAZE,
+            ACTOR_NONE,
+            ACTOR_NONE,
+            protocol_tile(round_wind_tile(snapshot.round_wind)?),
+            TILE_NONE,
+            TILE_NONE,
+            VALUE_NONE,
+            FLAG_NONE,
+        ));
+        tokens.push(token(
+            TYPE_STATE_KYOKU_INDEX,
+            ACTOR_NONE,
+            ACTOR_NONE,
+            TILE_NONE,
+            TILE_NONE,
+            TILE_NONE,
+            encode_value(u32::from(snapshot.kyoku_index) + 1),
+            FLAG_NONE,
+        ));
+        tokens.push(token(
+            TYPE_STATE_HONBA,
+            ACTOR_NONE,
+            ACTOR_NONE,
+            TILE_NONE,
+            TILE_NONE,
+            TILE_NONE,
+            encode_value(u32::from(snapshot.honba)),
+            FLAG_NONE,
+        ));
+        tokens.push(token(
+            TYPE_STATE_RIICHI_STICKS,
+            ACTOR_NONE,
+            ACTOR_NONE,
+            TILE_NONE,
+            TILE_NONE,
+            TILE_NONE,
+            encode_value(snapshot.riichi_sticks),
+            FLAG_NONE,
+        ));
+        for absolute_actor in 0..NUM_PLAYERS as u8 {
+            let score = snapshot.scores[absolute_actor as usize].max(0) as u32;
+            tokens.push(token(
+                TYPE_STATE_SCORE,
+                relative(absolute_actor)?,
+                ACTOR_NONE,
+                TILE_NONE,
+                TILE_NONE,
+                TILE_NONE,
+                encode_value(score / 5_000),
+                FLAG_NONE,
+                ));
+        }
+        for (index, tile_name) in snapshot.dora_indicators.iter().enumerate() {
+            let tile = snapshot_tile(tile_name)?;
+            tokens.push(token(
+                TYPE_STATE_DORA,
+                ACTOR_NONE,
+                ACTOR_NONE,
+                protocol_tile(tile),
+                TILE_NONE,
+                TILE_NONE,
+                encode_value(index as u32),
+                FLAG_NONE,
+                ));
+        }
+
+        let mut hand_counts = [0u8; 37];
+        for tile_name in &snapshot.hand {
+            let tile = snapshot_tile(tile_name)?;
+            if tile.as_usize() >= 37 {
+                return Err("snapshot hand cannot contain unknown tile".to_owned());
+            }
+            hand_counts[tile.as_usize()] = hand_counts[tile.as_usize()].saturating_add(1);
+        }
+        for (tile_id, count) in hand_counts.into_iter().enumerate() {
+            if count > 0 {
+                tokens.push(token(
+                    TYPE_STATE_HAND,
+                    ACTOR_SELF,
+                    ACTOR_NONE,
+                    tile_id as i64 + 1,
+                    TILE_NONE,
+                    TILE_NONE,
+                    encode_value(u32::from(count)),
+                    FLAG_NONE,
+                        ));
+            }
+        }
+        tokens.push(token(
+            TYPE_STATE_DRAWN_TILE,
+            ACTOR_SELF,
+            ACTOR_NONE,
+            snapshot
+                .drawn_tile
+                .as_deref()
+                .map(snapshot_tile)
+                .transpose()?
+                .map(protocol_tile)
+                .unwrap_or(TILE_NONE),
+            TILE_NONE,
+            TILE_NONE,
+            VALUE_NONE,
+            FLAG_NONE,
+        ));
+        for absolute_actor in 0..NUM_PLAYERS as u8 {
+            tokens.push(token(
+                TYPE_STATE_RIICHI_DECLARED,
+                relative(absolute_actor)?,
+                ACTOR_NONE,
+                TILE_NONE,
+                TILE_NONE,
+                TILE_NONE,
+                if snapshot.riichi_declared[absolute_actor as usize] {
+                    encode_value(1)
+                } else {
+                    VALUE_NONE
+                },
+                FLAG_NONE,
+                ));
+        }
+        tokens.push(token(
+            TYPE_STATE_LAST_DISCARD,
+            ACTOR_NONE,
+            ACTOR_NONE,
+            snapshot
+                .last_discard
+                .as_deref()
+                .map(snapshot_tile)
+                .transpose()?
+                .map(protocol_tile)
+                .unwrap_or(TILE_NONE),
+            TILE_NONE,
+            TILE_NONE,
+            VALUE_NONE,
+            FLAG_NONE,
+        ));
+        for absolute_actor in 0..NUM_PLAYERS as u8 {
+            tokens.push(token(
+                TYPE_STATE_LAST_TEDASHI,
+                relative(absolute_actor)?,
+                ACTOR_NONE,
+                snapshot.last_tedashis[absolute_actor as usize]
+                    .as_deref()
+                    .map(snapshot_tile)
+                    .transpose()?
+                    .map(protocol_tile)
+                    .unwrap_or(TILE_NONE),
+                TILE_NONE,
+                TILE_NONE,
+                VALUE_NONE,
+                FLAG_NONE,
+                ));
+        }
+        tokens.push(token(
+            TYPE_STATE_SNAPSHOT_END,
+            ACTOR_SELF,
+            ACTOR_NONE,
+            TILE_NONE,
+            TILE_NONE,
+            TILE_NONE,
+            VALUE_NONE,
+            FLAG_NONE,
+        ));
+        Ok(tokens)
     }
 
     fn start_kyoku(
         &mut self,
         event: &MjaiEvent,
-        mode: GameMode,
         reveal_opponent_initial_hands: bool,
     ) -> Result<(), String> {
         let MjaiEvent::StartKyoku {
@@ -46,13 +288,7 @@ impl PlayerKyokuStateMachine {
             return Err("start_kyoku must receive MjaiEvent::StartKyoku".to_owned());
         };
 
-        self.hand_counts.fill(0);
-        self.open_melds.clear();
-        for tile in tehais[self.absolute_seat as usize] {
-            self.hand_counts[tile.as_usize()] += 1;
-        }
         self.tokens.clear();
-        self.dora_indicators = 1;
 
         self.push(token(
             TYPE_EVENT_START_KYOKU,
@@ -63,18 +299,6 @@ impl PlayerKyokuStateMachine {
             TILE_NONE,
             encode_value(u32::from(*kyoku)),
             FLAG_NONE,
-            0,
-        ));
-        self.push(token(
-            TYPE_STATE_GAME_MODE,
-            ACTOR_NONE,
-            ACTOR_NONE,
-            TILE_NONE,
-            TILE_NONE,
-            TILE_NONE,
-            VALUE_NONE,
-            mode.flag(),
-            0,
         ));
         self.push(token(
             TYPE_STATE_BAKAZE,
@@ -85,7 +309,6 @@ impl PlayerKyokuStateMachine {
             TILE_NONE,
             VALUE_NONE,
             FLAG_NONE,
-            0,
         ));
         self.push(token(
             TYPE_STATE_JIKAZE,
@@ -96,7 +319,6 @@ impl PlayerKyokuStateMachine {
             TILE_NONE,
             VALUE_NONE,
             FLAG_NONE,
-            0,
         ));
         self.push(token(
             TYPE_STATE_OYA,
@@ -107,7 +329,6 @@ impl PlayerKyokuStateMachine {
             TILE_NONE,
             VALUE_NONE,
             FLAG_NONE,
-            0,
         ));
         self.push(token(
             TYPE_STATE_KYOKU_INDEX,
@@ -118,7 +339,6 @@ impl PlayerKyokuStateMachine {
             TILE_NONE,
             encode_value(u32::from(*kyoku)),
             FLAG_NONE,
-            0,
         ));
         self.push(token(
             TYPE_STATE_HONBA,
@@ -129,7 +349,6 @@ impl PlayerKyokuStateMachine {
             TILE_NONE,
             encode_value(u32::from(*honba)),
             FLAG_NONE,
-            0,
         ));
         self.push(token(
             TYPE_STATE_KYOTAKU,
@@ -140,7 +359,6 @@ impl PlayerKyokuStateMachine {
             TILE_NONE,
             encode_value(u32::from(*kyotaku)),
             FLAG_NONE,
-            0,
         ));
         for absolute_actor in 0..NUM_PLAYERS as u8 {
             let score = scores[absolute_actor as usize].max(0) as u32;
@@ -153,8 +371,7 @@ impl PlayerKyokuStateMachine {
                 TILE_NONE,
                 encode_value(score / 5_000),
                 FLAG_NONE,
-                0,
-            ));
+                ));
         }
         self.push(token(
             TYPE_STATE_LEFT_TILES,
@@ -165,7 +382,6 @@ impl PlayerKyokuStateMachine {
             TILE_NONE,
             encode_value(70 / 4),
             FLAG_NONE,
-            0,
         ));
         self.push(token(
             TYPE_STATE_DORA,
@@ -176,7 +392,6 @@ impl PlayerKyokuStateMachine {
             TILE_NONE,
             encode_value(0),
             FLAG_NONE,
-            0,
         ));
 
         for absolute_actor in 0..NUM_PLAYERS as u8 {
@@ -191,8 +406,7 @@ impl PlayerKyokuStateMachine {
                     TILE_NONE,
                     encode_value(13),
                     FLAG_NONE,
-                    0,
-                ));
+                        ));
                 continue;
             }
 
@@ -211,8 +425,7 @@ impl PlayerKyokuStateMachine {
                         TILE_NONE,
                         encode_value(u32::from(count)),
                         FLAG_NONE,
-                        0,
-                    ));
+                                ));
                 }
             }
         }
@@ -225,19 +438,11 @@ impl PlayerKyokuStateMachine {
             TILE_NONE,
             VALUE_NONE,
             FLAG_NONE,
-            0,
         ));
         Ok(())
     }
 
-    fn apply_event(
-        &mut self,
-        event: &MjaiEvent,
-        step: i64,
-        is_double_reach: bool,
-    ) -> Result<(), String> {
-        self.update_visible_hand(event)?;
-
+    fn apply_event(&mut self, event: &MjaiEvent, _step: i64) -> Result<(), String> {
         match event {
             MjaiEvent::None
             | MjaiEvent::StartGame { .. }
@@ -259,8 +464,7 @@ impl PlayerKyokuStateMachine {
                     TILE_NONE,
                     VALUE_NONE,
                     FLAG_NONE,
-                    step,
-                ));
+                        ));
             }
             MjaiEvent::Dahai {
                 actor,
@@ -276,8 +480,7 @@ impl PlayerKyokuStateMachine {
                     TILE_NONE,
                     VALUE_NONE,
                     if *tsumogiri { FLAG_TSUMOGIRI } else { FLAG_TEDASHI },
-                    step,
-                ));
+                        ));
             }
             MjaiEvent::Chi {
                 actor,
@@ -294,8 +497,7 @@ impl PlayerKyokuStateMachine {
                     protocol_tile(consumed[1]),
                     VALUE_NONE,
                     chi_flag(*pai, *consumed),
-                    step,
-                ));
+                        ));
             }
             MjaiEvent::Pon {
                 actor,
@@ -312,8 +514,7 @@ impl PlayerKyokuStateMachine {
                     protocol_tile(consumed[1]),
                     VALUE_NONE,
                     FLAG_NONE,
-                    step,
-                ));
+                        ));
             }
             MjaiEvent::Daiminkan {
                 actor,
@@ -330,8 +531,7 @@ impl PlayerKyokuStateMachine {
                     protocol_tile(consumed[1]),
                     VALUE_NONE,
                     FLAG_MELD_DAIMINKAN,
-                    step,
-                ));
+                        ));
                 self.push(token(
                     TYPE_EVENT_MELD_CONT,
                     self.relative(*actor),
@@ -341,8 +541,7 @@ impl PlayerKyokuStateMachine {
                     TILE_NONE,
                     encode_value(0),
                     FLAG_MELD_DAIMINKAN,
-                    step,
-                ));
+                        ));
             }
             MjaiEvent::Kakan {
                 actor,
@@ -358,8 +557,7 @@ impl PlayerKyokuStateMachine {
                     protocol_tile(consumed[1]),
                     VALUE_NONE,
                     FLAG_MELD_KAKAN,
-                    step,
-                ));
+                        ));
                 self.push(token(
                     TYPE_EVENT_MELD_CONT,
                     self.relative(*actor),
@@ -369,8 +567,7 @@ impl PlayerKyokuStateMachine {
                     TILE_NONE,
                     encode_value(0),
                     FLAG_MELD_KAKAN,
-                    step,
-                ));
+                        ));
             }
             MjaiEvent::Ankan { actor, consumed } => {
                 self.push(token(
@@ -382,8 +579,7 @@ impl PlayerKyokuStateMachine {
                     protocol_tile(consumed[2]),
                     VALUE_NONE,
                     FLAG_MELD_ANKAN,
-                    step,
-                ));
+                        ));
                 self.push(token(
                     TYPE_EVENT_MELD_CONT,
                     self.relative(*actor),
@@ -393,8 +589,7 @@ impl PlayerKyokuStateMachine {
                     TILE_NONE,
                     encode_value(0),
                     FLAG_MELD_ANKAN,
-                    step,
-                ));
+                        ));
             }
             MjaiEvent::Dora { dora_marker } => {
                 self.push(token(
@@ -404,11 +599,9 @@ impl PlayerKyokuStateMachine {
                     protocol_tile(*dora_marker),
                     TILE_NONE,
                     TILE_NONE,
-                    encode_value(u32::from(self.dora_indicators)),
+                    VALUE_NONE,
                     FLAG_NONE,
-                    step,
-                ));
-                self.dora_indicators = self.dora_indicators.saturating_add(1);
+                        ));
             }
             MjaiEvent::Reach { actor } => {
                 self.push(token(
@@ -419,13 +612,8 @@ impl PlayerKyokuStateMachine {
                     TILE_NONE,
                     TILE_NONE,
                     VALUE_NONE,
-                    if is_double_reach {
-                        FLAG_DOUBLE_REACH_DECLARE
-                    } else {
-                        FLAG_REACH_DECLARE
-                    },
-                    step,
-                ));
+                    FLAG_REACH_DECLARE,
+                        ));
             }
             MjaiEvent::ReachAccepted { actor } => {
                 self.push(token(
@@ -437,8 +625,7 @@ impl PlayerKyokuStateMachine {
                     TILE_NONE,
                     VALUE_NONE,
                     FLAG_NONE,
-                    step,
-                ));
+                        ));
             }
             MjaiEvent::Hora {
                 actor,
@@ -460,9 +647,8 @@ impl PlayerKyokuStateMachine {
                     TILE_NONE,
                     VALUE_NONE,
                     if is_tsumo { FLAG_TSUMO } else { FLAG_RON },
-                    step,
-                ));
-                self.push_score_deltas(deltas.as_ref(), step);
+                        ));
+                self.push_score_deltas(deltas.as_ref());
                 if *actor == self.absolute_seat {
                     for marker in ura_markers.iter().flatten() {
                         self.push(token(
@@ -474,8 +660,7 @@ impl PlayerKyokuStateMachine {
                             TILE_NONE,
                             VALUE_NONE,
                             FLAG_NONE,
-                            step,
-                        ));
+                                        ));
                     }
                 }
             }
@@ -489,119 +674,15 @@ impl PlayerKyokuStateMachine {
                     TILE_NONE,
                     VALUE_NONE,
                     FLAG_NONE,
-                    step,
-                ));
-                self.push_score_deltas(deltas.as_ref(), step);
+                        ));
+                self.push_score_deltas(deltas.as_ref());
             }
         }
 
         Ok(())
     }
 
-    fn update_visible_hand(&mut self, event: &MjaiEvent) -> Result<(), String> {
-        match event {
-            MjaiEvent::Tsumo { actor, pai } if *actor == self.absolute_seat => self.add_tile(*pai),
-            MjaiEvent::Dahai { actor, pai, .. } if *actor == self.absolute_seat => {
-                self.remove_tile(*pai)
-            }
-            MjaiEvent::Chi { actor, consumed, .. } if *actor == self.absolute_seat => {
-                self.remove_tiles(consumed)?;
-                self.open_melds.push(OpenMeld::Chi);
-                Ok(())
-            }
-            MjaiEvent::Pon {
-                actor,
-                pai,
-                consumed,
-                ..
-            } if *actor == self.absolute_seat => {
-                self.remove_tiles(consumed)?;
-                self.open_melds.push(OpenMeld::Pon {
-                    tiles: [*pai, consumed[0], consumed[1]],
-                });
-                Ok(())
-            }
-            MjaiEvent::Daiminkan { actor, consumed, .. } if *actor == self.absolute_seat => {
-                self.remove_tiles(consumed)?;
-                self.open_melds.push(OpenMeld::Daiminkan);
-                Ok(())
-            }
-            MjaiEvent::Kakan { actor, pai, .. } if *actor == self.absolute_seat => {
-                self.remove_tile(*pai)?;
-                let matching_pon = self.open_melds.iter().position(|meld| {
-                    matches!(meld, OpenMeld::Pon { tiles } if tiles[0].deaka() == pai.deaka())
-                });
-                if let Some(index) = matching_pon {
-                    self.open_melds[index] = OpenMeld::Kakan;
-                }
-                Ok(())
-            }
-            MjaiEvent::Ankan { actor, consumed } if *actor == self.absolute_seat => {
-                self.remove_tiles(consumed)?;
-                self.open_melds.push(OpenMeld::Ankan);
-                Ok(())
-            }
-            _ => Ok(()),
-        }
-    }
-
-    fn add_tile(&mut self, tile: MjaiTile) -> Result<(), String> {
-        let count = &mut self.hand_counts[tile.as_usize()];
-        if *count >= 4 {
-            return Err(format!("cannot add a fifth visible tile {tile:?} to self hand"));
-        }
-        *count += 1;
-        Ok(())
-    }
-
-    fn remove_tile(&mut self, tile: MjaiTile) -> Result<(), String> {
-        let count = &mut self.hand_counts[tile.as_usize()];
-        if *count == 0 {
-            return Err(format!("cannot remove absent tile {tile:?} from self hand"));
-        }
-        *count -= 1;
-        Ok(())
-    }
-
-    fn remove_tiles<const N: usize>(&mut self, tiles: &[MjaiTile; N]) -> Result<(), String> {
-        for tile in tiles {
-            self.remove_tile(*tile)?;
-        }
-        Ok(())
-    }
-
-    fn holds_tiles(&self, tiles: &[MjaiTile]) -> bool {
-        let mut required = [0u8; 38];
-        for tile in tiles {
-            required[tile.as_usize()] = required[tile.as_usize()].saturating_add(1);
-        }
-        required
-            .iter()
-            .enumerate()
-            .all(|(index, count)| *count <= self.hand_counts[index])
-    }
-
-    fn tiles_of_kind(&self, tile34: MjaiTile) -> Vec<MjaiTile> {
-        let mut tiles = Vec::new();
-        for tile_id in 0..37 {
-            let tile = MjaiTile(tile_id as u8);
-            if tile.deaka() == tile34 {
-                for _ in 0..self.hand_counts[tile_id] {
-                    tiles.push(tile);
-                }
-            }
-        }
-        tiles
-    }
-
-    fn pon_tiles(&self, tile34: MjaiTile) -> Option<[MjaiTile; 3]> {
-        self.open_melds.iter().find_map(|meld| match meld {
-            OpenMeld::Pon { tiles } if tiles[0].deaka() == tile34 => Some(*tiles),
-            _ => None,
-        })
-    }
-
-    fn push_score_deltas(&mut self, deltas: Option<&[i32; NUM_PLAYERS]>, step: i64) {
+    fn push_score_deltas(&mut self, deltas: Option<&[i32; NUM_PLAYERS]>) {
         let Some(deltas) = deltas else {
             return;
         };
@@ -622,8 +703,7 @@ impl PlayerKyokuStateMachine {
                 TILE_NONE,
                 encode_value(delta.unsigned_abs() / 1_000),
                 flag,
-                step,
-            ));
+                ));
         }
     }
 
