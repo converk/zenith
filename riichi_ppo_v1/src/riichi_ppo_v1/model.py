@@ -1,37 +1,49 @@
-"""Causal Transformer actor-critic for V4 event blocks and board groups."""
+"""V5 semantic-token GQA actor-critic with a fixed 241-action policy head."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 
 NUM_ACTIONS = 241
-BOARD_TOKENS = 12
-BOARD_FIELDS = 160
+TOKEN_WIDTH = 10
+NUMERIC_WIDTH = 8
+TOKEN_CARDINALITIES = (8, 32, 256, 8, 8, 16, 4, 16, 256, 4)
+TOKEN_SCHEMA_VERSION = 5
+MODEL_SCHEMA_VERSION = 5
 
 
 @dataclass(frozen=True)
 class ModelConfig:
-    d_embed: int
-    d_model: int
-    layers: int
-    heads: int
-    ffn_dim: int
+    layers: int = 6
+    d_model: int = 256
+    query_heads: int = 8
+    kv_heads: int = 2
+    head_dim: int = 32
+    ffn_dim: int = 768
+    context_tokens: int = 4096
     rope_base: float = 10_000.0
     eps: float = 1e-6
 
     def __post_init__(self) -> None:
-        if self.d_model % self.heads or (self.d_model // self.heads) % 2:
-            raise ValueError("d_model / heads must be an even integer for RoPE")
+        if self.d_model != self.query_heads * self.head_dim:
+            raise ValueError("d_model must equal query_heads * head_dim")
+        if self.query_heads % self.kv_heads:
+            raise ValueError("query_heads must be divisible by kv_heads")
+        if self.head_dim % 2:
+            raise ValueError("head_dim must be even for RoPE")
+        if self.context_tokens < 2:
+            raise ValueError("context_tokens must leave room for the query token")
 
     @classmethod
     def preset(cls, size: str) -> "ModelConfig":
         configs = {
-            "mid": cls(192, 192, 8, 6, 512),
-            "large": cls(256, 384, 12, 12, 1152),
+            "mid": cls(),
+            "large": cls(layers=12, d_model=384, query_heads=12, kv_heads=3, head_dim=32, ffn_dim=1152),
         }
         try:
             return configs[size]
@@ -39,197 +51,156 @@ class ModelConfig:
             raise ValueError("model size must be 'mid' or 'large'") from exc
 
 
-class RMSNorm(nn.Module):
-    def __init__(self, dim: int, eps: float) -> None:
+class FactorEmbedding(nn.Module):
+    """Summed categorical factors plus a continuous Fourier feature channel."""
+
+    def __init__(self, cardinalities: tuple[int, ...], d_model: int, numeric_dim: int) -> None:
         super().__init__()
-        self.weight = nn.Parameter(torch.ones(dim))
-        self.eps = eps
+        offsets, end = [], 0
+        for size in cardinalities:
+            if size < 1:
+                raise ValueError("factor cardinalities must be positive")
+            offsets.append(end)
+            end += size - 1
+        self.register_buffer("offsets", torch.tensor(offsets, dtype=torch.long), persistent=False)
+        self.table = nn.Embedding(end + 1, d_model, padding_idx=0)
+        self.numeric = nn.Linear(numeric_dim, d_model, bias=False)
+        self.norm = nn.RMSNorm(d_model)
+        nn.init.normal_(self.table.weight, std=1.0 / math.sqrt(d_model))
+        with torch.no_grad():
+            self.table.weight[0].zero_()
 
-    def forward(self, x: Tensor) -> Tensor:
-        return x * torch.rsqrt(x.square().mean(-1, keepdim=True) + self.eps) * self.weight
+    def forward(self, factors: Tensor, numeric: Tensor) -> Tensor:
+        if factors.ndim != 3 or factors.shape[-1] != self.offsets.numel():
+            raise ValueError("token_factors must be [batch, tokens, 10]")
+        if numeric.shape != (*factors.shape[:2], NUMERIC_WIDTH):
+            raise ValueError("token_numeric must match token_factors with width 8")
+        factors = factors.long()
+        indices = torch.where(factors.eq(0), 0, factors + self.offsets)
+        active = factors.ne(0).sum(-1, keepdim=True).clamp_min(1)
+        embedded = self.table(indices).sum(-2) / active.sqrt()
+        return self.norm(embedded + self.numeric(numeric.float()))
 
 
-class RoPE(nn.Module):
-    def __init__(self, head_dim: int, base: float) -> None:
-        super().__init__()
-        inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2).float() / head_dim))
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
-
-    def forward(self, x: Tensor, positions: Tensor) -> Tensor:
-        freqs = torch.einsum("bl,d->bld", positions.to(self.inv_freq.dtype), self.inv_freq)
-        angles = torch.repeat_interleave(freqs, 2, dim=-1).unsqueeze(1).to(x.dtype)
-        even, odd = x[..., 0::2], x[..., 1::2]
-        rotated = torch.stack((-odd, even), dim=-1).flatten(-2)
-        return x * angles.cos() + rotated * angles.sin()
+def _rope_values(tokens: int, head_dim: int, device: torch.device, dtype: torch.dtype, base: float) -> tuple[Tensor, Tensor]:
+    positions = torch.arange(tokens, device=device, dtype=torch.float32)
+    frequencies = torch.exp(torch.arange(0, head_dim, 2, device=device, dtype=torch.float32) * (-math.log(base) / head_dim))
+    angle = positions[:, None] * frequencies[None]
+    return angle.cos().to(dtype), angle.sin().to(dtype)
 
 
-class Attention(nn.Module):
+def _rope(x: Tensor, values: tuple[Tensor, Tensor]) -> Tensor:
+    cos, sin = values
+    even, odd = x[..., 0::2], x[..., 1::2]
+    return torch.stack((even * cos - odd * sin, even * sin + odd * cos), dim=-1).flatten(-2)
+
+
+def _attention_layout(lengths: Tensor, tokens: int) -> tuple[Tensor, Tensor]:
+    causal = torch.ones(tokens, tokens, dtype=torch.bool, device=lengths.device).tril()
+    valid = torch.arange(tokens, device=lengths.device)[None] < lengths[:, None]
+    valid_query = valid[:, None, :, None]
+    mask = causal[None, None] & valid[:, None, None, :]
+    # Padded rows need one finite key to avoid softmax NaNs. Blocks zero them
+    # immediately afterwards, so this artificial key cannot affect real rows.
+    first_key = torch.zeros_like(mask)
+    first_key[..., 0] = True
+    return (mask & valid_query) | (first_key & ~valid_query), valid
+
+
+class CausalGQA(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        self.heads = config.heads
-        self.head_dim = config.d_model // config.heads
-        self.qkv = nn.Linear(config.d_model, config.d_model * 3, bias=False)
-        self.out = nn.Linear(config.d_model, config.d_model, bias=False)
-        self.rope = RoPE(self.head_dim, config.rope_base)
+        self.qh, self.kvh, self.head_dim = config.query_heads, config.kv_heads, config.head_dim
+        self.qkv = nn.Linear(config.d_model, (self.qh + 2 * self.kvh) * self.head_dim, bias=False)
+        self.out = nn.Linear(self.qh * self.head_dim, config.d_model, bias=False)
 
-    def forward(self, x: Tensor, positions: Tensor) -> Tensor:
-        batch, length, width = x.shape
-        q, k, v = self.qkv(x).chunk(3, dim=-1)
-        def heads(t: Tensor) -> Tensor:
-            return t.view(batch, length, self.heads, self.head_dim).transpose(1, 2)
-        q, k, v = heads(q), heads(k), heads(v)
-        q, k = self.rope(q, positions), self.rope(k, positions)
-        y = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=True)
-        return self.out(y.transpose(1, 2).reshape(batch, length, width))
+    def forward(self, x: Tensor, rope: tuple[Tensor, Tensor], attention_mask: Tensor) -> Tensor:
+        batch, tokens, _ = x.shape
+        shape = lambda value, heads: value.view(batch, tokens, heads, self.head_dim).transpose(1, 2)
+        q_raw, k_raw, v_raw = self.qkv(x).split((self.qh * self.head_dim, self.kvh * self.head_dim, self.kvh * self.head_dim), dim=-1)
+        q, k, v = _rope(shape(q_raw, self.qh), rope), _rope(shape(k_raw, self.kvh), rope), shape(v_raw, self.kvh)
+        repeat = self.qh // self.kvh
+        k, v = k.repeat_interleave(repeat, dim=1), v.repeat_interleave(repeat, dim=1)
+        value = F.scaled_dot_product_attention(q, k, v, attn_mask=attention_mask, dropout_p=0.0)
+        return self.out(value.transpose(1, 2).reshape(batch, tokens, self.qh * self.head_dim))
 
 
-class SwiGLU(nn.Module):
+class DecoderBlock(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        self.gate = nn.Linear(config.d_model, config.ffn_dim, bias=False)
-        self.up = nn.Linear(config.d_model, config.ffn_dim, bias=False)
+        self.n1, self.n2 = nn.RMSNorm(config.d_model, eps=config.eps), nn.RMSNorm(config.d_model, eps=config.eps)
+        self.attention = CausalGQA(config)
+        self.gate = nn.Linear(config.d_model, 2 * config.ffn_dim, bias=False)
         self.down = nn.Linear(config.ffn_dim, config.d_model, bias=False)
 
-    def forward(self, x: Tensor) -> Tensor:
-        return self.down(F.silu(self.gate(x)) * self.up(x))
+    def forward(self, x: Tensor, rope: tuple[Tensor, Tensor], attention_mask: Tensor, valid: Tensor) -> Tensor:
+        x = x + self.attention(self.n1(x), rope, attention_mask)
+        gate, value = self.gate(self.n2(x)).chunk(2, dim=-1)
+        x = x + self.down(F.silu(gate) * value)
+        return torch.where(valid[..., None], x, torch.zeros((), dtype=x.dtype, device=x.device))
 
 
-class Block(nn.Module):
+class Decoder(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        self.attn_norm = RMSNorm(config.d_model, config.eps)
-        self.attn = Attention(config)
-        self.ffn_norm = RMSNorm(config.d_model, config.eps)
-        self.ffn = SwiGLU(config)
+        self.context_tokens, self.rope_base = config.context_tokens, config.rope_base
+        self.blocks = nn.ModuleList(DecoderBlock(config) for _ in range(config.layers))
+        self.norm = nn.RMSNorm(config.d_model, eps=config.eps)
 
-    def forward(self, x: Tensor, positions: Tensor) -> Tensor:
-        x = x + self.attn(self.attn_norm(x), positions)
-        return x + self.ffn(self.ffn_norm(x))
-
-
-class EventBlockEncoder(nn.Module):
-    """Embed V4's pre-decoded compact event fields, never a 64-bit vocabulary."""
-
-    def __init__(self, dim: int) -> None:
-        super().__init__()
-        self.micro_kind = nn.Embedding(5, dim, padding_idx=0)
-        self.micro_actor = nn.Embedding(5, dim, padding_idx=0)
-        self.micro_tile = nn.Embedding(39, dim, padding_idx=0)
-        self.micro_flag = nn.Embedding(8, dim, padding_idx=0)
-        self.micro_position = nn.Embedding(4, dim)
-        self.meld_value = nn.Embedding(40, dim, padding_idx=0)
-        self.meld_position = nn.Embedding(8, dim)
-        self.turn_norm = RMSNorm(dim, 1e-6)
-        self.meld_norm = RMSNorm(dim, 1e-6)
-
-    def forward(self, kinds: Tensor, turn: Tensor, meld: Tensor) -> Tensor:
-        if kinds.ndim != 2 or turn.shape != (*kinds.shape, 4, 4) or meld.shape != (*kinds.shape, 8):
-            raise ValueError("V4 event fields have incompatible shapes")
-        turn = turn.long()
-        micro = (
-            self.micro_kind(turn[..., 0])
-            + self.micro_actor(turn[..., 1])
-            + self.micro_tile(turn[..., 2])
-            + self.micro_flag(turn[..., 3])
-            + self.micro_position(torch.arange(4, device=kinds.device)).view(1, 1, 4, -1)
-        )
-        active = turn[..., 0].ne(0).unsqueeze(-1)
-        turn_embedding = self.turn_norm((micro * active).sum(-2) / active.sum(-2).clamp_min(1))
-        meld = meld.long()
-        meld_embedding = self.meld_value(meld) + self.meld_position(torch.arange(8, device=kinds.device)).view(1, 1, 8, -1)
-        meld_embedding = self.meld_norm(meld_embedding.sum(-2))
-        return torch.where(kinds.eq(1).unsqueeze(-1), turn_embedding, torch.where(kinds.eq(2).unsqueeze(-1), meld_embedding, torch.zeros_like(turn_embedding)))
-
-
-class BoardStateEncoder(nn.Module):
-    """Encode the twelve fixed V4 board groups from their raw u8 fields."""
-
-    def __init__(self, dim: int) -> None:
-        super().__init__()
-        self.value = nn.Embedding(64, dim, padding_idx=0)
-        self.field = nn.Embedding(BOARD_FIELDS, dim)
-        self.group = nn.Embedding(3, dim)
-        self.norm = RMSNorm(dim, 1e-6)
-
-    def forward(self, board: Tensor) -> Tensor:
-        if board.ndim != 3 or board.shape[1:] != (BOARD_TOKENS, BOARD_FIELDS):
-            raise ValueError(f"board_state must be [batch, {BOARD_TOKENS}, {BOARD_FIELDS}]")
-        board = board.long()
-        values = self.value(board)
-        fields = self.field(torch.arange(BOARD_FIELDS, device=board.device)).view(1, 1, BOARD_FIELDS, -1)
-        active = board.ne(0).unsqueeze(-1)
-        pooled = (values + fields) * active
-        pooled = pooled.sum(-2) / active.sum(-2).clamp_min(1)
-        groups = self.group((torch.arange(BOARD_TOKENS, device=board.device) % 3)).view(1, BOARD_TOKENS, -1)
-        return self.norm(pooled + groups)
+    def forward(self, x: Tensor, lengths: Tensor) -> Tensor:
+        tokens = x.shape[1]
+        if tokens > self.context_tokens:
+            raise ValueError(f"context overflow: {tokens} > {self.context_tokens}")
+        rope = _rope_values(tokens, x.shape[-1] // self.blocks[0].attention.qh, x.device, x.dtype, self.rope_base)
+        attention_mask, valid = _attention_layout(lengths, tokens)
+        for block in self.blocks:
+            x = block(x, rope, attention_mask, valid)
+        return self.norm(x)
 
 
 class KyokuTransformerActorCritic(nn.Module):
-    """Masked 241-action actor-critic over a single decision sequence."""
+    """Public V5 actor/value model with a learned query and masked 241-head."""
 
     def __init__(self, config: ModelConfig | None = None) -> None:
         super().__init__()
         self.config = config or ModelConfig.preset("mid")
-        self.event_embedding = EventBlockEncoder(self.config.d_embed)
-        self.board_embedding = BoardStateEncoder(self.config.d_embed)
-        self.input_proj: nn.Module = (
-            nn.Identity() if self.config.d_embed == self.config.d_model
-            else nn.Linear(self.config.d_embed, self.config.d_model, bias=False)
-        )
-        self.decision_token = nn.Parameter(torch.empty(self.config.d_model))
-        self.blocks = nn.ModuleList(Block(self.config) for _ in range(self.config.layers))
-        self.norm = RMSNorm(self.config.d_model, self.config.eps)
+        self.token_embedding = FactorEmbedding(TOKEN_CARDINALITIES, self.config.d_model, NUMERIC_WIDTH)
+        self.query = nn.Parameter(torch.empty(self.config.d_model))
+        self.backbone = Decoder(self.config)
         self.policy_head = nn.Linear(self.config.d_model, NUM_ACTIONS)
         self.value_head = nn.Linear(self.config.d_model, 1)
-        nn.init.normal_(self.decision_token, std=0.02)
+        nn.init.normal_(self.query, std=self.config.d_model ** -0.5)
 
-    def forward(
-        self,
-        block_kinds: Tensor,
-        turn_fields: Tensor,
-        meld_fields: Tensor,
-        board_state: Tensor,
-        legal_mask: Tensor | None = None,
-        block_lengths: Tensor | None = None,
-    ) -> dict[str, Tensor]:
-        lengths = self._metadata(block_kinds, turn_fields, meld_fields, board_state, block_lengths)
-        events = self.input_proj(self.event_embedding(block_kinds, turn_fields, meld_fields))
-        board = self.input_proj(self.board_embedding(board_state))
-        batch, length, width = events.shape
-        extended = events.new_zeros((batch, length + BOARD_TOKENS + 1, width))
-        # ``events`` is right-padded already, so the full assignment is valid
-        # for every row.  Keep the per-row board and decision positions on the
-        # device: converting ``lengths[index]`` to Python would synchronize
-        # once per decision in a rollout inference batch.
-        extended[:, :length] = events
-        row = torch.arange(batch, device=events.device)
-        board_positions = lengths.unsqueeze(1) + torch.arange(BOARD_TOKENS, device=events.device)
-        extended[row.unsqueeze(1), board_positions] = board
-        decision_index = lengths + BOARD_TOKENS
-        extended[row, decision_index] = self.decision_token
-        positions = torch.arange(extended.shape[1], device=events.device).expand(batch, -1)
-        for block in self.blocks:
-            extended = block(extended, positions)
-        hidden = self.norm(extended[row, decision_index])
-        raw = self.policy_head(hidden)
+    def forward(self, token_factors: Tensor, token_numeric: Tensor, legal_mask: Tensor | None = None, token_lengths: Tensor | None = None) -> dict[str, Tensor]:
+        if token_factors.shape[1] + 1 > self.config.context_tokens:
+            raise ValueError(f"context overflow: {token_factors.shape[1] + 1} > {self.config.context_tokens}")
+        if token_lengths is None:
+            token_lengths = token_factors.ne(0).any(-1).long().sum(-1)
+        token_lengths = token_lengths.to(device=token_factors.device, dtype=torch.long)
+        if token_lengths.shape != (token_factors.shape[0],):
+            raise ValueError("token_lengths must have one entry per batch row")
+        if torch.any(token_lengths < 0) or torch.any(token_lengths > token_factors.shape[1]):
+            raise ValueError("token_lengths exceed supplied token rows")
+        tokens = self.token_embedding(token_factors, token_numeric)
+        batch, padded, width = tokens.shape
+        sequence = tokens.new_zeros((batch, padded + 1, width))
+        sequence[:, :padded] = tokens
+        rows = torch.arange(batch, device=tokens.device)
+        sequence[rows, token_lengths] = self.query
+        hidden = self.backbone(sequence, token_lengths + 1)[rows, token_lengths]
+        # Autocast makes the preceding matrix multiplies BF16, but policy
+        # probabilities and value estimates feed PPO's numerically sensitive
+        # ratio/loss path.  Promote them before leaving the model, as in
+        # exp/training's ActorCritic.
+        raw = self.policy_head(hidden).float()
         if legal_mask is None:
             logits = raw
         else:
             if legal_mask.shape != (batch, NUM_ACTIONS):
                 raise ValueError("legal_mask must be [batch, 241]")
-            legal_mask = legal_mask.to(device=raw.device, dtype=torch.bool)
-            logits = raw.masked_fill(~legal_mask, float("-inf"))
-        return {"raw_policy_logits": raw, "policy_logits": logits, "value": self.value_head(hidden).squeeze(-1)}
-
-    @staticmethod
-    def _metadata(block_kinds: Tensor, turn: Tensor, meld: Tensor, board: Tensor, lengths: Tensor | None) -> Tensor:
-        if block_kinds.ndim != 2 or turn.shape != (*block_kinds.shape, 4, 4) or meld.shape != (*block_kinds.shape, 8):
-            raise ValueError("V4 event fields have incompatible shapes")
-        if board.shape != (block_kinds.shape[0], BOARD_TOKENS, BOARD_FIELDS):
-            raise ValueError("V4 board state has incompatible batch shape")
-        if lengths is None:
-            lengths = block_kinds.ne(0).long().sum(-1)
-        lengths = lengths.to(device=block_kinds.device, dtype=torch.long)
-        if lengths.shape != (block_kinds.shape[0],):
-            raise ValueError("block_lengths must have one entry per batch row")
-        return lengths
+            logits = raw.masked_fill(~legal_mask.to(device=raw.device, dtype=torch.bool), float("-inf"))
+        return {
+            "raw_policy_logits": raw,
+            "policy_logits": logits,
+            "value": self.value_head(hidden).squeeze(-1).float(),
+        }

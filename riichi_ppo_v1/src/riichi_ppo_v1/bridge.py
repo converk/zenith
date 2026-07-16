@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 import json
 from typing import Any
 
@@ -12,6 +13,7 @@ from .profiling import StageProfiler
 
 NUM_PLAYERS = 4
 NUM_ACTIONS = 241
+_DECISION_ACTION_TYPES = frozenset({"dahai", "reach", "ankan", "kakan", "ryukyoku"})
 
 
 @dataclass(frozen=True)
@@ -42,24 +44,45 @@ def tile_id_to_mjai(tile_id: int | None) -> str | None:
     return honors[(tile - 108) // 4]
 
 
-def action_jsons(observation: Any) -> list[str]:
-    """Create exact action templates, including the physical tsumogiri distinction."""
+@lru_cache(maxsize=1024)
+def _normalized_action_json(raw_action: str, tsumogiri: bool) -> tuple[str, str]:
+    """Return the canonical MJAI template and its type for one action shape.
+
+    RiichiEnv repeatedly exposes the same small action vocabulary across tables.
+    Caching this pure JSON normalization avoids both a repeated parse/dump and a
+    second parse later when constructing ``decision_flags``.
+    """
+    value = json.loads(raw_action)
+    action_type = str(value.get("type", ""))
+    if action_type == "dahai":
+        # Action.to_mjai intentionally does not carry this environment-only bit.
+        value["tsumogiri"] = bool(tsumogiri)
+    return json.dumps(value, separators=(",", ":"), sort_keys=True), action_type
+
+
+def _action_jsons_and_decision_flag(observation: Any) -> tuple[list[str], int]:
+    """Create exact templates and the snapshot's action-window flag together."""
     drawn = getattr(observation, "drawn_tile", None)
     result: list[str] = []
+    has_decision_action = False
     for action in observation.legal_actions():
-        value = json.loads(action.to_mjai())
-        if value.get("type") == "dahai":
-            # Action.to_mjai intentionally does not carry this environment-only bit.
-            value["tsumogiri"] = action.tile is not None and drawn is not None and int(action.tile) == int(drawn)
-        result.append(json.dumps(value, separators=(",", ":"), sort_keys=True))
-    return result
+        tsumogiri = action.tile is not None and drawn is not None and int(action.tile) == int(drawn)
+        action_json, action_type = _normalized_action_json(action.to_mjai(), tsumogiri)
+        result.append(action_json)
+        has_decision_action |= action_type in _DECISION_ACTION_TYPES
+    return result, int(has_decision_action)
 
 
-def snapshot_json(observation: Any) -> str:
+def action_jsons(observation: Any) -> list[str]:
+    """Create exact action templates, including the physical tsumogiri distinction."""
+    return _action_jsons_and_decision_flag(observation)[0]
+
+
+def snapshot_json(observation: Any, decision_flags: int = 0) -> str:
     pid = int(observation.player_id)
     hands = getattr(observation, "hands", None)
     if hands is None:
-        raise RuntimeError("Observation must expose all hands for the V4 state bridge")
+        raise RuntimeError("Observation must expose all hands for the V5 state bridge")
     data = {
         "player_id": pid,
         "oya": int(observation.oya),
@@ -72,8 +95,7 @@ def snapshot_json(observation: Any) -> str:
         "hand": [tile_id_to_mjai(x) for x in hands[pid]],
         "drawn_tile": tile_id_to_mjai(getattr(observation, "drawn_tile", None)),
         "riichi_declared": [bool(x) for x in observation.riichi_declared],
-        "last_discard": tile_id_to_mjai(getattr(observation, "last_discard", None)),
-        "last_tedashis": [tile_id_to_mjai(x) for x in observation.last_tedashis],
+        "decision_flags": int(decision_flags),
     }
     return json.dumps(data, separators=(",", ":"))
 
@@ -102,35 +124,37 @@ class BatchedStateBridge:
         with self.profiler.stage("state/boundary_array_convert"):
             return np.asarray(end_kyoku, dtype=np.bool_), np.asarray(end_game, dtype=np.bool_)
 
-    def prepare(self, decisions: list[Decision]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def prepare(self, decisions: list[Decision]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         if not decisions:
             raise ValueError("cannot prepare an empty decision batch")
         batch_indices = [decision.batch_index for decision in decisions]
         with self.profiler.stage("state/legal_action_json"):
-            legal_actions = [action_jsons(decision.observation) for decision in decisions]
+            action_rows = [_action_jsons_and_decision_flag(decision.observation) for decision in decisions]
+            legal_actions = [actions for actions, _flag in action_rows]
         with self.profiler.stage("state/snapshot_json"):
-            snapshots = [snapshot_json(decision.observation) for decision in decisions]
+            snapshots = [
+                snapshot_json(decision.observation, decision_flag)
+                for decision, (_actions, decision_flag) in zip(decisions, action_rows, strict=True)
+            ]
         with self.profiler.stage("state/rust_prepare_decisions"):
-            kinds, turn, meld, board, block_lengths, mask, history_generations = self.state_machine.prepare_decisions(batch_indices, legal_actions, snapshots)
+            factors, numeric, token_lengths, mask, history_generations = self.state_machine.prepare_decisions(batch_indices, legal_actions, snapshots)
         with self.profiler.stage("state/numpy_array_convert"):
-            kinds_a = np.asarray(kinds, dtype=np.uint8)
-            turn_a = np.asarray(turn, dtype=np.uint8)
-            meld_a = np.asarray(meld, dtype=np.uint8)
-            board_a = np.asarray(board, dtype=np.uint8)
-            block_lengths_a = np.asarray(block_lengths, dtype=np.int64)
+            factors_a = np.asarray(factors, dtype=np.uint8)
+            numeric_a = np.asarray(numeric, dtype=np.float32)
+            token_lengths_a = np.asarray(token_lengths, dtype=np.int64)
             mask_a = np.asarray(mask, dtype=np.bool_)
             history_generations_a = np.asarray(history_generations, dtype=np.int64)
-        if kinds_a.ndim != 2 or turn_a.shape != (*kinds_a.shape, 4, 4) or meld_a.shape != (*kinds_a.shape, 8):
-            raise RuntimeError("invalid V4 event-block shapes")
-        if board_a.shape != (len(decisions), 12, 160):
-            raise RuntimeError(f"invalid V4 board shape {board_a.shape}")
+        if factors_a.ndim != 3 or factors_a.shape[0] != len(decisions) or factors_a.shape[2] != 10:
+            raise RuntimeError(f"invalid V5 factor shape {factors_a.shape}")
+        if numeric_a.shape != (*factors_a.shape[:2], 8):
+            raise RuntimeError(f"invalid V5 numeric shape {numeric_a.shape}")
         if mask_a.shape != (len(decisions), NUM_ACTIONS) or not np.all(mask_a.any(axis=1)):
             raise RuntimeError("state machine returned an empty or malformed decision mask")
-        if block_lengths_a.shape != (len(decisions),) or history_generations_a.shape != (len(decisions),):
+        if token_lengths_a.shape != (len(decisions),) or history_generations_a.shape != (len(decisions),):
             raise RuntimeError("state machine returned malformed cache metadata")
-        if np.any(block_lengths_a < 0) or np.any(block_lengths_a > kinds_a.shape[1]):
-            raise RuntimeError("invalid V4 block length")
-        return kinds_a, turn_a, meld_a, board_a, block_lengths_a, mask_a, history_generations_a
+        if np.any(token_lengths_a < 0) or np.any(token_lengths_a > factors_a.shape[1]):
+            raise RuntimeError("invalid V5 token length")
+        return factors_a, numeric_a, token_lengths_a, mask_a, history_generations_a
 
     def decode(self, decisions: list[Decision], action_ids: list[int]) -> list[Any]:
         if len(decisions) != len(action_ids):

@@ -160,13 +160,7 @@ fn decision_snapshot() -> DecisionSnapshot {
         ],
         drawn_tile: Some("5mr".to_owned()),
         riichi_declared: [false, true, false, true],
-        last_discard: Some("9p".to_owned()),
-        last_tedashis: [
-            Some("3m".to_owned()),
-            None,
-            Some("5pr".to_owned()),
-            Some("C".to_owned()),
-        ],
+        decision_flags: 0,
     }
 }
 

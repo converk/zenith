@@ -41,11 +41,9 @@ class BatchedPipelineTest(unittest.TestCase):
                 if observation.legal_actions():
                     decisions.append(Decision(env_index, seat, observation))
         self.assertGreaterEqual(len(decisions), 2)
-        kinds, turn, meld, board, lengths, masks, _history_generations = bridge.prepare(decisions)
-        self.assertEqual(kinds.shape[0], len(decisions))
-        self.assertEqual(turn.shape, (*kinds.shape, 4, 4))
-        self.assertEqual(meld.shape, (*kinds.shape, 8))
-        self.assertEqual(board.shape, (len(decisions), 12, 160))
+        factors, numeric, lengths, masks, _history_generations = bridge.prepare(decisions)
+        self.assertEqual(factors.shape, (len(decisions), factors.shape[1], 10))
+        self.assertEqual(numeric.shape, (*factors.shape[:2], 8))
         self.assertEqual(masks.shape, (len(decisions), 241))
         self.assertTrue(np.all(masks.any(axis=1)))
 

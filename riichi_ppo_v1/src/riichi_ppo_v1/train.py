@@ -199,7 +199,7 @@ def run(config: dict[str, Any]) -> None:
             update_forward_s = float(metrics.get("timing/update/model_forward/total_s", 0.0))
             inference_rows = float(actor_profile.get("inference/full_forward_rows_mean", 0.0))
             inference_dispatch_rows = float(actor_profile.get("inference/dispatch_rows_mean", 0.0))
-            print(f"iteration={iteration + 1} transitions={len(transitions)} model_decisions={model_decisions:.0f} recorded_decisions={recorded_decisions:.0f} kyokus={rollout_kyokus:.0f} reward={rollout_reward:.4f} worker_transitions_per_s={rollout_tps:.2f} algorithm_wall_s={algorithm_wall_s:.3f} sps={recorded_decisions / max(algorithm_wall_s, 1e-9):.2f} model_forward_sps={model_decisions / max(algorithm_wall_s, 1e-9):.2f} rollout_wall_s={rollout_wall_s:.3f} begin_rollout_s={begin_rollout_s:.3f} profile_summary_s={profile_summary_s:.3f} transition_assembly_s={transition_assembly_s:.3f} env_step_s={env_step_s:.3f} inference_rows_per_forward={inference_rows:.2f} inference_rows_per_dispatch={inference_dispatch_rows:.2f} update_wall_s={update_wall_s:.3f} update_forward_s={update_forward_s:.3f} epochs={metrics['update/epochs_completed']:.0f}/{metrics['update/configured_epochs']:.0f} minibatches={metrics['update/executed_minibatches']:.0f}/{metrics['update/planned_minibatches']:.0f} early_stop={bool(metrics['update/early_stop'])} executed_samples={metrics['update/executed_transition_samples']:.0f} event_blocks_mean={metrics['update/executed_transition_event_blocks_mean']:.2f} input_tokens_mean={metrics['update/executed_transition_input_tokens_mean']:.2f} " + " ".join(f"{key}={value:.5f}" for key, value in metrics.items() if key in {"loss", "policy_loss", "value_loss", "entropy", "approx_kl", "clipfrac", "grad_norm"}), flush=True)
+            print(f"iteration={iteration + 1} transitions={len(transitions)} model_decisions={model_decisions:.0f} recorded_decisions={recorded_decisions:.0f} kyokus={rollout_kyokus:.0f} reward={rollout_reward:.4f} worker_transitions_per_s={rollout_tps:.2f} algorithm_wall_s={algorithm_wall_s:.3f} sps={recorded_decisions / max(algorithm_wall_s, 1e-9):.2f} model_forward_sps={model_decisions / max(algorithm_wall_s, 1e-9):.2f} rollout_wall_s={rollout_wall_s:.3f} begin_rollout_s={begin_rollout_s:.3f} profile_summary_s={profile_summary_s:.3f} transition_assembly_s={transition_assembly_s:.3f} env_step_s={env_step_s:.3f} inference_rows_per_forward={inference_rows:.2f} inference_rows_per_dispatch={inference_dispatch_rows:.2f} update_wall_s={update_wall_s:.3f} update_forward_s={update_forward_s:.3f} epochs={metrics['update/epochs_completed']:.0f}/{metrics['update/configured_epochs']:.0f} minibatches={metrics['update/executed_minibatches']:.0f}/{metrics['update/planned_minibatches']:.0f} early_stop={bool(metrics['update/early_stop'])} executed_samples={metrics['update/executed_transition_samples']:.0f} tokens_mean={metrics['update/executed_transition_tokens_mean']:.2f} input_tokens_mean={metrics['update/executed_transition_input_tokens_mean']:.2f} " + " ".join(f"{key}={value:.5f}" for key, value in metrics.items() if key in {"loss", "policy_loss", "value_loss", "entropy", "approx_kl", "clipfrac", "grad_norm"}), flush=True)
             print_timing_table("rollout worker", worker_timing)
             print_worker_details(results)
             print_timing_table("rollout inference actor", actor_timing)
@@ -245,6 +245,7 @@ def _parser(smoke: bool = False) -> argparse.ArgumentParser:
         parser.add_argument("--kyokus-per-worker", type=int, default=None)
         parser.add_argument("--update-epochs", type=int, default=None)
         parser.add_argument("--minibatch-size", type=int, default=None)
+        parser.add_argument("--inference-batch-wait-ms", type=float, default=None)
         parser.add_argument("--target-kl", type=float, default=None)
         parser.add_argument("--profile-cuda-sync", action=argparse.BooleanOptionalAction, default=None)
     if smoke:
@@ -259,6 +260,7 @@ def apply_cli_overrides(config: dict[str, Any], args: argparse.Namespace) -> Non
         "kyokus_per_worker": getattr(args, "kyokus_per_worker", None),
         "update_epochs": getattr(args, "update_epochs", None),
         "minibatch_size": getattr(args, "minibatch_size", None),
+        "inference_batch_wait_ms": getattr(args, "inference_batch_wait_ms", None),
         "target_kl": getattr(args, "target_kl", None),
         "profile_cuda_sync": getattr(args, "profile_cuda_sync", None),
     }

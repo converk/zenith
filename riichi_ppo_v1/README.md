@@ -1,8 +1,9 @@
 # RiichiEnv PPO v1
 
 独立的四麻 PPO 训练器。模型输入是 Rust `MjaiKyokuStateMachineManager` 生成的
-`Kyoku State Packet V4`，动作空间是 `KyokuActionSpace V2` 的 241 个动作。V4 使用可缓存的
-压缩公开事件块和 12 个临时结构化局面 token；详见 `KyokuEventTupleProtocol.md`。
+`Kyoku State Packet V5`，动作空间是 `KyokuActionSpace V2` 的 241 个动作。V5 使用公开
+MJAI 语义事件序列、当前局面 token 和 learned query；详见 `KyokuEventTupleProtocol.md`。
+策略和 value 共享完全相同的公开输入，不使用训练期特权信息。
 
 从仓库根目录先激活训练环境，并从源码安装两个扩展。`riichi` 使用仓库提供的安装脚本，脚本会把
 PyO3/Maturin 明确绑定到当前 Conda 的 Python，避免扩展被装入系统 Python 或其他环境：
@@ -31,7 +32,7 @@ LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" cargo t
 训练：
 
 ```bash
-riichi-ppo-train --config configs/default.yaml
+riichi-ppo-train
 ```
 
 最小端到端检查（一个 Ray worker、一个环境、一个小局和一次更新）：
@@ -52,9 +53,14 @@ transition 并参与 PPO update。半庄结束后才会为该桌重新抽取两�
 observation 增量、构造状态机输入，并在释放 GIL 后并行推进环境。默认配置为 4 个 Ray
 worker、每 worker 48 张桌、每 worker 4 条原生环境线程。唯一的 GPU PPO actor 同时持有
 模型和 optimizer：它在最多 5ms 内聚合各 worker 的同步请求，并以跨 worker 的 padded
-full-forward 执行 rollout inference 与 PPO update，因此没有第二份 GPU 模型或每轮权重同步；
+full-forward 执行 rollout inference。PPO update 则在每个 epoch 随机化样本、按 token 长度分桶，
+对每个相近长度 minibatch 独立 padding/H2D，因此没有第二份 GPU 模型或每轮权重同步；
 worker 本身不创建 CUDA context。
 可通过 `envs_per_worker` 与 `env_step_threads` 调整。
+
+在 CUDA 支持 BF16 时，rollout inference 和 PPO update 的模型前向均使用 BF16 autocast；
+policy/value 输出、PPO loss、梯度、模型权重与 AdamW 状态保持 FP32。CPU 或不支持 BF16 的
+CUDA 设备则全程使用 FP32，不会回退到 FP16。
 
 ## 性能监控
 
@@ -67,7 +73,7 @@ mean/max/min 与调用数；inference actor 的时间按 iteration 汇总一次�
 - rollout：observation/合法动作扫描、事件提取、Rust 事件更新、MJAI JSON、snapshot、
   Rust 输入构造、GPU inference RPC、queue wait、跨 worker host collation、H2D、
   full-forward、低频 CUDA event、采样、MJAI 回转、原生批量 step、GAE 和 reset；
-- update：padding/collate/H2D、优势归一化、索引、前向、loss、反向、裁剪、optimizer；
+- update：长度分桶、每 minibatch padding/collate/H2D、优势归一化、前向、loss、反向、裁剪、optimizer；
 - GPU：利用率、显存控制器利用率、显存用量、PyTorch allocated/reserved/peak、功耗、温度、SM 时钟。
 
 `iteration/algorithm_wall_s` 从本轮 rollout 准备开始，到 PPO actor 完成 update 为止；它包含
@@ -85,7 +91,7 @@ rollout、profile RPC、主进程 transition 拼接和传输、PPO update，但�
 
 ```bash
 CUDA_DEVICE=3 conda run -n Mahjong-AI riichi-ppo-train \
-  --config riichi_ppo_v1/configs/default.yaml --device cuda --iterations 1 \
+  --device cuda --iterations 1 \
   --num-workers 4 --envs-per-worker 48 --kyokus-per-worker 1 \
   --update-epochs 1 --minibatch-size 256 --target-kl 0 \
   --checkpoint-dir checkpoints/riichi_ppo_v1_benchmark_4w48e

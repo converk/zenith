@@ -10,11 +10,9 @@ import numpy as np
 
 @dataclass
 class Transition:
-    event_kinds: np.ndarray
-    turn_fields: np.ndarray
-    meld_fields: np.ndarray
-    board_state: np.ndarray
-    block_length: int
+    token_factors: np.ndarray
+    token_numeric: np.ndarray
+    token_length: int
     legal_mask: np.ndarray
     action: int
     logprob: float
@@ -39,8 +37,10 @@ def finish_kyoku(
         next_value = 0.0 if current.done else transitions[index + 1].value
         delta = current.reward + gamma * next_value - current.value
         gae = delta + gamma * gae_lambda * (0.0 if current.done else gae)
-        current.advantage = float(gae)
-        current.return_ = float(gae + current.value)
+        # Match exp/training's target buffers: retain each recursive GAE value
+        # as FP32 before it becomes the next step's trace or a PPO minibatch.
+        current.advantage = float(np.float32(gae))
+        current.return_ = float(np.float32(current.advantage + current.value))
     return transitions
 
 

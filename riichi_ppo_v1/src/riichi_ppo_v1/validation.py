@@ -1,4 +1,4 @@
-"""Reusable validation helpers for the 4-player V4/241 integration boundary."""
+"""Reusable validation helpers for the 4-player V5/241 integration boundary."""
 
 from __future__ import annotations
 
@@ -92,13 +92,13 @@ def fixture_snapshot() -> str:
         "player_id": 0, "oya": 0, "round_wind": 0, "kyoku_index": 0, "honba": 0,
         "riichi_sticks": 0, "scores": [25000] * 4, "dora_indicators": ["2p"],
         "hand": ["1m"] * 13, "drawn_tile": None, "riichi_declared": [False] * 4,
-        "last_discard": None, "last_tedashis": [None] * 4,
+        "decision_flags": 0,
     }, separators=(",", ":"))
 
 
 def assert_full_action_space(manager: Any) -> None:
     templates = all_action_templates()
-    _kinds, _turn, _meld, _board, _lengths, mask, _history_generations = manager.prepare_decisions(
+    _factors, _numeric, _lengths, mask, _history_generations = manager.prepare_decisions(
         [0], [[json.dumps(template, separators=(",", ":")) for template in templates]], [fixture_snapshot()]
     )
     mask = np.asarray(mask, dtype=bool)
@@ -113,7 +113,7 @@ def assert_full_action_space(manager: Any) -> None:
 def assert_observation_roundtrip(bridge: BatchedStateBridge, env_index: int, seat_id: int, observation: Any) -> set[int]:
     decision = Decision(env_index, seat_id, observation)
     expected = {canonical(value) for value in action_jsons(observation)}
-    _kinds, _turn, _meld, _board, _lengths, masks, _history_generations = bridge.prepare([decision])
+    _factors, _numeric, _lengths, masks, _history_generations = bridge.prepare([decision])
     mask = masks[0]
     ids = set(np.flatnonzero(mask).tolist())
     if not ids:

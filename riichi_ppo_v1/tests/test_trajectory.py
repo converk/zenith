@@ -1,11 +1,11 @@
 import numpy as np
 
-from riichi_ppo_v1.learner import transition_length_metrics
+from riichi_ppo_v1.learner import length_bucketed_minibatches, transition_length_metrics
 from riichi_ppo_v1.trajectory import Transition, finish_kyoku
 
 
 def transition(value: float) -> Transition:
-    return Transition(np.zeros(1, dtype=np.uint8), np.zeros((1, 4, 4), dtype=np.uint8), np.zeros((1, 8), dtype=np.uint8), np.zeros((12, 160), dtype=np.uint8), 1, np.ones(241, dtype=bool), 0, 0.0, value)
+    return Transition(np.zeros((1, 10), dtype=np.uint8), np.zeros((1, 8), dtype=np.float32), 1, np.ones(241, dtype=bool), 0, 0.0, value)
 
 
 def test_gae_does_not_cross_kyoku_boundaries() -> None:
@@ -19,12 +19,30 @@ def test_gae_does_not_cross_kyoku_boundaries() -> None:
     assert second[0].return_ < 0
 
 
-def test_transition_length_metrics_report_v4_blocks_and_board_tokens() -> None:
-    first = Transition(np.zeros(10, dtype=np.uint8), np.zeros((10, 4, 4), dtype=np.uint8), np.zeros((10, 8), dtype=np.uint8), np.zeros((12, 160), dtype=np.uint8), 10, np.ones(241, dtype=bool), 0, 0.0, 0.0)
-    second = Transition(np.zeros(6, dtype=np.uint8), np.zeros((6, 4, 4), dtype=np.uint8), np.zeros((6, 8), dtype=np.uint8), np.zeros((12, 160), dtype=np.uint8), 6, np.ones(241, dtype=bool), 0, 0.0, 0.0)
+def test_transition_length_metrics_report_v5_tokens_and_query() -> None:
+    first = Transition(np.zeros((10, 10), dtype=np.uint8), np.zeros((10, 8), dtype=np.float32), 10, np.ones(241, dtype=bool), 0, 0.0, 0.0)
+    second = Transition(np.zeros((6, 10), dtype=np.uint8), np.zeros((6, 8), dtype=np.float32), 6, np.ones(241, dtype=bool), 0, 0.0, 0.0)
 
     metrics = transition_length_metrics([first, second])
 
-    assert metrics["update/buffer_transition_event_blocks_mean"] == 8.0
-    assert metrics["update/buffer_transition_input_tokens_mean"] == 20.0
-    assert metrics["update/buffer_transition_board_tokens_mean"] == 12.0
+    assert metrics["update/buffer_transition_tokens_mean"] == 8.0
+    assert metrics["update/buffer_transition_input_tokens_mean"] == 9.0
+    assert metrics["update/buffer_transition_input_tokens_max"] == 11.0
+    assert metrics["update/buffer_effective_input_tokens"] == 18.0
+    assert metrics["update/buffer_global_padded_input_tokens"] == 22.0
+    assert metrics["update/buffer_global_padding_input_tokens"] == 4.0
+    assert metrics["update/buffer_global_padding_fraction_of_padded_input_tokens"] == 4.0 / 22.0
+
+
+def test_length_bucketing_covers_all_rows_with_homogeneous_batches() -> None:
+    transitions = [
+        Transition(np.zeros((length, 10), dtype=np.uint8), np.zeros((length, 8), dtype=np.float32),
+                   length, np.ones(241, dtype=bool), 0, 0.0, 0.0)
+        for length in (1, 1, 1, 1, 9, 9, 9, 9)
+    ]
+    np.random.seed(7)
+    batches = length_bucketed_minibatches(transitions, minibatch_size=2)
+
+    assert sorted(index for batch in batches for index in batch) == list(range(len(transitions)))
+    assert all(len(batch) <= 2 for batch in batches)
+    assert all(len({transitions[int(index)].token_length for index in batch}) == 1 for batch in batches)

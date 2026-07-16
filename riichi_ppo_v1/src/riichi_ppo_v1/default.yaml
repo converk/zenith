@@ -1,17 +1,25 @@
 seed: 1
 device: cuda
 model_size: mid
-num_workers: 4
-envs_per_worker: 32
+token_schema: 5
+model_schema: 5
+context_tokens: 4096
+num_workers: 12
+envs_per_worker: 96
 env_step_threads: 4
 profile_enabled: true
 profile_cuda_sync: false
 profile_cuda_event_interval: 100
 gpu_monitor: true
 gpu_sample_interval_s: 0.25
+# CUDA forwards (rollout and PPO update) use BF16 autocast when supported;
+# loss, gradients, weights and AdamW state remain FP32.  Other settings use FP32.
 inference_dtype: bf16
 inference_max_batch_size: 512
 inference_batch_wait_ms: 5.0
+# Flush immediately once enough rows fill an inference forward.  Zero follows
+# inference_max_batch_size, avoiding the otherwise unnecessary timeout wait.
+inference_batch_target_rows: 0
 # 0 uses num_workers.  A worker sends at most one synchronous request at once.
 inference_batch_target_workers: 0
 kyokus_per_worker: 16

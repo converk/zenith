@@ -80,18 +80,16 @@ if ray is not None:
             self, decisions: list[Decision], namespace: str, greedy: bool, record: bool,
         ) -> tuple[list[Any], list[Transition | None]]:
             with self.profiler.stage("rollout/model_state_prepare"):
-                kinds, turn, meld, board, block_lengths, legal, _history_generations = self.bridge.prepare(decisions)
+                token_factors, token_numeric, token_lengths, legal, _history_generations = self.bridge.prepare(decisions)
             with self.profiler.stage("inference/rpc_wait"):
                 result = ray.get(self.inference.infer.remote(
                     worker_id=self.worker_id,
                     namespace=namespace,
                     batch_indices=[decision.batch_index for decision in decisions],
-                    block_kinds=kinds,
-                    turn_fields=turn,
-                    meld_fields=meld,
-                    board_state=board,
+                    token_factors=token_factors,
+                    token_numeric=token_numeric,
                     legal_mask=legal,
-                    block_lengths=block_lengths,
+                    token_lengths=token_lengths,
                     greedy=greedy,
                 ))
             action_ids = [int(value) for value in result["action_ids"]]
@@ -108,8 +106,8 @@ if ray is not None:
                         if not should_record_decision(decision, self.sampled_seats):
                             continue
                         transitions[row] = Transition(
-                            kinds[row, : block_lengths[row]].copy(), turn[row, : block_lengths[row]].copy(),
-                            meld[row, : block_lengths[row]].copy(), board[row].copy(), int(block_lengths[row]),
+                            token_factors[row, : token_lengths[row]].copy(),
+                            token_numeric[row, : token_lengths[row]].copy(), int(token_lengths[row]),
                             legal[row].copy(), action_id, logprobs[row], values[row],
                         )
                         self.recorded_decisions += 1

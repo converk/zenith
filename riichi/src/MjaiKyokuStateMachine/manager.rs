@@ -23,9 +23,6 @@ impl MjaiKyokuStateMachineManager {
     #[getter]
     fn num_players(&self) -> usize { NUM_PLAYERS }
 
-    #[getter]
-    fn board_tokens(&self) -> usize { BOARD_TOKENS }
-
     /// Apply one event delta per player for every selected table.
     ///
     /// `events_by_env_player` has shape `[B][4][events]`.  A player may have
@@ -98,8 +95,9 @@ impl MjaiKyokuStateMachineManager {
         Ok((end_kyoku.into_pyarray(py), end_game.into_pyarray(py)).into_pyobject(py)?)
     }
 
-    /// Atomically records legal actions and materializes V4 rows.  Blocks are
-    /// pre-decoded u8 fields; the twelve board rows are temporary state.
+    /// Atomically records legal actions and materializes V5 semantic tokens.
+    /// The append-only public event prefix and temporary current-state suffix
+    /// are concatenated here; the learned query token belongs to the model.
     fn prepare_decisions<'py>(
         &mut self,
         py: Python<'py>,
@@ -127,57 +125,33 @@ impl MjaiKyokuStateMachineManager {
                 .map_err(|error| PyValueError::new_err(format!("invalid snapshot JSON: {error}")))?;
             let table = &mut self.tables[env_index];
             table.set_legal_action_jsons(player_index, actions).map_err(PyValueError::new_err)?;
-            let player = &table.players[player_index as usize];
-            let board = player.board_tokens(&snapshot).map_err(PyValueError::new_err)?;
-            snapshots.push((row, batch_index, board));
+            let tokens = table.players[player_index as usize].tokens(&snapshot).map_err(PyValueError::new_err)?;
+            snapshots.push((row, batch_index, tokens));
         }
 
-        let max_length = snapshots.iter().map(|(_, batch_index, _)| {
-            let table = &self.tables[*batch_index / NUM_PLAYERS];
-            table.players[*batch_index % NUM_PLAYERS].blocks.len()
-        }).max().unwrap_or(0);
-        let mut block_kinds = vec![BLOCK_PAD; batch_size * max_length];
-        let mut turn_fields = vec![0u8; batch_size * max_length * 4 * 4];
-        let mut meld_fields = vec![0u8; batch_size * max_length * 8];
-        let mut board_fields = vec![0u8; batch_size * BOARD_TOKENS * BOARD_FIELDS];
-        let mut block_lengths = vec![0i64; batch_size];
+        let max_length = snapshots.iter().map(|(_, _, tokens)| tokens.len()).max().unwrap_or(0);
+        let mut factors = vec![0u8; batch_size * max_length * TOKEN_WIDTH];
+        let mut numeric = vec![0f32; batch_size * max_length * NUMERIC_WIDTH];
+        let mut token_lengths = vec![0i64; batch_size];
         let mut history_generations = vec![0i64; batch_size];
         let mut masks = vec![false; batch_size * NUM_ACTIONS];
-        for (row, batch_index, board) in snapshots {
+        for (row, batch_index, tokens) in snapshots {
             let table = &self.tables[batch_index / NUM_PLAYERS];
-            let player = &table.players[batch_index % NUM_PLAYERS];
-            block_lengths[row] = player.blocks.len() as i64;
+            token_lengths[row] = tokens.len() as i64;
             history_generations[row] = table.history_generations[batch_index % NUM_PLAYERS] as i64;
-            for (block_index, block) in player.blocks.iter().enumerate() {
-                let block_offset = row * max_length + block_index;
-                match block {
-                    EventBlock::Turn(micros) => {
-                        block_kinds[block_offset] = BLOCK_TURN;
-                        for (micro_index, micro) in micros.iter().enumerate() {
-                            let offset = (block_offset * 4 + micro_index) * 4;
-                            turn_fields[offset..offset + 4].copy_from_slice(&[micro.kind, micro.actor, micro.tile, micro.flag]);
-                        }
-                    }
-                    EventBlock::Meld { meld_kind, actor, target, pai, tiles } => {
-                        block_kinds[block_offset] = BLOCK_MELD;
-                        let offset = block_offset * 8;
-                        meld_fields[offset..offset + 8].copy_from_slice(&[*meld_kind, *actor, *target, *pai, tiles[0], tiles[1], tiles[2], tiles[3]]);
-                    }
-                }
-            }
-            for (token_index, token) in board.iter().enumerate() {
-                let offset = (row * BOARD_TOKENS + token_index) * BOARD_FIELDS;
-                board_fields[offset..offset + BOARD_FIELDS].copy_from_slice(token);
+            for (token_index, token) in tokens.into_iter().enumerate() {
+                let factor_offset = (row * max_length + token_index) * TOKEN_WIDTH;
+                factors[factor_offset..factor_offset + TOKEN_WIDTH].copy_from_slice(&token.factors);
+                let numeric_offset = (row * max_length + token_index) * NUMERIC_WIDTH;
+                numeric[numeric_offset..numeric_offset + NUMERIC_WIDTH].copy_from_slice(&token.numeric);
             }
             masks[row * NUM_ACTIONS..(row + 1) * NUM_ACTIONS]
                 .copy_from_slice(&table.action_mask((batch_index % NUM_PLAYERS) as u8));
         }
         Ok((
-            block_kinds.into_pyarray(py).reshape((batch_size, max_length))?,
-            turn_fields.into_pyarray(py).reshape((batch_size, max_length, 4, 4))?,
-            meld_fields.into_pyarray(py).reshape((batch_size, max_length, 8))?,
-            board_fields.into_pyarray(py).reshape((batch_size, BOARD_TOKENS, BOARD_FIELDS))?,
-            block_lengths.into_pyarray(py),
+            factors.into_pyarray(py).reshape((batch_size, max_length, TOKEN_WIDTH))?,
+            numeric.into_pyarray(py).reshape((batch_size, max_length, NUMERIC_WIDTH))?,
+            token_lengths.into_pyarray(py),
             masks.into_pyarray(py).reshape((batch_size, NUM_ACTIONS))?,
             history_generations.into_pyarray(py),
         ).into_pyobject(py)?)

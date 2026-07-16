@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 import torch
-from torch.distributions import Categorical
+from torch.nn import functional as F
 
 try:
     import ray
@@ -21,8 +21,13 @@ from .profiling import StageProfiler
 from .trajectory import Transition
 
 
-def dispatch_reason(worker_ids: list[int], target_workers: int, deadline: float, now: float) -> str | None:
+def dispatch_reason(
+    worker_ids: list[int], target_workers: int, deadline: float, now: float,
+    *, row_count: int = 0, target_rows: int | None = None,
+) -> str | None:
     """Return why a pending inference batch may flush, without clock I/O."""
+    if target_rows is not None and row_count >= target_rows:
+        return "rows"
     if len(set(worker_ids)) >= max(1, target_workers):
         return "target"
     if now >= deadline:
@@ -32,29 +37,25 @@ def dispatch_reason(worker_ids: list[int], target_workers: int, deadline: float,
 
 def collate_request_rows(
     requests: list[dict[str, Any]], group: list[tuple[int, int]],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Host-pad selected request rows while preserving their request/row mapping."""
     if not group:
         raise ValueError("cannot collate an empty inference group")
     lengths = np.asarray(
-        [requests[request_index]["block_lengths"][row] for request_index, row in group], dtype=np.int64,
+        [requests[request_index]["token_lengths"][row] for request_index, row in group], dtype=np.int64,
     )
     max_length = int(lengths.max())
     batch = len(group)
-    kinds = np.zeros((batch, max_length), dtype=np.uint8)
-    turn = np.zeros((batch, max_length, 4, 4), dtype=np.uint8)
-    meld = np.zeros((batch, max_length, 8), dtype=np.uint8)
-    board = np.empty((batch, 12, 160), dtype=np.uint8)
+    factors = np.zeros((batch, max_length, 10), dtype=np.uint8)
+    numeric = np.zeros((batch, max_length, 8), dtype=np.float32)
     legal = np.empty((batch, 241), dtype=np.bool_)
     for index, (request_index, row) in enumerate(group):
         request = requests[request_index]
         length = int(lengths[index])
-        kinds[index, :length] = request["block_kinds"][row, :length]
-        turn[index, :length] = request["turn_fields"][row, :length]
-        meld[index, :length] = request["meld_fields"][row, :length]
-        board[index] = request["board_state"][row]
+        factors[index, :length] = request["token_factors"][row, :length]
+        numeric[index, :length] = request["token_numeric"][row, :length]
         legal[index] = request["legal_mask"][row]
-    return kinds, turn, meld, board, legal, lengths
+    return factors, numeric, legal, lengths
 
 
 def assign_batch_outputs(
@@ -86,9 +87,9 @@ if ray is not None:
                 raise RuntimeError("central rollout inference requires CUDA")
             self.config = config
             self.device = torch.device("cuda")
-            self.dtype = torch.bfloat16 if str(config.get("inference_dtype", "bf16")) == "bf16" else torch.float16
             hyperparameters = {key: value for key, value in config.items() if key not in {"model_size", "device"}}
             self.learner = PPOLearner(str(config["model_size"]), "cuda", **hyperparameters)
+            self.use_bf16 = self.learner.use_bf16
             if config.get("resume"):
                 self.learner.load(config["resume"])
             self.model = self.learner.model.eval()
@@ -105,7 +106,7 @@ if ray is not None:
             # Kept only for the active rollout.  This is intentionally a
             # compact list of scalar lengths (one entry per GPU forward), not
             # per-row tracing data.
-            self._rollout_forward_max_event_blocks: list[int] = []
+            self._rollout_forward_max_tokens: list[int] = []
 
         def _sync_cuda(self) -> None:
             if self.profile_cuda_sync:
@@ -132,7 +133,7 @@ if ray is not None:
             """Start an on-policy rollout using the current model weights."""
             self._profile_checkpoint = self.profiler.checkpoint()
             self._counter_checkpoint = dict(self._counters)
-            self._rollout_forward_max_event_blocks = []
+            self._rollout_forward_max_tokens = []
 
         def iteration(self) -> int:
             return int(self.learner.iteration)
@@ -164,14 +165,12 @@ if ray is not None:
             padding_tokens = counters.get("inference/padding_input_tokens", 0.0)
             stats["inference/padding_to_effective_token_ratio"] = padding_tokens / max(effective_tokens, 1.0)
             stats["inference/padding_fraction_of_padded_tokens"] = padding_tokens / max(padded_tokens, 1.0)
-            if self._rollout_forward_max_event_blocks:
-                # The transformer receives 12 board tokens and one decision
-                # token after the padded event prefix for every row.
-                input_lengths = np.asarray(self._rollout_forward_max_event_blocks, dtype=np.int64) + 13
-                event_lengths = np.asarray(self._rollout_forward_max_event_blocks, dtype=np.int64)
+            if self._rollout_forward_max_tokens:
+                input_lengths = np.asarray(self._rollout_forward_max_tokens, dtype=np.int64) + 1
+                token_lengths = np.asarray(self._rollout_forward_max_tokens, dtype=np.int64)
                 for prefix, values in (
                     ("inference/full_forward_max_input_tokens", input_lengths),
-                    ("inference/full_forward_max_event_blocks", event_lengths),
+                    ("inference/full_forward_max_tokens", token_lengths),
                 ):
                     stats[f"{prefix}/min"] = float(values.min())
                     stats[f"{prefix}/mean"] = float(values.mean())
@@ -187,24 +186,21 @@ if ray is not None:
             worker_id: int,
             namespace: str,
             batch_indices: list[int],
-            block_kinds: np.ndarray,
-            turn_fields: np.ndarray,
-            meld_fields: np.ndarray,
-            board_state: np.ndarray,
+            token_factors: np.ndarray,
+            token_numeric: np.ndarray,
             legal_mask: np.ndarray,
-            block_lengths: np.ndarray,
+            token_lengths: np.ndarray,
             greedy: bool,
         ) -> dict[str, Any]:
-            if len(batch_indices) != len(block_lengths) or block_kinds.shape[0] != len(batch_indices):
+            if len(batch_indices) != len(token_lengths) or token_factors.shape[0] != len(batch_indices):
                 raise ValueError("decision metadata batch dimensions differ")
             loop = asyncio.get_running_loop()
             future: asyncio.Future[dict[str, Any]] = loop.create_future()
             self._pending.append(({
                 "worker_id": int(worker_id), "namespace": str(namespace),
-                "batch_indices": batch_indices, "block_kinds": block_kinds,
-                "turn_fields": turn_fields, "meld_fields": meld_fields,
-                "board_state": board_state, "legal_mask": legal_mask,
-                "block_lengths": block_lengths, "greedy": bool(greedy),
+                "batch_indices": batch_indices, "token_factors": token_factors,
+                "token_numeric": token_numeric, "legal_mask": legal_mask,
+                "token_lengths": token_lengths, "greedy": bool(greedy),
             }, future, time.perf_counter()))
             self._pending_event.set()
             if self._drain_task is None:
@@ -215,12 +211,16 @@ if ray is not None:
             try:
                 while self._pending:
                     target_workers = self._target_workers()
+                    target_rows = max(1, int(self.config.get("inference_batch_target_rows", 0)) or
+                                      int(self.config.get("inference_max_batch_size", 512)))
                     deadline = time.perf_counter() + max(0.0, float(self.config.get("inference_batch_wait_ms", 5.0))) / 1_000.0
                     flush_reason: str | None = None
                     while flush_reason is None:
                         flush_reason = dispatch_reason(
                             [request["worker_id"] for request, _future, _queued_at in self._pending],
                             target_workers, deadline, time.perf_counter(),
+                            row_count=sum(len(request["batch_indices"]) for request, _future, _queued_at in self._pending),
+                            target_rows=target_rows,
                         )
                         if flush_reason is not None:
                             break
@@ -281,22 +281,17 @@ if ray is not None:
             if not group:
                 return
             with self.profiler.stage("inference/host_collate"):
-                kinds, turn, meld, board, legal, lengths = collate_request_rows(requests, group)
-            max_event_blocks = int(lengths.max())
-            # ``model.forward`` materializes [max_event_blocks + 12 board +
-            # 1 decision] positions for every row.  The latter thirteen are
-            # always real tokens, so only the event prefix contributes padding.
-            effective_input_tokens = int(lengths.sum()) + len(group) * 13
-            padded_input_tokens = len(group) * (max_event_blocks + 13)
+                factors, numeric, legal, lengths = collate_request_rows(requests, group)
+            max_tokens = int(lengths.max())
+            effective_input_tokens = int(lengths.sum()) + len(group)
+            padded_input_tokens = len(group) * (max_tokens + 1)
             self._add_counter("inference/effective_input_tokens", effective_input_tokens)
             self._add_counter("inference/padded_input_tokens", padded_input_tokens)
             self._add_counter("inference/padding_input_tokens", padded_input_tokens - effective_input_tokens)
-            self._rollout_forward_max_event_blocks.append(max_event_blocks)
+            self._rollout_forward_max_tokens.append(max_tokens)
             with self._gpu_stage("inference/h2d"):
-                group_kinds = torch.as_tensor(kinds, device=self.device, dtype=torch.long)
-                group_turn = torch.as_tensor(turn, device=self.device, dtype=torch.long)
-                group_meld = torch.as_tensor(meld, device=self.device, dtype=torch.long)
-                group_board = torch.as_tensor(board, device=self.device, dtype=torch.long)
+                group_factors = torch.as_tensor(factors, device=self.device, dtype=torch.long)
+                group_numeric = torch.as_tensor(numeric, device=self.device, dtype=torch.float32)
                 group_legal = torch.as_tensor(legal, device=self.device, dtype=torch.bool)
                 group_lengths = torch.as_tensor(lengths, device=self.device, dtype=torch.long)
             self._forward_calls += 1
@@ -309,8 +304,10 @@ if ray is not None:
             if start_event is not None:
                 start_event.record()
             with self._gpu_stage("inference/full_forward"):
-                with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=self.dtype):
-                    output = self.model(group_kinds, group_turn, group_meld, group_board, group_legal, group_lengths)
+                with torch.inference_mode(), torch.autocast(
+                    device_type="cuda", dtype=torch.bfloat16, enabled=self.use_bf16,
+                ):
+                    output = self.model(group_factors, group_numeric, group_legal, group_lengths)
             if end_event is not None and start_event is not None:
                 end_event.record()
                 end_event.synchronize()
@@ -318,11 +315,16 @@ if ray is not None:
             self._add_counter("inference/full_forwards")
             self._add_counter("inference/full_forward_rows", len(group))
             with self._gpu_stage("inference/sample_and_d2h"):
-                distribution = Categorical(logits=output["policy_logits"])
-                chosen = output["policy_logits"].argmax(-1) if greedy else distribution.sample()
-                chosen_cpu = chosen.tolist()
-                logprob_cpu = distribution.log_prob(chosen).tolist()
-                value_cpu = output["value"].tolist()
+                logprobabilities = F.log_softmax(output["policy_logits"], dim=-1)
+                chosen = (output["policy_logits"].argmax(-1) if greedy
+                          else torch.multinomial(logprobabilities.exp(), 1).squeeze(1))
+                chosen_logprobs = logprobabilities.gather(1, chosen[:, None]).squeeze(1)
+                # One packed device-to-host transfer replaces three scalar-list
+                # transfers for action, log-probability and value.
+                packed = torch.stack((chosen.float(), chosen_logprobs, output["value"].float()), dim=1).cpu().numpy()
+                chosen_cpu = packed[:, 0].astype(np.int64).tolist()
+                logprob_cpu = packed[:, 1].tolist()
+                value_cpu = packed[:, 2].tolist()
             assign_batch_outputs(responses, group, chosen_cpu, logprob_cpu, value_cpu)
 else:
     RolloutInferenceActor = None
