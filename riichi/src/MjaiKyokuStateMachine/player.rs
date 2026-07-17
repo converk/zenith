@@ -79,7 +79,7 @@ impl PlayerKyokuStateMachine {
     fn apply_event(&mut self, event: &MjaiEvent) {
         match event {
             // A draw changes the active wall and own snapshot hand. It has no
-            // standalone semantic token, matching the V5 encoder in exp.
+            // standalone semantic token, matching the encoder in exp.
             MjaiEvent::Tsumo { .. } => self.live_wall = self.live_wall.saturating_sub(1),
             MjaiEvent::Dahai { actor, pai, tsumogiri } => {
                 self.history.push(self.event_token(4, self.relative(*actor), ACTOR_NONE, Some(*pai), 1 + u8::from(*tsumogiri)));
@@ -121,7 +121,7 @@ impl PlayerKyokuStateMachine {
         let mut result = self.history.clone();
         self.append_state_tokens(&mut result, snapshot)?;
         if result.len() + 1 > MAX_CONTEXT_TOKENS {
-            return Err(format!("V5 context overflow: {} > {MAX_CONTEXT_TOKENS}", result.len() + 1));
+            return Err(format!("semantic-token context overflow: {} > {MAX_CONTEXT_TOKENS}", result.len() + 1));
         }
         Ok(result)
     }

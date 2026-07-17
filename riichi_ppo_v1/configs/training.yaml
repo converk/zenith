@@ -1,0 +1,172 @@
+# 训练配置。
+# 本文件包含会影响训练行为、运行拓扑、模型结构、环境规模、PPO 算法、优化器、reward 和 checkpoint 的参数。
+# 纯监控/诊断参数放在 monitoring.yaml。
+
+# 全局随机种子。影响 Python、NumPy、PyTorch 以及 rollout/update 中显式使用的随机流。
+# 固定 seed 可以让 benchmark 和训练行为更可复现；不同 seed 会改变对局采样、minibatch 打乱顺序等。
+seed: 1
+
+# 训练使用的主设备。生产训练通常使用 cuda；CPU 主要用于 smoke test、单元测试或没有 GPU 的调试。
+# 注意：项目约定用环境变量 CUDA_DEVICE 指定物理卡，例如 CUDA_DEVICE=0,3；进程内仍使用 cuda/cuda:0。
+device: cuda
+
+# Ray rollout worker 数量。每个 worker 内部会同时推进 envs_per_worker 张桌。
+# 该值主要影响 rollout 采样并行度、CPU 压力和 GPU inference 请求并发；当前默认是 12x32 双卡实测配置。
+num_workers: 12
+
+# GPU learner/inference actor 数量。1 表示单卡 actor；2 表示双卡 DDP update，并将 worker 分配到两个 actor。
+# 当前默认 2 是 12x32 双卡实测配置；运行时请配合 CUDA_DEVICE=0,3。
+learner_gpus: 2
+
+# 默认训练迭代轮数。每轮包含一次 rollout collection 和一次 PPO update。
+# benchmark 通常用 CLI 覆盖为 1 或 3；长期训练使用较大值。
+iterations: 1000
+
+# 模型规模预设。mid 是当前默认训练模型；large 会增加层数和宽度，显著提高显存与计算开销。
+model_size: mid
+
+# Transformer 最大上下文 token 数。必须覆盖公开语义 token、当前状态 token 和 learned query。
+# 增大可支持更长上下文，但会增加 attention 显存和计算成本。
+context_tokens: 4096
+
+# 是否把三家对手的公开牌河与副露紧凑汇总后追加到 critic-only 输入。默认关闭以保持
+# 既有基线与 checkpoint 行为；策略分支和 Rust 公开状态协议始终不使用这些额外 token。
+critic_include_public_state: false
+
+# CUDA forward 使用的自动混合精度类型。bf16 会在支持的 GPU 上使用 BF16 autocast；
+# 模型参数、优化器状态和 PPO loss 路径仍保持 FP32。不支持 BF16 或 CPU 运行时会回退 FP32。
+inference_dtype: bf16
+
+# RiichiEnv 游戏模式。当前默认是四麻红五半庄。
+game_mode: 4p-red-half
+
+# 每个 rollout worker 同时推进的环境桌数。
+# 当前默认 32 是 12x32 双卡实测配置；增大会增加采样吞吐和批量推理压力。
+envs_per_worker: 32
+
+# 每个 worker 内部用于原生环境批量 step 的线程数。
+# 增大可提高环境推进并行度，但也会增加 CPU 竞争。
+env_step_threads: 4
+
+# rollout inference actor 单次 full-forward 最多合并的决策行数。
+# 增大可提高 GPU 吞吐但可能增加等待和 padding；减小可降低延迟但可能让 GPU 利用率下降。
+inference_max_batch_size: 512
+
+# inference actor 等待更多 worker 请求合批的最长时间，单位毫秒。
+# 值越大越容易形成大 batch，但 worker RPC 等待时间也会增加；当前默认 5ms 用于平衡吞吐和 rollout 延迟。
+inference_batch_wait_ms: 5.0
+
+# inference 合批达到多少行后立即 flush。0 表示跟随 inference_max_batch_size。
+# 设置为非 0 可在未达到 max batch 前提前发送，减少排队等待；当前默认避免额外 timeout 等待。
+inference_batch_target_rows: 0
+
+# inference 合批达到多少个不同 worker 的请求后立即 flush。0 表示使用 num_workers。
+# 每个 worker 同一时刻最多一个同步请求；该参数可控制跨 worker 聚合程度。
+inference_batch_target_workers: 0
+
+# 每个 worker 在一次 rollout drain 前至少完成的小局数。原生环境会并行推进多张桌，
+# 因此同一完成波次可能略超出该目标；这能保证所有已开始的小局在 PPO 前完整结算。
+# 值越大，每轮采样量越大、update 更重、统计更稳定；值越小，单轮迭代更快。长期训练默认保留 32。
+kyokus_per_worker: 32
+
+# 折扣因子 gamma，用于 GAE/return 计算。越接近 1 越重视远期终局收益。
+gamma: 0.99
+
+# GAE lambda，控制 advantage 估计的 bias/variance 权衡。
+# 越接近 1 方差更高但偏差更低；越小更平滑但可能低估长期 credit assignment。
+gae_lambda: 0.95
+
+# PPO policy ratio clipping 半径。0.2 表示新旧策略概率比会被裁剪到 [0.8, 1.2] 区间参与 clipped objective。
+# 较小更保守，较大更新更激进。
+ppo_clip: 0.2
+
+# 每轮 rollout 数据重复训练的 PPO epoch 数。
+# 增大可提高样本利用率，但 update 时间增加，也可能造成 policy drift；性能测试基线使用 4。
+update_epochs: 4
+
+# PPO global minibatch 大小。双卡 DDP 下每张卡处理该 global batch 的一个 shard。
+# 12x32、约 6.8 万 transition 的双卡测试中，512 的端到端吞吐优于 256；1024 未作为默认选择。
+minibatch_size: 512
+
+# PPO update 的 minibatch 数据准备模式：
+# - streaming：每个 minibatch 即时 padding/collate/H2D；当前 12x32 双卡实测最快。
+# - prefetch：使用 pinned memory、后台线程和独立 CUDA stream 预取下一批；本负载下端到端变慢。
+# - gpu_cache：每个 epoch 先把 minibatch 缓存在 GPU；H2D 指标很低，但 forward/update 总耗时变慢。
+# - auto：自动模式；当前实现会在 CUDA 上选择 streaming，保留其他模式作显式诊断实验。
+update_batch_mode: streaming
+
+# 固定 entropy 系数的兼容字段。若 entropy_start/entropy_end 存在，会优先使用线性退火配置。
+# entropy 奖励鼓励探索；值越大策略越随机。
+entropy_coef: 0.01
+
+# entropy 系数退火起点。训练早期保持较高探索。
+entropy_start: 0.01
+
+# entropy 系数退火终点。训练后期降低探索，让策略更确定。
+entropy_end: 0.004
+
+# value loss 权重。总 loss = policy_loss + value_coef * value_loss - entropy_coef * entropy。
+# 增大可更重视价值函数拟合，但可能挤压 policy 更新。
+value_coef: 0.5
+
+# value loss 类型。huber 对异常值更稳；mse 对大误差惩罚更强。
+value_loss: huber
+
+# 梯度裁剪阈值，按全局 grad norm 裁剪。用于限制异常 minibatch 导致的过大更新。
+max_grad_norm: 0.5
+
+# PPO early stop 的 KL 阈值。若 >0，某个 epoch 后 approximate KL 超过该值会提前停止本轮 update。
+# 性能基准通常显式传 target_kl=0.0，避免 early stop 改变工作量；长期训练默认 0.02 提供稳定性保护。
+target_kl: 0.03
+
+# AdamW 初始学习率。实际学习率会先按 warmup_fraction 线性 warmup，再按 total_updates 线性衰减。
+# 提高可能加速学习但更容易不稳定；降低更稳但收敛更慢。
+learning_rate: 0.00025
+
+# 计划总 update 数，用于学习率 warmup/decay 和 entropy 退火的进度计算。
+# 不一定等于当前运行的 iterations，但应代表完整训练预算。
+total_updates: 10000
+
+# 学习率 warmup 占 total_updates 的比例。0.02 表示前 2% update 从 0 线性升到 learning_rate。
+# warmup 可降低训练初期不稳定。
+warmup_fraction: 0.02
+
+# AdamW beta1，一阶动量衰减系数。越大动量越平滑，响应越慢。
+adam_beta1: 0.9
+
+# AdamW beta2，二阶矩估计衰减系数。越大对梯度方差估计越平滑。
+adam_beta2: 0.999
+
+# AdamW epsilon，数值稳定项。过小可能在极端梯度下不稳定，过大可能影响自适应缩放。
+adam_epsilon: 0.00001
+
+# AdamW 权重衰减。用于正则化模型权重；不直接作用于 bias/归一化的具体行为由 PyTorch AdamW 实现决定。
+weight_decay: 0.01
+
+# 旧单一终局 reward 的兼容字段。五阶段课程使用固定的 E/K/R 分量范围。
+reward_scale: 8000.0
+
+# 缩放后 reward 的裁剪上限，限制极端牌局收益造成 advantage 爆炸。
+reward_limit: 3.0
+
+# 五阶段 rollout 的 worker 私有向听分析 LRU 条目上限。缓存 key 只包含弃牌后的
+# 34 种牌计数与副露数；公开牌变化不污染缓存。
+reward_cache_capacity: 131072
+
+# 每个 GPU inference actor 最多驻留的历史策略数。每轮全局 cohort 固定为这两个模型，
+# 历史模型在 rollout 边界预热，
+# 并按 LRU 淘汰；绝不在环境 step 线程中加载。
+resident_historical_models: 2
+
+# 历史对手 checkpoint 池最大条目数。课程固定每 2.5% total_updates 保存一次快照。
+history_pool_size: 48
+
+# checkpoint、performance.jsonl 和 TensorBoard 日志目录。
+# 保留为本地默认输出目录；benchmark 可用 CLI 覆盖到 /tmp 或专门的 checkpoints 子目录。
+checkpoint_dir: checkpoints/riichi_ppo_v1
+
+# checkpoint 保存间隔，单位为 iteration。每隔该轮数保存一次 iteration_N.pt，结束时另存 latest.pt。
+checkpoint_interval: 25
+
+# 恢复训练的 checkpoint 路径。null 表示从头开始；设置为具体 .pt 路径会加载模型、优化器、迭代号和随机数状态。
+resume: null

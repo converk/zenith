@@ -95,7 +95,7 @@ impl MjaiKyokuStateMachineManager {
         Ok((end_kyoku.into_pyarray(py), end_game.into_pyarray(py)).into_pyobject(py)?)
     }
 
-    /// Atomically records legal actions and materializes V5 semantic tokens.
+    /// Atomically records legal actions and materializes semantic tokens.
     /// The append-only public event prefix and temporary current-state suffix
     /// are concatenated here; the learned query token belongs to the model.
     fn prepare_decisions<'py>(

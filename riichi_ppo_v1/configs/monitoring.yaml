@@ -1,0 +1,36 @@
+# 监控配置。
+# 本文件只包含性能统计、CUDA 诊断和 GPU telemetry，不改变训练算法语义。
+
+# 是否启用阶段级性能统计。开启后会记录 rollout、inference、PPO update、GPU telemetry 等指标。
+# benchmark 和瓶颈分析建议保持 true；极限长期训练若确认 profiling 开销可忽略，也可以继续保持开启。
+profile_enabled: true
+
+# 是否在每个 GPU profile 阶段前后强制 torch.cuda.synchronize。
+# false 更接近真实吞吐；true 会显著改变耗时归因，只用于诊断异步 CUDA 队列中某个阶段的真实 GPU 时间。
+profile_cuda_sync: false
+
+# rollout inference 中每隔多少次 forward 用 CUDA event 采样一次更准确的 GPU forward 时间。
+# 值越小 telemetry 越细，但额外开销越高；100 是低开销诊断默认值。
+profile_cuda_event_interval: 100
+
+# 是否启动后台 nvidia-smi 采样线程，记录 GPU 利用率、显存、功耗、温度和 SM 时钟。
+# 对训练逻辑无影响；nvidia-smi 不可用时 telemetry 会自动缺省，不会中断训练。
+gpu_monitor: false
+
+# GPU telemetry 采样间隔，单位秒。较小值能捕捉更细的波动，但会增加少量系统调用开销。
+gpu_sample_interval_s: 0.25
+
+# 语义训练指标只记录公开 MJAI 事件、动作类别和最终结算；不会写入手牌或墙牌。
+semantic_metrics_enabled: true
+semantic_metrics_jsonl: metrics.jsonl
+metrics_rolling_kyokus: 1000
+metrics_histogram_interval: 25
+
+# 固定基线独立评测：update 0、每个 interval 及训练结束时运行。
+evaluation_enabled: true
+evaluation_interval_updates: 8
+evaluation_seed_base: 20260717
+# 12 个固定 seed × 4 个候选座位 = 48 个半庄；相较快速 16 局基线，
+# 平均名次、一位率和放铳率的采样方差明显更低。
+evaluation_seed_count: 12
+evaluation_workers: 6

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "riichi-ppo-v1"
 version = "0.1.0"
-description = "PPO training for RiichiEnv with KyokuEventTuple V3"
+description = "PPO training for RiichiEnv with semantic state tokens and a fixed action space"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -17,12 +17,19 @@ dependencies = [
 ]
 
 [project.scripts]
-riichi-ppo-train = "riichi_ppo_v1.train:main"
-riichi-ppo-smoke = "riichi_ppo_v1.train:smoke_main"
-riichi-ppo-validate = "riichi_ppo_v1.validate:main"
+riichi-ppo-train = "riichi_ppo_v1.training.train:main"
+riichi-ppo-smoke = "riichi_ppo_v1.training.train:smoke_main"
+riichi-ppo-validate = "riichi_ppo_v1.training.validate:main"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools]
+packages = [
+  "riichi_ppo_v1",
+  "riichi_ppo_v1.model",
+  "riichi_ppo_v1.training",
+  "riichi_ppo_v1.training.rewards",
+  "riichi_ppo_v1.training.opponents",
+]
+package-dir = {riichi_ppo_v1 = "."}
 
 [tool.setuptools.package-data]
-riichi_ppo_v1 = ["*.yaml"]
+riichi_ppo_v1 = ["configs/*.yaml"]

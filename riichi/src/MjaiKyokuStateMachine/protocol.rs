@@ -35,7 +35,7 @@ fn action_id_from_mjai_value(action: &Value) -> Result<usize, String> {
                     return Ok(76 + index);
                 }
             }
-            Err("chi consumed tiles cannot be mapped to KyokuActionSpace V2".to_owned())
+            Err("chi consumed tiles cannot be mapped to the fixed action space".to_owned())
         }
         "pon" => {
             let pai = action_tile_field(action, "pai")?;
@@ -48,7 +48,7 @@ fn action_id_from_mjai_value(action: &Value) -> Result<usize, String> {
                     return Ok(133 + index);
                 }
             }
-            Err("pon consumed tiles cannot be mapped to KyokuActionSpace V2".to_owned())
+            Err("pon consumed tiles cannot be mapped to the fixed action space".to_owned())
         }
         "daiminkan" => {
             let pai = action_tile_field(action, "pai")?;

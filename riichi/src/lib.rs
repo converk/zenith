@@ -4,15 +4,22 @@
 //! this crate any more.  Keeping this surface small makes the extension
 //! reproducible for the RiichiEnv PPO integration.
 
+mod analysis;
 #[path = "MjaiKyokuStateMachine/mod.rs"]
 mod mjai_kyoku_state_machine;
+mod shanten;
+mod shanten_table;
 
 use pyo3::prelude::*;
 
 use crate::mjai_kyoku_state_machine::MjaiKyokuStateMachineManager;
 
+const HAND_ANALYSIS_VERSION: u32 = 2;
+const SHANTEN_UNAVAILABLE: i8 = 127;
+
 #[pymodule]
 fn riichi(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<MjaiKyokuStateMachineManager>()?;
+    analysis::register(m)?;
     Ok(())
 }

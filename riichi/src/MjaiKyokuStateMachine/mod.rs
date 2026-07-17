@@ -20,4 +20,4 @@ include!("manager.rs");
 include!("protocol.rs");
 
 #[cfg(test)]
-mod tests_v5;
+mod semantic_token_tests;
