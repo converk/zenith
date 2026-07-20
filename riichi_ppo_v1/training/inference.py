@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections import OrderedDict
 from contextlib import contextmanager
-from pathlib import Path
 import time
 from typing import Any
 
@@ -20,7 +18,6 @@ except ImportError:
     ray = None
 
 from .learner import PPOLearner
-from .opponents.history import compatible_history, rollout_cohort
 from .profiling import StageProfiler
 from .trajectory import Transition
 
@@ -142,8 +139,7 @@ if ray is not None:
             # compact list of scalar lengths (one entry per GPU forward), not
             # per-row tracing data.
             self._rollout_forward_max_tokens: list[int] = []
-            self._history_models: OrderedDict[str, torch.nn.Module] = OrderedDict()
-            self._history_limit = max(1, int(config.get("resident_historical_models", 4)))
+            self._rollout_target_workers = int(config.get("inference_actor_num_workers", config.get("num_workers", 1)))
 
         def _sync_cuda(self) -> None:
             if self.profile_cuda_sync:
@@ -164,44 +160,22 @@ if ray is not None:
 
         def _target_workers(self) -> int:
             configured = int(self.config.get("inference_batch_target_workers", 0))
-            assigned_workers = int(self.config.get("inference_actor_num_workers", self.config.get("num_workers", 1)))
-            return max(1, configured or assigned_workers)
+            return max(1, configured or self._rollout_target_workers)
 
-        def begin_rollout(self, update: int | None = None) -> None:
+        def begin_rollout(
+            self,
+            update: int | None = None,
+            *,
+            split_policy_inference: bool = False,
+        ) -> None:
             """Start an on-policy rollout using the current model weights."""
             self._profile_checkpoint = self.profiler.checkpoint()
             self._counter_checkpoint = dict(self._counters)
             self._rollout_forward_max_tokens = []
-            # Warm the most recent bounded cache entries before workers begin
-            # synchronous environment stepping.  Less-recent sampled entries
-            # remain lazily loaded, but never share an environment-step lock.
-            paths = rollout_cohort(
-                compatible_history(self.config["checkpoint_dir"], max_entries=int(self.config.get("history_pool_size", 48))),
-                seed=int(self.config["seed"]), update=int(update or self.learner.iteration), size=self._history_limit,
+            self._rollout_target_workers = int(
+                self.config.get("split_inference_actor_num_workers")
+                if split_policy_inference else self.config.get("inference_actor_num_workers", self.config.get("num_workers", 1))
             )
-            for path in paths:
-                self._history_model(path)
-
-        def _history_model(self, path: str) -> torch.nn.Module:
-            path = str(Path(path))
-            cached = self._history_models.get(path)
-            if cached is not None:
-                self._history_models.move_to_end(path)
-                self._add_counter("history/cache_hits")
-                return cached
-            self._add_counter("history/cache_misses")
-            with self.profiler.stage("history/load"):
-                payload = torch.load(path, map_location="cpu", weights_only=False)
-                model = type(self.learner.model.module if hasattr(self.learner.model, "module") else self.learner.model)(self.learner.config)
-                model.load_state_dict(payload["model"])
-                model.to(self.device).eval()
-            self._history_models[path] = model
-            while len(self._history_models) > self._history_limit:
-                _path, evicted = self._history_models.popitem(last=False)
-                del evicted
-                self._add_counter("history/cache_evictions")
-            return model
-
         def iteration(self) -> int:
             return int(self.learner.iteration)
 
@@ -269,7 +243,6 @@ if ray is not None:
             legal_mask: np.ndarray,
             token_lengths: np.ndarray,
             greedy: bool,
-            policy_id: str = "current",
         ) -> dict[str, Any]:
             if len(batch_indices) != len(token_lengths) or token_factors.shape[0] != len(batch_indices):
                 raise ValueError("decision metadata batch dimensions differ")
@@ -285,7 +258,7 @@ if ray is not None:
                 "batch_indices": batch_indices, "token_factors": token_factors,
                 "token_numeric": token_numeric, "critic_factors": critic_factors,
                 "critic_lengths": critic_lengths, "legal_mask": legal_mask,
-                "token_lengths": token_lengths, "greedy": bool(greedy), "policy_id": str(policy_id),
+                "token_lengths": token_lengths, "greedy": bool(greedy),
             }, future, time.perf_counter()))
             self._pending_event.set()
             if self._drain_task is None:
@@ -343,17 +316,16 @@ if ray is not None:
                 {"action_ids": [0] * len(request["batch_indices"]), "logprobs": [0.0] * len(request["batch_indices"]), "values": [0.0] * len(request["batch_indices"])}
                 for request in requests
             ]
-            rows_by_policy: dict[tuple[bool, str], list[tuple[int, int]]] = {}
+            rows_by_mode: dict[bool, list[tuple[int, int]]] = {}
             for request_index, request in enumerate(requests):
-                rows_by_policy.setdefault((bool(request["greedy"]), str(request.get("policy_id", "current"))), []).extend(
+                rows_by_mode.setdefault(bool(request["greedy"]), []).extend(
                     (request_index, row) for row in range(len(request["batch_indices"]))
                 )
             max_batch = max(1, int(self.config.get("inference_max_batch_size", 512)))
-            for (greedy, policy_id), rows in rows_by_policy.items():
-                model = self.model if policy_id == "current" else self._history_model(policy_id)
+            for greedy, rows in rows_by_mode.items():
                 for offset in range(0, len(rows), max_batch):
                     group = rows[offset:offset + max_batch]
-                    self._run_full_forward(requests, responses, group, greedy, model)
+                    self._run_full_forward(requests, responses, group, greedy, self.model)
             self.profiler.add("inference/rpc_total", time.perf_counter() - started)
             return responses
 

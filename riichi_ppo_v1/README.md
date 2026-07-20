@@ -1,9 +1,9 @@
 # RiichiEnv PPO 训练器
 
 独立的四麻 PPO 训练器。策略分支输入是 Rust `MjaiKyokuStateMachineManager` 生成的公开语义
-token，策略头输出固定 241 个动作槽位。value 分支在共享策略 hidden 的基础上，额外接收
-critic-only 的三家对手手牌 token；可通过 `critic_include_public_state` 追加三家公开牌河和
-副露的紧凑汇总。这些额外特征不进入策略分支。
+token，策略头输出固定 241 个动作槽位。value 分支接收共享 Transformer 输出的完整公开 token
+序列，额外接收 critic-only 的三家对手手牌 token；可通过 `critic_include_public_state` 追加三家
+公开牌河和副露的紧凑汇总。这些额外特征不进入策略分支。
 
 ## 目录
 
@@ -23,7 +23,8 @@ RiichiEnv Observation
   -> Python bridge（事件提取、快照、MJAI 合法动作）
   -> Rust 状态机（公开 history、当前状态后缀、241 维 mask）
   -> Transformer actor（追加 learned query，输出 policy logits）
-       -> critic-only 对手手牌 token -> Transformer critic（输出 value）
+       -> 完整共享公开 token + critic-only 对手 token + value query
+       -> Transformer critic（输出 value）
   -> action_id -> 原始 MJAI JSON -> RiichiEnv Action -> env.step
 ```
 
@@ -57,7 +58,7 @@ python -m pip install -e riichi_ppo_v1 --no-deps --no-build-isolation
 
 `riichi-ppo-train` 会按上述顺序合并默认值。`--training-config` 可覆盖训练参数；
 `--model-config`、`--environment-config` 作为兼容入口仍保留；原有 `--config` 保留为最后合并的完整 YAML overlay。默认
-`checkpoint_dir` 仍为 `checkpoints/riichi_ppo_v1`，以保留本地测试产物的位置。
+`checkpoint_dir` 为 `checkpoints/train_riichi_v5`；该 value 结构与旧 checkpoint 不兼容，应从新目录开始训练。
 
 单卡训练与 GPU 测试默认固定到物理 0 号卡：
 
@@ -101,9 +102,14 @@ conda run -n Mahjong-AI riichi-ppo-validate --games 128 --output riichi_ppo_v1_c
 自然回放未命中的项目。未命中只表示该随机样本未覆盖；MJAI、mask、解码动作或环境选择出现语义
 不一致时，命令会立即失败。
 
-训练时，每张桌在一个半庄开始时随机、不重复地抽取两名训练座位，并在该半庄内保持不变。
-四个座位的每一个合法决策都由同一份当前 rollout 模型产生；只有被抽样的两席会保存
-transition 并参与 PPO update。半庄结束后才会为该桌重新抽取两席。
+训练使用固定、每个 worker 完全一致的桌位槽位：16 张桌中 4 张为四席自博弈、8 张为两席
+current 对效率/防守启发式、4 张为两席 current 对同一个冻结历史 checkpoint。历史 checkpoint
+不可用时，只有最后 4 张桌降级为启发式对手。两席 current 的座位在每个半庄之间轮换；自博弈桌的
+四席均保存 transition 并参与 PPO update。
+
+reward 始终以小局分差为主：`clip((after_score - before_score) / 1000, -12, 12)` 附加到该小局的
+最后一个 learner transition，并由 GAE 反向传播到此前本局决策。牌效 regret 只在前 10% update
+以 `0.10 → 0.0` 的线性系数提供密集辅助；半庄名次和排名势能不参与 reward。
 
 `kyokus_per_worker` 是开始 drain 前的最少完成小局数。达到该值后，worker 会冻结已经
 结束当前小局的桌子，只推进其他尚未结束的小局直至全部结算；因此不会因 PPO collection
@@ -111,7 +117,7 @@ transition 并参与 PPO update。半庄结束后才会为该桌重新抽取两�
 
 训练 worker 使用原生 `BatchedRiichiEnv`：每个 tick 会同步收集 worker 内全部环境的四家
 observation 增量、构造状态机输入，并在释放 GIL 后并行推进环境。默认配置为 12 个 Ray
-worker、每 worker 32 张桌、每 worker 4 条原生环境线程。默认 `learner_gpus: 2` 使用
+worker、每 worker 16 张桌、每 worker 4 条原生环境线程。默认 `learner_gpus: 2` 使用
 `CUDA_DEVICE=0,3` 启动两个 GPU actor，worker 按 rank 近似平均分配；每个 actor 只服务自己那部分
 worker 的 rollout inference。PPO update 使用 PyTorch DistributedDataParallel：两个 rank 对相同 global
 minibatch 取不同 shard 分别反传，梯度经 NCCL all-reduce 后同步更新。worker 本身不创建 CUDA
@@ -124,9 +130,8 @@ CUDA 设备则全程使用 FP32，不会回退到 FP16。
 
 ## 性能监控
 
-默认启用逐阶段 profiling。每轮会把完整指标写入 `checkpoint_dir/performance.jsonl`，并在
-`checkpoint_dir/tensorboard` 中记录同名标量；控制台会逐行打印 rollout worker、rollout
-inference actor 和 PPO update 的阶段表。worker 阶段同时给出 4 个 worker 的 total 时间
+默认启用逐阶段 profiling。每轮会把完整指标写入 `checkpoint_dir/performance.jsonl`；TensorBoard
+仅记录精选实时面板指标，控制台会逐行打印 rollout worker、rollout inference actor 和 PPO update 的阶段表。worker 阶段同时给出 4 个 worker 的 total 时间
 mean/max/min 与调用数；inference actor 的时间按 iteration 汇总一次，不会因 RPC 合批而重复计数。
 重点指标包括：
 
@@ -149,20 +154,23 @@ rollout、profile RPC、主进程 transition 拼接和传输、PPO update，但�
 
 ### 训练质量监控
 
-除性能指标外，训练还会写入 `checkpoint_dir/metrics.jsonl` 与 TensorBoard 语义指标。JSONL 的每行
+除性能指标外，训练还会写入 `checkpoint_dir/metrics.jsonl`。JSONL 的每行
 包含 schema 版本、update、累计 PPO 决策数、累计小局数、来源（`train` 或 `evaluation`）和有限标量；
 恢复训练时累计计数会从该文件续接。日志仅包含公开 MJAI 结算事件、动作类别和分数，绝不包含暗手、墙牌、
 随机状态或 critic-only 输入。
 
-`train/kyoku/*`、`train/match/*`、`train/action/*`、`train/efficiency/*` 与
-`train/defense/*` 用于诊断在线 rollout；`ppo/explained_variance`、`ppo/buffer/*`、
-`ppo/ratio` 与 `ppo/ratio_p95` 用于诊断 value 拟合和 PPO policy drift。每 25 个 update 写入
-return、advantage、value、合法动作数和 token 长度直方图。
+TensorBoard 只保留常用 PPO 信号：`ppo/policy_loss`、`ppo/value_loss`、`ppo/entropy`、
+`ppo/approx_kl`、`ppo/clipfrac`、`ppo/ratio_p95`、`ppo/explained_variance`、`ppo/grad_norm`、
+学习率、熵系数和 KL early-stop 标志。固定基线 eval 则保留小局得分及标准误、和了率、放铳率和牌效
+最优率。运行健康面板保留 `iteration/sps`、总轮耗时、update 耗时与所有 learner rank 聚合后的峰值显存。
+在线 rollout、细粒度 profiling、buffer、动作语义和 reward 分解
+继续写入 JSONL，不再投影为 TensorBoard 标量。每 25 个 update 仍写入 return、advantage、value、
+合法动作数和 token 长度直方图。
 
-默认还会在 update 0、每 25 个 update 和结束时运行固定基线评测。它使用 12 个确定 seed、候选策略
-4 个座位轮换，共 48 个半庄；候选模型贪心决策，对手为固定的效率/防守启发式混合。应以
-`eval/match/rank_mean`（越低越好）和 `eval/match/first_rate`（越高越好）判断跨课程阶段的真实进步，
-而不是把变化中的自博弈 reward 当作实力指标。相关开关和预算位于 `configs/monitoring.yaml`。
+默认还会在 update 0、每 50 个 update 和结束时运行固定基线评测。它使用 16 个确定 seed、候选策略
+4 个座位轮换，共 64 个半庄；候选模型贪心决策，对手为固定的效率/防守启发式混合。以连续 3 次评测的
+`eval/kyoku/point_delta_mean` 选择 `best_kyoku.pt`；同分时优先更低放铳率、再优先更高最优向听率。
+相关开关和预算位于 `configs/monitoring.yaml`。
 
 运行一轮目标负载 benchmark 而不修改默认长期训练配置：
 

@@ -11,12 +11,29 @@ def transition(value: float) -> Transition:
 def test_gae_does_not_cross_kyoku_boundaries() -> None:
     first = [transition(0.4), transition(0.2)]
     second = [transition(-0.1)]
-    finish_kyoku(first, 1.0, gamma=1.0, gae_lambda=1.0)
-    finish_kyoku(second, -1.0, gamma=1.0, gae_lambda=1.0)
+    first[-1].kyoku_reward = 1.0
+    first[-1].refresh_reward()
+    second[-1].kyoku_reward = -1.0
+    second[-1].refresh_reward()
+    finish_kyoku(first, gamma=1.0, gae_lambda=1.0)
+    finish_kyoku(second, gamma=1.0, gae_lambda=1.0)
     assert first[-1].done and second[-1].done
     assert first[-1].reward == 1.0 and second[-1].reward == -1.0
     assert first[0].return_ > 0
     assert second[0].return_ < 0
+
+
+def test_terminal_kyoku_score_reaches_each_prior_learner_decision() -> None:
+    kyoku = [transition(0.0), transition(0.0), transition(0.0)]
+    kyoku[-1].kyoku_reward = 1.0
+    kyoku[-1].refresh_reward()
+
+    finish_kyoku(kyoku, gamma=0.995, gae_lambda=0.97)
+
+    decay = 0.995 * 0.97
+    assert kyoku[-1].advantage == 1.0
+    assert kyoku[-2].advantage == np.float32(decay)
+    assert kyoku[-3].advantage == np.float32(decay ** 2)
 
 
 def test_transition_length_metrics_report_tokens_and_query() -> None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import math
 
 import torch
@@ -18,12 +18,13 @@ TOKEN_CARDINALITIES = (8, 32, 256, 8, 8, 16, 4, 16, 256, 4)
 @dataclass(frozen=True)
 class ModelConfig:
     layers: int = 6
+    shared_layers: int = 4
     critic_layers: int = 2
-    d_model: int = 256
+    d_model: int = 192
     query_heads: int = 8
     kv_heads: int = 2
-    head_dim: int = 32
-    ffn_dim: int = 768
+    head_dim: int = 24
+    ffn_dim: int = 576
     context_tokens: int = 4096
     rope_base: float = 10_000.0
     eps: float = 1e-6
@@ -37,6 +38,8 @@ class ModelConfig:
             raise ValueError("head_dim must be even for RoPE")
         if self.context_tokens < 2:
             raise ValueError("context_tokens must leave room for the query token")
+        if not 0 < self.shared_layers < self.layers:
+            raise ValueError("shared_layers must be positive and leave at least one actor-only layer")
         if self.critic_layers < 1:
             raise ValueError("critic_layers must be positive")
 
@@ -144,11 +147,14 @@ class DecoderBlock(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, config: ModelConfig) -> None:
+    def __init__(self, config: ModelConfig, *, layers: int | None = None, final_norm: bool = True) -> None:
         super().__init__()
         self.context_tokens, self.rope_base = config.context_tokens, config.rope_base
-        self.blocks = nn.ModuleList(DecoderBlock(config) for _ in range(config.layers))
-        self.norm = nn.RMSNorm(config.d_model, eps=config.eps)
+        block_count = config.layers if layers is None else int(layers)
+        if block_count < 1:
+            raise ValueError("decoder must contain at least one block")
+        self.blocks = nn.ModuleList(DecoderBlock(config) for _ in range(block_count))
+        self.norm: nn.Module = nn.RMSNorm(config.d_model, eps=config.eps) if final_norm else nn.Identity()
 
     def forward(self, x: Tensor, lengths: Tensor) -> Tensor:
         tokens = x.shape[1]
@@ -162,7 +168,7 @@ class Decoder(nn.Module):
 
 
 class KyokuTransformerActorCritic(nn.Module):
-    """Public actor with a critic-only private/value branch."""
+    """Shared-public actor with a centralized critic-only private branch."""
 
     def __init__(self, config: ModelConfig | None = None) -> None:
         super().__init__()
@@ -171,8 +177,12 @@ class KyokuTransformerActorCritic(nn.Module):
         self.critic_embedding = FactorEmbedding(TOKEN_CARDINALITIES, self.config.d_model)
         self.query = nn.Parameter(torch.empty(self.config.d_model))
         self.value_query = nn.Parameter(torch.empty(self.config.d_model))
-        self.backbone = Decoder(self.config)
-        self.critic_backbone = Decoder(replace(self.config, layers=self.config.critic_layers))
+        # The policy still traverses ``layers`` public blocks, while value
+        # learning trains the shared prefix directly.  The aggregate block
+        # budget remains unchanged: shared + actor-only + critic.
+        self.public_backbone = Decoder(self.config, layers=self.config.shared_layers, final_norm=False)
+        self.actor_backbone = Decoder(self.config, layers=self.config.layers - self.config.shared_layers)
+        self.critic_backbone = Decoder(self.config, layers=self.config.critic_layers)
         self.policy_head = nn.Linear(self.config.d_model, NUM_ACTIONS)
         self.value_head = nn.Linear(self.config.d_model, 1)
         nn.init.normal_(self.query, std=self.config.d_model ** -0.5)
@@ -203,7 +213,9 @@ class KyokuTransformerActorCritic(nn.Module):
         sequence[:, :padded] = tokens
         rows = torch.arange(batch, device=tokens.device)
         sequence[rows, token_lengths] = self.query
-        hidden = self.backbone(sequence, token_lengths + 1)[rows, token_lengths]
+        public_lengths = token_lengths + 1
+        public_sequence = self.public_backbone(sequence, public_lengths)
+        hidden = self.actor_backbone(public_sequence, token_lengths + 1)[rows, token_lengths]
         if critic_factors is None:
             critic_factors = token_factors.new_zeros((batch, 0, TOKEN_WIDTH))
         if critic_lengths is None:
@@ -216,15 +228,28 @@ class KyokuTransformerActorCritic(nn.Module):
             raise ValueError("critic_lengths must have one entry per batch row")
         if torch.any(critic_lengths < 0) or torch.any(critic_lengths > critic_factors.shape[1]):
             raise ValueError("critic_lengths exceed supplied critic rows")
-        if critic_factors.shape[1] + 2 > self.config.context_tokens:
-            raise ValueError(f"critic context overflow: {critic_factors.shape[1] + 2} > {self.config.context_tokens}")
+        critic_sequence_lengths = public_lengths + critic_lengths + 1
+        if torch.any(critic_sequence_lengths > self.config.context_tokens):
+            raise ValueError("critic context overflow: public tokens + critic tokens + two queries exceed context_tokens")
         critic_private = self.critic_embedding(critic_factors)
-        critic_sequence = critic_private.new_zeros((batch, critic_private.shape[1] + 2, width))
-        critic_sequence[:, 0] = hidden.detach()
-        critic_sequence[:, 1:1 + critic_private.shape[1]] = critic_private
-        value_indices = critic_lengths + 1
+        critic_capacity = int(critic_sequence_lengths.max().item())
+        critic_sequence = critic_private.new_zeros((batch, critic_capacity, width))
+        # Preserve every shared-public representation, including the learned
+        # policy query at the end of each row.  Value gradients improve this
+        # shared prefix but cannot update the actor-only policy tail.
+        public_positions = torch.arange(padded + 1, device=tokens.device)[None, :].expand(batch, -1)
+        public_valid = public_positions < public_lengths[:, None]
+        critic_sequence[
+            rows[:, None].expand_as(public_positions)[public_valid], public_positions[public_valid]
+        ] = public_sequence[public_valid]
+        private_positions = public_lengths[:, None] + torch.arange(
+            critic_private.shape[1], device=tokens.device
+        )[None, :]
+        private_valid = torch.arange(critic_private.shape[1], device=tokens.device)[None, :] < critic_lengths[:, None]
+        critic_sequence[rows[:, None].expand_as(private_positions)[private_valid], private_positions[private_valid]] = critic_private[private_valid]
+        value_indices = public_lengths + critic_lengths
         critic_sequence[rows, value_indices] = self.value_query
-        critic_hidden = self.critic_backbone(critic_sequence, critic_lengths + 2)[rows, value_indices]
+        critic_hidden = self.critic_backbone(critic_sequence, critic_sequence_lengths)[rows, value_indices]
         # Autocast makes the preceding matrix multiplies BF16, but policy
         # probabilities and value estimates feed PPO's numerically sensitive
         # ratio/loss path.  Promote them before leaving the model, as in

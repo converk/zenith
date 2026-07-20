@@ -579,6 +579,8 @@ class PPOLearner:
                         valid_logprobabilities, logprobabilities, torch.zeros_like(logprobabilities),
                     )
                     entropy_values = -(probabilities * safe_logprobabilities).sum(-1)
+                    legal_action_counts = legal_mask.sum(-1).float().clamp_min(2.0)
+                    normalized_entropy_values = entropy_values / legal_action_counts.log()
                     loss_values = (
                         policy_loss_values
                         + float(self.hp["value_coef"]) * value_loss
@@ -613,6 +615,7 @@ class PPOLearner:
                     ("policy_loss", policy_loss_values),
                     ("value_loss", value_loss),
                     ("entropy", entropy_values),
+                    ("entropy_normalized", normalized_entropy_values),
                     ("approx_kl", kl_values),
                     ("clipfrac", clipfrac_values),
                     ("ratio", ratio),

@@ -35,6 +35,12 @@ class PublicStateTracker:
         self.visible = np.zeros((int(num_envs), 34), dtype=np.int16)
         self.discard_masks = np.zeros((int(num_envs), NUM_PLAYERS), dtype=object)
         self.riichi = np.zeros((int(num_envs), NUM_PLAYERS), dtype=np.bool_)
+        self.discard_counts = np.zeros(int(num_envs), dtype=np.int16)
+        self.completed_discard_counts = np.zeros(int(num_envs), dtype=np.int16)
+        # Only open melds count as furo. Kakan upgrades an existing pon and
+        # therefore must not increment this table-level count.
+        self.open_meld_counts = np.zeros((int(num_envs), NUM_PLAYERS), dtype=np.int8)
+        self.completed_open_meld_counts = np.zeros(int(num_envs), dtype=np.int8)
         self.events = 0
 
     def reset(self, indices: list[int] | tuple[int, ...]) -> None:
@@ -42,6 +48,8 @@ class PublicStateTracker:
             self.visible[int(index)].fill(0)
             self.discard_masks[int(index)].fill(0)
             self.riichi[int(index)].fill(False)
+            self.discard_counts[int(index)] = 0
+            self.open_meld_counts[int(index)].fill(0)
 
     def remaining(self, env_index: int, own_counts: np.ndarray) -> np.ndarray:
         counts = np.asarray(own_counts, dtype=np.int16)
@@ -67,11 +75,21 @@ class PublicStateTracker:
         kind = str(event.get("type", ""))
         actor = int(event.get("actor", source_seat))
         if kind in {"start_kyoku", "end_kyoku"}:
+            if kind == "end_kyoku":
+                # RiichiEnv may include the next ``start_kyoku`` in the same
+                # event batch. Snapshot before that reset so completed-hand
+                # metrics cannot be reported as zero.
+                self.completed_discard_counts[env_index] = self.discard_counts[env_index]
+                self.completed_open_meld_counts[env_index] = self.open_meld_counts[env_index].sum()
             if kind == "start_kyoku":
                 self.reset([env_index])
             return
         if kind in {"reach", "reach_accepted"}:
             self.riichi[env_index, actor] = True
+        elif kind in {"chi", "pon", "daiminkan"}:
+            self.open_meld_counts[env_index, actor] += 1
+        if kind == "dahai":
+            self.discard_counts[env_index] += 1
         tile_values: list[str | None] = []
         if kind in {"dahai", "dora"}:
             tile_values.append(event.get("pai"))

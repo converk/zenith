@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
-
 from ..rewards.efficiency import DiscardAnalysisBatch, EfficiencyAnalyzer
 from ..rewards.public_state import PublicStateTracker
 
@@ -24,20 +22,24 @@ def _is_discard(action: Any) -> bool:
     return _kind(action) in {"dahai", "riichi", "reach"} or "discard" in _kind(action)
 
 
-def _own_counts(observation: Any) -> np.ndarray:
-    counts = np.zeros(34, dtype=np.uint8)
-    seat = int(observation.player_id)
-    for physical in getattr(observation, "hands")[seat]:
-        counts[int(physical) // 4] += 1
-    return counts
+def _is_aka_dora(physical_tile: int) -> bool:
+    """Return whether a physical tile is one of the three red fives."""
+    return int(physical_tile) in {16, 52, 88}
 
 
-def _open_melds(observation: Any) -> int:
-    seat = int(observation.player_id)
-    melds = getattr(observation, "melds", ())
-    if len(melds) > seat and isinstance(melds[seat], (list, tuple)):
-        return len(melds[seat])
-    return sum(int(getattr(meld, "seat", -1)) == seat for meld in melds)
+def _dora_type(indicator: int) -> int:
+    """Return the tile type indicated by a public dora indicator."""
+    tile = int(indicator) // 4
+    if tile >= 27:
+        # East -> South -> West -> North -> East; white -> green -> red.
+        return 27 + ((tile - 27 + 1) % 4) if tile < 31 else 31 + ((tile - 31 + 1) % 3)
+    suit, number = divmod(tile, 9)
+    return suit * 9 + ((number + 1) % 9)
+
+
+def _is_dora(observation: Any, tile: int) -> bool:
+    indicators = getattr(observation, "dora_indicators", None) or ()
+    return any(_dora_type(indicator) == int(tile) for indicator in indicators)
 
 
 def _suji_safety(tile: int, discard_mask: int) -> int:
@@ -61,6 +63,64 @@ class HeuristicPolicy:
         self.analyzer = analyzer
         self.public = public
         self.defensive = bool(defensive)
+
+    @staticmethod
+    def _efficiency_key(candidate: Any, observation: Any) -> tuple[int, int, int, int, int]:
+        """Shanten/ukeire first, then preserve known scoring value deterministically."""
+        action = candidate.action
+        physical_tile = int(action.tile)
+        tile = physical_tile // 4
+        return (
+            -int(candidate.shanten),
+            int(candidate.ukeire),
+            -int(_is_dora(observation, tile)),
+            -int(_is_aka_dora(physical_tile)),
+            -physical_tile,
+        )
+
+    def _defense_key(self, candidate: Any, row: Any, env_index: int, seat: int) -> tuple[int, ...]:
+        """Rank safety against every declared riichi before hand efficiency.
+
+        A fully visible tile cannot be in any opponent's concealed hand.  For
+        non-exhausted tiles, genbutsu is certain safety; suji is only a weak
+        public signal and is counted across *all* riichi opponents rather than
+        taking the previous, misleading maximum for one opponent.
+        """
+        action = candidate.action
+        physical_tile = int(action.tile)
+        tile = physical_tile // 4
+        threats = [
+            opponent
+            for opponent in range(4)
+            if opponent != seat and self.public.riichi[env_index, opponent]
+        ]
+        exhausted = int(int(row.counts[tile]) + int(self.public.visible[env_index, tile]) >= 4)
+        genbutsu_all = int(bool(threats) and self.public.is_genbutsu_to_all_riichi(env_index, tile))
+        coverage = self.public.genbutsu_coverage(env_index, tile)
+        suji_coverage = sum(
+            _suji_safety(tile, int(self.public.discard_masks[env_index, opponent]))
+            for opponent in threats
+        )
+        return (
+            exhausted,
+            genbutsu_all,
+            coverage,
+            suji_coverage,
+            *self._efficiency_key(candidate, row.decision.observation),
+        )
+
+    def _candidate_key(self, candidate: Any, row: Any, env_index: int, seat: int, threat: bool) -> tuple[int, ...]:
+        if threat:
+            return self._defense_key(candidate, row, env_index, seat)
+        return self._efficiency_key(candidate, row.decision.observation)
+
+    def _safe_tenpai_under_riichi(self, candidate: Any, row: Any, env_index: int, seat: int) -> bool:
+        """Whether defence can commit to riichi without giving up certain safety."""
+        if int(candidate.shanten) != 0:
+            return False
+        tile = int(candidate.action.tile) // 4
+        exhausted = int(row.counts[tile]) + int(self.public.visible[env_index, tile]) >= 4
+        return exhausted or self.public.is_genbutsu_to_all_riichi(env_index, tile)
 
     def select_batch(self, decisions: list[Any], analysis_batch: DiscardAnalysisBatch | None = None) -> list[Any]:
         """Select one legal native action per decision without GPU/RPC work."""
@@ -86,17 +146,21 @@ class HeuristicPolicy:
             env_index = int(decision.env_index)
             seat = int(decision.seat_id)
             threat = self.defensive and self.public.has_riichi_threat(env_index, seat)
-            def key(candidate: Any) -> tuple[int, int, int, int]:
-                action = candidate.action
-                tile = int(action.tile) // 4
-                if threat:
-                    genbutsu_all = int(self.public.is_genbutsu_to_all_riichi(env_index, tile))
-                    coverage = self.public.genbutsu_coverage(env_index, tile)
-                    suji = max((_suji_safety(tile, int(self.public.discard_masks[env_index, opponent]))
-                                for opponent in range(4) if opponent != seat and self.public.riichi[env_index, opponent]), default=0)
-                    return (genbutsu_all, coverage, suji, -candidate.shanten * 1000 + candidate.ukeire)
-                return (0, 0, 0, -candidate.shanten * 1000 + candidate.ukeire)
-            output[index] = max(row.candidates, key=key).action
+            best = max(
+                row.candidates,
+                key=lambda candidate: self._candidate_key(candidate, row, env_index, seat, threat),
+            )
+            riichi = next((action for action in actions if _kind(action) in {"riichi", "reach"}), None)
+            if riichi is not None and (
+                not threat or self._safe_tenpai_under_riichi(best, row, env_index, seat)
+            ):
+                # Riichi is a separate legal action in RiichiEnv.  The next
+                # decision is restricted to tenpai-preserving discards, so
+                # declare it explicitly instead of accidentally treating it
+                # as a tied discard candidate.
+                output[index] = riichi
+            else:
+                output[index] = best.action
         if any(action is None for action in output):
             raise RuntimeError("heuristic failed to choose a legal action")
         return [action for action in output if action is not None]

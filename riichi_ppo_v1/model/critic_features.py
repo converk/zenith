@@ -144,15 +144,6 @@ def collect_visible_table_state(observations: dict[int, Any], *, include_public_
     )
 
 
-def _counts34(tiles: Iterable[int]) -> np.ndarray:
-    counts = np.zeros(NUM_TILE_TYPES, dtype=np.float32)
-    for tile in tiles:
-        tile_type = tile_id_to_type(tile)
-        if tile_type is not None:
-            counts[tile_type] += 1.0
-    return counts
-
-
 def _tile_factors(tile_type: int) -> tuple[int, int]:
     tile_type = int(tile_type)
     suit = tile_type // 9 + 1 if tile_type < 27 else 4
@@ -162,22 +153,6 @@ def _tile_factors(tile_type: int) -> tuple[int, int]:
 
 def _is_red(tile: int) -> bool:
     return int(tile) in {16, 52, 88}
-
-
-def _row(field: int, relative: int, tile_type: int | None = None, count: int = 0) -> tuple[int, ...]:
-    suit, rank = (0, 0) if tile_type is None else _tile_factors(tile_type)
-    return (
-        SEGMENT_CRITIC_PRIVATE,
-        TOKEN_KIND_TILE_COUNT,
-        int(field),
-        int(relative),
-        suit,
-        rank,
-        0,
-        int(count),
-        0,
-        1,
-    )
 
 
 def _tile_count_rows(field: int, relative: int, tiles: Iterable[int], *, flag: int = 0) -> list[tuple[int, ...]]:
@@ -210,10 +185,10 @@ def encode_opponent_hand_tokens(table_state: TableState, observer: int) -> list[
     rows: list[tuple[int, ...]] = []
     for relative in (2, 3, 4):
         seat = (int(observer) + relative - 1) % NUM_PLAYERS
-        counts = _counts34(table_state.hands[seat])
-        for tile_type, count in enumerate(counts.astype(np.int64).tolist()):
-            if count:
-                rows.append(_row(FIELD_OPPONENT_HAND, relative, tile_type, count))
+        # Aka dora are semantically distinct tiles.  The value branch is
+        # allowed to see concealed opponent hands, so folding their red fives
+        # here would discard information that is retained for rivers/melds.
+        rows.extend(_tile_count_rows(FIELD_OPPONENT_HAND, relative, table_state.hands[seat]))
     return rows
 
 

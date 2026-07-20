@@ -46,14 +46,33 @@ class DiscardDecisionAnalysis:
         return 0.0
 
 
-def efficiency_reward(shanten: int, ukeire: int, best_shanten: int, best_ukeire: int) -> float:
-    """Return the prescribed [-6, 0] / [-2, 0] shaping reward."""
+def efficiency_reward(
+    shanten: int,
+    ukeire: int,
+    best_shanten: int,
+    best_ukeire: int,
+) -> float:
+    """Return the fixed, bounded shanten-first early-training signal."""
     if int(shanten) > int(best_shanten):
-        return float(np.clip(-3.0 * (int(shanten) - int(best_shanten)), -6.0, 0.0))
+        return -1.0
     if int(shanten) < int(best_shanten):
         raise ValueError("selected shanten cannot beat the candidate minimum")
     loss = max(0, int(best_ukeire) - int(ukeire)) / max(int(best_ukeire), 1)
-    return float(np.clip(-2.0 * loss, -2.0, 0.0))
+    return -0.25 * loss
+
+
+def early_efficiency_weight(
+    update: int, total_updates: int, *, initial_weight: float = 0.10, decay_fraction: float = 0.10,
+) -> float:
+    """Linearly retire bounded discard shaping during the first training slice."""
+    if int(total_updates) <= 0:
+        raise ValueError("total_updates must be positive")
+    if float(initial_weight) < 0:
+        raise ValueError("initial_weight must be non-negative")
+    if not 0 < float(decay_fraction) <= 1:
+        raise ValueError("decay_fraction must be in (0, 1]")
+    progress = min(max(float(update) / float(total_updates), 0.0), 1.0)
+    return float(initial_weight) * (1.0 - min(progress / float(decay_fraction), 1.0))
 
 
 def remaining_ukeire(improving_mask: int, remaining_counts: np.ndarray) -> int:
@@ -98,7 +117,12 @@ def selected_efficiency_rewards(
     if len(decisions) != len(selected_actions):
         raise ValueError("decision/action length mismatch")
     batch = analysis or DiscardAnalysisBatch.build(decisions, analyzer=analyzer, public=public)
-    return [batch.for_decision(decision).selected_reward(action) for decision, action in zip(decisions, selected_actions, strict=True)]
+    return [
+        batch.for_decision(decision).selected_reward(
+            action,
+        )
+        for decision, action in zip(decisions, selected_actions, strict=True)
+    ]
 
 
 class DiscardAnalysisBatch:

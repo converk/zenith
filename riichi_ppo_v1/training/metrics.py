@@ -16,9 +16,6 @@ from typing import Iterable, Mapping
 
 import numpy as np
 
-from .opponents.lineup import CURRENT, DEFENSE, EFFICIENCY
-
-
 METRIC_SCHEMA_VERSION = 1
 
 
@@ -81,21 +78,21 @@ class SemanticMetrics:
     win_points: list[float] = field(default_factory=list)
     deal_in_points: list[float] = field(default_factory=list)
     draw_points: list[float] = field(default_factory=list)
+    kyoku_discard_counts: list[float] = field(default_factory=list)
+    kyoku_open_melds: list[float] = field(default_factory=list)
     wins: int = 0
     tsumo_wins: int = 0
     ron_wins: int = 0
     deal_ins: int = 0
     draws: int = 0
-    matches: int = 0
-    ranks: list[float] = field(default_factory=list)
-    final_scores: list[float] = field(default_factory=list)
     rewards: list[float] = field(default_factory=list)
     reward_efficiency: list[float] = field(default_factory=list)
     reward_kyoku: list[float] = field(default_factory=list)
-    reward_rank: list[float] = field(default_factory=list)
     reward_weighted_efficiency: list[float] = field(default_factory=list)
     reward_weighted_kyoku: list[float] = field(default_factory=list)
-    reward_weighted_rank: list[float] = field(default_factory=list)
+    match_ranks: list[int] = field(default_factory=list)
+    match_kyoku_lengths: list[float] = field(default_factory=list)
+    match_discard_counts: list[float] = field(default_factory=list)
     policy_decisions: Counter[str] = field(default_factory=Counter)
     policy_seats: Counter[str] = field(default_factory=Counter)
 
@@ -123,25 +120,23 @@ class SemanticMetrics:
             self.optimal_ukeire.append(float(ukeire_loss == 0.0))
 
     def record_transition_reward(self, transition: object) -> None:
-        weights = tuple(float(value) for value in getattr(transition, "reward_weights"))
         efficiency = float(getattr(transition, "efficiency_reward"))
+        efficiency_weight = float(getattr(transition, "efficiency_weight"))
         kyoku = float(getattr(transition, "kyoku_reward"))
-        rank = float(getattr(transition, "rank_reward"))
         self.rewards.append(float(getattr(transition, "reward")))
-        self.reward_efficiency.append(efficiency); self.reward_kyoku.append(kyoku); self.reward_rank.append(rank)
-        self.reward_weighted_efficiency.append(weights[0] * efficiency)
-        self.reward_weighted_kyoku.append(weights[1] * kyoku)
-        self.reward_weighted_rank.append(weights[2] * rank)
+        self.reward_efficiency.append(efficiency); self.reward_kyoku.append(kyoku)
+        self.reward_weighted_efficiency.append(efficiency_weight * efficiency)
+        self.reward_weighted_kyoku.append(kyoku)
 
     def record_lineup(self, policies: Iterable[str], learner_seats: Iterable[int]) -> None:
         learner = set(int(seat) for seat in learner_seats)
-        for seat, policy in enumerate(policies):
-            name = "current" if policy == CURRENT else "efficiency" if policy == EFFICIENCY else "defense" if policy == DEFENSE else "history"
-            self.policy_seats[name] += 1
+        for seat, _policy in enumerate(policies):
+            self.policy_seats["current"] += 1
             if seat in learner:
-                self.policy_decisions[name] += 1
+                self.policy_decisions["current"] += 1
 
-    def record_kyoku(self, learner_seats: Iterable[int], score_deltas: Iterable[float], events: Iterable[Iterable[str]]) -> None:
+    def record_kyoku(self, learner_seats: Iterable[int], score_deltas: Iterable[float], events: Iterable[Iterable[str]],
+                     *, discard_count: int | None = None, open_meld_count: int | None = None) -> None:
         seats = set(int(seat) for seat in learner_seats)
         deltas = [float(value) / 1000.0 for value in score_deltas]
         rows: list[dict[str, object]] = []
@@ -157,9 +152,13 @@ class SemanticMetrics:
                     continue
         horas = [row for row in rows if row.get("type") == "hora"]
         is_draw = any(row.get("type") == "ryukyoku" for row in rows)
+        if open_meld_count is not None:
+            self.kyoku_open_melds.append(float(open_meld_count))
         for seat in seats:
             point = deltas[seat]
             self.kyoku_points.append(point)
+            if discard_count is not None:
+                self.kyoku_discard_counts.append(float(discard_count))
             won = [row for row in horas if int(row.get("actor", -1)) == seat]
             dealt = [row for row in horas if int(row.get("target", -1)) == seat and int(row.get("actor", -1)) != seat]
             if won:
@@ -174,14 +173,29 @@ class SemanticMetrics:
                 self.draws += 1
                 self.draw_points.append(point)
 
-    def record_match(self, learner_seats: Iterable[int], ranks: Iterable[int], scores: Iterable[float]) -> None:
-        self.matches += len(tuple(learner_seats))
-        self.ranks.extend(float(rank) for rank in ranks)
-        self.final_scores.extend(float(score) for score in scores)
+    def record_match_result(self, learner_seat: int, final_scores: Iterable[float], *, kyoku_count: int | None = None,
+                            discard_count: int | None = None) -> None:
+        """Record the candidate's final placement for evaluation reporting only.
+
+        Equal final scores are broken by seat id to give every completed match
+        exactly one placement.  Evaluation rotates the candidate through all
+        four seats, so this deterministic fallback cannot favour one policy.
+        These values are never used by rollout rewards or checkpoint selection.
+        """
+        scores = [float(score) for score in final_scores]
+        seat = int(learner_seat)
+        if not 0 <= seat < len(scores):
+            raise ValueError(f"learner seat {seat} is outside final scores")
+        ranking = sorted(range(len(scores)), key=lambda index: (-scores[index], index))
+        self.match_ranks.append(ranking.index(seat) + 1)
+        if kyoku_count is not None:
+            self.match_kyoku_lengths.append(float(kyoku_count))
+        if discard_count is not None:
+            self.match_discard_counts.append(float(discard_count))
 
     def summary(self, prefix: str = "train") -> dict[str, float]:
         kyokus = len(self.kyoku_points)
-        matches = len(self.ranks)
+        matches = len(self.match_ranks)
         result = {
             f"{prefix}/kyoku/count": float(kyokus),
             f"{prefix}/kyoku/point_delta_mean": _mean(self.kyoku_points),
@@ -196,13 +210,8 @@ class SemanticMetrics:
             f"{prefix}/kyoku/deal_in_points_mean": _mean(self.deal_in_points),
             f"{prefix}/kyoku/draw_rate": _rate(self.draws, kyokus),
             f"{prefix}/kyoku/draw_point_delta_mean": _mean(self.draw_points),
-            f"{prefix}/match/count": float(matches),
-            f"{prefix}/match/rank_mean": _mean(self.ranks),
-            f"{prefix}/match/first_rate": _rate(sum(rank == 1.0 for rank in self.ranks), matches),
-            f"{prefix}/match/top2_rate": _rate(sum(rank <= 2.0 for rank in self.ranks), matches),
-            f"{prefix}/match/last_rate": _rate(sum(rank == 4.0 for rank in self.ranks), matches),
-            f"{prefix}/match/final_score_mean": _mean(self.final_scores),
-            f"{prefix}/match/final_score_delta_mean": _mean([value - 25_000.0 for value in self.final_scores]),
+            f"{prefix}/kyoku/discard_count_mean": _mean(self.kyoku_discard_counts),
+            f"{prefix}/kyoku/open_melds_mean": _mean(self.kyoku_open_melds),
             f"{prefix}/action/decision_count": float(self.decisions),
             f"{prefix}/action/legal_count_mean": _mean(self.legal_actions),
             f"{prefix}/action/riichi_opportunity_accept_rate": _rate(self.actions["riichi"], self.riichi_opportunities),
@@ -216,17 +225,23 @@ class SemanticMetrics:
             f"{prefix}/defense/genbutsu_all_rate": _rate(self.genbutsu_all, self.threat_discards),
             f"{prefix}/defense/genbutsu_coverage_mean": _mean(self.genbutsu_coverage),
             f"{prefix}/reward/total_mean": _mean(self.rewards),
+            f"{prefix}/match/count": float(matches),
+            f"{prefix}/match/first_place_rate": _rate(sum(rank == 1 for rank in self.match_ranks), matches),
+            f"{prefix}/match/mean_rank": _mean([float(rank) for rank in self.match_ranks]),
+            f"{prefix}/match/top2_rate": _rate(sum(rank <= 2 for rank in self.match_ranks), matches),
+            f"{prefix}/match/last_place_rate": _rate(sum(rank == 4 for rank in self.match_ranks), matches),
+            f"{prefix}/match/length_kyokus_mean": _mean(self.match_kyoku_lengths),
+            f"{prefix}/match/discard_count_mean": _mean(self.match_discard_counts),
         }
         for kind in ("pass", "discard", "tsumogiri", "riichi", "chi", "pon", "daiminkan", "ankan", "kakan", "hora", "kyushu"):
             result[f"{prefix}/action/{kind}_rate"] = _rate(self.actions[kind], self.decisions)
-        for name, values in (("efficiency", self.reward_efficiency), ("kyoku", self.reward_kyoku), ("rank", self.reward_rank),
-                             ("weighted_efficiency", self.reward_weighted_efficiency), ("weighted_kyoku", self.reward_weighted_kyoku), ("weighted_rank", self.reward_weighted_rank)):
+        for name, values in (("efficiency", self.reward_efficiency), ("kyoku", self.reward_kyoku),
+                             ("weighted_efficiency", self.reward_weighted_efficiency), ("weighted_kyoku", self.reward_weighted_kyoku)):
             result[f"{prefix}/reward/{name}_mean"] = _mean(values)
         total_seats = sum(self.policy_seats.values())
         total_decisions = sum(self.policy_decisions.values())
-        for name in ("current", "efficiency", "defense", "history"):
-            result[f"{prefix}/opponents/{name}_seat_fraction"] = _rate(self.policy_seats[name], total_seats)
-            result[f"{prefix}/opponents/{name}_decision_fraction"] = _rate(self.policy_decisions[name], total_decisions)
+        result[f"{prefix}/opponents/current_seat_fraction"] = _rate(self.policy_seats["current"], total_seats)
+        result[f"{prefix}/opponents/current_decision_fraction"] = _rate(self.policy_decisions["current"], total_decisions)
         return result
 
 

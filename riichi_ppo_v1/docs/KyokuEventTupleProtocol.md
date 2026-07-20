@@ -1,6 +1,6 @@
 # Kyoku 状态协议
 
-本文定义 `RiichiEnv`、Python bridge、Rust `MjaiKyokuStateMachineManager` 与 PPO 模型之间的状态边界。它只表达标准四人立直麻将中模型在决策时可见的信息；策略与 value 使用同一份输入，不使用训练期特权信息。
+本文定义 `RiichiEnv`、Python bridge、Rust `MjaiKyokuStateMachineManager` 与 PPO 模型之间的状态边界。策略只表达标准四人立直麻将中观察者在决策时可见的信息；集中式 value 在该公共序列之外，可于训练期接收三家对手的闭手牌（以及可选的公开牌河/副露压缩表示）。这些 critic-only 特权信息绝不进入策略分支。
 
 ## 1. 数据流与职责
 
@@ -14,6 +14,8 @@ Observation.legal_actions() + Observation 当前字段
   -> prepare_decisions()
   -> token_factors / token_numeric / token_lengths / action_mask / history_generation
   -> 模型追加 learned query，输出 policy logits 与 value
+
+actor 只消费上述 `token_factors/token_numeric` 公共序列，其中自身手牌与摸牌只对该观察者可见。critic 还消费独立的 `critic_factors`：三家对手的闭手牌必定包含，`critic_include_public_state=true` 时还包含三家牌河与副露的压缩 token。critic 的隐藏手牌、对手摸牌、里宝及牌山组成不会回流到 actor。
 ```
 
 每张桌维护四个按观察者区分的状态机。history 在同一局内只追加公开事件；每次决策根据快照重建当前状态后缀。模型不接收候选动作 token，合法选择由独立的固定 `bool[241]` 掩码表示。动作空间与 MJAI 回转规则见 [KyokuActionSpace.md](KyokuActionSpace.md)。
@@ -85,6 +87,15 @@ Python bridge 为每条决策构造以下 JSON。`player_id` 必须等于该观�
 - 分数使用周期 `(100, 1_000, 10_000, 100_000)`；
 - 局况计数使用周期 `(2, 8, 32, 128)`；
 - 每个周期依次写入 `sin(2πx/p)`、`cos(2πx/p)`，组成八维；其他 token 的八维均为零。
+
+## 4.1 集中式 critic 的额外输入
+
+`critic_factors` 同样为十因子 `uint8` 行，但独立于 actor 的 `token_factors`，不带 numeric 通道。其 `segment=4`，并且只由 value 支路嵌入：
+
+- 三家对手的闭手牌：`kind=4, field=2`，按相对座位、牌种、赤五状态分别计数；普通五和赤五必须是不同 token，不能折叠。
+- 可选公开投影：启用 `critic_include_public_state` 后，`field=3` 为按牌种/赤五聚合的牌河，`kind=5, field=2` 为副露头，`field=4` 为副露组成牌计数。该投影刻意不保留牌河顺序、手切/摸切。
+
+该分支可以利用训练时完整 Observation 的四家闭手信息，但绝不能改变 actor 输入、策略 logits 或部署时的策略信息边界。
 
 ## 5. Python/Rust 边界与形状
 

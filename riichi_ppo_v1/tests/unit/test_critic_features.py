@@ -17,7 +17,7 @@ def observation(seat: int, hand: list[int]):
     return SimpleNamespace(hands=hands)
 
 
-def test_collects_true_hands_from_four_self_observations_and_folds_red_fives() -> None:
+def test_collects_true_hands_from_four_self_observations_and_preserves_red_fives() -> None:
     observations = {
         0: observation(0, [0, 4, 8]),
         1: observation(1, [16, 17]),
@@ -29,12 +29,13 @@ def test_collects_true_hands_from_four_self_observations_and_folds_red_fives() -
     features = encode_critic_features(table, observer=0)
 
     hand_rows = features.factors[features.factors[:, 2] == FIELD_OPPONENT_HAND]
-    assert hand_rows[:, 3].tolist() == [2, 3, 4]
-    assert hand_rows[:, 6].tolist() == [0, 0, 0]
-    assert any(row.tolist() == [4, 4, 2, 2, 1, 5, 0, 2, 0, 1] for row in hand_rows)
+    assert hand_rows[:, 3].tolist() == [2, 2, 3, 4]
+    assert hand_rows[:, 6].tolist() == [0, 1, 1, 0]
+    assert any(row.tolist() == [4, 4, 2, 2, 1, 5, 1, 1, 0, 1] for row in hand_rows)
+    assert any(row.tolist() == [4, 4, 2, 2, 1, 5, 0, 1, 0, 1] for row in hand_rows)
 
-    assert features.length == 3
-    assert features.factors.shape == (3, 10)
+    assert features.length == 4
+    assert features.factors.shape == (4, 10)
 
 
 def test_compact_opponent_rivers_and_melds_are_critic_only_opt_in() -> None:

@@ -20,17 +20,17 @@ gpu_monitor: false
 # GPU telemetry 采样间隔，单位秒。较小值能捕捉更细的波动，但会增加少量系统调用开销。
 gpu_sample_interval_s: 0.25
 
-# 语义训练指标只记录公开 MJAI 事件、动作类别和最终结算；不会写入手牌或墙牌。
+# JSONL 语义训练指标只记录公开 MJAI 事件、动作类别和最终结算；不会写入手牌或墙牌。
+# TensorBoard 仅投影精选的 PPO、固定基线 eval 与运行健康指标；完整诊断保留在 JSONL。
 semantic_metrics_enabled: true
 semantic_metrics_jsonl: metrics.jsonl
 metrics_rolling_kyokus: 1000
 metrics_histogram_interval: 25
 
-# 固定基线独立评测：update 0、每个 interval 及训练结束时运行。
+# 固定启发式基线独立评测：update 0、每个 interval 及训练结束时运行。
 evaluation_enabled: true
-evaluation_interval_updates: 8
+evaluation_interval_updates: 12
 evaluation_seed_base: 20260717
-# 12 个固定 seed × 4 个候选座位 = 48 个半庄；相较快速 16 局基线，
-# 平均名次、一位率和放铳率的采样方差明显更低。
-evaluation_seed_count: 12
-evaluation_workers: 6
+# 每次评测固定进行 128 个半庄；四个候选座位在单次评测内完全均衡。
+evaluation_hanchan_count: 96
+evaluation_workers: 24

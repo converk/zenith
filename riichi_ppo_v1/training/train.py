@@ -24,8 +24,8 @@ import yaml
 from torch.utils.tensorboard import SummaryWriter
 
 from .profiling import GpuSampler, append_jsonl
-from .curriculum import checkpoint_cadence
 from .metrics import RollingKyokuMetrics, append_metric_jsonl, metric_counters
+from .tensorboard import learner_peak_allocated_mb, write_curated_scalars
 
 
 _CONFIG_GROUPS = ("training", "monitoring")
@@ -104,8 +104,23 @@ def summarize_worker_rollout(
             # Semantic metric tags are already public TensorBoard paths.  Keep
             # them out of the legacy ``rollout/`` namespace and sum explicit
             # event counts across workers.
-            target = name if name.startswith(("train/", "curriculum/")) else f"rollout/{name}"
-            metrics[target] = float(np.sum(values) if name.endswith("/count") or name.endswith("_count") else np.mean(values))
+            target = name if name.startswith(("train/", "reward_schedule/")) else f"rollout/{name}"
+            if name.endswith("/count") or name.endswith("_count"):
+                metrics[target] = float(np.sum(values))
+            elif name.startswith("train/kyoku/"):
+                # Per-kyoku rates, points and lengths must be weighted by the
+                # number of settled kyokus each worker actually produced.
+                weighted = [
+                    (float(stats[name]), float(stats.get("train/kyoku/count", 0.0)))
+                    for stats in stats_list if name in stats and np.isfinite(stats[name])
+                ]
+                total_weight = sum(weight for _value, weight in weighted)
+                metrics[target] = (
+                    float(sum(value * weight for value, weight in weighted) / total_weight)
+                    if total_weight else float(np.mean(values))
+                )
+            else:
+                metrics[target] = float(np.mean(values))
 
     rows: dict[str, dict[str, float]] = {}
     for total_name in sorted(name for stats in stats_list for name in stats if name.startswith("timing/") and name.endswith("/total_s")):
@@ -125,65 +140,6 @@ def summarize_worker_rollout(
     return metrics, rows
 
 
-def timing_rows(stats: dict[str, float], label: str) -> dict[str, dict[str, float]]:
-    """Convert StageProfiler's flat metric schema into printable rows."""
-    rows: dict[str, dict[str, float]] = {}
-    for total_name in sorted(name for name in stats if name.startswith("timing/") and name.endswith("/total_s")):
-        stage = total_name.removeprefix("timing/").removesuffix("/total_s")
-        base = total_name.removesuffix("/total_s")
-        name = f"{label}/{stage}" if label else stage
-        rows[name] = {
-            "total_s": float(stats[total_name]),
-            "mean_ms": float(stats.get(f"{base}/mean_ms", 0.0)),
-            "max_ms": float(stats.get(f"{base}/max_ms", 0.0)),
-            "count": float(stats.get(f"{base}/count", 0.0)),
-        }
-    return rows
-
-
-def print_timing_table(title: str, rows: dict[str, dict[str, float]]) -> None:
-    print(f"{title} timing:", flush=True)
-    for name, row in sorted(rows.items()):
-        if "worker_mean_total_s" in row:
-            print(
-                f"  {name:<48} worker_total_s mean={row['worker_mean_total_s']:.4f} "
-                f"max={row['worker_max_total_s']:.4f} min={row['worker_min_total_s']:.4f} "
-                f"count_sum={row['worker_sum_count']:.0f}",
-                flush=True,
-            )
-        else:
-            print(
-                f"  {name:<48} total_s={row['total_s']:.4f} mean_ms={row['mean_ms']:.3f} "
-                f"max_ms={row['max_ms']:.3f} count={row['count']:.0f}",
-                flush=True,
-            )
-
-
-def print_worker_details(results: list[tuple[list[Any], dict[str, float]]]) -> None:
-    """Print non-aggregated rollout throughput and timing for every worker."""
-    print("rollout worker detail:", flush=True)
-    for worker_id, (transitions, stats) in enumerate(results):
-        elapsed = float(stats.get("rollout_s", 0.0))
-        model_decisions = float(stats.get("model_decisions", 0.0))
-        recorded_decisions = float(stats.get("recorded_decisions", len(transitions)))
-        print(
-            f"  worker={worker_id} kyokus={stats.get('kyokus', 0.0):.0f} "
-            f"transitions={len(transitions)} model_decisions={model_decisions:.0f} "
-            f"rollout_s={elapsed:.3f} transition_sps={len(transitions) / max(elapsed, 1e-9):.2f} "
-            f"model_decision_sps={model_decisions / max(elapsed, 1e-9):.2f} "
-            f"recorded_decision_sps={recorded_decisions / max(elapsed, 1e-9):.2f}",
-            flush=True,
-        )
-        for total_name in sorted(name for name in stats if name.startswith("timing/") and name.endswith("/total_s")):
-            stage = total_name.removeprefix("timing/").removesuffix("/total_s")
-            total = float(stats[total_name])
-            count = float(stats.get(total_name.removesuffix("/total_s") + "/count", 0.0))
-            print(
-                f"    {stage:<46} total_s={total:.4f} mean_ms={total * 1_000.0 / max(count, 1.0):.3f} count={count:.0f}",
-                flush=True,
-            )
-
-
 def aggregate_actor_profiles(profiles: list[dict[str, float]]) -> dict[str, float]:
     """Sum per-rank inference/update counters for a single iteration summary."""
     result: dict[str, float] = {}
@@ -193,11 +149,26 @@ def aggregate_actor_profiles(profiles: list[dict[str, float]]) -> dict[str, floa
     return result
 
 
-def ranked_timing_rows(profiles: list[dict[str, float]], label: str) -> dict[str, dict[str, float]]:
-    rows: dict[str, dict[str, float]] = {}
-    for rank, profile in enumerate(profiles):
-        rows.update(timing_rows(profile, f"{label}/rank{rank}"))
-    return rows
+def is_better_kyoku_selection(
+    candidate: dict[str, float], best: dict[str, float] | None, *, score_epsilon: float = 1e-3,
+) -> bool:
+    """Compare evaluation windows without reintroducing half-match objectives."""
+    if best is None:
+        return True
+    score_delta = candidate["eval/kyoku/point_delta_mean"] - best["eval/kyoku/point_delta_mean"]
+    if score_delta > score_epsilon:
+        return True
+    if abs(score_delta) > score_epsilon:
+        return False
+    deal_in_delta = candidate["eval/kyoku/deal_in_rate"] - best["eval/kyoku/deal_in_rate"]
+    if deal_in_delta < -1e-12:
+        return True
+    if abs(deal_in_delta) > 1e-12:
+        return False
+    return (
+        candidate["eval/efficiency/optimal_shanten_rate"]
+        > best["eval/efficiency/optimal_shanten_rate"]
+    )
 
 
 def run(config: dict[str, Any]) -> None:
@@ -241,7 +212,11 @@ def run(config: dict[str, Any]) -> None:
         flush=True,
     )
     workers = [
-        RolloutWorker.remote(index, config, inference_actors[worker_to_rank[index]])
+        RolloutWorker.remote(
+            index,
+            config,
+            inference_actors[worker_to_rank[index]],
+        )
         for index in range(int(config["num_workers"]))
     ]
     evaluation_workers = []
@@ -259,28 +234,75 @@ def run(config: dict[str, Any]) -> None:
     gpu_sampler = GpuSampler(bool(config.get("gpu_monitor", True)) and device.startswith("cuda"), float(config.get("gpu_sample_interval_s", 0.25)))
     gpu_sampler.start()
     last_evaluated = -1
+    evaluation_history: list[dict[str, float]] = []
+    best_selection: dict[str, float] | None = None
 
     def run_evaluation(update: int) -> None:
         """Run the fixed public baseline at a safe rollout/update boundary."""
-        nonlocal last_evaluated
+        nonlocal last_evaluated, evaluation_history, best_selection
         if not evaluation_workers:
             return
-        cases = evaluation_cases(int(config.get("evaluation_seed_base", 20260717)), int(config.get("evaluation_seed_count", 4)))
+        evaluation_interval = max(1, int(config.get("evaluation_interval_updates", 15)))
+        cases = evaluation_cases(
+            int(config.get("evaluation_seed_base", 20260717)),
+            int(config.get("evaluation_hanchan_count", 10)),
+            cycle=int(update) // evaluation_interval,
+        )
         futures = [
             evaluation_workers[index % len(evaluation_workers)].evaluate.remote(seed, seat, recipe)
             for index, (seed, seat, recipe) in enumerate(cases)
         ]
         results = ray.get(futures)
         values = merge_evaluation_summaries([result["metrics"] for result in results])
-        for name, value in values.items():
-            writer.add_scalar(name, value, update)
+        write_curated_scalars(writer, values, update)
         append_metric_jsonl(semantic_path, update=update, global_decisions=global_decisions,
                             global_kyokus=global_kyokus, source="evaluation", metrics=values,
                             metadata={"seed_base": int(config.get("evaluation_seed_base", 20260717)),
                                       "cases": [{key: result[key] for key in ("seed", "candidate_seat", "opponents")} for result in results]})
-        print(f"evaluation update={update} games={values.get('eval/match/count', 0):.0f} "
-              f"rank_mean={values.get('eval/match/rank_mean', 0.0):.4f} "
-              f"first_rate={values.get('eval/match/first_rate', 0.0):.4f}", flush=True)
+        print(
+            f"evaluation update={update} kyokus={values.get('eval/kyoku/count', 0):.0f} "
+            f"point_delta_mean={values.get('eval/kyoku/point_delta_mean', 0.0):.4f} "
+            f"deal_in_rate={values.get('eval/kyoku/deal_in_rate', 0.0):.4f} "
+            f"optimal_shanten_rate={values.get('eval/efficiency/optimal_shanten_rate', 0.0):.4f}",
+            flush=True,
+        )
+        evaluation_history = (evaluation_history + [{
+            name: float(values[name])
+            for name in (
+                "eval/kyoku/point_delta_mean", "eval/kyoku/deal_in_rate",
+                "eval/efficiency/optimal_shanten_rate",
+            )
+            if name in values
+        }])[-3:]
+        if len(evaluation_history) == 3:
+            window = {
+                name: float(np.mean([row[name] for row in evaluation_history]))
+                for name in evaluation_history[0]
+                if all(name in row for row in evaluation_history)
+            }
+            required = {
+                "eval/kyoku/point_delta_mean", "eval/kyoku/deal_in_rate",
+                "eval/efficiency/optimal_shanten_rate",
+            }
+            if required.issubset(window):
+                is_best = is_better_kyoku_selection(window, best_selection)
+                if is_best:
+                    best_selection = window
+                    path = Path(config["checkpoint_dir"]) / "best_kyoku.pt"
+                    ray.get(inference.save.remote(str(path), config))
+                    append_metric_jsonl(
+                        semantic_path, update=update, global_decisions=global_decisions,
+                        global_kyokus=global_kyokus, source="selection",
+                        metrics={f"selection/{name.removeprefix('eval/')}": value for name, value in window.items()},
+                        metadata={"window_updates": [update - 2 * int(config.get("evaluation_interval_updates", 50)),
+                                                      update - int(config.get("evaluation_interval_updates", 50)), update],
+                                  "checkpoint": str(path)},
+                    )
+                    print(
+                        f"best_kyoku_checkpoint={path} "
+                        f"point_delta_mean_3eval={window['eval/kyoku/point_delta_mean']:.4f}",
+                        flush=True,
+                    )
         last_evaluated = update
 
     try:
@@ -290,10 +312,16 @@ def run(config: dict[str, Any]) -> None:
             gpu_cursor = gpu_sampler.checkpoint()
             algorithm_started = time.perf_counter()
             begin_rollout_started = time.perf_counter()
-            ray.get([actor.begin_rollout.remote(iteration) for actor in inference_actors])
+            ray.get([actor.begin_rollout.remote(
+                iteration, split_policy_inference=False,
+            )
+                     for actor in inference_actors])
             begin_rollout_s = time.perf_counter() - begin_rollout_started
             rollout_started = time.perf_counter()
-            results = ray.get([worker.collect.remote(iteration) for worker in workers])
+            results = ray.get([
+                worker.collect.remote(iteration)
+                for worker in workers
+            ])
             rollout_wall_s = time.perf_counter() - rollout_started
             profile_summary_started = time.perf_counter()
             actor_profiles = ray.get([actor.profile_summary.remote() for actor in inference_actors])
@@ -342,25 +370,19 @@ def run(config: dict[str, Any]) -> None:
                 rollout_metrics.update(rolling_kyokus.update(
                     [float(rollout_metrics["train/kyoku/point_delta_mean"])] * point_count
                 ))
-            actor_timing = ranked_timing_rows(actor_profiles, "inference_actor")
-            update_timing = timing_rows(metrics, "")
             env_step_s = float(worker_timing.get("env/step_batch_native", {}).get("worker_mean_total_s", 0.0))
             update_forward_s = float(metrics.get("timing/update/model_forward/total_s", 0.0))
             inference_rows = float(actor_profile.get("inference/full_forward_rows_mean", 0.0))
             inference_dispatch_rows = float(actor_profile.get("inference/dispatch_rows_mean", 0.0))
             print(f"iteration={iteration + 1} transitions={len(transitions)} model_decisions={model_decisions:.0f} recorded_decisions={recorded_decisions:.0f} kyokus={rollout_kyokus:.0f} reward={rollout_reward:.4f} worker_transitions_per_s={rollout_tps:.2f} algorithm_wall_s={algorithm_wall_s:.3f} sps={recorded_decisions / max(algorithm_wall_s, 1e-9):.2f} model_forward_sps={model_decisions / max(algorithm_wall_s, 1e-9):.2f} rollout_wall_s={rollout_wall_s:.3f} begin_rollout_s={begin_rollout_s:.3f} profile_summary_s={profile_summary_s:.3f} transition_assembly_s={transition_assembly_s:.3f} env_step_s={env_step_s:.3f} inference_rows_per_forward={inference_rows:.2f} inference_rows_per_dispatch={inference_dispatch_rows:.2f} update_wall_s={update_wall_s:.3f} update_forward_s={update_forward_s:.3f} epochs={metrics['update/epochs_completed']:.0f}/{metrics['update/configured_epochs']:.0f} minibatches={metrics['update/executed_minibatches']:.0f}/{metrics['update/planned_minibatches']:.0f} early_stop={bool(metrics['update/early_stop'])} executed_samples={metrics['update/executed_transition_samples']:.0f} tokens_mean={metrics['update/executed_transition_tokens_mean']:.2f} input_tokens_mean={metrics['update/executed_transition_input_tokens_mean']:.2f} " + " ".join(f"{key}={value:.5f}" for key, value in metrics.items() if key in {"loss", "policy_loss", "value_loss", "entropy", "approx_kl", "clipfrac", "grad_norm"}), flush=True)
-            print_timing_table("rollout worker", worker_timing)
-            print_worker_details(results)
-            print_timing_table("rollout inference actor", actor_timing)
-            print_timing_table("PPO update", update_timing)
-            writer.add_scalar("rollout/kyokus", rollout_kyokus, iteration + 1)
-            writer.add_scalar("rollout/reward_mean", rollout_reward, iteration + 1)
-            for name, value in rollout_metrics.items():
-                writer.add_scalar(name, value, iteration + 1)
-            for name, value in metrics.items():
-                writer.add_scalar(f"ppo/{name}", value, iteration + 1)
-            for name, value in gpu_metrics.items():
-                writer.add_scalar(name, value, iteration + 1)
+            tensorboard_metrics = {
+                **rollout_metrics,
+                **{f"ppo/{name}": float(value) for name, value in metrics.items()},
+            }
+            learner_peak_mb = learner_peak_allocated_mb(update_results)
+            if learner_peak_mb is not None:
+                tensorboard_metrics["system/learner_gpu_peak_allocated_mb"] = learner_peak_mb
+            write_curated_scalars(writer, tensorboard_metrics, iteration + 1)
             histogram_interval = int(config.get("metrics_histogram_interval", 25))
             if histogram_interval > 0 and (iteration + 1) % histogram_interval == 0 and transitions:
                 writer.add_histogram("diagnostics/return", np.asarray([item.return_ for item in transitions], dtype=np.float32), iteration + 1)
@@ -379,18 +401,16 @@ def run(config: dict[str, Any]) -> None:
                 **gpu_metrics,
             })
             if bool(config.get("semantic_metrics_enabled", True)):
-                semantic_values = {**{name: value for name, value in rollout_metrics.items() if name.startswith(("train/", "curriculum/"))},
+                semantic_values = {**{name: value for name, value in rollout_metrics.items() if name.startswith(("train/", "reward_schedule/"))},
                                    **{f"ppo/{name}": value for name, value in metrics.items()}, **gpu_metrics}
                 append_metric_jsonl(semantic_path, update=iteration + 1, global_decisions=global_decisions,
                                     global_kyokus=global_kyokus, source="train", metrics=semantic_values,
-                                    metadata={"game_mode": config["game_mode"], "curriculum_stage": rollout_metrics.get("curriculum/stage", 0.0)})
-            if (iteration + 1) % max(1, int(config.get("evaluation_interval_updates", 25))) == 0:
+                                    metadata={
+                                        "game_mode": config["game_mode"],
+                                        "opponent_mix": "current_self_play_all_seats",
+                                    })
+            if (iteration + 1) % max(1, int(config.get("evaluation_interval_updates", 50))) == 0:
                 run_evaluation(iteration + 1)
-            cadence = checkpoint_cadence(int(config.get("total_updates", config["iterations"])))
-            if (iteration + 1) % cadence == 0:
-                path = Path(config["checkpoint_dir"]) / f"iteration_{iteration + 1}.pt"
-                ray.get(inference.save.remote(str(path), config))
-                print("checkpoint=" + str(path), flush=True)
         final_update = ray.get(inference.iteration.remote())
         if final_update != last_evaluated:
             run_evaluation(final_update)
@@ -477,7 +497,7 @@ def smoke_main() -> None:
         environment_path=args.environment_config,
         training_path=args.training_config,
     )
-    config.update({"device": args.device or "cpu", "num_workers": 1, "envs_per_worker": 1, "kyokus_per_worker": args.kyokus, "iterations": 1, "update_epochs": 4, "target_kl": 0.0, "minibatch_size": 32, "update_batch_mode": "auto", "checkpoint_interval": 1, "checkpoint_dir": "checkpoints/riichi_ppo_v1_smoke", "evaluation_enabled": False})
+    config.update({"device": args.device or "cpu", "num_workers": 1, "learner_gpus": 1, "envs_per_worker": 1, "kyokus_per_worker": args.kyokus, "iterations": 1, "update_epochs": 4, "target_kl": 0.0, "minibatch_size": 32, "update_batch_mode": "auto", "checkpoint_dir": "checkpoints/riichi_ppo_v1_smoke", "evaluation_enabled": False})
     if args.iterations is not None:
         config["iterations"] = args.iterations
     if args.checkpoint_dir:
