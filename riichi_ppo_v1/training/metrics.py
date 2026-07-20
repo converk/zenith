@@ -90,6 +90,7 @@ class SemanticMetrics:
     reward_kyoku: list[float] = field(default_factory=list)
     reward_weighted_efficiency: list[float] = field(default_factory=list)
     reward_weighted_kyoku: list[float] = field(default_factory=list)
+    completed_matches: int = 0
     match_ranks: list[int] = field(default_factory=list)
     match_kyoku_lengths: list[float] = field(default_factory=list)
     match_discard_counts: list[float] = field(default_factory=list)
@@ -173,6 +174,13 @@ class SemanticMetrics:
                 self.draws += 1
                 self.draw_points.append(point)
 
+    def record_match_length(self, kyoku_count: int, *, discard_count: int | None = None) -> None:
+        """Record one completed physical hanchan without assigning a seat rank."""
+        self.completed_matches += 1
+        self.match_kyoku_lengths.append(float(kyoku_count))
+        if discard_count is not None:
+            self.match_discard_counts.append(float(discard_count))
+
     def record_match_result(self, learner_seat: int, final_scores: Iterable[float], *, kyoku_count: int | None = None,
                             discard_count: int | None = None) -> None:
         """Record the candidate's final placement for evaluation reporting only.
@@ -188,6 +196,7 @@ class SemanticMetrics:
             raise ValueError(f"learner seat {seat} is outside final scores")
         ranking = sorted(range(len(scores)), key=lambda index: (-scores[index], index))
         self.match_ranks.append(ranking.index(seat) + 1)
+        self.completed_matches += 1
         if kyoku_count is not None:
             self.match_kyoku_lengths.append(float(kyoku_count))
         if discard_count is not None:
@@ -195,7 +204,7 @@ class SemanticMetrics:
 
     def summary(self, prefix: str = "train") -> dict[str, float]:
         kyokus = len(self.kyoku_points)
-        matches = len(self.match_ranks)
+        matches = self.completed_matches
         result = {
             f"{prefix}/kyoku/count": float(kyokus),
             f"{prefix}/kyoku/point_delta_mean": _mean(self.kyoku_points),

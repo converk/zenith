@@ -78,7 +78,7 @@ gamma: 0.99
 
 # GAE lambda，控制 advantage 估计的 bias/variance 权衡。
 # 越接近 1 方差更高但偏差更低；越小更平滑但可能低估长期 credit assignment。
-gae_lambda: 0.97
+gae_lambda: 0.95
 
 # PPO policy ratio clipping 半径。0.20 表示新旧策略概率比会被裁剪到 [0.8, 1.2] 区间参与 clipped objective。
 # 较小更保守，较大更新更激进。
@@ -116,6 +116,14 @@ value_coef: 0.5
 # value loss类型。huber对异常值更稳；mse对大误差惩罚更强。
 value_loss: huber
 
+# critic 的 target 尺度处理。batch_std 仅在 value loss 内按当前 rollout 的
+# return 均值/标准差缩放预测与目标；GAE、奖励语义和推理 value 保持原始尺度。
+# none 保留原始尺度目标，主要用于对照实验。
+value_target_normalization: batch_std
+
+# batch_std 下 return 标准差的最小值，避免常数或近常数目标造成数值放大。
+value_target_std_floor: 0.01
+
 # 梯度裁剪阈值，按全局 grad norm 裁剪。用于限制异常 minibatch 导致的过大更新。
 max_grad_norm: 0.5
 
@@ -125,7 +133,7 @@ target_kl: 0.02
 
 # AdamW 初始学习率。实际学习率会先按 warmup_fraction 线性 warmup，再按total_updates线性衰减。
 # 提高可能加速学习但更容易不稳定；降低更稳但收敛更慢。
-learning_rate: 0.000025
+learning_rate: 0.00002
 
 # 计划总 update 数，用于学习率 warmup/decay 和 entropy 退火的进度计算。
 # 不一定等于当前运行的 iterations，但应代表完整训练预算。
@@ -158,7 +166,7 @@ reward_cache_capacity: 131072
 
 # checkpoint、performance.jsonl 和 TensorBoard 日志目录。
 # 保留为本地默认输出目录；benchmark 可用 CLI 覆盖到 /tmp 或专门的 checkpoints 子目录。
-checkpoint_dir: checkpoints/train_riichi_v4
+checkpoint_dir: checkpoints/train_riichi_v6
 
 # 恢复训练的 checkpoint 路径。null 表示从头开始；设置为具体 .pt 路径会加载模型、优化器、迭代号和随机数状态。
 resume: null

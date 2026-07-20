@@ -77,6 +77,7 @@ if ray is not None:
             self.public.update(self.bridge.last_events)
             self.efficiency = EfficiencyAnalyzer(int(config.get("reward_cache_capacity", 131_072)))
             self.start_scores = [[int(x) for x in scores] for scores in self.envs.scores()]
+            self.match_kyoku_counts = [0] * self.num_envs
             self.pending: list[list[list[Transition]]] = [
                 [[] for _ in range(NUM_PLAYERS)] for _ in range(self.num_envs)
             ]
@@ -204,6 +205,7 @@ if ray is not None:
             scores_by_env = self.envs.scores()
             for env_index in done_indices:
                 self.start_scores[env_index] = [int(x) for x in scores_by_env[env_index]]
+                self.match_kyoku_counts[env_index] = 0
 
         def _advance_once(
             self,
@@ -251,6 +253,7 @@ if ray is not None:
                 if env_index in active and end_kyoku[env_index]:
                     completed_kyokus += 1
                     ended_kyoku_indices.append(env_index)
+                    self.match_kyoku_counts[env_index] += 1
                     scores = [int(x) for x in scores_by_env[env_index]]
                     self.semantic.record_kyoku(
                         range(NUM_PLAYERS),
@@ -273,6 +276,10 @@ if ray is not None:
                         rewards.append(reward)
                         self.pending[env_index][seat] = []
                     self.start_scores[env_index] = scores
+                    if done[env_index]:
+                        # Self-play is symmetric: record the physical hanchan
+                        # once, rather than duplicating its length for four seats.
+                        self.semantic.record_match_length(self.match_kyoku_counts[env_index])
             if done_indices:
                 self._finish_games(done_indices)
                 if reset_completed:

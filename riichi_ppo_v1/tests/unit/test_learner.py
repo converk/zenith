@@ -5,8 +5,10 @@ from tempfile import TemporaryDirectory
 from riichi_ppo_v1.training.learner import (
     PPOLearner,
     approximate_kl_values,
+    branch_grad_norms,
     collate,
     materialize_host_batch,
+    normalize_value_targets,
     scheduled_entropy_coefficient,
     scheduled_learning_rate,
     transfer_batch_to_device,
@@ -47,6 +49,8 @@ def learner_kwargs(**overrides):
         adam_epsilon=1e-5,
         weight_decay=0.01,
         value_loss="huber",
+        value_target_normalization="batch_std",
+        value_target_std_floor=1e-2,
     )
     defaults.update(overrides)
     return defaults
@@ -75,6 +79,71 @@ def test_value_loss_supports_huber_and_mse() -> None:
     returns = torch.tensor([0.0, 0.0])
     torch.testing.assert_close(value_loss_values(predicted, returns, "mse"), torch.tensor([0.0, 9.0]))
     torch.testing.assert_close(value_loss_values(predicted, returns, "huber"), torch.tensor([0.0, 2.5]))
+
+
+def test_batch_std_value_target_normalization_scales_prediction_and_target_together() -> None:
+    predicted = torch.tensor([1.0, 5.0])
+    returns = torch.tensor([3.0, 7.0])
+    normalized_predicted, normalized_returns = normalize_value_targets(
+        predicted, returns, mode="batch_std", mean=5.0, std=2.0, std_floor=0.01,
+    )
+    torch.testing.assert_close(normalized_predicted, torch.tensor([-2.0, 0.0]))
+    torch.testing.assert_close(normalized_returns, torch.tensor([-1.0, 1.0]))
+    torch.testing.assert_close(
+        value_loss_values(normalized_predicted, normalized_returns, "mse"), torch.tensor([1.0, 1.0]),
+    )
+
+
+def test_value_target_normalization_none_preserves_the_original_loss_space() -> None:
+    predicted = torch.tensor([1.0, 5.0])
+    returns = torch.tensor([3.0, 7.0])
+    actual_predicted, actual_returns = normalize_value_targets(
+        predicted, returns, mode="none", mean=5.0, std=2.0, std_floor=0.01,
+    )
+    torch.testing.assert_close(actual_predicted, predicted)
+    torch.testing.assert_close(actual_returns, returns)
+
+
+def test_value_target_normalization_uses_the_standard_deviation_floor() -> None:
+    predicted = torch.tensor([1.0])
+    returns = torch.tensor([1.0])
+    normalized_predicted, normalized_returns = normalize_value_targets(
+        predicted, returns, mode="batch_std", mean=1.0, std=0.0, std_floor=0.01,
+    )
+    assert torch.isfinite(normalized_predicted).all()
+    assert torch.isfinite(normalized_returns).all()
+    torch.testing.assert_close(normalized_predicted, torch.zeros(1))
+    torch.testing.assert_close(normalized_returns, torch.zeros(1))
+
+
+def test_branch_grad_norms_are_disjoint_and_include_every_model_branch() -> None:
+    class BranchModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.token_embedding = torch.nn.Linear(1, 1, bias=False)
+            self.public_backbone = torch.nn.Linear(1, 1, bias=False)
+            self.actor_backbone = torch.nn.Linear(1, 1, bias=False)
+            self.policy_head = torch.nn.Linear(1, 1, bias=False)
+            self.query = torch.nn.Parameter(torch.zeros(1))
+            self.critic_embedding = torch.nn.Linear(1, 1, bias=False)
+            self.critic_backbone = torch.nn.Linear(1, 1, bias=False)
+            self.value_head = torch.nn.Linear(1, 1, bias=False)
+            self.value_query = torch.nn.Parameter(torch.zeros(1))
+
+    model = BranchModel()
+    for index, parameter in enumerate(model.parameters(), start=1):
+        parameter.grad = torch.full_like(parameter, float(index))
+
+    norms = branch_grad_norms(model)
+    expected = {"actor": 0.0, "critic": 0.0, "shared": 0.0}
+    for name, parameter in model.named_parameters():
+        root = name.split(".", 1)[0]
+        branch = "actor" if root in {"actor_backbone", "policy_head", "query"} else (
+            "critic" if root in {"critic_embedding", "critic_backbone", "value_head", "value_query"} else "shared"
+        )
+        expected[branch] += float(parameter.grad.square().sum())
+    for branch, total in expected.items():
+        assert torch.isclose(norms[branch], torch.tensor(total).sqrt())
 
 
 def test_approximate_kl_matches_exp_formula() -> None:
@@ -137,6 +206,12 @@ def test_cpu_batch_modes_fall_back_to_streaming() -> None:
         metrics = learner.update([transition(0.2), transition(-0.1), transition(0.3)], shuffle_seed=7)
         assert metrics["update/batch_mode_id"] == 0.0
         assert metrics["update/executed_minibatches"] == 2.0
+        assert metrics["value_loss_raw"] >= 0.0
+        assert metrics["value_target_std"] >= 0.0
+        assert metrics["value_prediction_std"] >= 0.0
+        assert metrics["value_explained_variance"] == metrics["explained_variance"]
+        assert metrics["grad_norm_post_clip"] <= learner.hp["max_grad_norm"]
+        assert {"grad_norm_actor", "grad_norm_critic", "grad_norm_shared"}.issubset(metrics)
 
 
 def test_target_kl_zero_completes_all_ppo_epochs() -> None:

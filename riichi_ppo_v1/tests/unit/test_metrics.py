@@ -63,6 +63,17 @@ def test_match_placement_metrics_are_candidate_centric_and_tie_stable() -> None:
     assert summary["eval/match/discard_count_mean"] == 460 / 3
 
 
+def test_match_length_metrics_support_physical_self_play_hanchans() -> None:
+    metrics = SemanticMetrics()
+    metrics.record_match_length(8)
+    metrics.record_match_length(12)
+
+    summary = metrics.summary("train")
+    assert summary["train/match/count"] == 2
+    assert summary["train/match/length_kyokus_mean"] == 10.0
+    assert summary["train/match/mean_rank"] == 0.0
+
+
 def test_ppo_buffer_and_evaluation_matrix_metrics() -> None:
     transition = Transition(np.zeros((1, 10), np.uint8), np.zeros((1, 8), np.float32), 1,
                             np.ones(241, np.bool_), 0, 0.0, 1.0)

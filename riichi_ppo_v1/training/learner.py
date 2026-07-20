@@ -122,6 +122,54 @@ def value_loss_values(predicted: torch.Tensor, returns: torch.Tensor, loss_name:
     raise ValueError(f"unknown value_loss {loss_name!r}; expected 'huber' or 'mse'")
 
 
+def normalize_value_targets(
+    predicted: torch.Tensor,
+    returns: torch.Tensor,
+    *,
+    mode: str,
+    mean: float,
+    std: float,
+    std_floor: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Put critic predictions and targets into the configured loss space.
+
+    Rollout values, GAE and inference deliberately stay in the original reward
+    space.  This only conditions the critic objective against changing return
+    scales during self-play.
+    """
+    normalized_mode = str(mode).lower()
+    if normalized_mode == "none":
+        return predicted, returns
+    if normalized_mode == "batch_std":
+        scale = max(float(std), float(std_floor))
+        return (predicted - float(mean)) / scale, (returns - float(mean)) / scale
+    raise ValueError("value_target_normalization must be one of 'none' or 'batch_std'")
+
+
+def branch_grad_norms(model: nn.Module) -> dict[str, torch.Tensor]:
+    """Return pre-clipping L2 gradient norms for disjoint actor/critic/shared groups."""
+    parameter_device = next(model.parameters()).device
+    squared_sums = {
+        "actor": torch.zeros((), device=parameter_device),
+        "critic": torch.zeros((), device=parameter_device),
+        "shared": torch.zeros((), device=parameter_device),
+    }
+    for name, parameter in model.named_parameters():
+        if parameter.grad is None:
+            continue
+        root = name.removeprefix("module.").split(".", 1)[0]
+        if root in {"actor_backbone", "policy_head", "query"}:
+            branch = "actor"
+        elif root in {"critic_embedding", "critic_backbone", "value_head", "value_query"}:
+            branch = "critic"
+        elif root in {"token_embedding", "public_backbone"}:
+            branch = "shared"
+        else:  # Guard against silently misclassifying a future model parameter.
+            raise ValueError(f"unclassified model parameter for gradient metrics: {name}")
+        squared_sums[branch].add_(parameter.grad.detach().float().square().sum())
+    return {name: value.sqrt() for name, value in squared_sums.items()}
+
+
 def approximate_kl_values(new_logprob: torch.Tensor, old_logprob: torch.Tensor) -> torch.Tensor:
     """Return exp/training's per-sample PPO approximate KL estimate."""
     log_ratio = new_logprob - old_logprob
@@ -255,6 +303,12 @@ class PPOLearner:
         self.update_batch_mode = str(hyperparameters.get("update_batch_mode", "auto")).lower()
         if self.update_batch_mode not in {"streaming", "prefetch", "gpu_cache", "auto"}:
             raise ValueError("update_batch_mode must be one of streaming, prefetch, gpu_cache or auto")
+        self.value_target_normalization = str(hyperparameters.get("value_target_normalization", "batch_std")).lower()
+        if self.value_target_normalization not in {"none", "batch_std"}:
+            raise ValueError("value_target_normalization must be one of 'none' or 'batch_std'")
+        self.value_target_std_floor = float(hyperparameters.get("value_target_std_floor", 1e-2))
+        if self.value_target_std_floor <= 0:
+            raise ValueError("value_target_std_floor must be positive")
         self.distributed = False
 
     def enable_distributed(self) -> None:
@@ -414,6 +468,18 @@ class PPOLearner:
         self.profiler.reset()
         length_metrics = transition_length_metrics(transitions)
         length_metrics.update(ppo_buffer_metrics(transitions))
+        raw_returns = np.asarray([transition.return_ for transition in transitions], dtype=np.float64)
+        raw_values = np.asarray([transition.value for transition in transitions], dtype=np.float64)
+        value_target_mean = float(raw_returns.mean())
+        value_target_std = float(raw_returns.std())
+        length_metrics.update({
+            # Keep these raw-space diagnostics independent from the selected
+            # loss normalization mode so experiments remain comparable.
+            "value_target_mean": value_target_mean,
+            "value_target_std": value_target_std,
+            "value_prediction_std": float(raw_values.std()),
+            "value_explained_variance": float(length_metrics["explained_variance"]),
+        })
         if self.device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(self.device)
         with self.profiler.stage("update/advantage_normalize"):
@@ -568,8 +634,20 @@ class PPOLearner:
                     ratio = (logprob - old_logprobs).exp()
                     clipped = ratio.clamp(1 - float(self.hp["ppo_clip"]), 1 + float(self.hp["ppo_clip"])) * adv
                     policy_loss_values = -torch.minimum(ratio * adv, clipped)
+                    predicted_value = output["value"].float()
+                    normalized_value, normalized_returns = normalize_value_targets(
+                        predicted_value,
+                        returns,
+                        mode=self.value_target_normalization,
+                        mean=value_target_mean,
+                        std=value_target_std,
+                        std_floor=self.value_target_std_floor,
+                    )
                     value_loss = value_loss_values(
-                        output["value"].float(), returns, str(self.hp.get("value_loss", "huber")),
+                        normalized_value, normalized_returns, str(self.hp.get("value_loss", "huber")),
+                    )
+                    raw_value_loss = value_loss_values(
+                        predicted_value, returns, str(self.hp.get("value_loss", "huber")),
                     )
                     valid_logprobabilities = torch.isfinite(logprobabilities)
                     probabilities = torch.where(
@@ -596,7 +674,9 @@ class PPOLearner:
                 with self._gpu_stage("update/backward"):
                     loss.backward()
                 with self._gpu_stage("update/gradient_clip"):
+                    branch_norms = branch_grad_norms(self.model)
                     grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), float(self.hp["max_grad_norm"]))
+                    grad_norm_post_clip = grad_norm.clamp(max=float(self.hp["max_grad_norm"]))
                 with self._gpu_stage("update/optimizer_step"):
                     self.optimizer.step()
                 with self._gpu_stage("update/diagnostic_metrics"):
@@ -614,6 +694,7 @@ class PPOLearner:
                     ("loss", loss_values),
                     ("policy_loss", policy_loss_values),
                     ("value_loss", value_loss),
+                    ("value_loss_raw", raw_value_loss),
                     ("entropy", entropy_values),
                     ("entropy_normalized", normalized_entropy_values),
                     ("approx_kl", kl_values),
@@ -636,6 +717,18 @@ class PPOLearner:
                     step_metric_totals["grad_norm"].add_(detached_grad_norm)
                 else:
                     step_metric_totals["grad_norm"] = detached_grad_norm.clone()
+                detached_post_clip_grad_norm = grad_norm_post_clip.detach()
+                if "grad_norm_post_clip" in step_metric_totals:
+                    step_metric_totals["grad_norm_post_clip"].add_(detached_post_clip_grad_norm)
+                else:
+                    step_metric_totals["grad_norm_post_clip"] = detached_post_clip_grad_norm.clone()
+                for branch, value in branch_norms.items():
+                    name = f"grad_norm_{branch}"
+                    detached_value = value.detach()
+                    if name in step_metric_totals:
+                        step_metric_totals[name].add_(detached_value)
+                    else:
+                        step_metric_totals[name] = detached_value.clone()
                 updates += 1
             batch_mode_id_sum += BATCH_MODE_IDS[batch_mode]
             batch_mode_epochs += 1

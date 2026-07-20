@@ -15,8 +15,10 @@ from riichi_ppo_v1.training.tensorboard import (
 
 def test_curated_scalars_keep_only_the_dashboard_allowlist() -> None:
     expected = {
-        "ppo/policy_loss", "ppo/value_loss", "ppo/entropy", "ppo/entropy_normalized", "ppo/approx_kl", "ppo/clipfrac",
-        "ppo/ratio_p95", "ppo/explained_variance", "ppo/grad_norm", "ppo/system/learning_rate",
+        "ppo/policy_loss", "ppo/value_loss", "ppo/value_loss_raw", "ppo/value_target_std",
+        "ppo/value_prediction_std", "ppo/entropy", "ppo/entropy_normalized", "ppo/approx_kl", "ppo/clipfrac",
+        "ppo/ratio_p95", "ppo/explained_variance", "ppo/grad_norm", "ppo/grad_norm_post_clip",
+        "ppo/grad_norm_actor", "ppo/grad_norm_critic", "ppo/grad_norm_shared", "ppo/system/learning_rate",
         "ppo/system/entropy_coef", "ppo/update/early_stop", "reward_schedule/efficiency_weight",
         "reward_schedule/kyoku_weight", "reward_schedule/efficiency_abs_mean", "reward_schedule/kyoku_abs_mean",
         "eval/kyoku/point_delta_mean", "eval/kyoku/point_delta_mean_stderr", "eval/kyoku/win_rate",
@@ -24,10 +26,13 @@ def test_curated_scalars_keep_only_the_dashboard_allowlist() -> None:
         "eval/match/first_place_rate", "eval/match/mean_rank",
         "eval/match/top2_rate", "eval/match/last_place_rate", "eval/efficiency/optimal_shanten_rate",
         "eval/efficiency/optimal_ukeire_rate", "eval/match/length_kyokus_mean",
-        "eval/match/discard_count_mean", "train/kyoku/draw_rate", "train/kyoku/discard_count_mean",
+        "eval/match/discard_count_mean", "train/kyoku/draw_rate", "train/kyoku/deal_in_rate",
+        "train/kyoku/discard_count_mean",
         "train/kyoku/open_melds_mean",
+        "train/match/length_kyokus_mean",
         "train/action/riichi_rate",
-        "train/action/call_opportunity_accept_rate", "iteration/sps",
+        "train/action/call_opportunity_accept_rate", "train/efficiency/optimal_shanten_rate",
+        "train/efficiency/optimal_ukeire_rate", "iteration/sps",
         "iteration/algorithm_wall_s", "update/wall_s", "system/learner_gpu_peak_allocated_mb",
     }
     assert CURATED_SCALAR_TAGS == expected
@@ -60,6 +65,9 @@ def test_learner_peak_allocated_mb_uses_the_largest_rank_peak() -> None:
 def test_tensorboard_display_tags_are_complete_and_localized() -> None:
     assert set(TENSORBOARD_DISPLAY_TAGS) == CURATED_SCALAR_TAGS
     assert TENSORBOARD_DISPLAY_TAGS["train/kyoku/open_melds_mean"] == "采样牌局/平均副露数·四家合计 (open_melds_mean)"
+    assert TENSORBOARD_DISPLAY_TAGS["train/kyoku/deal_in_rate"] == "采样牌局/放铳率·四家汇总 (deal_in_rate)"
+    assert TENSORBOARD_DISPLAY_TAGS["train/efficiency/optimal_shanten_rate"] == "采样效率/最优向听率·四家汇总 (optimal_shanten_rate)"
+    assert TENSORBOARD_DISPLAY_TAGS["train/match/length_kyokus_mean"] == "采样对局/平均局数 (length_kyokus_mean)"
 
 
 def test_tensorboard_event_contains_only_curated_scalars_and_selected_histograms(tmp_path) -> None:
