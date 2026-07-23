@@ -19,6 +19,23 @@ def test_action_protocol_categories_cover_fixed_boundaries() -> None:
     ]
 
 
+def test_riichi_metric_reports_opportunity_acceptance() -> None:
+    metrics = SemanticMetrics()
+    riichi_legal = np.zeros(241, dtype=np.bool_)
+    riichi_legal[[1, 75]] = True
+    no_riichi_legal = np.zeros(241, dtype=np.bool_)
+    no_riichi_legal[1] = True
+
+    metrics.record_decision(75, riichi_legal)
+    metrics.record_decision(1, riichi_legal)
+    metrics.record_decision(1, no_riichi_legal)
+
+    summary = metrics.summary()
+    assert summary["train/action/riichi_opportunity_count"] == 2
+    assert summary["train/action/riichi_opportunity_accept_rate"] == 0.5
+    assert summary["train/action/riichi_rate"] == 1 / 3
+
+
 def test_hora_multi_ron_and_draw_metrics_are_deduplicated() -> None:
     metrics = SemanticMetrics()
     # The same public events are received by each observation cursor.

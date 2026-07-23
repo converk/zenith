@@ -119,6 +119,26 @@ def summarize_worker_rollout(
                     float(sum(value * weight for value, weight in weighted) / total_weight)
                     if total_weight else float(np.mean(values))
                 )
+            elif name == "train/action/riichi_opportunity_accept_rate":
+                weighted = [
+                    (float(stats[name]), float(stats.get("train/action/riichi_opportunity_count", 0.0)))
+                    for stats in stats_list if name in stats and np.isfinite(stats[name])
+                ]
+                total_weight = sum(weight for _value, weight in weighted)
+                metrics[target] = (
+                    float(sum(value * weight for value, weight in weighted) / total_weight)
+                    if total_weight else float(np.mean(values))
+                )
+            elif name == "train/action/call_opportunity_accept_rate":
+                weighted = [
+                    (float(stats[name]), float(stats.get("train/action/call_opportunity_count", 0.0)))
+                    for stats in stats_list if name in stats and np.isfinite(stats[name])
+                ]
+                total_weight = sum(weight for _value, weight in weighted)
+                metrics[target] = (
+                    float(sum(value * weight for value, weight in weighted) / total_weight)
+                    if total_weight else float(np.mean(values))
+                )
             else:
                 metrics[target] = float(np.mean(values))
 

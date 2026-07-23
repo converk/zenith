@@ -20,7 +20,7 @@ learner_gpus: 2
 
 # 默认训练迭代轮数。每轮包含一次 rollout collection 和一次 PPO update。
 # benchmark 通常用 CLI 覆盖为 1 或 3；长期训练使用较大值。
-iterations: 5000
+iterations: 9920
 
 # 模型规模预设。mid 是当前默认训练模型；large 会增加层数和宽度，显著提高显存与计算开销。
 model_size: mid
@@ -137,7 +137,7 @@ learning_rate: 0.00002
 
 # 计划总 update 数，用于学习率 warmup/decay 和 entropy 退火的进度计算。
 # 不一定等于当前运行的 iterations，但应代表完整训练预算。
-total_updates: 5000
+total_updates: 9920
 
 # 学习率 warmup 占 total_updates 的比例。0.02 表示前 140 个 update 从 0 线性升到 learning_rate，
 # 随后进入线性衰减。
@@ -169,4 +169,4 @@ reward_cache_capacity: 131072
 checkpoint_dir: checkpoints/train_riichi_v6
 
 # 恢复训练的 checkpoint 路径。null 表示从头开始；设置为具体 .pt 路径会加载模型、优化器、迭代号和随机数状态。
-resume: null
+resume: checkpoints/train_riichi_v6/best_kyoku.pt

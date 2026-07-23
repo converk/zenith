@@ -223,6 +223,8 @@ class SemanticMetrics:
             f"{prefix}/kyoku/open_melds_mean": _mean(self.kyoku_open_melds),
             f"{prefix}/action/decision_count": float(self.decisions),
             f"{prefix}/action/legal_count_mean": _mean(self.legal_actions),
+            f"{prefix}/action/riichi_opportunity_count": float(self.riichi_opportunities),
+            f"{prefix}/action/call_opportunity_count": float(self.call_opportunities),
             f"{prefix}/action/riichi_opportunity_accept_rate": _rate(self.actions["riichi"], self.riichi_opportunities),
             f"{prefix}/action/call_opportunity_accept_rate": _rate(sum(self.actions[key] for key in ("chi", "pon", "daiminkan", "ankan", "kakan")), self.call_opportunities),
             f"{prefix}/efficiency/reward_mean": _mean(self.efficiency_rewards),

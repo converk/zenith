@@ -26,11 +26,12 @@ def test_curated_scalars_keep_only_the_dashboard_allowlist() -> None:
         "eval/match/first_place_rate", "eval/match/mean_rank",
         "eval/match/top2_rate", "eval/match/last_place_rate", "eval/efficiency/optimal_shanten_rate",
         "eval/efficiency/optimal_ukeire_rate", "eval/match/length_kyokus_mean",
-        "eval/match/discard_count_mean", "train/kyoku/draw_rate", "train/kyoku/deal_in_rate",
+        "eval/match/discard_count_mean", "eval/action/riichi_opportunity_accept_rate",
+        "train/kyoku/draw_rate", "train/kyoku/deal_in_rate",
         "train/kyoku/discard_count_mean",
         "train/kyoku/open_melds_mean",
         "train/match/length_kyokus_mean",
-        "train/action/riichi_rate",
+        "train/action/riichi_opportunity_accept_rate",
         "train/action/call_opportunity_accept_rate", "train/efficiency/optimal_shanten_rate",
         "train/efficiency/optimal_ukeire_rate", "iteration/sps",
         "iteration/algorithm_wall_s", "update/wall_s", "system/learner_gpu_peak_allocated_mb",
@@ -78,9 +79,10 @@ def test_tensorboard_event_contains_only_curated_scalars_and_selected_histograms
         "ppo/update/early_stop": 1.0,
         "eval/kyoku/point_delta_mean": 2.1,
         "eval/match/mean_rank": 2.3,
+        "eval/action/riichi_opportunity_accept_rate": 0.4,
         "iteration/sps": 512.0,
         "ppo/loss": 0.5,
-        "train/action/riichi_rate": 0.1,
+        "train/action/riichi_opportunity_accept_rate": 0.1,
     }, step=7)
     writer.add_histogram("diagnostics/advantage", np.asarray([0.0, 1.0], dtype=np.float32), 7)
     writer.flush()
@@ -91,6 +93,7 @@ def test_tensorboard_event_contains_only_curated_scalars_and_selected_histograms
     assert set(accumulator.Tags()["scalars"]) == {
         "PPO/概率比 P95 (ratio_p95)", "PPO/熵系数 (entropy_coef)", "PPO/提前停止 (early_stop)",
         "评测牌局/平均得分变化 (point_delta_mean)", "评测对局/平均排名 (mean_rank)", "性能/每秒决策数 (sps)",
-        "采样策略/立直率 (riichi_rate)",
+        "评测策略/立直机会接受率 (riichi_opportunity_accept_rate)",
+        "采样策略/立直机会接受率 (riichi_opportunity_accept_rate)",
     }
     assert set(accumulator.Tags()["histograms"]) == {"diagnostics/advantage"}

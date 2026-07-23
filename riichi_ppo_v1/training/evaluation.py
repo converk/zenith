@@ -46,6 +46,7 @@ def merge_evaluation_summaries(rows: Iterable[dict[str, float]]) -> dict[str, fl
         return {}
     count_keys = {
         "eval/kyoku/count", "eval/match/count", "eval/action/decision_count",
+        "eval/action/riichi_opportunity_count", "eval/action/call_opportunity_count",
         "eval/defense/threat_discard_count",
     }
     result: dict[str, float] = {}
@@ -58,6 +59,10 @@ def merge_evaluation_summaries(rows: Iterable[dict[str, float]]) -> dict[str, fl
             weights = [float(row.get("eval/kyoku/count", 0.0)) for row in values if name in row]
         elif name.startswith("eval/match/"):
             weights = [float(row.get("eval/match/count", 0.0)) for row in values if name in row]
+        elif name == "eval/action/riichi_opportunity_accept_rate":
+            weights = [float(row.get("eval/action/riichi_opportunity_count", 0.0)) for row in values if name in row]
+        elif name == "eval/action/call_opportunity_accept_rate":
+            weights = [float(row.get("eval/action/call_opportunity_count", 0.0)) for row in values if name in row]
         elif name.startswith(("eval/action/", "eval/efficiency/")):
             weights = [float(row.get("eval/action/decision_count", 0.0)) for row in values if name in row]
         else:
