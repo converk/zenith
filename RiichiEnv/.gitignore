@@ -1,0 +1,12 @@
+**/*.pyc
+**/__pycache__
+**/*.so
+target
+**/.python-version
+trunk
+**/wandb
+**/.env
+riichienv-ml-xt/
+debug-riichienv-with-mortal
+mjsoul-parser
+**/.ipynb_checkpoints
