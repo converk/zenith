@@ -20,7 +20,8 @@ riichi_ppo_v1/
 
 ```text
 RiichiEnv Observation
-  -> Python bridge（事件提取、快照、MJAI 合法动作）
+  -> 规则感知决策分析（公开牌去重、向听/受入、役、振听、鸣牌反事实）
+  -> Python bridge（事件提取、快照、MJAI 合法动作、每个合法动作的候选 token）
   -> Rust 状态机（公开 history、当前状态后缀、241 维 mask）
   -> Transformer actor（追加 learned query，输出 policy logits）
        -> 完整共享公开 token + critic-only 对手 token + value query
@@ -38,8 +39,9 @@ RiichiEnv Observation
 MJAI/RiichiEnv 回转以 [docs/KyokuActionSpace.md](docs/KyokuActionSpace.md) 为准。状态机只将环境已广播
 确认的事件写入 history；模型选择通过当前合法动作 mask 约束，不直接修改状态。
 
-checkpoint 保存模型权重、优化器状态、模型配置、训练配置、迭代号和随机数状态。加载使用
-PyTorch 严格模型权重校验；训练产物不提供格式迁移或兼容读取。
+V8 checkpoint 保存模型权重、优化器、随机数状态、reward controller 的 EMA/权重/阶段和历史
+对手池元数据，并写入 `token_schema_version=8`。V6/V7 checkpoint 与候选 token schema 不兼容，
+加载时会立即报错；V8 checkpoint 可恢复并连续执行 reward 调度。
 
 从仓库根目录先激活训练环境，并从源码安装两个扩展。`riichi` 使用仓库提供的安装脚本，脚本会把
 PyO3/Maturin 明确绑定到当前 Conda 的 Python，避免扩展被装入系统 Python 或其他环境：
@@ -58,7 +60,7 @@ python -m pip install -e riichi_ppo_v1 --no-deps --no-build-isolation
 
 `riichi-ppo-train` 会按上述顺序合并默认值。`--training-config` 可覆盖训练参数；
 `--model-config`、`--environment-config` 作为兼容入口仍保留；原有 `--config` 保留为最后合并的完整 YAML overlay。默认
-`checkpoint_dir` 为 `checkpoints/train_riichi_v5`；该 value 结构与旧 checkpoint 不兼容，应从新目录开始训练。
+`checkpoint_dir` 为 `checkpoints/train_riichi_v8`；默认 `resume: null`，从头训练。
 
 单卡训练与 GPU 测试默认固定到物理 0 号卡：
 
@@ -82,6 +84,13 @@ LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" cargo t
 riichi-ppo-train
 ```
 
+先运行 250-update pilot：
+
+```bash
+CUDA_DEVICE=0,3 conda run -n Mahjong-AI riichi-ppo-train \
+  --config riichi_ppo_v1/configs/v8_pilot.yaml --device cuda
+```
+
 最小端到端检查（一个 Ray worker、一个环境、一个小局和一次更新）：
 
 ```bash
@@ -102,14 +111,14 @@ conda run -n Mahjong-AI riichi-ppo-validate --games 128 --output riichi_ppo_v1_c
 自然回放未命中的项目。未命中只表示该随机样本未覆盖；MJAI、mask、解码动作或环境选择出现语义
 不一致时，命令会立即失败。
 
-训练使用固定、每个 worker 完全一致的桌位槽位：16 张桌中 4 张为四席自博弈、8 张为两席
-current 对效率/防守启发式、4 张为两席 current 对同一个冻结历史 checkpoint。历史 checkpoint
-不可用时，只有最后 4 张桌降级为启发式对手。两席 current 的座位在每个半庄之间轮换；自博弈桌的
-四席均保存 transition 并参与 PPO update。
+update 1–1500 使用四席 current self-play。update 1501 起，每桌固定两席 current 和两个不同的
+历史快照，座位按 update/worker seed 确定性打乱；只有 current 席 transition 进入 PPO。每 250
+update 保存一次推理快照，池容量 8，每个 inference actor 同时常驻 2 个历史模型。
 
-reward 始终以小局分差为主：`clip((after_score - before_score) / 1000, -12, 12)` 附加到该小局的
-最后一个 learner transition，并由 GAE 反向传播到此前本局决策。牌效 regret 只在前 10% update
-以 `0.10 → 0.0` 的线性系数提供密集辅助；半庄名次和排名势能不参与 reward。
+reward 始终以小局分差为主：`clip((after_score - before_score) / 1000, -12, 12)`。弃牌和鸣牌
+regret 独立记录，driver 按完整小局的 reward-only GAE trace RMS 调整下一轮权重。目标比例依次为
+`0.35/0.15`、`0.20/0.10`、`0.12/0.05`，后期不会衰减为零。并列最优动作 teacher 只作用于
+actor，系数在前 1500 update 从 0.05 降至 0.01，之后保持 0.01，不进入 GAE、return 或 critic target。
 
 `kyokus_per_worker` 是开始 drain 前的最少完成小局数。达到该值后，worker 会冻结已经
 结束当前小局的桌子，只推进其他尚未结束的小局直至全部结算；因此不会因 PPO collection
@@ -167,33 +176,19 @@ TensorBoard 只保留常用 PPO 信号：`ppo/policy_loss`、`ppo/value_loss`、
 继续写入 JSONL，不再投影为 TensorBoard 标量。每 25 个 update 仍写入 return、advantage、value、
 合法动作数和 token 长度直方图。
 
-默认还会在 update 0、每 50 个 update 和结束时运行固定基线评测。它使用 16 个确定 seed、候选策略
-4 个座位轮换，共 64 个半庄；候选模型贪心决策，对手为固定的效率/防守启发式混合。以连续 3 次评测的
-`eval/kyoku/point_delta_mean` 选择 `best_kyoku.pt`；同分时优先更低放铳率、再优先更高最优向听率。
-相关开关和预算位于 `configs/monitoring.yaml`。
+默认在 update 0、每 12 update 和结束时运行 96 个固定种子半庄、24 个评测 worker。连续三次窗口
+按小局点差和放铳率保存 `best_score.pt`；`best_kyoku.pt` 还要求结构最优率不低于 98%、规则有效
+听牌偏好准确率不低于 95%。周期 checkpoint 默认每 50 update 保存。
 
-运行一轮目标负载 benchmark 而不修改默认长期训练配置：
-
-```bash
-CUDA_DEVICE=0 conda run -n Mahjong-AI riichi-ppo-train \
-  --device cuda --iterations 1 \
-  --num-workers 4 --envs-per-worker 48 --kyokus-per-worker 1 \
-  --update-epochs 4 --minibatch-size 768 --target-kl 0.0 \
-  --checkpoint-dir checkpoints/riichi_ppo_v1_benchmark_4w48e
-```
-
-将 `--num-workers 4` 改为 `1` 即可运行 1×48。吞吐 benchmark 保持默认
-`--no-profile-cuda-sync`；先用 `nvidia-smi -i 0` 确认物理第 1 张卡没有外部
-compute process，再分别热身一次、重新启动进程并记录三次结果。比较
-`rollout/wall_s`、`iteration/model_forward_sps` 与
-`rollout/inference_actor/inference/full_forward_rows_mean`。
-
-双卡一轮 benchmark：
+运行三轮双卡目标负载 benchmark（第 1 轮 warm-up，单独报告第 2–3 轮）：
 
 ```bash
 CUDA_DEVICE=0,3 conda run -n Mahjong-AI riichi-ppo-train \
-  --device cuda --learner-gpus 2 --iterations 1 \
-  --num-workers 4 --envs-per-worker 48 --kyokus-per-worker 1 \
-  --update-epochs 4 --minibatch-size 768 --target-kl 0.0 \
-  --checkpoint-dir checkpoints/riichi_ppo_v1_benchmark_2gpu_4w48e
+  --device cuda --learner-gpus 2 --iterations 3 \
+  --num-workers 12 --envs-per-worker 32 --kyokus-per-worker 1 \
+  --update-epochs 4 --minibatch-size 512 --target-kl 0.0 \
+  --checkpoint-dir checkpoints/train_riichi_v8_benchmark
 ```
+
+比较 rollout、规则分析器、inference、update、SPS、显存和 cache 指标；长期训练仍使用
+`kyokus_per_worker=16` 与 `target_kl=0.02`。

@@ -1,0 +1,12 @@
+# Three-iteration dual-GPU validation baseline. Iteration 1 is warm-up.
+iterations: 3
+learner_gpus: 2
+num_workers: 12
+envs_per_worker: 32
+kyokus_per_worker: 1
+update_epochs: 4
+target_kl: 0.0
+minibatch_size: 512
+evaluation_enabled: false
+checkpoint_dir: checkpoints/train_riichi_v8_benchmark
+resume: null

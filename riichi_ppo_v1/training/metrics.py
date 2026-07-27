@@ -96,6 +96,14 @@ class SemanticMetrics:
     match_discard_counts: list[float] = field(default_factory=list)
     policy_decisions: Counter[str] = field(default_factory=Counter)
     policy_seats: Counter[str] = field(default_factory=Counter)
+    structural_tenpai: int = 0
+    open_no_yaku_tenpai: int = 0
+    furiten_tenpai: int = 0
+    effective_ron_tiles: list[float] = field(default_factory=list)
+    accepted_calls: int = 0
+    bad_calls: int = 0
+    structural_optimal: list[float] = field(default_factory=list)
+    rule_tenpai_preference: list[float] = field(default_factory=list)
 
     def record_decision(self, action_id: int, legal_mask: np.ndarray, *, threat: bool = False,
                         genbutsu_to_all: bool = False, genbutsu_count: int = 0) -> None:
@@ -121,8 +129,8 @@ class SemanticMetrics:
             self.optimal_ukeire.append(float(ukeire_loss == 0.0))
 
     def record_transition_reward(self, transition: object) -> None:
-        efficiency = float(getattr(transition, "efficiency_reward"))
-        efficiency_weight = float(getattr(transition, "efficiency_weight"))
+        efficiency = float(getattr(transition, "discard_regret", 0.0))
+        efficiency_weight = float(getattr(transition, "discard_weight", 0.0))
         kyoku = float(getattr(transition, "kyoku_reward"))
         self.rewards.append(float(getattr(transition, "reward")))
         self.reward_efficiency.append(efficiency); self.reward_kyoku.append(kyoku)
@@ -131,10 +139,40 @@ class SemanticMetrics:
 
     def record_lineup(self, policies: Iterable[str], learner_seats: Iterable[int]) -> None:
         learner = set(int(seat) for seat in learner_seats)
-        for seat, _policy in enumerate(policies):
-            self.policy_seats["current"] += 1
+        for seat, policy in enumerate(policies):
+            self.policy_seats[str(policy)] += 1
             if seat in learner:
                 self.policy_decisions["current"] += 1
+
+    def record_rule_quality(
+        self,
+        candidate: object,
+        *,
+        accepted_call: bool,
+        bad_call: bool,
+        best_rank: tuple[int, ...] | None = None,
+        alternatives: Iterable[object] = (),
+    ) -> None:
+        if best_rank is not None:
+            rank = tuple(getattr(candidate, "rank"))
+            self.structural_optimal.append(float(rank[0] == best_rank[0]))
+            relevant = [
+                item for item in alternatives
+                if int(getattr(item, "structural_shanten", 99)) == 0
+            ]
+            if len({(
+                int(getattr(item, "effective_shanten", 99)),
+                bool(getattr(item, "furiten", False)),
+                bool(getattr(item, "open_no_yaku", False)),
+            ) for item in relevant}) > 1:
+                self.rule_tenpai_preference.append(float(rank == best_rank))
+        if int(getattr(candidate, "structural_shanten", 99)) == 0:
+            self.structural_tenpai += 1
+            self.open_no_yaku_tenpai += int(bool(getattr(candidate, "open_no_yaku", False)))
+            self.furiten_tenpai += int(bool(getattr(candidate, "furiten", False)))
+            self.effective_ron_tiles.append(float(getattr(candidate, "live_ron", 0)))
+        self.accepted_calls += int(accepted_call)
+        self.bad_calls += int(accepted_call and bad_call)
 
     def record_kyoku(self, learner_seats: Iterable[int], score_deltas: Iterable[float], events: Iterable[Iterable[str]],
                      *, discard_count: int | None = None, open_meld_count: int | None = None) -> None:
@@ -235,6 +273,18 @@ class SemanticMetrics:
             f"{prefix}/defense/threat_discard_count": float(self.threat_discards),
             f"{prefix}/defense/genbutsu_all_rate": _rate(self.genbutsu_all, self.threat_discards),
             f"{prefix}/defense/genbutsu_coverage_mean": _mean(self.genbutsu_coverage),
+            f"{prefix}/rules/open_no_yaku_tenpai_rate": _rate(
+                self.open_no_yaku_tenpai, self.structural_tenpai,
+            ),
+            f"{prefix}/rules/furiten_tenpai_rate": _rate(
+                self.furiten_tenpai, self.structural_tenpai,
+            ),
+            f"{prefix}/rules/effective_ron_tiles_mean": _mean(self.effective_ron_tiles),
+            f"{prefix}/rules/bad_call_rate": _rate(self.bad_calls, self.accepted_calls),
+            f"{prefix}/fixed/structural_optimal_rate": _mean(self.structural_optimal),
+            f"{prefix}/fixed/rule_tenpai_preference_accuracy": _mean(
+                self.rule_tenpai_preference,
+            ),
             f"{prefix}/reward/total_mean": _mean(self.rewards),
             f"{prefix}/match/count": float(matches),
             f"{prefix}/match/first_place_rate": _rate(sum(rank == 1 for rank in self.match_ranks), matches),

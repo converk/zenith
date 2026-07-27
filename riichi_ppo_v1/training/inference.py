@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from contextlib import contextmanager
 import time
 from typing import Any
@@ -125,6 +126,7 @@ if ray is not None:
             if self.world_size > 1:
                 self.learner.enable_distributed()
             self.model = self.learner.model.eval()
+            self.history_models: dict[str, torch.nn.Module] = {}
             self.profiler = StageProfiler(enabled=bool(config.get("profile_enabled", True)))
             self.profile_cuda_sync = bool(config.get("profile_cuda_sync", False))
             self.cuda_event_interval = max(0, int(config.get("profile_cuda_event_interval", 100)))
@@ -190,8 +192,53 @@ if ray is not None:
             self.model.eval()
             return metrics
 
-        def save(self, path: str, train_config: dict[str, Any]) -> None:
-            self.learner.save(path, train_config)
+        def save(
+            self,
+            path: str,
+            train_config: dict[str, Any],
+            extra_state: dict[str, Any] | None = None,
+        ) -> None:
+            self.learner.save(path, train_config, extra_state)
+
+        def snapshot_policy(self, path: str) -> None:
+            """Persist inference-only weights for a deterministic pool snapshot."""
+            from pathlib import Path
+
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            torch.save({
+                "model": self.learner.weights(),
+                "token_schema_version": 8,
+                "iteration": self.learner.iteration,
+            }, path)
+
+        def load_history_policy(self, policy_id: str, path: str) -> None:
+            payload = torch.load(path, map_location="cpu", weights_only=False)
+            if int(payload.get("token_schema_version", 0)) != 8:
+                raise RuntimeError("historical opponent has an incompatible token schema")
+            base = self.model.module if hasattr(self.model, "module") else self.model
+            model = copy.deepcopy(base)
+            model.load_state_dict(payload["model"])
+            self.history_models[str(policy_id)] = model.to(self.device).eval()
+            limit = max(1, int(self.config.get("opponent_resident_models", 2)))
+            while len(self.history_models) > limit:
+                oldest = next(iter(self.history_models))
+                del self.history_models[oldest]
+
+        def resident_history_ids(self) -> list[str]:
+            return list(self.history_models)
+
+        def clear_history_policies(self) -> None:
+            self.history_models.clear()
+
+        def rng_state(self) -> dict[str, Any]:
+            return {
+                "torch_rng": torch.get_rng_state().cpu(),
+                "cuda_rng": torch.cuda.get_rng_state(self.device).cpu(),
+            }
+
+        def load_rng_state(self, state: dict[str, Any]) -> None:
+            torch.set_rng_state(state["torch_rng"].cpu())
+            torch.cuda.set_rng_state(state["cuda_rng"].cpu(), self.device)
 
         def shutdown(self) -> None:
             if self.world_size > 1 and dist.is_available() and dist.is_initialized():
@@ -235,6 +282,7 @@ if ray is not None:
             *,
             worker_id: int,
             namespace: str,
+            policy_id: str = "current",
             batch_indices: list[int],
             token_factors: np.ndarray,
             token_numeric: np.ndarray,
@@ -255,6 +303,7 @@ if ray is not None:
             future: asyncio.Future[dict[str, Any]] = loop.create_future()
             self._pending.append(({
                 "worker_id": int(worker_id), "namespace": str(namespace),
+                "policy_id": str(policy_id),
                 "batch_indices": batch_indices, "token_factors": token_factors,
                 "token_numeric": token_numeric, "critic_factors": critic_factors,
                 "critic_lengths": critic_lengths, "legal_mask": legal_mask,
@@ -316,16 +365,20 @@ if ray is not None:
                 {"action_ids": [0] * len(request["batch_indices"]), "logprobs": [0.0] * len(request["batch_indices"]), "values": [0.0] * len(request["batch_indices"])}
                 for request in requests
             ]
-            rows_by_mode: dict[bool, list[tuple[int, int]]] = {}
+            rows_by_mode: dict[tuple[bool, str], list[tuple[int, int]]] = {}
             for request_index, request in enumerate(requests):
-                rows_by_mode.setdefault(bool(request["greedy"]), []).extend(
+                key = (bool(request["greedy"]), str(request.get("policy_id", "current")))
+                rows_by_mode.setdefault(key, []).extend(
                     (request_index, row) for row in range(len(request["batch_indices"]))
                 )
             max_batch = max(1, int(self.config.get("inference_max_batch_size", 512)))
-            for greedy, rows in rows_by_mode.items():
+            for (greedy, policy_id), rows in rows_by_mode.items():
+                model = self.model if policy_id == "current" else self.history_models.get(policy_id)
+                if model is None:
+                    raise RuntimeError(f"unknown historical opponent policy {policy_id!r}")
                 for offset in range(0, len(rows), max_batch):
                     group = rows[offset:offset + max_batch]
-                    self._run_full_forward(requests, responses, group, greedy, self.model)
+                    self._run_full_forward(requests, responses, group, greedy, model)
             self.profiler.add("inference/rpc_total", time.perf_counter() - started)
             return responses
 

@@ -112,6 +112,14 @@ def scheduled_entropy_coefficient(start: float, end: float, update: int, total_u
     return float(start) + (float(end) - float(start)) * progress
 
 
+def scheduled_auxiliary_coefficient(
+    start: float, floor: float, update: int, decay_updates: int,
+) -> float:
+    """Linearly decay the actor-only teacher coefficient, then keep its floor."""
+    progress = min(max(float(update) / max(int(decay_updates), 1), 0.0), 1.0)
+    return float(start) + (float(floor) - float(start)) * progress
+
+
 def value_loss_values(predicted: torch.Tensor, returns: torch.Tensor, loss_name: str) -> torch.Tensor:
     """Return per-sample value loss for the configured PPO value objective."""
     normalized = str(loss_name).lower()
@@ -203,6 +211,8 @@ def materialize_host_batch(
         old_logprobs = _empty_host_tensor((batch,), torch.float32, pin_memory)
         returns = _empty_host_tensor((batch,), torch.float32, pin_memory)
         advantage_values = _empty_host_tensor((batch,), torch.float32, pin_memory)
+        teacher_mask = _empty_host_tensor((batch, 241), torch.bool, pin_memory).zero_()
+        teacher_supervised = _empty_host_tensor((batch,), torch.bool, pin_memory).zero_()
     with profile.stage("update/collate_host_padding_copy"):
         factors_np = factors.numpy()
         numeric_np = numeric.numpy()
@@ -214,6 +224,8 @@ def materialize_host_batch(
         old_logprobs_np = old_logprobs.numpy()
         returns_np = returns.numpy()
         advantage_values_np = advantage_values.numpy()
+        teacher_mask_np = teacher_mask.numpy()
+        teacher_supervised_np = teacher_supervised.numpy()
         source_advantages = (
             np.asarray([t.advantage for t in transitions], dtype=np.float32)
             if advantages is None else np.asarray(advantages, dtype=np.float32)
@@ -235,6 +247,11 @@ def materialize_host_batch(
             old_logprobs_np[row] = float(transition.logprob)
             returns_np[row] = float(transition.return_)
             advantage_values_np[row] = source_advantages[row]
+            if transition.teacher_supervised:
+                if transition.teacher_mask is None or np.asarray(transition.teacher_mask).shape != (241,):
+                    raise ValueError("supervised transition requires a 241-way teacher mask")
+                teacher_mask_np[row] = transition.teacher_mask
+                teacher_supervised_np[row] = bool(np.any(transition.teacher_mask))
     return {
         "token_factors": factors,
         "token_numeric": numeric,
@@ -246,6 +263,8 @@ def materialize_host_batch(
         "old_logprobs": old_logprobs,
         "advantages": advantage_values,
         "returns": returns,
+        "teacher_mask": teacher_mask,
+        "teacher_supervised": teacher_supervised,
     }
 
 
@@ -519,6 +538,12 @@ class PPOLearner:
             )
         else:
             entropy_coef = float(self.hp["entropy_coef"])
+        auxiliary_coef = scheduled_auxiliary_coefficient(
+            float(self.hp.get("auxiliary_start", 0.05)),
+            float(self.hp.get("auxiliary_floor", 0.01)),
+            update_number,
+            int(self.hp.get("auxiliary_decay_updates", 1500)),
+        )
         epochs_started = 0
         epochs_completed = 0
         executed_samples = 0
@@ -610,6 +635,8 @@ class PPOLearner:
                 legal_mask, token_lengths = batch["legal_mask"], batch["token_lengths"]
                 actions, old_logprobs = batch["actions"], batch["old_logprobs"]
                 adv, returns = batch["advantages"], batch["returns"]
+                teacher_mask = batch["teacher_mask"]
+                teacher_supervised = batch["teacher_supervised"]
                 executed_samples += plan.global_batch_size
                 executed_tokens += plan.minibatch_tokens
                 executed_padded_input_tokens += plan.padded_input_tokens
@@ -659,10 +686,15 @@ class PPOLearner:
                     entropy_values = -(probabilities * safe_logprobabilities).sum(-1)
                     legal_action_counts = legal_mask.sum(-1).float().clamp_min(2.0)
                     normalized_entropy_values = entropy_values / legal_action_counts.log()
+                    teacher_counts = teacher_mask.sum(-1).float().clamp_min(1.0)
+                    teacher_distribution = teacher_mask.float() / teacher_counts[:, None]
+                    auxiliary_loss_values = -(teacher_distribution * safe_logprobabilities).sum(-1)
+                    auxiliary_loss_values = auxiliary_loss_values * teacher_supervised.float()
                     loss_values = (
                         policy_loss_values
                         + float(self.hp["value_coef"]) * value_loss
                         - entropy_coef * entropy_values
+                        + auxiliary_coef * auxiliary_loss_values
                     )
                     weighted_count = sample_weights.sum().clamp_min(1.0)
                     policy_loss = (policy_loss_values * sample_weights).sum() / weighted_count
@@ -700,6 +732,7 @@ class PPOLearner:
                     ("approx_kl", kl_values),
                     ("clipfrac", clipfrac_values),
                     ("ratio", ratio),
+                    ("auxiliary_loss", auxiliary_loss_values),
                 ):
                     detached = (values.detach() * sample_weights).sum()
                     if name in metric_sample_sums:
@@ -770,6 +803,10 @@ class PPOLearner:
             "update/batch_cache_fallbacks": float(batch_cache_fallbacks),
             "system/learning_rate": float(learning_rate),
             "system/entropy_coef": float(entropy_coef),
+            "system/auxiliary_coef": float(auxiliary_coef),
+            "teacher/supervised_fraction": float(
+                np.mean([transition.teacher_supervised for transition in transitions])
+            ),
         })
         sample_count_tensor = torch.tensor(float(metric_sample_count), device=self.device)
         if distributed:
@@ -800,7 +837,12 @@ class PPOLearner:
             })
         return result
 
-    def save(self, path: str | Path, train_config: dict[str, Any]) -> None:
+    def save(
+        self,
+        path: str | Path,
+        train_config: dict[str, Any],
+        extra_state: dict[str, Any] | None = None,
+    ) -> None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         torch.save({
             "model": self.weights(),
@@ -809,12 +851,21 @@ class PPOLearner:
             "train_config": train_config,
             "iteration": self.iteration,
             "torch_rng": torch.get_rng_state(),
+            "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
             "python_rng": random.getstate(),
             "numpy_rng": np.random.get_state(),
+            "token_schema_version": 8,
+            "extra_state": dict(extra_state or {}),
         }, path)
 
     def load(self, path: str | Path) -> None:
         payload = torch.load(path, map_location=self.device, weights_only=False)
+        schema = int(payload.get("token_schema_version", 0))
+        if schema != 8:
+            raise RuntimeError(
+                f"checkpoint token schema {schema} is incompatible with required V8 schema 8; "
+                "start a new V8 run instead"
+            )
         self.model.load_state_dict(payload["model"])
         self.optimizer.load_state_dict(payload["optimizer"])
         self.iteration = int(payload.get("iteration", 0))
@@ -825,3 +876,7 @@ class PPOLearner:
             torch.set_rng_state(payload["torch_rng"].cpu())
             random.setstate(payload["python_rng"])
             np.random.set_state(payload["numpy_rng"])
+            if payload.get("cuda_rng") is not None and torch.cuda.is_available():
+                torch.cuda.set_rng_state_all([
+                    state.cpu() for state in payload["cuda_rng"]
+                ])

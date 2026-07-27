@@ -7,15 +7,21 @@ observation used by the privileged critic.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
+from ..rewards.decision import DecisionAnalysisBatch
 from ..rewards.efficiency import DiscardAnalysisBatch, EfficiencyAnalyzer
 from ..rewards.public_state import PublicStateTracker
 
 
 def _kind(action: Any) -> str:
+    try:
+        return str(json.loads(action.to_mjai()).get("type", "")).lower()
+    except (AttributeError, TypeError, ValueError):
+        pass
     value = getattr(action, "action_type", getattr(action, "type", ""))
-    return str(getattr(value, "name", value)).lower()
+    return str(getattr(value, "name", value)).lower().rsplit(".", 1)[-1]
 
 
 def _is_discard(action: Any) -> bool:
@@ -71,7 +77,7 @@ class HeuristicPolicy:
         physical_tile = int(action.tile)
         tile = physical_tile // 4
         return (
-            -int(candidate.shanten),
+            -int(getattr(candidate, "structural_shanten", getattr(candidate, "shanten", 99))),
             int(candidate.ukeire),
             -int(_is_dora(observation, tile)),
             -int(_is_aka_dora(physical_tile)),
@@ -94,7 +100,9 @@ class HeuristicPolicy:
             for opponent in range(4)
             if opponent != seat and self.public.riichi[env_index, opponent]
         ]
-        exhausted = int(int(row.counts[tile]) + int(self.public.visible[env_index, tile]) >= 4)
+        exhausted = int(getattr(candidate, "four_visible", False))
+        if hasattr(row, "counts"):
+            exhausted = int(int(row.counts[tile]) + int(self.public.visible[env_index, tile]) >= 4)
         genbutsu_all = int(bool(threats) and self.public.is_genbutsu_to_all_riichi(env_index, tile))
         coverage = self.public.genbutsu_coverage(env_index, tile)
         suji_coverage = sum(
@@ -116,17 +124,23 @@ class HeuristicPolicy:
 
     def _safe_tenpai_under_riichi(self, candidate: Any, row: Any, env_index: int, seat: int) -> bool:
         """Whether defence can commit to riichi without giving up certain safety."""
-        if int(candidate.shanten) != 0:
+        if int(getattr(candidate, "effective_shanten", getattr(candidate, "shanten", 99))) != 0:
             return False
         tile = int(candidate.action.tile) // 4
-        exhausted = int(row.counts[tile]) + int(self.public.visible[env_index, tile]) >= 4
+        exhausted = bool(getattr(candidate, "four_visible", False))
+        if hasattr(row, "counts"):
+            exhausted = int(row.counts[tile]) + int(self.public.visible[env_index, tile]) >= 4
         return exhausted or self.public.is_genbutsu_to_all_riichi(env_index, tile)
 
-    def select_batch(self, decisions: list[Any], analysis_batch: DiscardAnalysisBatch | None = None) -> list[Any]:
+    def select_batch(
+        self,
+        decisions: list[Any],
+        analysis_batch: DiscardAnalysisBatch | DecisionAnalysisBatch | None = None,
+    ) -> list[Any]:
         """Select one legal native action per decision without GPU/RPC work."""
         if not decisions:
             return []
-        analysis_batch = analysis_batch or DiscardAnalysisBatch.build(
+        analysis_batch = analysis_batch or DecisionAnalysisBatch.build(
             decisions, analyzer=self.analyzer, public=self.public,
         )
         output: list[Any | None] = [None] * len(decisions)
@@ -146,10 +160,26 @@ class HeuristicPolicy:
             env_index = int(decision.env_index)
             seat = int(decision.seat_id)
             threat = self.defensive and self.public.has_riichi_threat(env_index, seat)
-            best = max(
-                row.candidates,
-                key=lambda candidate: self._candidate_key(candidate, row, env_index, seat, threat),
-            )
+            if isinstance(analysis_batch, DecisionAnalysisBatch):
+                defensive_discards = [
+                    candidate for candidate in row.candidates
+                    if _is_discard(candidate.action)
+                    and getattr(candidate.action, "tile", None) is not None
+                ]
+                if threat and defensive_discards:
+                    best = max(
+                        defensive_discards,
+                        key=lambda candidate: self._defense_key(
+                            candidate, row, env_index, seat,
+                        ),
+                    )
+                else:
+                    best = min(row.candidates, key=lambda candidate: candidate.rank)
+            else:
+                best = max(
+                    row.candidates,
+                    key=lambda candidate: self._candidate_key(candidate, row, env_index, seat, threat),
+                )
             riichi = next((action for action in actions if _kind(action) in {"riichi", "reach"}), None)
             if riichi is not None and (
                 not threat or self._safe_tenpai_under_riichi(best, row, env_index, seat)

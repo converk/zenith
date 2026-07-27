@@ -18,18 +18,51 @@ class Transition:
     logprob: float
     value: float
     reward: float = 0.0
-    efficiency_reward: float = 0.0
-    efficiency_weight: float = 0.0
+    discard_regret: float = 0.0
+    call_regret: float = 0.0
+    discard_weight: float = 0.25
+    call_weight: float = 0.10
     kyoku_reward: float = 0.0
     done: bool = False
     advantage: float = 0.0
     return_: float = 0.0
     critic_factors: np.ndarray | None = None
     critic_length: int = 0
+    teacher_mask: np.ndarray | None = None
+    teacher_supervised: bool = False
 
     def refresh_reward(self) -> None:
-        """Compose dense discard shaping and the kyoku-terminal score delta."""
-        self.reward = float(self.efficiency_weight * self.efficiency_reward + self.kyoku_reward)
+        """Compose scale-controlled local regrets and terminal point reward."""
+        self.reward = float(
+            self.kyoku_reward
+            + self.discard_weight * self.discard_regret
+            + self.call_weight * self.call_regret
+        )
+
+
+def component_trace_statistics(
+    transitions: list[Transition], gamma: float, gae_lambda: float,
+) -> dict[str, float]:
+    """Return reward-only GAE traces for driver-owned scale calibration."""
+    rho = float(gamma) * float(gae_lambda)
+    sums = {"kyoku": 0.0, "discard": 0.0, "call": 0.0}
+    absolute = {"kyoku": 0.0, "discard": 0.0, "call": 0.0}
+    tails = {"kyoku": 0.0, "discard": 0.0, "call": 0.0}
+    for item in reversed(transitions):
+        components = {
+            "kyoku": item.kyoku_reward,
+            "discard": item.discard_regret,
+            "call": item.call_regret,
+        }
+        for name, reward in components.items():
+            tails[name] = float(reward) + rho * tails[name]
+            sums[name] += tails[name] ** 2
+            absolute[name] += abs(tails[name])
+    result = {"reward_scale/trace_count": float(len(transitions))}
+    for name in sums:
+        result[f"reward_scale/{name}_trace_sum_squares"] = sums[name]
+        result[f"reward_scale/{name}_trace_abs_sum"] = absolute[name]
+    return result
 
 
 def finish_kyoku(transitions: list[Transition], gamma: float, gae_lambda: float) -> list[Transition]:

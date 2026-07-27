@@ -14,9 +14,10 @@ except ImportError:  # imported lazily by the command line program
 
 from ..model.bridge import BatchedStateBridge, Decision, NUM_PLAYERS
 from .profiling import StageProfiler
-from .rewards import DiscardAnalysisBatch, EfficiencyAnalyzer, PublicStateTracker, early_efficiency_weight, selected_efficiency_rewards
-from .trajectory import Transition, finish_kyoku
+from .rewards import DecisionAnalysisBatch, EfficiencyAnalyzer, PublicStateTracker
+from .trajectory import Transition, component_trace_statistics, finish_kyoku
 from .metrics import SemanticMetrics
+from .curriculum import rollout_lineups
 
 
 def active_decisions(
@@ -66,11 +67,8 @@ if ray is not None:
                 self.profiler,
                 critic_include_public_state=bool(config.get("critic_include_public_state", False)),
             )
-            self.efficiency_weight = early_efficiency_weight(
-                0, int(config["total_updates"]),
-                initial_weight=float(config.get("initial_efficiency_weight", 0.10)),
-                decay_fraction=float(config.get("efficiency_decay_fraction", 0.10)),
-            )
+            self.discard_weight = float(config.get("initial_discard_weight", 0.25))
+            self.call_weight = float(config.get("initial_call_weight", 0.10))
             self.observations = list(self.envs.reset())
             self.bridge.sync(self.observations)
             self.public = PublicStateTracker(self.num_envs)
@@ -85,16 +83,26 @@ if ray is not None:
             self.recorded_decisions = 0
             self.deferred_reset_indices: set[int] = set()
             self.semantic = SemanticMetrics()
+            self.lineups: list[tuple[str, str, str, str]] = [
+                ("current",) * NUM_PLAYERS for _ in range(self.num_envs)
+            ]
 
         def set_rollout_context(
             self,
             update: int,
+            context: dict[str, float] | None = None,
+            history_ids: list[str] | None = None,
         ) -> None:
-            """Install the deterministic early-training shaping weight."""
-            self.efficiency_weight = early_efficiency_weight(
-                int(update), int(self.config["total_updates"]),
-                initial_weight=float(self.config.get("initial_efficiency_weight", 0.10)),
-                decay_fraction=float(self.config.get("efficiency_decay_fraction", 0.10)),
+            """Install the driver-owned V7 reward scales for this rollout."""
+            if context is not None:
+                self.discard_weight = float(context["discard_weight"])
+                self.call_weight = float(context["call_weight"])
+            self.lineups = rollout_lineups(
+                self.num_envs,
+                update=int(update),
+                worker_id=self.worker_id,
+                history_ids=history_ids or (),
+                pool_start_update=int(self.config.get("opponent_pool_start_update", 1501)),
             )
 
         def _submit_model_actions(
@@ -102,6 +110,8 @@ if ray is not None:
             decisions: list[Decision],
             namespace: str,
             greedy: bool,
+            analysis_batch: DecisionAnalysisBatch | None = None,
+            policy_id: str = "current",
         ) -> tuple[Any, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
             with self.profiler.stage("rollout/model_state_prepare"):
                 (
@@ -112,7 +122,7 @@ if ray is not None:
                     _history_generations,
                     critic_factors,
                     critic_lengths,
-                ) = self.bridge.prepare(decisions)
+                ) = self.bridge.prepare(decisions, analysis_batch)
             request = self.inference.infer.remote(
                 worker_id=self.worker_id,
                 namespace=namespace,
@@ -124,6 +134,7 @@ if ray is not None:
                 legal_mask=legal,
                 token_lengths=token_lengths,
                 greedy=greedy,
+                policy_id=policy_id,
             )
             return request, (token_factors, token_numeric, token_lengths, legal, critic_factors, critic_lengths)
 
@@ -133,7 +144,7 @@ if ray is not None:
             prepared: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
             result: dict[str, Any],
             record: bool,
-            analysis_batch: DiscardAnalysisBatch | None = None,
+            analysis_batch: DecisionAnalysisBatch | None = None,
         ) -> tuple[list[Any], list[Transition | None]]:
             token_factors, token_numeric, token_lengths, legal, critic_factors, critic_lengths = prepared
             action_ids = [int(value) for value in result["action_ids"]]
@@ -144,24 +155,31 @@ if ray is not None:
             self.model_decisions += len(decisions)
             transitions: list[Transition | None] = [None] * len(decisions)
             if record:
-                if self.efficiency_weight != 0.0:
-                    efficiency_rewards = selected_efficiency_rewards(
-                        decisions, actions, analyzer=self.efficiency, public=self.public, analysis=analysis_batch,
-                    )
-                else:
-                    efficiency_rewards = [0.0] * len(decisions)
                 with self.profiler.stage("rollout/transition_materialize"):
-                    for row, (action_id, efficiency_reward) in enumerate(zip(action_ids, efficiency_rewards, strict=True)):
+                    for row, action_id in enumerate(action_ids):
                         decision = decisions[row]
+                        analysis_row = analysis_batch.for_decision(decision) if analysis_batch is not None else None
+                        discard_regret, call_regret = (
+                            analysis_row.selected_regrets(actions[row]) if analysis_row is not None else (0.0, 0.0)
+                        )
                         transition = Transition(
                             token_factors[row, : token_lengths[row]].copy(),
                             token_numeric[row, : token_lengths[row]].copy(), int(token_lengths[row]),
                             legal[row].copy(), action_id, logprobs[row], values[row],
                             critic_factors=critic_factors[row, : critic_lengths[row]].copy(),
                             critic_length=int(critic_lengths[row]),
+                            discard_regret=float(discard_regret),
+                            call_regret=float(call_regret),
+                            discard_weight=self.discard_weight,
+                            call_weight=self.call_weight,
+                            teacher_mask=(
+                                analysis_row.teacher_mask.copy()
+                                if analysis_row is not None and analysis_row.teacher_mask.any() else None
+                            ),
+                            teacher_supervised=bool(
+                                analysis_row is not None and analysis_row.teacher_mask.any()
+                            ),
                         )
-                        transition.efficiency_reward = float(efficiency_reward)
-                        transition.efficiency_weight = self.efficiency_weight
                         transition.refresh_reward()
                         transitions[row] = transition
                         threat = self.public.has_riichi_threat(decision.env_index, decision.seat_id)
@@ -172,17 +190,32 @@ if ray is not None:
                             genbutsu_to_all=(tile_type >= 0 and self.public.is_genbutsu_to_all_riichi(decision.env_index, tile_type)),
                             genbutsu_count=(self.public.genbutsu_coverage(decision.env_index, tile_type) if tile_type >= 0 else 0),
                         )
-                        if analysis_batch is not None:
-                            analysis_row = analysis_batch.for_decision(decision)
+                        if analysis_row is not None:
                             chosen = actions[row]
-                            chosen_tile = getattr(chosen, "tile", None)
-                            candidate = next((item for item in analysis_row.candidates
-                                              if getattr(item.action, "tile", None) == chosen_tile), None)
-                            if candidate is not None and analysis_row.best_shanten is not None:
-                                shanten_gap = int(candidate.shanten) - int(analysis_row.best_shanten)
-                                ukeire_loss = (max(0, int(analysis_row.best_ukeire) - int(candidate.ukeire))
-                                               / max(int(analysis_row.best_ukeire), 1)) if shanten_gap == 0 else 1.0
-                                self.semantic.record_efficiency(reward=float(efficiency_reward), shanten_gap=shanten_gap, ukeire_loss=ukeire_loss)
+                            candidate = analysis_row.candidate_for(chosen)
+                            if candidate is not None and analysis_row.best_rank is not None:
+                                shanten_gap = int(candidate.structural_shanten) - int(analysis_row.best_rank[0])
+                                best_ukeire = max(
+                                    (item.ukeire for item in analysis_row.candidates
+                                     if item.structural_shanten == analysis_row.best_rank[0]),
+                                    default=0,
+                                )
+                                ukeire_loss = (
+                                    max(0, best_ukeire - int(candidate.ukeire)) / max(best_ukeire, 1)
+                                    if shanten_gap == 0 else 1.0
+                                )
+                                self.semantic.record_efficiency(
+                                    reward=float(discard_regret + call_regret),
+                                    shanten_gap=shanten_gap,
+                                    ukeire_loss=ukeire_loss,
+                                )
+                                self.semantic.record_rule_quality(
+                                    candidate,
+                                    accepted_call=76 <= action_id <= 170,
+                                    bad_call=call_regret < 0.0,
+                                    best_rank=analysis_row.best_rank,
+                                    alternatives=analysis_row.candidates,
+                                )
                         self.recorded_decisions += 1
             return actions, transitions
 
@@ -221,22 +254,31 @@ if ray is not None:
             with self.profiler.stage("rollout/scan_observations_and_legal_actions"):
                 decisions = active_decisions(self.observations, active)
             if decisions:
-                analysis_batch: DiscardAnalysisBatch | None = None
-                if record and self.efficiency_weight != 0.0:
+                by_policy: dict[str, list[Decision]] = {}
+                for decision in decisions:
+                    policy_id = self.lineups[decision.env_index][decision.seat_id]
+                    by_policy.setdefault(policy_id, []).append(decision)
+                for policy_id, policy_decisions in by_policy.items():
                     with self.profiler.stage("rollout/reward_analysis"):
-                        analysis_batch = DiscardAnalysisBatch.build(
-                            decisions,
-                            analyzer=self.efficiency,
-                            public=self.public,
+                        analysis_batch = DecisionAnalysisBatch.build(
+                            policy_decisions, analyzer=self.efficiency, public=self.public,
                         )
-                request, prepared = self._submit_model_actions(decisions, "eval" if greedy else "rollout", greedy)
-                with self.profiler.stage("inference/rpc_wait"):
-                    result = ray.get(request)
-                actions, transitions = self._model_actions(decisions, prepared, result, record, analysis_batch)
-                for decision, action, transition in zip(decisions, actions, transitions, strict=True):
-                    actions_by_env[decision.env_index][decision.seat_id] = action
-                    if transition is not None:
-                        self.pending[decision.env_index][decision.seat_id].append(transition)
+                    request, prepared = self._submit_model_actions(
+                        policy_decisions, "eval" if greedy else "rollout", greedy,
+                        analysis_batch, policy_id,
+                    )
+                    with self.profiler.stage("inference/rpc_wait"):
+                        result = ray.get(request)
+                    record_policy = bool(record and policy_id == "current")
+                    actions, transitions = self._model_actions(
+                        policy_decisions, prepared, result, record_policy, analysis_batch,
+                    )
+                    for decision, action, transition in zip(
+                        policy_decisions, actions, transitions, strict=True,
+                    ):
+                        actions_by_env[decision.env_index][decision.seat_id] = action
+                        if transition is not None:
+                            self.pending[decision.env_index][decision.seat_id].append(transition)
 
             with self.profiler.stage("env/step_batch_native"):
                 self.observations = list(self.envs.step_batch(actions_by_env))
@@ -255,8 +297,12 @@ if ray is not None:
                     ended_kyoku_indices.append(env_index)
                     self.match_kyoku_counts[env_index] += 1
                     scores = [int(x) for x in scores_by_env[env_index]]
+                    current_seats = [
+                        seat for seat, policy in enumerate(self.lineups[env_index])
+                        if policy == "current"
+                    ]
                     self.semantic.record_kyoku(
-                        range(NUM_PLAYERS),
+                        current_seats,
                         [scores[seat] - self.start_scores[env_index][seat] for seat in range(NUM_PLAYERS)],
                         self.bridge.last_events[env_index],
                         discard_count=int(self.public.completed_discard_counts[env_index]),
@@ -265,11 +311,16 @@ if ray is not None:
                     for seat in range(NUM_PLAYERS):
                         reward = float(np.clip((scores[seat] - self.start_scores[env_index][seat]), -12_000, 12_000) / 1_000.0)
                         pending = self.pending[env_index][seat]
-                        if record:
+                        if record and self.lineups[env_index][seat] == "current":
                             with self.profiler.stage("rollout/finish_kyoku_gae"):
                                 if pending:
                                     pending[-1].kyoku_reward = reward
                                     pending[-1].refresh_reward()
+                                    trace = component_trace_statistics(
+                                        pending, float(self.config["gamma"]), float(self.config["gae_lambda"]),
+                                    )
+                                    for name, value in trace.items():
+                                        self.trace_totals[name] = self.trace_totals.get(name, 0.0) + float(value)
                                 completed.extend(finish_kyoku(
                                     pending, float(self.config["gamma"]), float(self.config["gae_lambda"]),
                                 ))
@@ -289,9 +340,11 @@ if ray is not None:
         def collect(
             self,
             update: int | None = None,
+            reward_context: dict[str, float] | None = None,
+            history_ids: list[str] | None = None,
         ) -> tuple[list[Transition], dict[str, float]]:
             if update is not None:
-                self.set_rollout_context(int(update))
+                self.set_rollout_context(int(update), reward_context, history_ids)
             # ``kyokus_per_worker`` is the worker-level rollout drain target.
             # The native environment advances tables in parallel, so a worker
             # can exceed it by one in-flight completion wave; that bounded
@@ -306,10 +359,12 @@ if ray is not None:
             active_envs = set(range(self.num_envs))
             self.profiler.reset()
             self.semantic = SemanticMetrics()
-            for _index in range(self.num_envs):
-                self.semantic.record_lineup(("current",) * NUM_PLAYERS, range(NUM_PLAYERS))
+            for lineup in self.lineups:
+                current_seats = [seat for seat, policy in enumerate(lineup) if policy == "current"]
+                self.semantic.record_lineup(lineup, current_seats)
             self.model_decisions = 0
             self.recorded_decisions = 0
+            self.trace_totals: dict[str, float] = {}
             if self.deferred_reset_indices:
                 self._reset_games(sorted(self.deferred_reset_indices))
                 self.deferred_reset_indices.clear()
@@ -342,8 +397,12 @@ if ray is not None:
                 "transitions_per_s": float(len(transitions) / max(elapsed, 1e-9)),
                 "model_decisions": float(self.model_decisions),
                 "recorded_decisions": float(self.recorded_decisions),
-                "sampled_seats_per_game": float(NUM_PLAYERS),
-                "reward_schedule/efficiency_weight": self.efficiency_weight,
+                "sampled_seats_per_game": float(
+                    sum(policy == "current" for lineup in self.lineups for policy in lineup)
+                    / max(self.num_envs, 1)
+                ),
+                "reward_schedule/discard_weight": self.discard_weight,
+                "reward_schedule/call_weight": self.call_weight,
                 "reward_schedule/kyoku_weight": 1.0,
                 "drain_kyokus": float(drain_kyokus),
                 "drain_steps": float(drain_steps),
@@ -351,24 +410,45 @@ if ray is not None:
             stats.update(self.profiler.delta({}, prefix="timing"))
             stats.update(self.efficiency.metrics())
             stats.update(self.public.metrics())
+            stats.update(self.trace_totals)
             for transition in transitions:
                 self.semantic.record_transition_reward(transition)
             stats.update(self.semantic.summary())
             if len(transitions):
-                efficiency_components = np.asarray([
-                    transition.efficiency_weight * transition.efficiency_reward
-                    for transition in transitions
+                discard_components = np.asarray([
+                    transition.discard_weight * transition.discard_regret for transition in transitions
+                ], dtype=np.float64)
+                call_components = np.asarray([
+                    transition.call_weight * transition.call_regret for transition in transitions
                 ], dtype=np.float64)
                 kyoku_components = np.asarray([
                     transition.kyoku_reward for transition in transitions
                 ], dtype=np.float64)
                 stats.update({
-                    "reward_schedule/efficiency_abs_mean": float(np.abs(efficiency_components).mean()),
+                    "reward_scale/discard_nonzero_count": float(np.count_nonzero(
+                        [transition.discard_regret for transition in transitions]
+                    )),
+                    "reward_scale/call_nonzero_count": float(np.count_nonzero(
+                        [transition.call_regret for transition in transitions]
+                    )),
+                    "reward_scale/discard_raw_mean": float(np.mean(
+                        [transition.discard_regret for transition in transitions]
+                    )),
+                    "reward_scale/call_raw_mean": float(np.mean(
+                        [transition.call_regret for transition in transitions]
+                    )),
+                    "reward_schedule/discard_abs_mean": float(np.abs(discard_components).mean()),
+                    "reward_schedule/call_abs_mean": float(np.abs(call_components).mean()),
                     "reward_schedule/kyoku_abs_mean": float(np.abs(kyoku_components).mean()),
                 })
             else:
                 stats.update({
-                    "reward_schedule/efficiency_abs_mean": 0.0,
+                    "reward_scale/discard_nonzero_count": 0.0,
+                    "reward_scale/call_nonzero_count": 0.0,
+                    "reward_scale/discard_raw_mean": 0.0,
+                    "reward_scale/call_raw_mean": 0.0,
+                    "reward_schedule/discard_abs_mean": 0.0,
+                    "reward_schedule/call_abs_mean": 0.0,
                     "reward_schedule/kyoku_abs_mean": 0.0,
                 })
             return transitions, stats

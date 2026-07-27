@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from riichi_ppo_v1.training.rewards.efficiency import early_efficiency_weight, efficiency_reward, remaining_ukeire
+from riichi_ppo_v1.training.rewards.efficiency import efficiency_reward, remaining_ukeire
 from riichi_ppo_v1.training.trajectory import Transition, finish_kyoku
 
 
@@ -14,26 +14,21 @@ def test_efficiency_reward_prioritizes_shanten_then_ukeire() -> None:
     assert remaining_ukeire((1 << 1) | (1 << 3), remaining) == 5
 
 
-def test_two_component_reward_keeps_kyoku_score_primary() -> None:
+def test_three_component_reward_keeps_kyoku_score_primary() -> None:
     transition = Transition(
         np.zeros((1, 10), np.uint8), np.zeros((1, 8), np.float32), 1,
         np.ones(241, np.bool_), 0, 0.0, 0.0,
     )
-    transition.efficiency_reward = -1.0
-    transition.efficiency_weight = 0.10
+    transition.discard_regret = -1.0
+    transition.discard_weight = 0.10
+    transition.call_regret = -0.5
+    transition.call_weight = 0.10
     transition.kyoku_reward = 2.0
     transition.refresh_reward()
 
-    assert transition.reward == pytest.approx(1.9)
+    assert transition.reward == pytest.approx(1.85)
     finish_kyoku([transition], gamma=.995, gae_lambda=.97)
-    assert transition.reward == pytest.approx(1.9)
-
-
-def test_early_efficiency_weight_retires_after_ten_percent() -> None:
-    assert early_efficiency_weight(0, 1_000) == pytest.approx(0.10)
-    assert early_efficiency_weight(50, 1_000) == pytest.approx(0.05)
-    assert early_efficiency_weight(100, 1_000) == pytest.approx(0.0)
-    assert early_efficiency_weight(1_000, 1_000) == pytest.approx(0.0)
+    assert transition.reward == pytest.approx(1.85)
 
 
 def test_weighted_efficiency_penalty_is_bounded() -> None:

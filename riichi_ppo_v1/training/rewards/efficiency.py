@@ -61,20 +61,6 @@ def efficiency_reward(
     return -0.25 * loss
 
 
-def early_efficiency_weight(
-    update: int, total_updates: int, *, initial_weight: float = 0.10, decay_fraction: float = 0.10,
-) -> float:
-    """Linearly retire bounded discard shaping during the first training slice."""
-    if int(total_updates) <= 0:
-        raise ValueError("total_updates must be positive")
-    if float(initial_weight) < 0:
-        raise ValueError("initial_weight must be non-negative")
-    if not 0 < float(decay_fraction) <= 1:
-        raise ValueError("decay_fraction must be in (0, 1]")
-    progress = min(max(float(update) / float(total_updates), 0.0), 1.0)
-    return float(initial_weight) * (1.0 - min(progress / float(decay_fraction), 1.0))
-
-
 def remaining_ukeire(improving_mask: int, remaining_counts: np.ndarray) -> int:
     """Count publicly remaining improving tile copies from a 34-element vector."""
     if remaining_counts.shape != (34,):

@@ -19,7 +19,7 @@ def test_curated_scalars_keep_only_the_dashboard_allowlist() -> None:
         "ppo/value_prediction_std", "ppo/entropy", "ppo/entropy_normalized", "ppo/approx_kl", "ppo/clipfrac",
         "ppo/ratio_p95", "ppo/explained_variance", "ppo/grad_norm", "ppo/grad_norm_post_clip",
         "ppo/grad_norm_actor", "ppo/grad_norm_critic", "ppo/grad_norm_shared", "ppo/system/learning_rate",
-        "ppo/system/entropy_coef", "ppo/update/early_stop", "reward_schedule/efficiency_weight",
+        "ppo/system/entropy_coef", "ppo/update/early_stop",
         "reward_schedule/kyoku_weight", "reward_schedule/efficiency_abs_mean", "reward_schedule/kyoku_abs_mean",
         "eval/kyoku/point_delta_mean", "eval/kyoku/point_delta_mean_stderr", "eval/kyoku/win_rate",
         "eval/kyoku/deal_in_rate", "eval/kyoku/draw_rate", "eval/kyoku/discard_count_mean",
@@ -35,6 +35,19 @@ def test_curated_scalars_keep_only_the_dashboard_allowlist() -> None:
         "train/action/call_opportunity_accept_rate", "train/efficiency/optimal_shanten_rate",
         "train/efficiency/optimal_ukeire_rate", "iteration/sps",
         "iteration/algorithm_wall_s", "update/wall_s", "system/learner_gpu_peak_allocated_mb",
+    }
+    expected |= {
+        "ppo/system/auxiliary_coef",
+        "ppo/auxiliary_loss",
+        "reward_scale/discard_weight",
+        "reward_scale/call_weight",
+        "reward_scale/discard_to_kyoku_ratio",
+        "reward_scale/call_to_kyoku_ratio",
+        "eval/fixed/structural_optimal_rate",
+        "eval/fixed/rule_tenpai_preference_accuracy",
+        "eval/rules/open_no_yaku_tenpai_rate",
+        "eval/rules/furiten_tenpai_rate",
+        "eval/rules/bad_call_rate",
     }
     assert CURATED_SCALAR_TAGS == expected
     values = {name: float(index) for index, name in enumerate(expected, start=1)}

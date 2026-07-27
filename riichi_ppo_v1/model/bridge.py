@@ -135,7 +135,7 @@ class BatchedStateBridge:
         with self.profiler.stage("state/boundary_array_convert"):
             return np.asarray(end_kyoku, dtype=np.bool_), np.asarray(end_game, dtype=np.bool_)
 
-    def prepare(self, decisions: list[Decision]) -> tuple[
+    def prepare(self, decisions: list[Decision], analysis: Any | None = None) -> tuple[
         np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray
     ]:
         if not decisions:
@@ -179,6 +179,31 @@ class BatchedStateBridge:
             history_generations_a = np.asarray(history_generations, dtype=np.int64)
             critic_factors_a = np.asarray(critic_factors, dtype=np.uint8)
             critic_lengths_a = np.asarray(critic_lengths, dtype=np.int64)
+        if analysis is not None:
+            with self.profiler.stage("state/candidate_feature_encode"):
+                candidate_factors, candidate_numeric = analysis.candidate_tokens(decisions, mask_a)
+                new_lengths = token_lengths_a + np.asarray(
+                    [len(row) for row in candidate_factors], dtype=np.int64,
+                )
+                # The model appends one learned query token.
+                if np.any(new_lengths + 1 > 4096):
+                    raise RuntimeError(
+                        f"V8 candidate tokens overflow context: max={int(new_lengths.max()) + 1} limit=4096"
+                    )
+                width = int(new_lengths.max())
+                extended_factors = np.zeros((len(decisions), width, 10), dtype=np.uint8)
+                extended_numeric = np.zeros((len(decisions), width, 8), dtype=np.float32)
+                for row, (extra_factors, extra_numeric) in enumerate(
+                    zip(candidate_factors, candidate_numeric, strict=True)
+                ):
+                    base = int(token_lengths_a[row])
+                    extended_factors[row, :base] = factors_a[row, :base]
+                    extended_numeric[row, :base] = numeric_a[row, :base]
+                    extended_factors[row, base : base + len(extra_factors)] = extra_factors
+                    extended_numeric[row, base : base + len(extra_numeric)] = extra_numeric
+                factors_a = extended_factors
+                numeric_a = extended_numeric
+                token_lengths_a = new_lengths
         if factors_a.ndim != 3 or factors_a.shape[0] != len(decisions) or factors_a.shape[2] != 10:
             raise RuntimeError(f"invalid token factor shape {factors_a.shape}")
         if numeric_a.shape != (*factors_a.shape[:2], 8):

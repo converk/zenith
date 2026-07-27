@@ -83,6 +83,9 @@ class PublicStateTracker:
                 self.completed_open_meld_counts[env_index] = self.open_meld_counts[env_index].sum()
             if kind == "start_kyoku":
                 self.reset([env_index])
+                marker = tile_type(event.get("dora_marker"))
+                if marker is not None:
+                    self.visible[env_index, marker] += 1
             return
         if kind in {"reach", "reach_accepted"}:
             self.riichi[env_index, actor] = True
@@ -93,8 +96,11 @@ class PublicStateTracker:
         tile_values: list[str | None] = []
         if kind in {"dahai", "dora"}:
             tile_values.append(event.get("pai"))
-        elif kind in {"chi", "pon", "daiminkan", "ankan", "kakan"}:
+        elif kind in {"chi", "pon", "daiminkan", "ankan"}:
             tile_values.extend(event.get("consumed", ()))
+        elif kind == "kakan":
+            # The consumed triplet was made public by the original pon.
+            # Only the added tile becomes newly visible here.
             tile_values.append(event.get("pai"))
         for value in tile_values:
             kind_index = tile_type(value)

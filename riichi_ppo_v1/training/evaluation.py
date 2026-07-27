@@ -15,10 +15,9 @@ from ..model.bridge import BatchedStateBridge, Decision, NUM_PLAYERS
 from .metrics import SemanticMetrics
 from .opponents.heuristic import HeuristicPolicy
 from .rewards import (
-    DiscardAnalysisBatch,
+    DecisionAnalysisBatch,
     EfficiencyAnalyzer,
     PublicStateTracker,
-    selected_efficiency_rewards,
 )
 from .worker import active_decisions
 
@@ -63,7 +62,7 @@ def merge_evaluation_summaries(rows: Iterable[dict[str, float]]) -> dict[str, fl
             weights = [float(row.get("eval/action/riichi_opportunity_count", 0.0)) for row in values if name in row]
         elif name == "eval/action/call_opportunity_accept_rate":
             weights = [float(row.get("eval/action/call_opportunity_count", 0.0)) for row in values if name in row]
-        elif name.startswith(("eval/action/", "eval/efficiency/")):
+        elif name.startswith(("eval/action/", "eval/efficiency/", "eval/fixed/")):
             weights = [float(row.get("eval/action/decision_count", 0.0)) for row in values if name in row]
         else:
             weights = [1.0] * len(samples)
@@ -71,6 +70,13 @@ def merge_evaluation_summaries(rows: Iterable[dict[str, float]]) -> dict[str, fl
     kyoku_scores = [float(row.get("eval/kyoku/point_delta_mean", 0.0)) for row in values]
     result["eval/kyoku/point_delta_mean_stderr"] = (
         float(np.std(kyoku_scores, ddof=1) / np.sqrt(len(kyoku_scores))) if len(kyoku_scores) > 1 else 0.0
+    )
+    half_width = 1.96 * result["eval/kyoku/point_delta_mean_stderr"]
+    result["eval/kyoku/point_delta_mean_ci95_low"] = (
+        result.get("eval/kyoku/point_delta_mean", 0.0) - half_width
+    )
+    result["eval/kyoku/point_delta_mean_ci95_high"] = (
+        result.get("eval/kyoku/point_delta_mean", 0.0) + half_width
     )
     return result
 
@@ -106,15 +112,15 @@ if ray is not None:
             for _step in range(int(self.config.get("evaluation_max_steps", 4000))):
                 actions_by_env: list[dict[int, Any]] = [{}]
                 decisions = active_decisions(observations)
-                analysis_indices = [
-                    index for index, decision in enumerate(decisions)
-                    if policies[decision.seat_id] in heuristics or policies[decision.seat_id] == "candidate"
-                ]
-                analysis = DiscardAnalysisBatch.build([decisions[index] for index in analysis_indices], analyzer=efficiency, public=public) if analysis_indices else None
+                analysis = DecisionAnalysisBatch.build(
+                    decisions, analyzer=efficiency, public=public,
+                ) if decisions else None
                 for index, decision in enumerate(decisions):
                     policy = policies[decision.seat_id]
                     if policy == "candidate":
-                        factors, numeric, lengths, legal, _generations, critic, critic_lengths = bridge.prepare([decision])
+                        factors, numeric, lengths, legal, _generations, critic, critic_lengths = bridge.prepare(
+                            [decision], analysis,
+                        )
                         response = ray.get(self.inference.infer.remote(
                             worker_id=100_000 + self.worker_id, namespace="eval", batch_indices=[decision.batch_index],
                             token_factors=factors, token_numeric=numeric, critic_factors=critic, critic_lengths=critic_lengths,
@@ -127,26 +133,33 @@ if ray is not None:
                         metrics.record_decision(action_id, legal[0], threat=threat,
                                                 genbutsu_to_all=(tile_type >= 0 and public.is_genbutsu_to_all_riichi(0, tile_type)),
                                                 genbutsu_count=(public.genbutsu_coverage(0, tile_type) if tile_type >= 0 else 0))
-                        efficiency_reward = selected_efficiency_rewards(
-                            [decision], [action], analyzer=efficiency, public=public, analysis=analysis,
-                        )[0]
                         analysis_row = analysis.for_decision(decision) if analysis is not None else None
                         if analysis_row is not None:
-                            candidate = next(
-                                (item for item in analysis_row.candidates if getattr(item.action, "tile", None) == tile),
-                                None,
-                            )
-                            if candidate is not None and analysis_row.best_shanten is not None:
-                                shanten_gap = int(candidate.shanten) - int(analysis_row.best_shanten)
+                            candidate = analysis_row.candidate_for(action)
+                            if candidate is not None and analysis_row.best_rank is not None:
+                                discard_regret, call_regret = analysis_row.selected_regrets(action)
+                                shanten_gap = int(candidate.structural_shanten) - int(analysis_row.best_rank[0])
+                                best_ukeire = max(
+                                    (item.ukeire for item in analysis_row.candidates
+                                     if item.structural_shanten == analysis_row.best_rank[0]),
+                                    default=0,
+                                )
                                 ukeire_loss = (
-                                    max(0, int(analysis_row.best_ukeire) - int(candidate.ukeire))
-                                    / max(int(analysis_row.best_ukeire), 1)
+                                    max(0, best_ukeire - int(candidate.ukeire))
+                                    / max(best_ukeire, 1)
                                     if shanten_gap == 0 else 1.0
                                 )
                                 metrics.record_efficiency(
-                                    reward=float(efficiency_reward),
+                                    reward=float(discard_regret + call_regret),
                                     shanten_gap=shanten_gap,
                                     ukeire_loss=ukeire_loss,
+                                )
+                                metrics.record_rule_quality(
+                                    candidate,
+                                    accepted_call=76 <= action_id <= 170,
+                                    bad_call=call_regret < 0.0,
+                                    best_rank=analysis_row.best_rank,
+                                    alternatives=analysis_row.candidates,
                                 )
                     else:
                         action = heuristics[policy].select_batch([decision], analysis)[0]
@@ -170,5 +183,92 @@ if ray is not None:
                     )
                     return {"metrics": metrics.summary("eval"), "seed": int(seed), "candidate_seat": int(candidate_seat), "opponents": list(opponents)}
             raise RuntimeError("evaluation game exceeded evaluation_max_steps")
+
+        def evaluate_fixed_quality(
+            self, seed: int, candidate_seat: int, opponents: tuple[str, str, str],
+        ) -> dict[str, Any]:
+            """Score the model on a deterministic trajectory it cannot alter.
+
+            Every submitted environment action comes from a fixed rule-aware
+            heuristic.  The candidate model is queried at its seat only for
+            structural/rule-preference accuracy, so this decision set remains
+            identical when comparing checkpoints.
+            """
+            envs = self._env_type(1, seed=int(seed), step_threads=1, game_mode=self.config["game_mode"])
+            bridge = BatchedStateBridge(self._riichi.MjaiKyokuStateMachineManager(1), 1)
+            observations = list(envs.reset())
+            bridge.sync(observations)
+            public = PublicStateTracker(1)
+            public.update(bridge.last_events)
+            efficiency = EfficiencyAnalyzer(int(self.config.get("reward_cache_capacity", 131_072)))
+            heuristics = {
+                EFFICIENCY: HeuristicPolicy(efficiency, public, defensive=False),
+                DEFENSE: HeuristicPolicy(efficiency, public, defensive=True),
+            }
+            policies: list[str] = []
+            opponent_iter = iter(opponents)
+            for seat in range(NUM_PLAYERS):
+                policies.append(EFFICIENCY if seat == int(candidate_seat) else next(opponent_iter))
+            metrics = SemanticMetrics()
+            for _step in range(int(self.config.get("evaluation_max_steps", 4000))):
+                actions_by_env: list[dict[int, Any]] = [{}]
+                decisions = active_decisions(observations)
+                analysis = DecisionAnalysisBatch.build(
+                    decisions, analyzer=efficiency, public=public,
+                ) if decisions else None
+                for decision in decisions:
+                    fixed_action = heuristics[policies[decision.seat_id]].select_batch(
+                        [decision], analysis,
+                    )[0]
+                    if decision.seat_id == int(candidate_seat):
+                        factors, numeric, lengths, legal, _generations, critic, critic_lengths = bridge.prepare(
+                            [decision], analysis,
+                        )
+                        response = ray.get(self.inference.infer.remote(
+                            worker_id=200_000 + self.worker_id,
+                            namespace="fixed_eval",
+                            batch_indices=[decision.batch_index],
+                            token_factors=factors,
+                            token_numeric=numeric,
+                            critic_factors=critic,
+                            critic_lengths=critic_lengths,
+                            legal_mask=legal,
+                            token_lengths=lengths,
+                            greedy=True,
+                        ))
+                        action_id = int(response["action_ids"][0])
+                        model_action = bridge.decode([decision], [action_id])[0]
+                        metrics.record_decision(action_id, legal[0])
+                        analysis_row = analysis.for_decision(decision) if analysis is not None else None
+                        candidate = (
+                            analysis_row.candidate_for(model_action)
+                            if analysis_row is not None else None
+                        )
+                        if candidate is not None and analysis_row.best_rank is not None:
+                            _discard, call_regret = analysis_row.selected_regrets(model_action)
+                            metrics.record_rule_quality(
+                                candidate,
+                                accepted_call=76 <= action_id <= 170,
+                                bad_call=call_regret < 0.0,
+                                best_rank=analysis_row.best_rank,
+                                alternatives=analysis_row.candidates,
+                            )
+                    actions_by_env[0][decision.seat_id] = fixed_action
+                observations = list(envs.step_batch(actions_by_env))
+                _end_kyoku, _end_game = bridge.sync(observations)
+                public.update(bridge.last_events)
+                if bool(envs.done()[0]):
+                    summary = metrics.summary("eval")
+                    keep = {
+                        name: value for name, value in summary.items()
+                        if name.startswith("eval/fixed/")
+                        or name == "eval/action/decision_count"
+                    }
+                    return {
+                        "metrics": keep,
+                        "seed": int(seed),
+                        "candidate_seat": int(candidate_seat),
+                    }
+            raise RuntimeError("fixed quality game exceeded evaluation_max_steps")
 else:
     EvaluationWorker = None

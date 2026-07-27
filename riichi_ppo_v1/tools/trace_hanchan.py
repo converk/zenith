@@ -29,7 +29,7 @@ from riichienv import BatchedRiichiEnv
 from riichi_ppo_v1.model.bridge import BatchedStateBridge, Decision, tile_id_to_mjai
 from riichi_ppo_v1.training.learner import PPOLearner
 from riichi_ppo_v1.training.opponents.heuristic import HeuristicPolicy
-from riichi_ppo_v1.training.rewards import DiscardAnalysisBatch, EfficiencyAnalyzer, PublicStateTracker
+from riichi_ppo_v1.training.rewards import DecisionAnalysisBatch, EfficiencyAnalyzer, PublicStateTracker
 from riichi_ppo_v1.training.train import load_config
 from riichi_ppo_v1.training.worker import active_decisions
 
@@ -141,12 +141,16 @@ def run(checkpoint: Path, output: Path, seed: int, seat: int) -> None:
         for step in range(4000):
             actions_by_env: list[dict[int, Any]] = [{}]
             decisions = active_decisions(observations)
-            analysis = DiscardAnalysisBatch.build(decisions, analyzer=efficiency, public=public) if decisions else None
+            analysis = DecisionAnalysisBatch.build(
+                decisions, analyzer=efficiency, public=public,
+            ) if decisions else None
             for decision in decisions:
                 if decision.seat_id != seat:
                     actions_by_env[0][decision.seat_id] = opponent_by_seat[decision.seat_id].select_batch([decision], analysis)[0]
                     continue
-                factors, numeric, lengths, legal_mask, _generation, critic, critic_lengths = bridge.prepare([decision])
+                factors, numeric, lengths, legal_mask, _generation, critic, critic_lengths = bridge.prepare(
+                    [decision], analysis,
+                )
                 with torch.inference_mode(), torch.autocast(device_type=device.split(":")[0], dtype=torch.bfloat16, enabled=learner.use_bf16):
                     result = model(
                         torch.as_tensor(factors, device=device, dtype=torch.long),
@@ -179,8 +183,8 @@ def run(checkpoint: Path, output: Path, seed: int, seat: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", type=Path, default=Path("checkpoints/train_riichi_v6/best_kyoku.pt"))
-    parser.add_argument("--output", type=Path, default=Path("checkpoints/train_riichi_v6/best_kyoku_hanchan_trace.md"))
+    parser.add_argument("--checkpoint", type=Path, default=Path("checkpoints/train_riichi_v8/best_kyoku.pt"))
+    parser.add_argument("--output", type=Path, default=Path("checkpoints/train_riichi_v8/best_kyoku_hanchan_trace.md"))
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--seat", type=int, choices=range(4), default=0)
     args = parser.parse_args()

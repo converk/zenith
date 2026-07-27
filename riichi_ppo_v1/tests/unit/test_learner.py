@@ -231,17 +231,21 @@ def test_cpu_update_keeps_fp32_parameters_and_disables_bf16_autocast() -> None:
     assert {parameter.dtype for parameter in learner.model.parameters()} == {torch.float32}
 
 
-def test_checkpoint_omits_schema_metadata_and_restores_state() -> None:
+def test_checkpoint_records_v8_schema_metadata_and_restores_state() -> None:
     learner = PPOLearner("mid", "cpu", **learner_kwargs())
     learner.iteration = 7
     with TemporaryDirectory() as directory:
         path = f"{directory}/checkpoint.pt"
-        learner.save(path, {"seed": 1})
+        learner.save(path, {"seed": 1}, {
+            "reward_scale_controller": {"discard_weight": 0.6},
+        })
         payload = torch.load(path, weights_only=False)
         assert set(payload) == {
             "model", "optimizer", "model_config", "train_config", "iteration",
-            "torch_rng", "python_rng", "numpy_rng",
+            "torch_rng", "cuda_rng", "python_rng", "numpy_rng", "token_schema_version", "extra_state",
         }
+        assert payload["token_schema_version"] == 8
+        assert payload["extra_state"]["reward_scale_controller"]["discard_weight"] == 0.6
 
         restored = PPOLearner("mid", "cpu", **learner_kwargs())
         restored.load(path)

@@ -26,6 +26,7 @@ from torch.utils.tensorboard import SummaryWriter
 from .profiling import GpuSampler, append_jsonl
 from .metrics import RollingKyokuMetrics, append_metric_jsonl, metric_counters
 from .tensorboard import learner_peak_allocated_mb, write_curated_scalars
+from .reward_scale import RewardScaleController
 
 
 _CONFIG_GROUPS = ("training", "monitoring")
@@ -191,6 +192,17 @@ def is_better_kyoku_selection(
     )
 
 
+def is_better_score_selection(
+    candidate: dict[str, float], best: dict[str, float] | None, *, epsilon: float = 1e-3,
+) -> bool:
+    if best is None:
+        return True
+    score = candidate["eval/kyoku/point_delta_mean"] - best["eval/kyoku/point_delta_mean"]
+    if abs(score) > epsilon:
+        return score > 0
+    return candidate["eval/kyoku/deal_in_rate"] < best["eval/kyoku/deal_in_rate"]
+
+
 def run(config: dict[str, Any]) -> None:
     try:
         import ray
@@ -204,6 +216,24 @@ def run(config: dict[str, Any]) -> None:
     if RolloutInferenceActor is None:
         raise RuntimeError("Ray rollout inference actor could not be defined")
     seed_everything(int(config["seed"]))
+    controller = RewardScaleController(
+        beta=float(config.get("reward_scale_ema_beta", 0.95)),
+        minimum=float(config.get("reward_scale_min", 0.02)),
+        maximum=float(config.get("reward_scale_max", 2.0)),
+        discard_weight=float(config.get("initial_discard_weight", 0.25)),
+        call_weight=float(config.get("initial_call_weight", 0.10)),
+        stage1_end=int(config.get("reward_stage1_end", 1500)),
+        stage2_end=int(config.get("reward_stage2_end", 3500)),
+    )
+    resume_payload: dict[str, Any] = {}
+    if config.get("resume"):
+        resume_payload = torch.load(config["resume"], map_location="cpu", weights_only=False)
+        schema = int(resume_payload.get("token_schema_version", 0))
+        if schema != 8:
+            raise RuntimeError(f"cannot resume token schema {schema}; V8 requires schema 8")
+        controller_state = resume_payload.get("extra_state", {}).get("reward_scale_controller")
+        if controller_state:
+            controller.load_state_dict(controller_state)
     device = str(config["device"])
     if device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but PyTorch cannot see a CUDA device")
@@ -219,6 +249,14 @@ def run(config: dict[str, Any]) -> None:
         actor_config["inference_actor_num_workers"] = len(worker_ids)
         inference_actors.append(RolloutInferenceActor.remote(actor_config, rank, learner_gpus, init_method))
     inference = inference_actors[0]
+    saved_actor_rng = resume_payload.get("extra_state", {}).get("actor_rng_states", [])
+    if saved_actor_rng:
+        if len(saved_actor_rng) != len(inference_actors):
+            raise RuntimeError("checkpoint learner rank count differs from current learner_gpus")
+        ray.get([
+            actor.load_rng_state.remote(state)
+            for actor, state in zip(inference_actors, saved_actor_rng, strict=True)
+        ])
     worker_to_rank = {
         worker_id: rank
         for rank, worker_ids in enumerate(partitions)
@@ -256,10 +294,24 @@ def run(config: dict[str, Any]) -> None:
     last_evaluated = -1
     evaluation_history: list[dict[str, float]] = []
     best_selection: dict[str, float] | None = None
+    best_score_selection: dict[str, float] | None = None
+    history_pool: list[dict[str, Any]] = list(
+        resume_payload.get("extra_state", {}).get("history_pool", [])
+    )
+
+    def checkpoint_extra_state() -> dict[str, Any]:
+        return {
+            "schema_version": 8,
+            "reward_scale_controller": controller.state_dict(),
+            "history_pool": history_pool,
+            "actor_rng_states": ray.get([
+                actor.rng_state.remote() for actor in inference_actors
+            ]),
+        }
 
     def run_evaluation(update: int) -> None:
         """Run the fixed public baseline at a safe rollout/update boundary."""
-        nonlocal last_evaluated, evaluation_history, best_selection
+        nonlocal last_evaluated, evaluation_history, best_selection, best_score_selection
         if not evaluation_workers:
             return
         evaluation_interval = max(1, int(config.get("evaluation_interval_updates", 15)))
@@ -274,6 +326,25 @@ def run(config: dict[str, Any]) -> None:
         ]
         results = ray.get(futures)
         values = merge_evaluation_summaries([result["metrics"] for result in results])
+        fixed_cases = evaluation_cases(
+            int(config.get("evaluation_seed_base", 20260717)),
+            int(config.get("evaluation_hanchan_count", 10)),
+            cycle=0,
+        )
+        fixed_futures = [
+            evaluation_workers[index % len(evaluation_workers)].evaluate_fixed_quality.remote(
+                seed, seat, recipe,
+            )
+            for index, (seed, seat, recipe) in enumerate(fixed_cases)
+        ]
+        fixed_results = ray.get(fixed_futures)
+        fixed_values = merge_evaluation_summaries([
+            result["metrics"] for result in fixed_results
+        ])
+        values.update({
+            name: value for name, value in fixed_values.items()
+            if name.startswith("eval/fixed/")
+        })
         write_curated_scalars(writer, values, update)
         append_metric_jsonl(semantic_path, update=update, global_decisions=global_decisions,
                             global_kyokus=global_kyokus, source="evaluation", metrics=values,
@@ -291,6 +362,8 @@ def run(config: dict[str, Any]) -> None:
             for name in (
                 "eval/kyoku/point_delta_mean", "eval/kyoku/deal_in_rate",
                 "eval/efficiency/optimal_shanten_rate",
+                "eval/fixed/structural_optimal_rate",
+                "eval/fixed/rule_tenpai_preference_accuracy",
             )
             if name in values
         }])[-3:]
@@ -305,11 +378,22 @@ def run(config: dict[str, Any]) -> None:
                 "eval/efficiency/optimal_shanten_rate",
             }
             if required.issubset(window):
-                is_best = is_better_kyoku_selection(window, best_selection)
-                if is_best:
+                if is_better_score_selection(window, best_score_selection):
+                    best_score_selection = window
+                    score_path = Path(config["checkpoint_dir"]) / "best_score.pt"
+                    ray.get(inference.save.remote(
+                        str(score_path), config, checkpoint_extra_state(),
+                    ))
+                quality_ok = (
+                    window.get("eval/fixed/structural_optimal_rate", 0.0) >= 0.98
+                    and window.get("eval/fixed/rule_tenpai_preference_accuracy", 0.0) >= 0.95
+                )
+                if quality_ok and is_better_kyoku_selection(window, best_selection):
                     best_selection = window
                     path = Path(config["checkpoint_dir"]) / "best_kyoku.pt"
-                    ray.get(inference.save.remote(str(path), config))
+                    ray.get(inference.save.remote(
+                        str(path), config, checkpoint_extra_state(),
+                    ))
                     append_metric_jsonl(
                         semantic_path, update=update, global_decisions=global_decisions,
                         global_kyokus=global_kyokus, source="selection",
@@ -329,6 +413,23 @@ def run(config: dict[str, Any]) -> None:
         start_iteration = ray.get(inference.iteration.remote())
         run_evaluation(start_iteration)
         for iteration in range(start_iteration, int(config["iterations"])):
+            update_number = iteration + 1
+            reward_context = controller.context(update_number)
+            resident_history: list[dict[str, Any]] = []
+            if (
+                update_number >= int(config.get("opponent_pool_start_update", 1501))
+                and len(history_pool) >= 2
+            ):
+                lineup_rng = random.Random(
+                    int(config["seed"]) ^ (update_number * 0x9E3779B1)
+                )
+                resident_history = lineup_rng.sample(history_pool, 2)
+                ray.get([actor.clear_history_policies.remote() for actor in inference_actors])
+                for entry in resident_history:
+                    ray.get([
+                        actor.load_history_policy.remote(str(entry["id"]), str(entry["path"]))
+                        for actor in inference_actors
+                    ])
             gpu_cursor = gpu_sampler.checkpoint()
             algorithm_started = time.perf_counter()
             begin_rollout_started = time.perf_counter()
@@ -339,7 +440,11 @@ def run(config: dict[str, Any]) -> None:
             begin_rollout_s = time.perf_counter() - begin_rollout_started
             rollout_started = time.perf_counter()
             results = ray.get([
-                worker.collect.remote(iteration)
+                worker.collect.remote(
+                    update_number,
+                    reward_context,
+                    [str(entry["id"]) for entry in resident_history],
+                )
                 for worker in workers
             ])
             rollout_wall_s = time.perf_counter() - rollout_started
@@ -355,6 +460,21 @@ def run(config: dict[str, Any]) -> None:
             update_results = ray.get([actor.update.remote(transitions, update_seed) for actor in inference_actors])
             metrics = update_results[0]
             update_wall_s = time.perf_counter() - update_started
+            snapshot_interval = max(1, int(config.get("opponent_snapshot_interval", 250)))
+            if update_number % snapshot_interval == 0:
+                snapshot_id = f"history_{update_number:05d}"
+                snapshot_path = (
+                    Path(config["checkpoint_dir"]) / "opponent_pool" / f"{snapshot_id}.pt"
+                )
+                ray.get(inference.snapshot_policy.remote(str(snapshot_path)))
+                history_pool.append({
+                    "id": snapshot_id,
+                    "path": str(snapshot_path),
+                    "update": update_number,
+                })
+                history_pool[:] = history_pool[-max(
+                    2, int(config.get("opponent_pool_capacity", 8)),
+                ):]
             algorithm_wall_s = time.perf_counter() - algorithm_started
             gpu_metrics = gpu_sampler.summary(gpu_cursor)
             rollout_reward = float(np.nanmean([stats["reward_mean"] for _, stats in results]))
@@ -363,6 +483,10 @@ def run(config: dict[str, Any]) -> None:
             model_decisions = sum(stats.get("model_decisions", 0.0) for _, stats in results)
             recorded_decisions = sum(stats.get("recorded_decisions", 0.0) for _, stats in results)
             rollout_metrics, worker_timing = summarize_worker_rollout(results)
+            reward_scale_metrics = controller.update(
+                update_number, [stats for _worker_transitions, stats in results],
+            )
+            rollout_metrics.update(reward_scale_metrics)
             actor_metrics = {f"rollout/inference_actor/{name}": float(value) for name, value in actor_profile.items()}
             rollout_metrics.update(actor_metrics)
             for rank, profile in enumerate(actor_profiles):
@@ -421,20 +545,31 @@ def run(config: dict[str, Any]) -> None:
                 **gpu_metrics,
             })
             if bool(config.get("semantic_metrics_enabled", True)):
-                semantic_values = {**{name: value for name, value in rollout_metrics.items() if name.startswith(("train/", "reward_schedule/"))},
+                semantic_values = {**{name: value for name, value in rollout_metrics.items() if name.startswith(("train/", "reward_schedule/", "reward_scale/"))},
                                    **{f"ppo/{name}": value for name, value in metrics.items()}, **gpu_metrics}
                 append_metric_jsonl(semantic_path, update=iteration + 1, global_decisions=global_decisions,
                                     global_kyokus=global_kyokus, source="train", metrics=semantic_values,
                                     metadata={
                                         "game_mode": config["game_mode"],
-                                        "opponent_mix": "current_self_play_all_seats",
+                                        "opponent_mix": (
+                                            "two_current_two_history"
+                                            if resident_history else "current_self_play_all_seats"
+                                        ),
                                     })
             if (iteration + 1) % max(1, int(config.get("evaluation_interval_updates", 50))) == 0:
                 run_evaluation(iteration + 1)
+            checkpoint_interval = max(1, int(config.get("checkpoint_interval_updates", 50)))
+            if update_number % checkpoint_interval == 0:
+                checkpoint_path = Path(config["checkpoint_dir"]) / f"checkpoint_{update_number:05d}.pt"
+                ray.get(inference.save.remote(
+                    str(checkpoint_path), config, checkpoint_extra_state(),
+                ))
         final_update = ray.get(inference.iteration.remote())
         if final_update != last_evaluated:
             run_evaluation(final_update)
-        ray.get(inference.save.remote(str(Path(config["checkpoint_dir"]) / "latest.pt"), config))
+        ray.get(inference.save.remote(
+            str(Path(config["checkpoint_dir"]) / "latest.pt"), config, checkpoint_extra_state(),
+        ))
     finally:
         if "inference_actors" in locals():
             try:

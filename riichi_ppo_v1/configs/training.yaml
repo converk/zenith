@@ -20,7 +20,7 @@ learner_gpus: 2
 
 # 默认训练迭代轮数。每轮包含一次 rollout collection 和一次 PPO update。
 # benchmark 通常用 CLI 覆盖为 1 或 3；长期训练使用较大值。
-iterations: 9920
+iterations: 5000
 
 # 模型规模预设。mid 是当前默认训练模型；large 会增加层数和宽度，显著提高显存与计算开销。
 model_size: mid
@@ -70,7 +70,7 @@ split_policy_inference: false
 # 每个 worker 在一次 rollout drain 前至少完成的小局数。原生环境会并行推进多张桌，
 # 因此同一完成波次可能略超出该目标；这能保证所有已开始的小局在 PPO 前完整结算。
 # 值越大，每轮采样量越大、update 更重、统计更稳定；值越小，单轮迭代更快。
-# 设为 1 时，12 workers × 32 张并行桌会在首个完整 drain wave 收集 384 个物理小局。
+# 设为 1 时，12 workers × 32 张并行桌会在首个完整 drain wave 收集约 384 个物理小局。
 kyokus_per_worker: 1
 
 # 折扣因子 gamma，用于 GAE/return 计算。越接近 1 越重视远期终局收益。
@@ -137,9 +137,9 @@ learning_rate: 0.00002
 
 # 计划总 update 数，用于学习率 warmup/decay 和 entropy 退火的进度计算。
 # 不一定等于当前运行的 iterations，但应代表完整训练预算。
-total_updates: 9920
+total_updates: 5000
 
-# 学习率 warmup 占 total_updates 的比例。0.02 表示前 140 个 update 从 0 线性升到 learning_rate，
+# 学习率 warmup 占 total_updates 的比例。0.02 表示前 100 个 update 从 0 线性升到 learning_rate，
 # 随后进入线性衰减。
 warmup_fraction: 0.02
 
@@ -155,10 +155,32 @@ adam_epsilon: 0.00001
 # AdamW 权重衰减。用于正则化模型权重；不直接作用于 bias/归一化的具体行为由 PyTorch AdamW 实现决定。
 weight_decay: 0.01
 
-# 小局分差始终是 reward 主项：clip((after_score - before_score) / 1000, -12, 12)。
-# 牌效 regret 仅在训练前 10% 作为密集辅助；其系数从 0.10 线性衰减至 0，之后完全关闭。
-initial_efficiency_weight: 0.10
-efficiency_decay_fraction: 0.10
+# V8 使用 V7 风格的 reward-only GAE trace RMS 控制器。牌效 shaping
+# 在后期保持低目标比例，不再线性衰减到 0。
+initial_discard_weight: 0.25
+initial_call_weight: 0.10
+reward_scale_ema_beta: 0.95
+reward_scale_min: 0.02
+reward_scale_max: 2.0
+reward_stage1_end: 1500
+reward_stage2_end: 3500
+
+# Actor-only 并列最优动作辅助监督；不进入 GAE、return 或 critic target。
+auxiliary_start: 0.05
+auxiliary_floor: 0.01
+auxiliary_decay_updates: 1500
+
+# 历史对手课程：1500 update 前全 current；之后每桌 2 current + 2 history。
+opponent_pool_start_update: 1501
+opponent_snapshot_interval: 250
+opponent_pool_capacity: 8
+opponent_resident_models: 2
+
+# 周期 checkpoint 与固定评测。
+checkpoint_interval_updates: 50
+evaluation_interval_updates: 12
+evaluation_hanchan_count: 96
+evaluation_workers: 24
 
 # rollout 的 worker 私有向听分析 LRU 条目上限。缓存 key只包含弃牌后的
 # 34 种牌计数与副露数；公开牌变化不污染缓存。
@@ -166,7 +188,7 @@ reward_cache_capacity: 131072
 
 # checkpoint、performance.jsonl 和 TensorBoard 日志目录。
 # 保留为本地默认输出目录；benchmark 可用 CLI 覆盖到 /tmp 或专门的 checkpoints 子目录。
-checkpoint_dir: checkpoints/train_riichi_v6
+checkpoint_dir: checkpoints/train_riichi_v8
 
 # 恢复训练的 checkpoint 路径。null 表示从头开始；设置为具体 .pt 路径会加载模型、优化器、迭代号和随机数状态。
-resume: checkpoints/train_riichi_v6/best_kyoku.pt
+resume: null
