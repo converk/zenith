@@ -1,6 +1,8 @@
 checkpoints/
+datasets/
 runs/
 __pycache__/
 /*.log
 evaluations/match_logs
 exp/
+logs/

@@ -24,9 +24,14 @@ import yaml
 from torch.utils.tensorboard import SummaryWriter
 
 from .profiling import GpuSampler, append_jsonl
+from .evaluation import (
+    evaluation_shards,
+    merge_ppo_evaluation_summaries,
+    should_run_evaluation,
+)
 from .metrics import RollingKyokuMetrics, append_metric_jsonl, metric_counters
 from .tensorboard import learner_peak_allocated_mb, write_curated_scalars
-from .reward_scale import RewardScaleController
+from ..model.schema import TOKEN_SCHEMA_VERSION
 
 
 _CONFIG_GROUPS = ("training", "monitoring")
@@ -170,39 +175,6 @@ def aggregate_actor_profiles(profiles: list[dict[str, float]]) -> dict[str, floa
     return result
 
 
-def is_better_kyoku_selection(
-    candidate: dict[str, float], best: dict[str, float] | None, *, score_epsilon: float = 1e-3,
-) -> bool:
-    """Compare evaluation windows without reintroducing half-match objectives."""
-    if best is None:
-        return True
-    score_delta = candidate["eval/kyoku/point_delta_mean"] - best["eval/kyoku/point_delta_mean"]
-    if score_delta > score_epsilon:
-        return True
-    if abs(score_delta) > score_epsilon:
-        return False
-    deal_in_delta = candidate["eval/kyoku/deal_in_rate"] - best["eval/kyoku/deal_in_rate"]
-    if deal_in_delta < -1e-12:
-        return True
-    if abs(deal_in_delta) > 1e-12:
-        return False
-    return (
-        candidate["eval/efficiency/optimal_shanten_rate"]
-        > best["eval/efficiency/optimal_shanten_rate"]
-    )
-
-
-def is_better_score_selection(
-    candidate: dict[str, float], best: dict[str, float] | None, *, epsilon: float = 1e-3,
-) -> bool:
-    if best is None:
-        return True
-    score = candidate["eval/kyoku/point_delta_mean"] - best["eval/kyoku/point_delta_mean"]
-    if abs(score) > epsilon:
-        return score > 0
-    return candidate["eval/kyoku/deal_in_rate"] < best["eval/kyoku/deal_in_rate"]
-
-
 def run(config: dict[str, Any]) -> None:
     try:
         import ray
@@ -210,30 +182,29 @@ def run(config: dict[str, Any]) -> None:
         raise RuntimeError("Ray is required: pip install -e riichi_ppo_v1") from exc
     from .worker import RolloutWorker
     from .inference import RolloutInferenceActor
-    from .evaluation import EvaluationWorker, evaluation_cases, merge_evaluation_summaries
     if RolloutWorker is None:
         raise RuntimeError("Ray rollout worker could not be defined")
     if RolloutInferenceActor is None:
         raise RuntimeError("Ray rollout inference actor could not be defined")
     seed_everything(int(config["seed"]))
-    controller = RewardScaleController(
-        beta=float(config.get("reward_scale_ema_beta", 0.95)),
-        minimum=float(config.get("reward_scale_min", 0.02)),
-        maximum=float(config.get("reward_scale_max", 2.0)),
-        discard_weight=float(config.get("initial_discard_weight", 0.25)),
-        call_weight=float(config.get("initial_call_weight", 0.10)),
-        stage1_end=int(config.get("reward_stage1_end", 1500)),
-        stage2_end=int(config.get("reward_stage2_end", 3500)),
-    )
     resume_payload: dict[str, Any] = {}
+    init_payload: dict[str, Any] = {}
+    if config.get("resume") and config.get("init_model"):
+        raise ValueError("resume and init_model are mutually exclusive")
     if config.get("resume"):
         resume_payload = torch.load(config["resume"], map_location="cpu", weights_only=False)
         schema = int(resume_payload.get("token_schema_version", 0))
-        if schema != 8:
-            raise RuntimeError(f"cannot resume token schema {schema}; V8 requires schema 8")
-        controller_state = resume_payload.get("extra_state", {}).get("reward_scale_controller")
-        if controller_state:
-            controller.load_state_dict(controller_state)
+        if schema != TOKEN_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"cannot resume token schema {schema}; required schema is {TOKEN_SCHEMA_VERSION}"
+            )
+    elif config.get("init_model"):
+        init_payload = torch.load(config["init_model"], map_location="cpu", weights_only=False)
+        schema = int(init_payload.get("token_schema_version", 0))
+        if schema != TOKEN_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"cannot initialize from token schema {schema}; required schema is {TOKEN_SCHEMA_VERSION}"
+            )
     device = str(config["device"])
     if device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but PyTorch cannot see a CUDA device")
@@ -277,33 +248,16 @@ def run(config: dict[str, Any]) -> None:
         )
         for index in range(int(config["num_workers"]))
     ]
-    evaluation_workers = []
-    if bool(config.get("evaluation_enabled", True)):
-        if EvaluationWorker is None:
-            raise RuntimeError("Ray evaluation worker could not be defined")
-        evaluation_workers = [
-            EvaluationWorker.remote(index, config, inference_actors[index % len(inference_actors)])
-            for index in range(max(1, int(config.get("evaluation_workers", 4))))
-        ]
     writer = SummaryWriter(str(Path(config["checkpoint_dir"]) / "tensorboard"))
     semantic_path = Path(config["checkpoint_dir"]) / str(config.get("semantic_metrics_jsonl", "metrics.jsonl"))
     global_decisions, global_kyokus = metric_counters(semantic_path)
     rolling_kyokus = RollingKyokuMetrics(int(config.get("metrics_rolling_kyokus", 1000)))
     gpu_sampler = GpuSampler(bool(config.get("gpu_monitor", True)) and device.startswith("cuda"), float(config.get("gpu_sample_interval_s", 0.25)))
     gpu_sampler.start()
-    last_evaluated = -1
-    evaluation_history: list[dict[str, float]] = []
-    best_selection: dict[str, float] | None = None
-    best_score_selection: dict[str, float] | None = None
-    history_pool: list[dict[str, Any]] = list(
-        resume_payload.get("extra_state", {}).get("history_pool", [])
-    )
 
     def checkpoint_extra_state() -> dict[str, Any]:
         return {
-            "schema_version": 8,
-            "reward_scale_controller": controller.state_dict(),
-            "history_pool": history_pool,
+            "schema_version": TOKEN_SCHEMA_VERSION,
             "actor_rng_states": ray.get([
                 actor.rng_state.remote() for actor in inference_actors
             ]),
@@ -311,125 +265,69 @@ def run(config: dict[str, Any]) -> None:
 
     def run_evaluation(update: int) -> None:
         """Run the fixed public baseline at a safe rollout/update boundary."""
-        nonlocal last_evaluated, evaluation_history, best_selection, best_score_selection
-        if not evaluation_workers:
+        if not should_run_evaluation(config, update):
             return
-        evaluation_interval = max(1, int(config.get("evaluation_interval_updates", 15)))
-        cases = evaluation_cases(
-            int(config.get("evaluation_seed_base", 20260717)),
-            int(config.get("evaluation_hanchan_count", 10)),
-            cycle=int(update) // evaluation_interval,
+        hanchan_count = int(config.get("evaluation_hanchan_count", 96))
+        parallel_hanchans = int(
+            config.get("evaluation_parallel_hanchan_count", 48)
         )
-        futures = [
-            evaluation_workers[index % len(evaluation_workers)].evaluate.remote(seed, seat, recipe)
-            for index, (seed, seat, recipe) in enumerate(cases)
-        ]
-        results = ray.get(futures)
-        values = merge_evaluation_summaries([result["metrics"] for result in results])
-        fixed_cases = evaluation_cases(
-            int(config.get("evaluation_seed_base", 20260717)),
-            int(config.get("evaluation_hanchan_count", 10)),
-            cycle=0,
-        )
-        fixed_futures = [
-            evaluation_workers[index % len(evaluation_workers)].evaluate_fixed_quality.remote(
-                seed, seat, recipe,
+        shards = evaluation_shards(hanchan_count, len(inference_actors))
+        shard_values = ray.get([
+            actor.evaluate_heuristics.remote(
+                seed_offset=offset,
+                hanchan_count=count,
+                parallel_hanchans=min(parallel_hanchans, count),
             )
-            for index, (seed, seat, recipe) in enumerate(fixed_cases)
-        ]
-        fixed_results = ray.get(fixed_futures)
-        fixed_values = merge_evaluation_summaries([
-            result["metrics"] for result in fixed_results
+            for actor, (offset, count) in zip(
+                inference_actors, shards, strict=False,
+            )
         ])
-        values.update({
-            name: value for name, value in fixed_values.items()
-            if name.startswith("eval/fixed/")
-        })
+        values = merge_ppo_evaluation_summaries(shard_values)
         write_curated_scalars(writer, values, update)
-        append_metric_jsonl(semantic_path, update=update, global_decisions=global_decisions,
-                            global_kyokus=global_kyokus, source="evaluation", metrics=values,
-                            metadata={"seed_base": int(config.get("evaluation_seed_base", 20260717)),
-                                      "cases": [{key: result[key] for key in ("seed", "candidate_seat", "opponents")} for result in results]})
+        writer.flush()
+        append_metric_jsonl(
+            semantic_path,
+            update=update,
+            global_decisions=global_decisions,
+            global_kyokus=global_kyokus,
+            source="evaluation",
+            metrics=values,
+            metadata={
+                "seed_base": int(config.get("evaluation_seed_base", 20260717)),
+                "hanchan_count": hanchan_count,
+                "shards": [
+                    {"rank": rank, "seed_offset": offset, "hanchan_count": count}
+                    for rank, (offset, count) in enumerate(shards)
+                ],
+                "opponents": "fixed_efficiency_defense_heuristics",
+                "greedy": True,
+            },
+        )
+        append_jsonl(
+            Path(config["checkpoint_dir"])
+            / str(config.get("evaluation_jsonl", "evaluation.jsonl")),
+            {
+                "update": int(update),
+                "timestamp": time.time(),
+                **values,
+            },
+        )
         print(
-            f"evaluation update={update} kyokus={values.get('eval/kyoku/count', 0):.0f} "
-            f"point_delta_mean={values.get('eval/kyoku/point_delta_mean', 0.0):.4f} "
+            f"evaluation update={update} "
+            f"hanchans={values.get('eval/match/count', 0):.0f} "
+            f"mean_rank={values.get('eval/match/mean_rank', 0.0):.4f} "
+            f"first_place_rate={values.get('eval/match/first_place_rate', 0.0):.4f} "
+            f"match_point_delta_mean={values.get('eval/match/point_delta_mean', 0.0):.2f} "
+            f"win_rate={values.get('eval/kyoku/win_rate', 0.0):.4f} "
             f"deal_in_rate={values.get('eval/kyoku/deal_in_rate', 0.0):.4f} "
             f"optimal_shanten_rate={values.get('eval/efficiency/optimal_shanten_rate', 0.0):.4f}",
             flush=True,
         )
-        evaluation_history = (evaluation_history + [{
-            name: float(values[name])
-            for name in (
-                "eval/kyoku/point_delta_mean", "eval/kyoku/deal_in_rate",
-                "eval/efficiency/optimal_shanten_rate",
-                "eval/fixed/structural_optimal_rate",
-                "eval/fixed/rule_tenpai_preference_accuracy",
-            )
-            if name in values
-        }])[-3:]
-        if len(evaluation_history) == 3:
-            window = {
-                name: float(np.mean([row[name] for row in evaluation_history]))
-                for name in evaluation_history[0]
-                if all(name in row for row in evaluation_history)
-            }
-            required = {
-                "eval/kyoku/point_delta_mean", "eval/kyoku/deal_in_rate",
-                "eval/efficiency/optimal_shanten_rate",
-            }
-            if required.issubset(window):
-                if is_better_score_selection(window, best_score_selection):
-                    best_score_selection = window
-                    score_path = Path(config["checkpoint_dir"]) / "best_score.pt"
-                    ray.get(inference.save.remote(
-                        str(score_path), config, checkpoint_extra_state(),
-                    ))
-                quality_ok = (
-                    window.get("eval/fixed/structural_optimal_rate", 0.0) >= 0.98
-                    and window.get("eval/fixed/rule_tenpai_preference_accuracy", 0.0) >= 0.95
-                )
-                if quality_ok and is_better_kyoku_selection(window, best_selection):
-                    best_selection = window
-                    path = Path(config["checkpoint_dir"]) / "best_kyoku.pt"
-                    ray.get(inference.save.remote(
-                        str(path), config, checkpoint_extra_state(),
-                    ))
-                    append_metric_jsonl(
-                        semantic_path, update=update, global_decisions=global_decisions,
-                        global_kyokus=global_kyokus, source="selection",
-                        metrics={f"selection/{name.removeprefix('eval/')}": value for name, value in window.items()},
-                        metadata={"window_updates": [update - 2 * int(config.get("evaluation_interval_updates", 50)),
-                                                      update - int(config.get("evaluation_interval_updates", 50)), update],
-                                  "checkpoint": str(path)},
-                    )
-                    print(
-                        f"best_kyoku_checkpoint={path} "
-                        f"point_delta_mean_3eval={window['eval/kyoku/point_delta_mean']:.4f}",
-                        flush=True,
-                    )
-        last_evaluated = update
 
     try:
         start_iteration = ray.get(inference.iteration.remote())
-        run_evaluation(start_iteration)
         for iteration in range(start_iteration, int(config["iterations"])):
             update_number = iteration + 1
-            reward_context = controller.context(update_number)
-            resident_history: list[dict[str, Any]] = []
-            if (
-                update_number >= int(config.get("opponent_pool_start_update", 1501))
-                and len(history_pool) >= 2
-            ):
-                lineup_rng = random.Random(
-                    int(config["seed"]) ^ (update_number * 0x9E3779B1)
-                )
-                resident_history = lineup_rng.sample(history_pool, 2)
-                ray.get([actor.clear_history_policies.remote() for actor in inference_actors])
-                for entry in resident_history:
-                    ray.get([
-                        actor.load_history_policy.remote(str(entry["id"]), str(entry["path"]))
-                        for actor in inference_actors
-                    ])
             gpu_cursor = gpu_sampler.checkpoint()
             algorithm_started = time.perf_counter()
             begin_rollout_started = time.perf_counter()
@@ -442,8 +340,6 @@ def run(config: dict[str, Any]) -> None:
             results = ray.get([
                 worker.collect.remote(
                     update_number,
-                    reward_context,
-                    [str(entry["id"]) for entry in resident_history],
                 )
                 for worker in workers
             ])
@@ -460,21 +356,6 @@ def run(config: dict[str, Any]) -> None:
             update_results = ray.get([actor.update.remote(transitions, update_seed) for actor in inference_actors])
             metrics = update_results[0]
             update_wall_s = time.perf_counter() - update_started
-            snapshot_interval = max(1, int(config.get("opponent_snapshot_interval", 250)))
-            if update_number % snapshot_interval == 0:
-                snapshot_id = f"history_{update_number:05d}"
-                snapshot_path = (
-                    Path(config["checkpoint_dir"]) / "opponent_pool" / f"{snapshot_id}.pt"
-                )
-                ray.get(inference.snapshot_policy.remote(str(snapshot_path)))
-                history_pool.append({
-                    "id": snapshot_id,
-                    "path": str(snapshot_path),
-                    "update": update_number,
-                })
-                history_pool[:] = history_pool[-max(
-                    2, int(config.get("opponent_pool_capacity", 8)),
-                ):]
             algorithm_wall_s = time.perf_counter() - algorithm_started
             gpu_metrics = gpu_sampler.summary(gpu_cursor)
             rollout_reward = float(np.nanmean([stats["reward_mean"] for _, stats in results]))
@@ -483,10 +364,6 @@ def run(config: dict[str, Any]) -> None:
             model_decisions = sum(stats.get("model_decisions", 0.0) for _, stats in results)
             recorded_decisions = sum(stats.get("recorded_decisions", 0.0) for _, stats in results)
             rollout_metrics, worker_timing = summarize_worker_rollout(results)
-            reward_scale_metrics = controller.update(
-                update_number, [stats for _worker_transitions, stats in results],
-            )
-            rollout_metrics.update(reward_scale_metrics)
             actor_metrics = {f"rollout/inference_actor/{name}": float(value) for name, value in actor_profile.items()}
             rollout_metrics.update(actor_metrics)
             for rank, profile in enumerate(actor_profiles):
@@ -506,6 +383,7 @@ def run(config: dict[str, Any]) -> None:
                 "iteration/model_decisions_per_s": float(model_decisions / max(algorithm_wall_s, 1e-9)),
                 "iteration/sampled_decisions_per_s": float(recorded_decisions / max(algorithm_wall_s, 1e-9)),
                 "iteration/effective_transitions_per_s": float(len(transitions) / max(algorithm_wall_s, 1e-9)),
+                "iteration/policy_update": float(update_number),
             })
             global_decisions += int(recorded_decisions)
             global_kyokus += int(rollout_kyokus)
@@ -545,19 +423,15 @@ def run(config: dict[str, Any]) -> None:
                 **gpu_metrics,
             })
             if bool(config.get("semantic_metrics_enabled", True)):
-                semantic_values = {**{name: value for name, value in rollout_metrics.items() if name.startswith(("train/", "reward_schedule/", "reward_scale/"))},
+                semantic_values = {**{name: value for name, value in rollout_metrics.items() if name.startswith(("train/", "reward_schedule/"))},
                                    **{f"ppo/{name}": value for name, value in metrics.items()}, **gpu_metrics}
                 append_metric_jsonl(semantic_path, update=iteration + 1, global_decisions=global_decisions,
                                     global_kyokus=global_kyokus, source="train", metrics=semantic_values,
                                     metadata={
                                         "game_mode": config["game_mode"],
-                                        "opponent_mix": (
-                                            "two_current_two_history"
-                                            if resident_history else "current_self_play_all_seats"
-                                        ),
+                                        "opponent_mix": "current_self_play_all_seats",
                                     })
-            if (iteration + 1) % max(1, int(config.get("evaluation_interval_updates", 50))) == 0:
-                run_evaluation(iteration + 1)
+            run_evaluation(update_number)
             checkpoint_interval = max(1, int(config.get("checkpoint_interval_updates", 50)))
             if update_number % checkpoint_interval == 0:
                 checkpoint_path = Path(config["checkpoint_dir"]) / f"checkpoint_{update_number:05d}.pt"
@@ -565,8 +439,6 @@ def run(config: dict[str, Any]) -> None:
                     str(checkpoint_path), config, checkpoint_extra_state(),
                 ))
         final_update = ray.get(inference.iteration.remote())
-        if final_update != last_evaluated:
-            run_evaluation(final_update)
         ray.get(inference.save.remote(
             str(Path(config["checkpoint_dir"]) / "latest.pt"), config, checkpoint_extra_state(),
         ))
@@ -590,6 +462,7 @@ def _parser(smoke: bool = False) -> argparse.ArgumentParser:
     parser.add_argument("--device", default=None)
     parser.add_argument("--iterations", type=int, default=None)
     parser.add_argument("--checkpoint-dir", default=None)
+    parser.add_argument("--init-model", default=None, help="SFT/model checkpoint used for a fresh PPO run")
     if not smoke:
         parser.add_argument("--num-workers", type=int, default=None)
         parser.add_argument("--learner-gpus", type=int, default=None)
@@ -640,6 +513,8 @@ def main() -> None:
         config["iterations"] = args.iterations
     if args.checkpoint_dir:
         config["checkpoint_dir"] = args.checkpoint_dir
+    if args.init_model:
+        config["init_model"] = args.init_model
     apply_cli_overrides(config, args)
     run(config)
 

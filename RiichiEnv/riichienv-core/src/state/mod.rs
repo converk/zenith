@@ -324,6 +324,14 @@ impl GameState {
             });
         }
 
+        obs.privileged_hands = Some(std::array::from_fn(|i| {
+            self.players[i]
+                .hand
+                .iter()
+                .map(|&tile| tile as u32)
+                .collect()
+        }));
+
         Ok(obs)
     }
 

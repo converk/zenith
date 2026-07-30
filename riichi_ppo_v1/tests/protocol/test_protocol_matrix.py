@@ -183,9 +183,8 @@ class ProtocolMatrixTest(unittest.TestCase):
         self.assertTrue(any(row.tolist() == [2, 4, 1, 1, 4, 1, 0, 1, 0, 1] for row in hand_rows))
         self.assertTrue(any(row.tolist() == [2, 4, 3, 0, 1, 5, 1, 0, 0, 1] for row in used))
         self.assertTrue(any(row.tolist() == [2, 4, 5, 1, 2, 5, 1, 1, 0, 1] for row in used))
-        masks = used[(used[:, 0] == 2) & (used[:, 1] == 7)]
-        self.assertEqual(masks[:, 3].tolist(), [2, 3, 4])
-        self.assertTrue(np.all(masks[:, 9] == 2))
+        self.assertFalse(np.any((used[:, 0] == 2) & (used[:, 1] == 7)))
+        self.assertFalse(np.any(used[:, 9] == 2))
 
     def test_events_clear_stale_pending_actions_and_new_kyoku_bumps_generation(self) -> None:
         self.prepare()

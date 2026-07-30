@@ -9,7 +9,13 @@ from typing import Any
 
 import numpy as np
 
-from .critic_features import collect_visible_table_state, empty_critic_features, encode_critic_features, pad_critic_feature_rows
+from .critic_features import (
+    collect_visible_table_state,
+    empty_critic_features,
+    encode_critic_features,
+    encode_public_summary,
+    pad_critic_feature_rows,
+)
 from ..training.profiling import StageProfiler
 
 NUM_PLAYERS = 4
@@ -58,6 +64,17 @@ def _normalized_action_json(raw_action: str, tsumogiri: bool) -> tuple[str, str]
     if action_type == "dahai":
         # Action.to_mjai intentionally does not carry this environment-only bit.
         value["tsumogiri"] = bool(tsumogiri)
+    expected_consumed = {"chi": 2, "pon": 2, "daiminkan": 3}.get(action_type)
+    consumed = value.get("consumed")
+    if expected_consumed is not None and isinstance(consumed, list) and len(consumed) == expected_consumed + 1:
+        # Offline replay actions contain the called tile in consume_tiles,
+        # whereas canonical MJAI keeps it only in ``pai``.
+        called = value.get("pai")
+        try:
+            consumed.remove(called)
+        except ValueError as exc:
+            raise ValueError(f"{action_type} replay action does not contain its called tile") from exc
+        value["consumed"] = consumed
     return json.dumps(value, separators=(",", ":"), sort_keys=True), action_type
 
 
@@ -154,11 +171,12 @@ class BatchedStateBridge:
         with self.profiler.stage("state/critic_feature_encode"):
             if self.observations_by_env is None:
                 critic_features = [empty_critic_features() for _decision in decisions]
+                public_features = [empty_critic_features() for _decision in decisions]
             else:
                 table_cache = {
                     env_index: collect_visible_table_state(
                         self.observations_by_env[env_index],
-                        include_public_state=self.critic_include_public_state,
+                        include_public_state=True,
                     )
                     for env_index in {decision.env_index for decision in decisions}
                 }
@@ -166,8 +184,11 @@ class BatchedStateBridge:
                     encode_critic_features(
                         table_cache[decision.env_index],
                         decision.seat_id,
-                        include_public_state=self.critic_include_public_state,
                     )
+                    for decision in decisions
+                ]
+                public_features = [
+                    encode_public_summary(table_cache[decision.env_index], decision.seat_id)
                     for decision in decisions
                 ]
             critic_factors, critic_lengths = pad_critic_feature_rows(critic_features)
@@ -188,7 +209,7 @@ class BatchedStateBridge:
                 # The model appends one learned query token.
                 if np.any(new_lengths + 1 > 4096):
                     raise RuntimeError(
-                        f"V8 candidate tokens overflow context: max={int(new_lengths.max()) + 1} limit=4096"
+                        f"candidate tokens overflow context: max={int(new_lengths.max()) + 1} limit=4096"
                     )
                 width = int(new_lengths.max())
                 extended_factors = np.zeros((len(decisions), width, 10), dtype=np.uint8)
@@ -204,6 +225,26 @@ class BatchedStateBridge:
                 factors_a = extended_factors
                 numeric_a = extended_numeric
                 token_lengths_a = new_lengths
+        with self.profiler.stage("state/public_summary_append"):
+            new_lengths = token_lengths_a + np.asarray(
+                [feature.length for feature in public_features], dtype=np.int64,
+            )
+            if np.any(new_lengths + 1 > 4096):
+                raise RuntimeError(
+                    f"public-summary tokens overflow context: max={int(new_lengths.max()) + 1} limit=4096"
+                )
+            width = int(new_lengths.max())
+            extended_factors = np.zeros((len(decisions), width, 10), dtype=np.uint8)
+            extended_numeric = np.zeros((len(decisions), width, 8), dtype=np.float32)
+            for row, feature in enumerate(public_features):
+                base = int(token_lengths_a[row])
+                extended_factors[row, :base] = factors_a[row, :base]
+                extended_numeric[row, :base] = numeric_a[row, :base]
+                if feature.length:
+                    extended_factors[row, base : base + feature.length] = feature.factors
+            factors_a = extended_factors
+            numeric_a = extended_numeric
+            token_lengths_a = new_lengths
         if factors_a.ndim != 3 or factors_a.shape[0] != len(decisions) or factors_a.shape[2] != 10:
             raise RuntimeError(f"invalid token factor shape {factors_a.shape}")
         if numeric_a.shape != (*factors_a.shape[:2], 8):

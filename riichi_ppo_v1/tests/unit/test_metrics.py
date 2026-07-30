@@ -4,7 +4,7 @@ import json
 
 import numpy as np
 
-from riichi_ppo_v1.training.evaluation import evaluation_cases, merge_evaluation_summaries
+from riichi_ppo_v1.sft.evaluation_cases import evaluation_cases, merge_evaluation_summaries
 from riichi_ppo_v1.training.metrics import SemanticMetrics, action_kind, append_metric_jsonl, metric_counters, ppo_buffer_metrics
 from riichi_ppo_v1.training.trajectory import Transition
 
@@ -55,6 +55,10 @@ def test_hora_multi_ron_and_draw_metrics_are_deduplicated() -> None:
     assert draw.summary()["train/kyoku/draw_rate"] == 1.0
     assert draw.summary()["train/kyoku/discard_count_mean"] == 18.0
 
+    tsumo = SemanticMetrics()
+    tsumo.record_kyoku([0], [-2000, 6000, -2000, -2000], [[_hora(1, 1)], [], [], []])
+    assert tsumo.summary()["train/kyoku/tsumo_loss_rate"] == 1.0
+
 
 def test_metrics_jsonl_has_schema_and_resume_counters(tmp_path) -> None:
     path = tmp_path / "metrics.jsonl"
@@ -66,9 +70,9 @@ def test_metrics_jsonl_has_schema_and_resume_counters(tmp_path) -> None:
 
 def test_match_placement_metrics_are_candidate_centric_and_tie_stable() -> None:
     metrics = SemanticMetrics()
-    metrics.record_match_result(0, [32000, 25000, 22000, 21000], kyoku_count=8, discard_count=120)
-    metrics.record_match_result(1, [25000, 25000, 25000, 25000], kyoku_count=10, discard_count=160)
-    metrics.record_match_result(0, [21000, 22000, 23000, 24000], kyoku_count=12, discard_count=180)
+    metrics.record_match_result(0, [32000, 25000, 22000, 21000], kyoku_count=8, discard_count=120, point_delta=7000)
+    metrics.record_match_result(1, [25000, 25000, 25000, 25000], kyoku_count=10, discard_count=160, point_delta=0)
+    metrics.record_match_result(0, [21000, 22000, 23000, 24000], kyoku_count=12, discard_count=180, point_delta=-4000)
 
     summary = metrics.summary("eval")
     assert summary["eval/match/count"] == 3
@@ -76,6 +80,8 @@ def test_match_placement_metrics_are_candidate_centric_and_tie_stable() -> None:
     assert summary["eval/match/mean_rank"] == 7 / 3
     assert summary["eval/match/top2_rate"] == 2 / 3
     assert summary["eval/match/last_place_rate"] == 1 / 3
+    assert summary["eval/match/point_delta_mean"] == 1000.0
+    assert summary["eval/match/positive_point_delta_rate"] == 1 / 3
     assert summary["eval/match/length_kyokus_mean"] == 10.0
     assert summary["eval/match/discard_count_mean"] == 460 / 3
 

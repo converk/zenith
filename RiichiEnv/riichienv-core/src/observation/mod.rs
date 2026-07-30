@@ -53,6 +53,9 @@ pub struct Observation {
     pub last_discard: Option<u32>,
     #[serde(default)]
     pub drawn_tile: Option<u8>,
+    /// Omniscient concealed-hand snapshot populated only by offline replay.
+    #[serde(skip)]
+    pub privileged_hands: Option<[Vec<u32>; 4]>,
 }
 
 /// Pure Rust methods (no PyO3 dependency).
@@ -107,6 +110,7 @@ impl Observation {
             last_tedashis,
             last_discard,
             drawn_tile,
+            privileged_hands: None,
         }
     }
 

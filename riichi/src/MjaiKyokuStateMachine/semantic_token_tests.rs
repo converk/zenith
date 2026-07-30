@@ -49,7 +49,7 @@ fn history_uses_semantic_events_and_omits_draw_and_terminal_events() {
 }
 
 #[test]
-fn state_has_own_hand_draw_and_masks_but_no_river_or_meld_tokens() {
+fn state_has_own_hand_and_draw_but_no_opponent_masks_river_or_meld_tokens() {
     let mut player = PlayerKyokuStateMachine::new(0);
     player.start_kyoku(MjaiTile(27), 1);
     let mut current = snapshot();
@@ -63,13 +63,8 @@ fn state_has_own_hand_draw_and_masks_but_no_river_or_meld_tokens() {
     assert!(tokens.iter().any(|row| row.factors[1] == KIND_TILE_COUNT
         && row.factors[2] == 5
         && row.factors[6] == 1));
-    assert_eq!(
-        tokens
-            .iter()
-            .filter(|row| row.factors[1] == KIND_MASKED)
-            .count(),
-        3
-    );
+    assert!(!tokens.iter().any(|row| row.factors[1] == 7));
+    assert!(!tokens.iter().any(|row| row.factors[9] == 2));
     assert!(!tokens.iter().any(|row| matches!(row.factors[1], 5 | 6))); // no state river/meld token kinds
 }
 

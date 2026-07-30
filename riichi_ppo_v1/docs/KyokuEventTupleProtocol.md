@@ -1,6 +1,6 @@
 # Kyoku 状态协议
 
-本文定义 `RiichiEnv`、Python bridge、Rust `MjaiKyokuStateMachineManager` 与 PPO 模型之间的状态边界。策略只表达标准四人立直麻将中观察者在决策时可见的信息；集中式 value 在该公共序列之外，可于训练期接收三家对手的闭手牌（以及可选的公开牌河/副露压缩表示）。这些 critic-only 特权信息绝不进入策略分支。
+本文定义 `RiichiEnv`、Python bridge、Rust `MjaiKyokuStateMachineManager` 与 PPO/SFT 模型之间的状态边界。策略只表达标准四人立直麻将中观察者在决策时可见的信息；集中式 value 在该公共序列之外，仅于训练期接收三家对手的闭手牌。这些 critic-only 特权信息绝不进入策略分支。
 
 ## 1. 数据流与职责
 
@@ -15,10 +15,10 @@ Observation.legal_actions() + Observation 当前字段
   -> token_factors / token_numeric / token_lengths / action_mask / history_generation
   -> 模型追加 learned query，输出 policy logits 与 value
 
-actor 只消费上述 `token_factors/token_numeric` 公共序列，其中自身手牌与摸牌只对该观察者可见。critic 还消费独立的 `critic_factors`：三家对手的闭手牌必定包含，`critic_include_public_state=true` 时还包含三家牌河与副露的压缩 token。critic 的隐藏手牌、对手摸牌、里宝及牌山组成不会回流到 actor。
+actor 消费上述 `token_factors/token_numeric` 公共序列，其中自身手牌与摸牌只对该观察者可见。候选动作 token 之后追加四家牌河与副露的压缩公开汇总。critic 还消费独立的 `critic_factors`，其中只有三家对手闭手牌；对手摸牌、里宝及牌山组成不会回流到 actor。
 ```
 
-每张桌维护四个按观察者区分的状态机。history 在同一局内只追加公开事件；每次决策根据快照重建当前状态后缀。模型不接收候选动作 token，合法选择由独立的固定 `bool[241]` 掩码表示。动作空间与 MJAI 回转规则见 [KyokuActionSpace.md](KyokuActionSpace.md)。
+每张桌维护四个按观察者区分的状态机。history 在同一局内只追加公开事件；每次决策根据快照重建当前状态后缀。Python 在状态后缀之后追加公开候选动作 token 和四家公开汇总；合法选择由独立的固定 `bool[241]` 掩码表示。动作空间与 MJAI 回转规则见 [KyokuActionSpace.md](KyokuActionSpace.md)。
 
 ## 2. 事件 history
 
@@ -57,7 +57,7 @@ Python bridge 为每条决策构造以下 JSON。`player_id` 必须等于该观�
 | `riichi_declared[player_id]` | `Observation.riichi_declared` | 写入自身状态 flag 的立直位 |
 | `decision_flags` | 当前合法动作类型 | flag 的“主动决策窗口”位；Python 对 `dahai`、`reach`、`ankan`、`kakan`、`ryukyoku` 任一存在时置位 |
 
-后缀不会重复河牌、副露、立直过程，因为这些信息已由完整 history 恢复。三个对手各生成一条闭手 mask token；不会编码其闭手牌、摸牌或里宝。
+后缀不会重复河牌、副露、立直过程，因为这些信息已由完整 history 恢复。actor 不编码任何对手闭手占位、对手摸牌或里宝。
 
 ## 4. Token 字段与数值通道
 
@@ -72,15 +72,15 @@ Python bridge 为每条决策构造以下 JSON。`player_id` 必须等于该观�
 
 | 字段 | 编码与用途 |
 |---|---|
-| `segment` | `1=history 事件`，`2=当前状态` |
-| `kind` | `1=事件`，`2=分数`，`3=局况计数`，`4=牌计数/单牌`，`7=对手闭手 mask` |
+| `segment` | `1=history 事件`，`2=当前状态`，`3=四家公开汇总`，`7=候选动作` |
+| `kind` | `1=事件`，`2=分数`，`3=局况计数`，`4=牌计数/单牌` |
 | `field`（事件） | `2=start_kyoku`，`4=dahai`，`5=chi`，`6=pon`，`7=daiminkan`，`8=ankan`，`9=kakan`，`10=dora`，`11=reach`，`12=reach_accepted` |
-| `field`（状态） | 分数为 `1`；局况依次为 `1=场风`、`2=局号`、`3=本场`、`4=供托`、`5=活牌山`、`6=庄家`、`7=自风`、`8=自身 flag`；牌字段为 `1=手牌`、`3=明宝牌`、`5=摸牌`；闭手 mask 为 `1` |
+| `field`（状态） | 分数为 `1`；局况依次为 `1=场风`、`2=局号`、`3=本场`、`4=供托`、`5=活牌山`、`6=庄家`、`7=自风`、`8=自身 flag`；牌字段为 `1=手牌`、`3=明宝牌`、`5=摸牌` |
 | `seat` | 事件 actor、来源、分数所属者或状态所属者的相对座位；无座位时为 `0` |
 | `tile_suit`、`tile_rank`、`tile_red` | 牌分解为 `m/p/s=1/2/3`、字牌=4；数牌 rank 为 `1..9`，字牌为 `1..7`；赤五为 1 |
 | `count_or_source` | 事件中保存来源座位；牌计数保存张数；吃保存被鸣牌在顺子中的位置与赤五组合；碰和杠保存是否含赤五 |
 | `flag` | 弃牌保存 `1=手切`、`2=摸切`；开局保存场风/局号组合；自身状态的 bit 0/1/2 依次为已立直/有摸牌/主动决策窗口 |
-| `visibility` | `1=公开`，`2=隐藏`；仅对手闭手 mask 使用隐藏值 |
+| `visibility` | `1=公开`；actor 不含隐藏 token |
 
 `token_numeric` 与分类行一一对应，形状为 `[B, L, 8] float32`。只有分数和局况计数写入数值特征：
 
@@ -90,10 +90,13 @@ Python bridge 为每条决策构造以下 JSON。`player_id` 必须等于该观�
 
 ## 4.1 集中式 critic 的额外输入
 
+`segment=3` 的公开汇总位于 policy query 前，按相对座位 `1..4` 编码。`kind=4, field=6`
+为按牌种/赤五聚合的牌河；`kind=5` 为副露头，`kind=4, field=7` 为副露组成牌计数。
+牌河不保留顺序和手切/摸切；副露保留类型、来源、组成、赤五与组索引。
+
 `critic_factors` 同样为十因子 `uint8` 行，但独立于 actor 的 `token_factors`，不带 numeric 通道。其 `segment=4`，并且只由 value 支路嵌入：
 
 - 三家对手的闭手牌：`kind=4, field=2`，按相对座位、牌种、赤五状态分别计数；普通五和赤五必须是不同 token，不能折叠。
-- 可选公开投影：启用 `critic_include_public_state` 后，`field=3` 为按牌种/赤五聚合的牌河，`kind=5, field=2` 为副露头，`field=4` 为副露组成牌计数。该投影刻意不保留牌河顺序、手切/摸切。
 
 该分支可以利用训练时完整 Observation 的四家闭手信息，但绝不能改变 actor 输入、策略 logits 或部署时的策略信息边界。
 

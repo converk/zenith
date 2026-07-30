@@ -159,7 +159,14 @@ impl KyokuStepIterator {
             self.state.current_claims.clear();
             self.state.current_claims.insert(i, claim_actions);
 
-            let obs = self.state.get_observation(i);
+            let mut obs = self.state.get_observation(i);
+            obs.privileged_hands = Some(std::array::from_fn(|seat| {
+                self.state.players[seat]
+                    .hand
+                    .iter()
+                    .map(|&tile| tile as u32)
+                    .collect()
+            }));
 
             self.state.phase = orig_phase;
             self.state.active_players = orig_active;

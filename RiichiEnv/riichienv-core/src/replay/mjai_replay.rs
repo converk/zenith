@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "python")]
 use std::fs::File;
 #[cfg(feature = "python")]
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Cursor};
 #[cfg(feature = "python")]
 use std::sync::Arc;
 
@@ -366,6 +366,77 @@ impl MjaiReplay {
             rounds[i].end_scores = rounds[i + 1].scores.clone();
         }
 
+        Ok(MjaiReplay { rounds })
+    }
+
+    /// Parse uncompressed MJAI JSONL already resident in memory.
+    #[staticmethod]
+    #[pyo3(signature = (content, rule=None))]
+    pub fn from_jsonl_string(content: String, rule: Option<String>) -> PyResult<Self> {
+        let game_rule = match rule.as_deref() {
+            Some("tenhou") => crate::rule::GameRule::default_tenhou(),
+            Some("mjsoul") => crate::rule::GameRule::default_mjsoul(),
+            None => crate::rule::GameRule::default_tenhou(),
+            Some(other) => {
+                return Err(PyValueError::new_err(format!(
+                    "Unknown rule: '{}'. Expected 'tenhou' or 'mjsoul'",
+                    other
+                )));
+            }
+        };
+        let reader = BufReader::new(Cursor::new(content.into_bytes()));
+        let mut rounds = Vec::new();
+        let mut builder: Option<KyokuBuilder> = None;
+        for line in reader.lines() {
+            let line = line.map_err(|e| PyValueError::new_err(format!("Read error: {}", e)))?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let event: MjaiEvent = serde_json::from_str(&line)
+                .map_err(|e| PyValueError::new_err(format!("Parse error: {}", e)))?;
+            match event {
+                MjaiEvent::StartKyoku {
+                    bakaze,
+                    kyoku,
+                    honba,
+                    kyoutaku,
+                    scores,
+                    dora_marker,
+                    tehais,
+                    ..
+                } => {
+                    if let Some(previous) = builder.take() {
+                        rounds.push(previous.build());
+                    }
+                    builder = Some(KyokuBuilder::new(
+                        bakaze,
+                        kyoku,
+                        honba,
+                        kyoutaku,
+                        scores,
+                        dora_marker,
+                        tehais,
+                        game_rule,
+                    ));
+                }
+                MjaiEvent::EndKyoku | MjaiEvent::EndGame => {
+                    if let Some(previous) = builder.take() {
+                        rounds.push(previous.build());
+                    }
+                }
+                _ => {
+                    if let Some(ref mut active) = builder {
+                        Self::process_event(active, event);
+                    }
+                }
+            }
+        }
+        if let Some(previous) = builder.take() {
+            rounds.push(previous.build());
+        }
+        for index in 0..rounds.len().saturating_sub(1) {
+            rounds[index].end_scores = rounds[index + 1].scores.clone();
+        }
         Ok(MjaiReplay { rounds })
     }
 

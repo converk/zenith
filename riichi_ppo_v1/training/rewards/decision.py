@@ -54,7 +54,19 @@ def action_kind(action: object) -> str:
 
 def consumed_tiles(action: object) -> tuple[int, ...]:
     values = getattr(action, "consume_tiles", getattr(action, "consumed", ())) or ()
-    return tuple(int(value) for value in values)
+    result = [int(value) for value in values]
+    kind = action_kind(action)
+    expected = {"chi": 2, "pon": 2, "daiminkan": 3}.get(kind)
+    called = getattr(action, "tile", None)
+    if expected is not None and len(result) == expected + 1 and called is not None:
+        # Offline MjaiReplay actions retain the called tile in consume_tiles;
+        # live RiichiEnv actions expose only tiles taken from the actor's hand.
+        # Normalize both representations before simulating the post-call hand.
+        try:
+            result.remove(int(called))
+        except ValueError:
+            pass
+    return tuple(result)
 
 
 def action_key(action: object) -> tuple[str, int, tuple[int, ...]]:
@@ -72,6 +84,19 @@ def action_id(action: object, observation: object) -> int | None:
         row = json.loads(action.to_mjai())
     except (AttributeError, TypeError, ValueError):
         row = {}
+    expected_consumed = {"chi": 2, "pon": 2, "daiminkan": 3}.get(kind)
+    consumed_row = row.get("consumed")
+    if (
+        expected_consumed is not None
+        and isinstance(consumed_row, list)
+        and len(consumed_row) == expected_consumed + 1
+    ):
+        consumed_row = list(consumed_row)
+        try:
+            consumed_row.remove(row.get("pai"))
+        except ValueError:
+            return None
+        row["consumed"] = consumed_row
     if kind in {"none", "pass"}:
         return 0
     if kind == "dahai":
@@ -186,6 +211,10 @@ class RuleState:
     riichi_route: bool = False
     open_no_yaku: bool = False
     furiten: bool = False
+    ron_value_sum: int = 0
+    tsumo_value_sum: int = 0
+    riichi_ron_points: int = 0
+    riichi_ron_value_sum: int = 0
 
 
 def _rule_state(
@@ -209,6 +238,8 @@ def _rule_state(
         riichi_now = bool((getattr(observation, "riichi_declared", ()) or (False,) * 4)[seat])
         furiten = bool(set(waits) & _river_types(observation))
         ron_live = tsumo_live = ron_points = tsumo_points = 0
+        ron_value_sum = tsumo_value_sum = 0
+        riichi_ron_points = riichi_ron_value_sum = 0
         intrinsic_yaku = False
         riichi_route = False
         dora = [int(tile) for tile in getattr(observation, "dora_indicators", ()) or ()]
@@ -229,18 +260,28 @@ def _rule_state(
             intrinsic_yaku |= bool(ron.is_win or tsumo.is_win)
             if ron.is_win and not furiten:
                 ron_live += copies
-                ron_points = max(ron_points, _score_total(ron, False, dealer))
+                points = _score_total(ron, False, dealer)
+                ron_points = max(ron_points, points)
+                ron_value_sum += copies * points
             if tsumo.is_win:
                 tsumo_live += copies
-                tsumo_points = max(tsumo_points, _score_total(tsumo, True, dealer))
+                points = _score_total(tsumo, True, dealer)
+                tsumo_points = max(tsumo_points, points)
+                tsumo_value_sum += copies * points
             if closed and not riichi_now:
                 reach = evaluator.calc(win_tile, dora, Conditions(tsumo=False, riichi=True, **base))
                 riichi_route |= bool(reach.is_win)
+                if reach.is_win and not furiten:
+                    points = _score_total(reach, False, dealer)
+                    riichi_ron_points = max(riichi_ron_points, points)
+                    riichi_ron_value_sum += copies * points
         open_no_yaku = not closed and not intrinsic_yaku
         effective = 1 if open_no_yaku else 0
         return RuleState(
             effective, waits, ron_live, tsumo_live, ron_points, tsumo_points,
             intrinsic_yaku, riichi_route, open_no_yaku, furiten,
+            ron_value_sum, tsumo_value_sum,
+            riichi_ron_points, riichi_ron_value_sum,
         )
     except (ImportError, RuntimeError, TypeError, ValueError):
         # Unit-test doubles and old serialized observations may not carry the
@@ -282,6 +323,14 @@ class Candidate:
     preserve_red: int = 0
     genbutsu_coverage: int = 0
     four_visible: bool = False
+    # Heuristic-only opportunity-weighted values.  They deliberately do not
+    # participate in ``rank`` so SFT teacher masks and candidate-token schemas
+    # remain stable.
+    ron_value_sum: int = 0
+    tsumo_value_sum: int = 0
+    riichi_ron_points: int = 0
+    riichi_ron_value_sum: int = 0
+    improving_mask: int = 0
 
     @property
     def rank(self) -> tuple[int, ...]:
@@ -373,6 +422,9 @@ def _candidate(
         rules.live_ron, rules.live_tsumo, rules.ron_points, rules.tsumo_points,
         rules.has_yaku, rules.riichi_route, rules.open_no_yaku, rules.furiten,
         _is_closed(melds), preserve_dora, preserve_red, coverage, four_visible,
+        rules.ron_value_sum, rules.tsumo_value_sum,
+        rules.riichi_ron_points, rules.riichi_ron_value_sum,
+        int(analysis.improving_mask),
     )
 
 

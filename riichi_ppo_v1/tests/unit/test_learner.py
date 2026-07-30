@@ -1,12 +1,15 @@
 import numpy as np
 import torch
+from riichi_ppo_v1.model.schema import TOKEN_SCHEMA_VERSION
 from tempfile import TemporaryDirectory
 
 from riichi_ppo_v1.training.learner import (
     PPOLearner,
     approximate_kl_values,
     branch_grad_norms,
+    categorical_kl_values,
     collate,
+    discounted_empirical_returns,
     materialize_host_batch,
     normalize_value_targets,
     scheduled_entropy_coefficient,
@@ -116,6 +119,18 @@ def test_value_target_normalization_uses_the_standard_deviation_floor() -> None:
     torch.testing.assert_close(normalized_returns, torch.zeros(1))
 
 
+def test_discounted_empirical_returns_reset_at_kyoku_boundaries() -> None:
+    rows = [transition(0.0) for _ in range(4)]
+    for item, reward in zip(rows, (1.0, 2.0, 3.0, 4.0), strict=True):
+        item.reward = reward
+    rows[1].done = True
+    rows[3].done = True
+    np.testing.assert_allclose(
+        discounted_empirical_returns(rows, 0.5),
+        [2.0, 2.0, 5.0, 4.0],
+    )
+
+
 def test_branch_grad_norms_are_disjoint_and_include_every_model_branch() -> None:
     class BranchModel(torch.nn.Module):
         def __init__(self) -> None:
@@ -154,6 +169,24 @@ def test_approximate_kl_matches_exp_formula() -> None:
     torch.testing.assert_close(approximate_kl_values(new_logprob, old_logprob), expected)
 
 
+def test_categorical_kl_matches_masked_distribution_and_is_zero_at_reference() -> None:
+    policy = torch.tensor([[1.0, 0.0, float("-inf")]], requires_grad=True)
+    reference = torch.tensor([[0.0, 1.0, float("-inf")]])
+    actual = categorical_kl_values(policy, reference)
+    probability = torch.softmax(policy[:, :2], dim=-1)
+    expected = (
+        probability
+        * (
+            torch.log_softmax(policy[:, :2], dim=-1)
+            - torch.log_softmax(reference[:, :2], dim=-1)
+        )
+    ).sum(-1)
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(categorical_kl_values(policy, policy), torch.zeros(1))
+    actual.sum().backward()
+    assert torch.isfinite(policy.grad).all()
+
+
 def test_adamw_parameters_are_read_from_config() -> None:
     learner = PPOLearner(
         "mid",
@@ -180,6 +213,33 @@ def test_update_batch_mode_validation() -> None:
         assert "update_batch_mode" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("invalid update_batch_mode must be rejected")
+
+
+def test_branch_learning_rates_are_scheduled_independently() -> None:
+    learner = PPOLearner(
+        "mid",
+        "cpu",
+        **learner_kwargs(
+            actor_learning_rate=2e-5,
+            shared_learning_rate=5e-6,
+            critic_learning_rate=4e-5,
+        ),
+    )
+    metrics = learner.update([transition(0.2), transition(-0.1)], shuffle_seed=3)
+    assert metrics["system/actor_learning_rate"] == 1e-5
+    assert metrics["system/shared_learning_rate"] == 2.5e-6
+    assert metrics["system/critic_learning_rate"] == 2e-5
+
+
+def test_critic_public_gradient_scale_validation() -> None:
+    try:
+        PPOLearner(
+            "mid", "cpu", **learner_kwargs(critic_public_grad_scale=1.1)
+        )
+    except ValueError as exc:
+        assert "critic_public_grad_scale" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("invalid critic_public_grad_scale must be rejected")
 
 
 def test_split_collate_matches_legacy_collate_on_cpu() -> None:
@@ -231,27 +291,145 @@ def test_cpu_update_keeps_fp32_parameters_and_disables_bf16_autocast() -> None:
     assert {parameter.dtype for parameter in learner.model.parameters()} == {torch.float32}
 
 
-def test_checkpoint_records_v8_schema_metadata_and_restores_state() -> None:
+def test_checkpoint_records_schema_metadata_and_restores_state() -> None:
     learner = PPOLearner("mid", "cpu", **learner_kwargs())
     learner.iteration = 7
     with TemporaryDirectory() as directory:
         path = f"{directory}/checkpoint.pt"
-        learner.save(path, {"seed": 1}, {
-            "reward_scale_controller": {"discard_weight": 0.6},
-        })
+        learner.save(path, {"seed": 1})
         payload = torch.load(path, weights_only=False)
         assert set(payload) == {
             "model", "optimizer", "model_config", "train_config", "iteration",
             "torch_rng", "cuda_rng", "python_rng", "numpy_rng", "token_schema_version", "extra_state",
+            "ppo_format_version",
         }
-        assert payload["token_schema_version"] == 8
-        assert payload["extra_state"]["reward_scale_controller"]["discard_weight"] == 0.6
+        assert payload["token_schema_version"] == TOKEN_SCHEMA_VERSION
+        assert payload["ppo_format_version"] == 2
 
         restored = PPOLearner("mid", "cpu", **learner_kwargs())
         restored.load(path)
         assert restored.iteration == 7
         for name, value in learner.model.state_dict().items():
             torch.testing.assert_close(restored.model.state_dict()[name], value)
+
+
+def test_model_initialization_starts_joint_ppo() -> None:
+    kwargs = learner_kwargs(
+        gamma=0.99,
+        update_epochs=1,
+        minibatch_size=2,
+    )
+    source = PPOLearner("mid", "cpu", **kwargs)
+    with TemporaryDirectory() as directory:
+        path = f"{directory}/actor_only.pt"
+        torch.save({
+            "model": source.weights(),
+            "token_schema_version": TOKEN_SCHEMA_VERSION,
+            "training_stage": "sft",
+            "training_mode": "actor_only",
+        }, path)
+        learner = PPOLearner("mid", "cpu", **kwargs)
+        learner.load_model_weights(path)
+        before = {
+            name: value.detach().clone()
+            for name, value in learner.model.state_dict().items()
+        }
+        rows = [transition(0.2), transition(-0.1)]
+        for row, reward in zip(rows, (1.0, -1.0), strict=True):
+            row.legal_mask[:2] = True
+            row.reward = reward
+            row.done = True
+        metrics = learner.update(rows, shuffle_seed=3)
+        after_warmup = learner.model.state_dict()
+        assert any(
+            not torch.equal(value, before[name])
+            for name, value in after_warmup.items()
+        )
+        resume_path = f"{directory}/resume.pt"
+        learner.save(resume_path, {"seed": 1})
+        resumed = PPOLearner("mid", "cpu", **kwargs)
+        resumed.load(resume_path)
+        assert resumed.iteration == 1
+        actor_before_joint = resumed.model.policy_head.weight.detach().clone()
+        joint_metrics = resumed.update(rows, shuffle_seed=4)
+        assert joint_metrics["training/policy_update"] == 2.0
+        assert not torch.equal(resumed.model.policy_head.weight, actor_before_joint)
+
+
+def test_actor_only_sft_initialization_bootstraps_critic_before_policy() -> None:
+    kwargs = learner_kwargs(
+        critic_bootstrap_updates=1,
+        critic_bootstrap_learning_rate=1e-4,
+        sft_kl_coef_start=0.02,
+        sft_kl_coef_end=0.0,
+        sft_kl_anneal_updates=10,
+        zero_value_head_on_sft_init=True,
+        update_epochs=1,
+        minibatch_size=2,
+    )
+    source = PPOLearner("mid", "cpu", **kwargs)
+    with TemporaryDirectory() as directory:
+        path = f"{directory}/actor_only.pt"
+        torch.save({
+            "model": source.weights(),
+            "token_schema_version": TOKEN_SCHEMA_VERSION,
+            "training_stage": "sft",
+            "training_mode": "actor_only",
+        }, path)
+        learner = PPOLearner("mid", "cpu", **kwargs)
+        learner.load_model_weights(path)
+        assert learner.reference_model is not None
+        assert not any(parameter.requires_grad for parameter in learner.reference_model.parameters())
+        torch.testing.assert_close(
+            learner.model.value_head.weight,
+            torch.zeros_like(learner.model.value_head.weight),
+        )
+        actor_before = learner.model.policy_head.weight.detach().clone()
+        shared_before = learner.model.token_embedding.table.weight.detach().clone()
+        critic_before = learner.model.value_head.weight.detach().clone()
+        rows = [transition(1.0), transition(-1.0)]
+        for row in rows:
+            row.legal_mask[:2] = True
+        rows[1].action = 1
+        metrics = learner.update(rows, shuffle_seed=3)
+        assert metrics["training/critic_bootstrap"] == 1.0
+        assert metrics["training/policy_update"] == 0.0
+        assert metrics["system/sft_kl_coef"] == 0.0
+        assert metrics["system/learning_rate"] == 0.0
+        assert metrics["system/actor_learning_rate"] == 0.0
+        assert metrics["system/shared_learning_rate"] == 0.0
+        assert metrics["system/critic_learning_rate"] == 1e-4
+        assert metrics["system/critic_public_grad_scale"] == 0.0
+        torch.testing.assert_close(learner.model.policy_head.weight, actor_before)
+        torch.testing.assert_close(learner.model.token_embedding.table.weight, shared_before)
+        assert not torch.equal(learner.model.value_head.weight, critic_before)
+        joint_metrics = learner.update(rows, shuffle_seed=4)
+        assert joint_metrics["training/critic_bootstrap"] == 0.0
+        assert joint_metrics["training/policy_update"] == 1.0
+        assert joint_metrics["system/sft_kl_coef"] > 0.0
+        assert not torch.equal(learner.model.policy_head.weight, actor_before)
+
+
+def test_anchored_ppo_checkpoint_restores_frozen_sft_reference() -> None:
+    kwargs = learner_kwargs(sft_kl_coef_start=0.02, sft_kl_coef_end=0.0)
+    source = PPOLearner("mid", "cpu", **kwargs)
+    with TemporaryDirectory() as directory:
+        sft_path = f"{directory}/sft.pt"
+        torch.save({
+            "model": source.weights(),
+            "token_schema_version": TOKEN_SCHEMA_VERSION,
+            "training_stage": "sft",
+            "training_mode": "actor_only",
+        }, sft_path)
+        source.load_model_weights(sft_path)
+        checkpoint_path = f"{directory}/ppo.pt"
+        source.save(checkpoint_path, {"seed": 1})
+        restored = PPOLearner("mid", "cpu", **kwargs)
+        restored.load(checkpoint_path)
+        assert restored.reference_model is not None
+        for name, value in source.reference_model.state_dict().items():
+            torch.testing.assert_close(restored.reference_model.state_dict()[name], value)
+        assert not any(parameter.requires_grad for parameter in restored.reference_model.parameters())
 
 
 def test_checkpoint_requires_a_complete_model_state() -> None:

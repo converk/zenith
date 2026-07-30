@@ -11,10 +11,8 @@ def transition(value: float) -> Transition:
 def test_gae_does_not_cross_kyoku_boundaries() -> None:
     first = [transition(0.4), transition(0.2)]
     second = [transition(-0.1)]
-    first[-1].kyoku_reward = 1.0
-    first[-1].refresh_reward()
-    second[-1].kyoku_reward = -1.0
-    second[-1].refresh_reward()
+    first[-1].reward = 1.0
+    second[-1].reward = -1.0
     finish_kyoku(first, gamma=1.0, gae_lambda=1.0)
     finish_kyoku(second, gamma=1.0, gae_lambda=1.0)
     assert first[-1].done and second[-1].done
@@ -25,8 +23,7 @@ def test_gae_does_not_cross_kyoku_boundaries() -> None:
 
 def test_terminal_kyoku_score_reaches_each_prior_learner_decision() -> None:
     kyoku = [transition(0.0), transition(0.0), transition(0.0)]
-    kyoku[-1].kyoku_reward = 1.0
-    kyoku[-1].refresh_reward()
+    kyoku[-1].reward = 1.0
 
     finish_kyoku(kyoku, gamma=0.995, gae_lambda=0.97)
 

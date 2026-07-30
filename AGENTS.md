@@ -5,6 +5,10 @@
   `CUDA_DEVICE=0` only when a single-GPU run is explicitly requested. The
   training entry point maps `CUDA_DEVICE` to CUDA's standard
   `CUDA_VISIBLE_DEVICES` before starting PyTorch or Ray.
+- `CUDA_DEVICE=0` (also referred to as `CUDA=0`) maps to physical GPU 0.
+- `CUDA_DEVICE=1` (also referred to as `CUDA=1`) maps to physical GPU 1.
+- `CUDA_DEVICE=2` (also referred to as `CUDA=2`) maps to physical GPU 3.
+- `CUDA_DEVICE=3` (also referred to as `CUDA=3`) maps to physical GPU 4.
 - Use the Conda environment named `Mahjong-AI` for Python commands and training.
 - `RiichiEnv` is this project's training environment.
 - `exp/` contains the existing training framework used as the reference when

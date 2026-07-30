@@ -1,9 +1,8 @@
-"""Critic-only centralized-value features.
+"""Centralized-value and shared public-summary features.
 
-The actor consumes the public event history.  The critic can additionally
-receive the other players' concealed hands and, when explicitly enabled, a
-compact projection of public rivers and melds.  Keeping that projection here
-means it never enters the policy branch or the Rust public-state protocol.
+The actor consumes the public event history plus a compact four-seat summary
+of rivers and melds.  The critic additionally receives only the other
+players' concealed hands.
 """
 
 from __future__ import annotations
@@ -19,11 +18,12 @@ NUM_TILE_TYPES = 34
 NUM_PLAYERS = 4
 
 SEGMENT_CRITIC_PRIVATE = 4
+SEGMENT_PUBLIC_SUMMARY = 3
 TOKEN_KIND_TILE_COUNT = 4
 TOKEN_KIND_MELD = 5
 FIELD_OPPONENT_HAND = 2
-FIELD_OPPONENT_RIVER = 3
-FIELD_OPPONENT_MELD_TILE = 4
+FIELD_PUBLIC_RIVER = 6
+FIELD_PUBLIC_MELD_TILE = 7
 
 _MELD_FIELDS = {
     "chi": 1,
@@ -119,8 +119,8 @@ def _public_meld_rows(values: Any, seat: int) -> tuple[MeldState, ...]:
     return tuple(meld for value in row if (meld := _meld_state(value)) is not None)
 
 
-def collect_visible_table_state(observations: dict[int, Any], *, include_public_state: bool = False) -> TableState:
-    """Collect hidden hands and optionally the table's public river/meld projection."""
+def collect_visible_table_state(observations: dict[int, Any], *, include_public_state: bool = True) -> TableState:
+    """Collect concealed hands and the table's public river/meld projection."""
     if set(observations) != set(range(NUM_PLAYERS)):
         raise RuntimeError("critic features require all four player observations")
     hands: list[tuple[int, ...]] = []
@@ -139,6 +139,20 @@ def collect_visible_table_state(observations: dict[int, Any], *, include_public_
     melds = getattr(public_observation, "melds", ())
     return TableState(
         tuple(hands),
+        tuple(_public_seat_rows(discards, seat) for seat in range(NUM_PLAYERS)),
+        tuple(_public_meld_rows(melds, seat) for seat in range(NUM_PLAYERS)),
+    )
+
+
+def collect_replay_table_state(observation: Any) -> TableState:
+    """Collect an omniscient table snapshot exposed only by offline replay."""
+    hands = getattr(observation, "privileged_hands", None)
+    if hands is None or len(hands) != NUM_PLAYERS:
+        raise RuntimeError("offline replay observation does not expose four privileged hands")
+    discards = getattr(observation, "discards", ())
+    melds = getattr(observation, "melds", ())
+    return TableState(
+        tuple(tuple(int(tile) for tile in row) for row in hands),
         tuple(_public_seat_rows(discards, seat) for seat in range(NUM_PLAYERS)),
         tuple(_public_meld_rows(melds, seat) for seat in range(NUM_PLAYERS)),
     )
@@ -192,8 +206,8 @@ def encode_opponent_hand_tokens(table_state: TableState, observer: int) -> list[
     return rows
 
 
-def encode_opponent_public_tokens(table_state: TableState, observer: int) -> list[tuple[int, ...]]:
-    """Compact public river/meld rows for the three opponents.
+def encode_public_summary_tokens(table_state: TableState, observer: int) -> list[tuple[int, ...]]:
+    """Compact actor-visible public river/meld rows for all four players.
 
     River rows aggregate equal face/red combinations, deliberately discarding
     timing and tsumogiri details.  A meld header records its kind and source;
@@ -201,9 +215,10 @@ def encode_opponent_public_tokens(table_state: TableState, observer: int) -> lis
     per-seat meld index connects those rows without adding an eleventh factor.
     """
     rows: list[tuple[int, ...]] = []
-    for relative in (2, 3, 4):
+    for relative in (1, 2, 3, 4):
         seat = (int(observer) + relative - 1) % NUM_PLAYERS
-        rows.extend(_tile_count_rows(FIELD_OPPONENT_RIVER, relative, table_state.discards[seat]))
+        river_rows = _tile_count_rows(FIELD_PUBLIC_RIVER, relative, table_state.discards[seat])
+        rows.extend((SEGMENT_PUBLIC_SUMMARY, *row[1:]) for row in river_rows)
         for meld_index, meld in enumerate(table_state.melds[seat], start=1):
             if meld.called_tile is None:
                 suit = rank = red = 0
@@ -214,7 +229,7 @@ def encode_opponent_public_tokens(table_state: TableState, observer: int) -> lis
                 red = int(_is_red(meld.called_tile))
             source = 0 if meld.source is None else relative_seat(observer, meld.source)
             rows.append((
-                SEGMENT_CRITIC_PRIVATE,
+                SEGMENT_PUBLIC_SUMMARY,
                 TOKEN_KIND_MELD,
                 meld.field,
                 int(relative),
@@ -225,14 +240,21 @@ def encode_opponent_public_tokens(table_state: TableState, observer: int) -> lis
                 meld_index,
                 1,
             ))
-            rows.extend(_tile_count_rows(FIELD_OPPONENT_MELD_TILE, relative, meld.tiles, flag=meld_index))
+            meld_rows = _tile_count_rows(FIELD_PUBLIC_MELD_TILE, relative, meld.tiles, flag=meld_index)
+            rows.extend((SEGMENT_PUBLIC_SUMMARY, *row[1:]) for row in meld_rows)
     return rows
 
 
 def encode_critic_features(table_state: TableState, observer: int, *, include_public_state: bool = False) -> CriticFeatures:
     rows = encode_opponent_hand_tokens(table_state, observer)
-    if include_public_state:
-        rows.extend(encode_opponent_public_tokens(table_state, observer))
+    if not rows:
+        return empty_critic_features()
+    factors = np.asarray(rows, dtype=np.uint8).reshape(-1, TOKEN_WIDTH)
+    return CriticFeatures(factors, len(rows))
+
+
+def encode_public_summary(table_state: TableState, observer: int) -> CriticFeatures:
+    rows = encode_public_summary_tokens(table_state, observer)
     if not rows:
         return empty_critic_features()
     factors = np.asarray(rows, dtype=np.uint8).reshape(-1, TOKEN_WIDTH)

@@ -17,8 +17,8 @@ TOKEN_CARDINALITIES = (8, 32, 256, 8, 8, 16, 4, 16, 256, 4)
 
 @dataclass(frozen=True)
 class ModelConfig:
-    layers: int = 6
-    shared_layers: int = 4
+    layers: int = 4
+    shared_layers: int = 3
     critic_layers: int = 2
     d_model: int = 192
     query_heads: int = 8
@@ -47,7 +47,7 @@ class ModelConfig:
     def preset(cls, size: str) -> "ModelConfig":
         configs = {
             "mid": cls(),
-            "large": cls(layers=12, d_model=384, query_heads=12, kv_heads=3, head_dim=32, ffn_dim=1152),
+            "large": cls(d_model=384, query_heads=12, kv_heads=3, head_dim=32, ffn_dim=1152),
         }
         try:
             return configs[size]
@@ -177,9 +177,9 @@ class KyokuTransformerActorCritic(nn.Module):
         self.critic_embedding = FactorEmbedding(TOKEN_CARDINALITIES, self.config.d_model)
         self.query = nn.Parameter(torch.empty(self.config.d_model))
         self.value_query = nn.Parameter(torch.empty(self.config.d_model))
-        # The policy still traverses ``layers`` public blocks, while value
-        # learning trains the shared prefix directly.  The aggregate block
-        # budget remains unchanged: shared + actor-only + critic.
+        # The policy traverses ``layers`` public/actor blocks.  The centralized
+        # value branch then gets its own ``critic_layers`` blocks after private
+        # opponent-hand tokens are appended.
         self.public_backbone = Decoder(self.config, layers=self.config.shared_layers, final_norm=False)
         self.actor_backbone = Decoder(self.config, layers=self.config.layers - self.config.shared_layers)
         self.critic_backbone = Decoder(self.config, layers=self.config.critic_layers)
@@ -187,6 +187,40 @@ class KyokuTransformerActorCritic(nn.Module):
         self.value_head = nn.Linear(self.config.d_model, 1)
         nn.init.normal_(self.query, std=self.config.d_model ** -0.5)
         nn.init.normal_(self.value_query, std=self.config.d_model ** -0.5)
+
+    def forward_policy(
+        self,
+        token_factors: Tensor,
+        token_numeric: Tensor,
+        legal_mask: Tensor | None = None,
+        token_lengths: Tensor | None = None,
+    ) -> dict[str, Tensor]:
+        """Run only the shared-public and actor branches."""
+        if token_factors.shape[1] + 1 > self.config.context_tokens:
+            raise ValueError(f"context overflow: {token_factors.shape[1] + 1} > {self.config.context_tokens}")
+        if token_lengths is None:
+            token_lengths = token_factors.ne(0).any(-1).long().sum(-1)
+        token_lengths = token_lengths.to(device=token_factors.device, dtype=torch.long)
+        if token_lengths.shape != (token_factors.shape[0],):
+            raise ValueError("token_lengths must have one entry per batch row")
+        if torch.any(token_lengths < 0) or torch.any(token_lengths > token_factors.shape[1]):
+            raise ValueError("token_lengths exceed supplied token rows")
+        tokens = self.token_embedding(token_factors, token_numeric)
+        batch, padded, width = tokens.shape
+        sequence = tokens.new_zeros((batch, padded + 1, width))
+        sequence[:, :padded] = tokens
+        rows = torch.arange(batch, device=tokens.device)
+        sequence[rows, token_lengths] = self.query
+        public_sequence = self.public_backbone(sequence, token_lengths + 1)
+        hidden = self.actor_backbone(public_sequence, token_lengths + 1)[rows, token_lengths]
+        raw = self.policy_head(hidden).float()
+        if legal_mask is None:
+            logits = raw
+        else:
+            if legal_mask.shape != (batch, NUM_ACTIONS):
+                raise ValueError("legal_mask must be [batch, 241]")
+            logits = raw.masked_fill(~legal_mask.to(device=raw.device, dtype=torch.bool), float("-inf"))
+        return {"raw_policy_logits": raw, "policy_logits": logits}
 
     def forward(
         self,
@@ -197,7 +231,14 @@ class KyokuTransformerActorCritic(nn.Module):
         *,
         critic_factors: Tensor | None = None,
         critic_lengths: Tensor | None = None,
+        detach_critic_public: bool = False,
+        critic_public_grad_scale: float = 1.0,
+        policy_only: bool = False,
     ) -> dict[str, Tensor]:
+        if policy_only:
+            return self.forward_policy(
+                token_factors, token_numeric, legal_mask, token_lengths
+            )
         if token_factors.shape[1] + 1 > self.config.context_tokens:
             raise ValueError(f"context overflow: {token_factors.shape[1] + 1} > {self.config.context_tokens}")
         if token_lengths is None:
@@ -239,9 +280,23 @@ class KyokuTransformerActorCritic(nn.Module):
         # shared prefix but cannot update the actor-only policy tail.
         public_positions = torch.arange(padded + 1, device=tokens.device)[None, :].expand(batch, -1)
         public_valid = public_positions < public_lengths[:, None]
+        public_grad_scale = 0.0 if detach_critic_public else float(critic_public_grad_scale)
+        if not 0.0 <= public_grad_scale <= 1.0:
+            raise ValueError("critic_public_grad_scale must be in [0, 1]")
+        if public_grad_scale == 0.0:
+            critic_public = public_sequence.detach()
+        elif public_grad_scale == 1.0:
+            critic_public = public_sequence
+        else:
+            detached_public = public_sequence.detach()
+            # Preserve the exact forward value while scaling only the value
+            # branch gradient entering the shared public representation.
+            critic_public = detached_public + public_grad_scale * (
+                public_sequence - detached_public
+            )
         critic_sequence[
             rows[:, None].expand_as(public_positions)[public_valid], public_positions[public_valid]
-        ] = public_sequence[public_valid]
+        ] = critic_public[public_valid]
         private_positions = public_lengths[:, None] + torch.arange(
             critic_private.shape[1], device=tokens.device
         )[None, :]

@@ -1,5 +1,5 @@
 use crate::action::Phase;
-use crate::parser::mjai_to_tid;
+use crate::parser::{mjai_to_tid, tid_to_mjai};
 use crate::replay::{Action as LogAction, MjaiEvent};
 use crate::state::GameState;
 use crate::state::legal_actions::GameStateLegalActions;
@@ -346,36 +346,12 @@ impl GameStateEventHandler for GameState {
                     false
                 };
 
-                // Update progression cache (replay mode).
-                #[cfg(feature = "python")]
-                if self.enable_seq_caching {
-                    use crate::observation::sequence_features::process_single_event_progression;
-                    use crate::parser::tid_to_mjai;
-                    use std::sync::Arc;
-
-                    if *is_liqi || *is_wliqi {
-                        let ev = serde_json::json!({"type": "reach", "actor": s});
-                        if let Some(entry) = process_single_event_progression(
-                            &ev,
-                            &mut self.round_seq_prog_pending_reach,
-                        ) {
-                            Arc::make_mut(&mut self.round_seq_progression).push(entry);
-                        }
-                    }
-                    let pai = tid_to_mjai(t);
-                    let ev = serde_json::json!({
-                        "type": "dahai",
-                        "actor": s,
-                        "pai": pai,
-                        "tsumogiri": is_tsumogiri,
-                    });
-                    if let Some(entry) = process_single_event_progression(
-                        &ev,
-                        &mut self.round_seq_prog_pending_reach,
-                    ) {
-                        Arc::make_mut(&mut self.round_seq_progression).push(entry);
-                    }
+                if *is_liqi || *is_wliqi {
+                    self._push_mjai_event(serde_json::json!({"type": "reach", "actor": s}));
                 }
+                self._push_mjai_event(serde_json::json!({
+                    "type": "dahai", "actor": s, "pai": tid_to_mjai(t), "tsumogiri": is_tsumogiri,
+                }));
 
                 if let Some(idx) = self.players[s].hand.iter().position(|&x| x == t) {
                     self.players[s].hand.remove(idx);
@@ -419,7 +395,9 @@ impl GameStateEventHandler for GameState {
                 if let Some(rp) = self.riichi_pending_acceptance.take() {
                     self.players[rp as usize].score -= 1000;
                     self.riichi_sticks += 1;
+                    self._push_mjai_event(serde_json::json!({"type": "reach_accepted", "actor": rp}));
                 }
+                self._push_mjai_event(serde_json::json!({"type": "tsumo", "actor": *seat, "pai": tid_to_mjai(*tile)}));
                 self.players[*seat].hand.push(*tile);
                 self.drawn_tile = Some(*tile);
                 self.current_player = *seat as u8;
@@ -440,56 +418,26 @@ impl GameStateEventHandler for GameState {
                 tiles,
                 froms,
             } => {
-                // Update progression cache (replay mode).
-                #[cfg(feature = "python")]
-                if self.enable_seq_caching {
-                    use crate::observation::sequence_features::process_single_event_progression;
-                    use crate::parser::tid_to_mjai;
-                    use std::sync::Arc;
-
-                    let mtype_str = match meld_type {
-                        MeldType::Chi => "chi",
-                        MeldType::Pon => "pon",
-                        MeldType::Daiminkan => "daiminkan",
-                        _ => "",
-                    };
-                    if !mtype_str.is_empty() {
-                        let target = froms.iter().find(|&&f| f != *seat).copied().unwrap_or(0);
-                        let called_tile: Option<u8> = tiles
-                            .iter()
-                            .zip(froms.iter())
-                            .find(|&(_, &f)| f != *seat)
-                            .map(|(&t, _)| t);
-                        let consumed_tiles: Vec<u8> = tiles
-                            .iter()
-                            .zip(froms.iter())
-                            .filter(|&(_, &f)| f == *seat)
-                            .map(|(&t, _)| t)
-                            .collect();
-                        let pai_str = called_tile.map(tid_to_mjai).unwrap_or_default();
-                        let consumed_strs: Vec<String> =
-                            consumed_tiles.iter().map(|&t| tid_to_mjai(t)).collect();
-                        let ev = serde_json::json!({
-                            "type": mtype_str,
-                            "actor": *seat,
-                            "target": target,
-                            "pai": pai_str,
-                            "consumed": consumed_strs,
-                        });
-                        if let Some(entry) = process_single_event_progression(
-                            &ev,
-                            &mut self.round_seq_prog_pending_reach,
-                        ) {
-                            Arc::make_mut(&mut self.round_seq_progression).push(entry);
-                        }
-                    }
-                }
-
-                // Finalize pending riichi deposit (discard was claimed, not ronned)
+                // MJAI finalizes riichi before the call that consumed the
+                // declaration discard, matching the source event order.
                 if let Some(rp) = self.riichi_pending_acceptance.take() {
                     self.players[rp as usize].score -= 1000;
                     self.riichi_sticks += 1;
+                    self._push_mjai_event(serde_json::json!({"type": "reach_accepted", "actor": rp}));
                 }
+                let mtype_str = match meld_type {
+                    MeldType::Chi => "chi", MeldType::Pon => "pon", MeldType::Daiminkan => "daiminkan", _ => "",
+                };
+                if !mtype_str.is_empty() {
+                    let target = froms.iter().find(|&&f| f != *seat).copied().unwrap_or(0);
+                    let called_tile = tiles.iter().zip(froms.iter()).find(|&(_, &f)| f != *seat).map(|(&t, _)| t);
+                    let consumed: Vec<String> = tiles.iter().zip(froms.iter()).filter(|&(_, &f)| f == *seat).map(|(&t, _)| tid_to_mjai(t)).collect();
+                    self._push_mjai_event(serde_json::json!({
+                        "type": mtype_str, "actor": *seat, "target": target,
+                        "pai": called_tile.map(tid_to_mjai).unwrap_or_default(), "consumed": consumed,
+                    }));
+                }
+
                 // Discard was called -> discarder loses nagashi eligibility
                 if let Some((discarder_pid, _)) = self.last_discard {
                     self.players[discarder_pid as usize].nagashi_eligible = false;
@@ -570,14 +518,7 @@ impl GameStateEventHandler for GameState {
                 tiles,
                 ..
             } => {
-                // Update progression cache (replay mode).
-                #[cfg(feature = "python")]
-                if self.enable_seq_caching {
-                    use crate::observation::sequence_features::process_single_event_progression;
-                    use crate::parser::tid_to_mjai;
-                    use std::sync::Arc;
-
-                    let ev = if *meld_type == MeldType::Ankan {
+                let ev = if *meld_type == MeldType::Ankan {
                         let t_val = tiles[0] / 4;
                         let consumed_tids =
                             [t_val * 4, t_val * 4 + 1, t_val * 4 + 2, t_val * 4 + 3];
@@ -588,22 +529,27 @@ impl GameStateEventHandler for GameState {
                             "actor": *seat,
                             "consumed": consumed_strs,
                         })
-                    } else {
-                        // Kakan
-                        let pai_str = tid_to_mjai(tiles[0]);
-                        serde_json::json!({
-                            "type": "kakan",
-                            "actor": *seat,
-                            "pai": pai_str,
-                        })
-                    };
-                    if let Some(entry) = process_single_event_progression(
-                        &ev,
-                        &mut self.round_seq_prog_pending_reach,
-                    ) {
-                        Arc::make_mut(&mut self.round_seq_progression).push(entry);
-                    }
-                }
+                } else {
+                    // Kakan
+                    let pai_str = tid_to_mjai(tiles[0]);
+                    // The state-machine protocol needs the existing pon's
+                    // three tiles to preserve red-five semantics.  MJAI's
+                    // kakan event carries these in `consumed`, even though
+                    // the replay LogAction only carries the added tile.
+                    let consumed: Vec<String> = self.players[*seat]
+                        .melds
+                        .iter()
+                        .find(|meld| meld.meld_type == MeldType::Pon && meld.tiles[0] / 4 == tiles[0] / 4)
+                        .map(|meld| meld.tiles.iter().map(|&tile| tid_to_mjai(tile)).collect())
+                        .unwrap_or_default();
+                    serde_json::json!({
+                        "type": "kakan",
+                        "actor": *seat,
+                        "pai": pai_str,
+                        "consumed": consumed,
+                    })
+                };
+                self._push_mjai_event(ev);
 
                 if *meld_type == MeldType::Ankan {
                     let t_val = tiles[0] / 4;
@@ -663,6 +609,7 @@ impl GameStateEventHandler for GameState {
             }
             LogAction::Dora { dora_marker } => {
                 self.wall.dora_indicators.push(*dora_marker);
+                self._push_mjai_event(serde_json::json!({"type": "dora", "dora_marker": tid_to_mjai(*dora_marker)}));
             }
             LogAction::Hule { hules } => {
                 // If a riichi deposit is pending and this is a ron, the deposit

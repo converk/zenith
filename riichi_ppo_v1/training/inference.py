@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 from contextlib import contextmanager
 import time
 from typing import Any
@@ -123,10 +122,11 @@ if ray is not None:
             self.use_bf16 = self.learner.use_bf16
             if config.get("resume"):
                 self.learner.load(config["resume"])
+            elif config.get("init_model"):
+                self.learner.load_model_weights(config["init_model"])
             if self.world_size > 1:
                 self.learner.enable_distributed()
             self.model = self.learner.model.eval()
-            self.history_models: dict[str, torch.nn.Module] = {}
             self.profiler = StageProfiler(enabled=bool(config.get("profile_enabled", True)))
             self.profile_cuda_sync = bool(config.get("profile_cuda_sync", False))
             self.cuda_event_interval = max(0, int(config.get("profile_cuda_event_interval", 100)))
@@ -192,6 +192,44 @@ if ray is not None:
             self.model.eval()
             return metrics
 
+        def evaluate_heuristics(
+            self,
+            *,
+            seed_offset: int = 0,
+            hanchan_count: int | None = None,
+            parallel_hanchans: int | None = None,
+        ) -> dict[str, float]:
+            """Evaluate this rank's current policy against the fixed public baselines."""
+            from ..sft.heuristic_evaluation import evaluate_against_heuristics
+            from .evaluation import heuristic_evaluation_config, ppo_evaluation_metrics
+
+            model = getattr(self.learner.model, "module", self.learner.model)
+            evaluation_config = heuristic_evaluation_config(self.config)
+            evaluation_config["heuristic_evaluation_seed_base"] = (
+                int(evaluation_config.get("heuristic_evaluation_seed_base", 20260717))
+                + int(seed_offset)
+            )
+            if parallel_hanchans is not None:
+                evaluation_config["heuristic_evaluation_parallel_hanchan_count"] = int(
+                    parallel_hanchans
+                )
+            shard_hanchans = int(
+                hanchan_count
+                if hanchan_count is not None
+                else evaluation_config.get("heuristic_evaluation_hanchan_count", 96)
+            )
+            metrics = evaluate_against_heuristics(
+                model,
+                self.device,
+                evaluation_config,
+                hanchan_count=shard_hanchans,
+                # Keep the exact same seats, seeds and opponents at every
+                # checkpoint so the TensorBoard curve remains comparable.
+                cycle=0,
+            )
+            self.model.eval()
+            return ppo_evaluation_metrics(metrics)
+
         def save(
             self,
             path: str,
@@ -199,36 +237,6 @@ if ray is not None:
             extra_state: dict[str, Any] | None = None,
         ) -> None:
             self.learner.save(path, train_config, extra_state)
-
-        def snapshot_policy(self, path: str) -> None:
-            """Persist inference-only weights for a deterministic pool snapshot."""
-            from pathlib import Path
-
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
-            torch.save({
-                "model": self.learner.weights(),
-                "token_schema_version": 8,
-                "iteration": self.learner.iteration,
-            }, path)
-
-        def load_history_policy(self, policy_id: str, path: str) -> None:
-            payload = torch.load(path, map_location="cpu", weights_only=False)
-            if int(payload.get("token_schema_version", 0)) != 8:
-                raise RuntimeError("historical opponent has an incompatible token schema")
-            base = self.model.module if hasattr(self.model, "module") else self.model
-            model = copy.deepcopy(base)
-            model.load_state_dict(payload["model"])
-            self.history_models[str(policy_id)] = model.to(self.device).eval()
-            limit = max(1, int(self.config.get("opponent_resident_models", 2)))
-            while len(self.history_models) > limit:
-                oldest = next(iter(self.history_models))
-                del self.history_models[oldest]
-
-        def resident_history_ids(self) -> list[str]:
-            return list(self.history_models)
-
-        def clear_history_policies(self) -> None:
-            self.history_models.clear()
 
         def rng_state(self) -> dict[str, Any]:
             return {
@@ -282,7 +290,6 @@ if ray is not None:
             *,
             worker_id: int,
             namespace: str,
-            policy_id: str = "current",
             batch_indices: list[int],
             token_factors: np.ndarray,
             token_numeric: np.ndarray,
@@ -303,7 +310,6 @@ if ray is not None:
             future: asyncio.Future[dict[str, Any]] = loop.create_future()
             self._pending.append(({
                 "worker_id": int(worker_id), "namespace": str(namespace),
-                "policy_id": str(policy_id),
                 "batch_indices": batch_indices, "token_factors": token_factors,
                 "token_numeric": token_numeric, "critic_factors": critic_factors,
                 "critic_lengths": critic_lengths, "legal_mask": legal_mask,
@@ -365,20 +371,17 @@ if ray is not None:
                 {"action_ids": [0] * len(request["batch_indices"]), "logprobs": [0.0] * len(request["batch_indices"]), "values": [0.0] * len(request["batch_indices"])}
                 for request in requests
             ]
-            rows_by_mode: dict[tuple[bool, str], list[tuple[int, int]]] = {}
+            rows_by_mode: dict[bool, list[tuple[int, int]]] = {}
             for request_index, request in enumerate(requests):
-                key = (bool(request["greedy"]), str(request.get("policy_id", "current")))
+                key = bool(request["greedy"])
                 rows_by_mode.setdefault(key, []).extend(
                     (request_index, row) for row in range(len(request["batch_indices"]))
                 )
             max_batch = max(1, int(self.config.get("inference_max_batch_size", 512)))
-            for (greedy, policy_id), rows in rows_by_mode.items():
-                model = self.model if policy_id == "current" else self.history_models.get(policy_id)
-                if model is None:
-                    raise RuntimeError(f"unknown historical opponent policy {policy_id!r}")
+            for greedy, rows in rows_by_mode.items():
                 for offset in range(0, len(rows), max_batch):
                     group = rows[offset:offset + max_batch]
-                    self._run_full_forward(requests, responses, group, greedy, model)
+                    self._run_full_forward(requests, responses, group, greedy, self.model)
             self.profiler.add("inference/rpc_total", time.perf_counter() - started)
             return responses
 

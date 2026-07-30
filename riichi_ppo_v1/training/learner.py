@@ -17,12 +17,16 @@ from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
+from ..model.schema import TOKEN_SCHEMA_VERSION
 from .profiling import StageProfiler
 from .trajectory import Transition
 from .metrics import ppo_buffer_metrics
 
 
 BATCH_MODE_IDS = {"streaming": 0.0, "prefetch": 1.0, "gpu_cache": 2.0}
+ACTOR_ROOTS = {"actor_backbone", "policy_head", "query"}
+CRITIC_ROOTS = {"critic_embedding", "critic_backbone", "value_head", "value_query"}
+SHARED_ROOTS = {"token_embedding", "public_backbone"}
 
 
 @dataclass(frozen=True)
@@ -112,14 +116,6 @@ def scheduled_entropy_coefficient(start: float, end: float, update: int, total_u
     return float(start) + (float(end) - float(start)) * progress
 
 
-def scheduled_auxiliary_coefficient(
-    start: float, floor: float, update: int, decay_updates: int,
-) -> float:
-    """Linearly decay the actor-only teacher coefficient, then keep its floor."""
-    progress = min(max(float(update) / max(int(decay_updates), 1), 0.0), 1.0)
-    return float(start) + (float(floor) - float(start)) * progress
-
-
 def value_loss_values(predicted: torch.Tensor, returns: torch.Tensor, loss_name: str) -> torch.Tensor:
     """Return per-sample value loss for the configured PPO value objective."""
     normalized = str(loss_name).lower()
@@ -166,11 +162,11 @@ def branch_grad_norms(model: nn.Module) -> dict[str, torch.Tensor]:
         if parameter.grad is None:
             continue
         root = name.removeprefix("module.").split(".", 1)[0]
-        if root in {"actor_backbone", "policy_head", "query"}:
+        if root in ACTOR_ROOTS:
             branch = "actor"
-        elif root in {"critic_embedding", "critic_backbone", "value_head", "value_query"}:
+        elif root in CRITIC_ROOTS:
             branch = "critic"
-        elif root in {"token_embedding", "public_backbone"}:
+        elif root in SHARED_ROOTS:
             branch = "shared"
         else:  # Guard against silently misclassifying a future model parameter.
             raise ValueError(f"unclassified model parameter for gradient metrics: {name}")
@@ -178,11 +174,45 @@ def branch_grad_norms(model: nn.Module) -> dict[str, torch.Tensor]:
     return {name: value.sqrt() for name, value in squared_sums.items()}
 
 
+def discounted_empirical_returns(
+    transitions: list[Transition], gamma: float,
+) -> np.ndarray:
+    """Monte Carlo reward-to-go, reset at every completed kyoku."""
+    returns = np.zeros(len(transitions), dtype=np.float32)
+    running = 0.0
+    for index in range(len(transitions) - 1, -1, -1):
+        item = transitions[index]
+        if item.done:
+            running = 0.0
+        running = float(item.reward) + float(gamma) * running
+        returns[index] = np.float32(running)
+    return returns
+
+
 def approximate_kl_values(new_logprob: torch.Tensor, old_logprob: torch.Tensor) -> torch.Tensor:
     """Return exp/training's per-sample PPO approximate KL estimate."""
     log_ratio = new_logprob - old_logprob
     ratio = log_ratio.exp()
     return (ratio - 1.0) - log_ratio
+
+
+def categorical_kl_values(
+    policy_logits: torch.Tensor,
+    reference_logits: torch.Tensor,
+) -> torch.Tensor:
+    """Return KL(policy || frozen SFT reference) for each masked action row."""
+    policy_logprob = F.log_softmax(policy_logits.float(), dim=-1)
+    reference_logprob = F.log_softmax(reference_logits.float(), dim=-1)
+    finite = torch.isfinite(policy_logprob) & torch.isfinite(reference_logprob)
+    probability = torch.where(finite, policy_logprob.exp(), torch.zeros_like(policy_logprob))
+    safe_policy_logprob = torch.where(
+        finite, policy_logprob, torch.zeros_like(policy_logprob)
+    )
+    safe_reference_logprob = torch.where(
+        finite, reference_logprob, torch.zeros_like(reference_logprob)
+    )
+    log_ratio = safe_policy_logprob - safe_reference_logprob
+    return (probability * log_ratio).sum(-1)
 
 
 def _empty_host_tensor(shape: tuple[int, ...], dtype: torch.dtype, pin_memory: bool) -> torch.Tensor:
@@ -211,8 +241,6 @@ def materialize_host_batch(
         old_logprobs = _empty_host_tensor((batch,), torch.float32, pin_memory)
         returns = _empty_host_tensor((batch,), torch.float32, pin_memory)
         advantage_values = _empty_host_tensor((batch,), torch.float32, pin_memory)
-        teacher_mask = _empty_host_tensor((batch, 241), torch.bool, pin_memory).zero_()
-        teacher_supervised = _empty_host_tensor((batch,), torch.bool, pin_memory).zero_()
     with profile.stage("update/collate_host_padding_copy"):
         factors_np = factors.numpy()
         numeric_np = numeric.numpy()
@@ -224,8 +252,6 @@ def materialize_host_batch(
         old_logprobs_np = old_logprobs.numpy()
         returns_np = returns.numpy()
         advantage_values_np = advantage_values.numpy()
-        teacher_mask_np = teacher_mask.numpy()
-        teacher_supervised_np = teacher_supervised.numpy()
         source_advantages = (
             np.asarray([t.advantage for t in transitions], dtype=np.float32)
             if advantages is None else np.asarray(advantages, dtype=np.float32)
@@ -247,11 +273,6 @@ def materialize_host_batch(
             old_logprobs_np[row] = float(transition.logprob)
             returns_np[row] = float(transition.return_)
             advantage_values_np[row] = source_advantages[row]
-            if transition.teacher_supervised:
-                if transition.teacher_mask is None or np.asarray(transition.teacher_mask).shape != (241,):
-                    raise ValueError("supervised transition requires a 241-way teacher mask")
-                teacher_mask_np[row] = transition.teacher_mask
-                teacher_supervised_np[row] = bool(np.any(transition.teacher_mask))
     return {
         "token_factors": factors,
         "token_numeric": numeric,
@@ -263,8 +284,6 @@ def materialize_host_batch(
         "old_logprobs": old_logprobs,
         "advantages": advantage_values,
         "returns": returns,
-        "teacher_mask": teacher_mask,
-        "teacher_supervised": teacher_supervised,
     }
 
 
@@ -295,7 +314,14 @@ def collate(
 class PPOLearner:
     def __init__(self, model_size: str, device: str, **hyperparameters: Any) -> None:
         self.device = torch.device(device)
-        self.config = replace(ModelConfig.preset(model_size), context_tokens=int(hyperparameters.get("context_tokens", 4096)))
+        preset = ModelConfig.preset(model_size)
+        self.config = replace(
+            preset,
+            context_tokens=int(hyperparameters.get("context_tokens", 4096)),
+            critic_layers=int(
+                hyperparameters.get("critic_layers", preset.critic_layers)
+            ),
+        )
         self.model = KyokuTransformerActorCritic(self.config).to(self.device)
         self.hp = hyperparameters
         # Keep FP32 parameters and optimizer state, but use BF16 tensor cores for
@@ -305,8 +331,33 @@ class PPOLearner:
         self.use_bf16 = bool(
             requested_bf16 and self.device.type == "cuda" and torch.cuda.is_bf16_supported()
         )
+        parameter_groups: dict[str, list[nn.Parameter]] = {
+            "shared": [], "actor": [], "critic": [],
+        }
+        for name, parameter in self.model.named_parameters():
+            root = name.split(".", 1)[0]
+            if root in ACTOR_ROOTS:
+                parameter_groups["actor"].append(parameter)
+            elif root in CRITIC_ROOTS:
+                parameter_groups["critic"].append(parameter)
+            elif root in SHARED_ROOTS:
+                parameter_groups["shared"].append(parameter)
+            else:
+                raise ValueError(f"unclassified optimizer parameter: {name}")
         self.optimizer = torch.optim.AdamW(
-            self.model.parameters(),
+            [
+                {
+                    "params": parameters,
+                    "branch": branch,
+                    "lr": float(
+                        hyperparameters.get(
+                            f"{branch}_learning_rate",
+                            hyperparameters["learning_rate"],
+                        )
+                    ),
+                }
+                for branch, parameters in parameter_groups.items()
+            ],
             lr=float(hyperparameters["learning_rate"]),
             betas=(
                 float(hyperparameters.get("adam_beta1", 0.9)),
@@ -316,6 +367,7 @@ class PPOLearner:
             weight_decay=float(hyperparameters.get("weight_decay", 0.01)),
             fused=self.use_bf16,
         )
+        self.reference_model: KyokuTransformerActorCritic | None = None
         self.iteration = 0
         self.profiler = StageProfiler(enabled=bool(hyperparameters.get("profile_enabled", True)))
         self.profile_cuda_sync = bool(hyperparameters.get("profile_cuda_sync", False))
@@ -328,6 +380,11 @@ class PPOLearner:
         self.value_target_std_floor = float(hyperparameters.get("value_target_std_floor", 1e-2))
         if self.value_target_std_floor <= 0:
             raise ValueError("value_target_std_floor must be positive")
+        self.critic_public_grad_scale = float(
+            hyperparameters.get("critic_public_grad_scale", 1.0)
+        )
+        if not 0.0 <= self.critic_public_grad_scale <= 1.0:
+            raise ValueError("critic_public_grad_scale must be in [0, 1]")
         self.distributed = False
 
     def enable_distributed(self) -> None:
@@ -520,30 +577,70 @@ class PPOLearner:
         minibatch_size = int(self.hp["minibatch_size"])
         planned_minibatches_per_epoch = (count + minibatch_size - 1) // minibatch_size
         update_number = self.iteration + 1
+        bootstrap_updates = max(0, int(self.hp.get("critic_bootstrap_updates", 0)))
+        critic_bootstrap = update_number <= bootstrap_updates
+        policy_update_number = max(0, update_number - bootstrap_updates)
         total_updates = int(self.hp.get("total_updates", self.hp.get("iterations", 1)))
-        learning_rate = scheduled_learning_rate(
-            float(self.hp["learning_rate"]),
-            update_number,
-            total_updates,
-            float(self.hp.get("warmup_fraction", 0.0)),
-        )
+        total_policy_updates = max(1, total_updates - bootstrap_updates)
+        branch_learning_rates: dict[str, float]
+        if critic_bootstrap:
+            branch_learning_rates = {
+                "actor": 0.0,
+                "shared": 0.0,
+                "critic": float(
+                    self.hp.get(
+                        "critic_bootstrap_learning_rate",
+                        self.hp.get("critic_learning_rate", self.hp["learning_rate"]),
+                    )
+                ),
+            }
+        else:
+            branch_bases = {
+                "actor": float(
+                    self.hp.get("actor_learning_rate", self.hp["learning_rate"])
+                ),
+                "shared": float(
+                    self.hp.get("shared_learning_rate", self.hp["learning_rate"])
+                ),
+                "critic": float(
+                    self.hp.get("critic_learning_rate", self.hp["learning_rate"])
+                ),
+            }
+            branch_learning_rates = {
+                branch: scheduled_learning_rate(
+                    base,
+                    max(policy_update_number, 1),
+                    total_policy_updates,
+                    float(self.hp.get("warmup_fraction", 0.0)),
+                )
+                for branch, base in branch_bases.items()
+            }
         for group in self.optimizer.param_groups:
-            group["lr"] = learning_rate
+            group["lr"] = branch_learning_rates[str(group["branch"])]
         if "entropy_start" in self.hp or "entropy_end" in self.hp:
             entropy_coef = scheduled_entropy_coefficient(
                 float(self.hp.get("entropy_start", self.hp.get("entropy_coef", 0.0))),
                 float(self.hp.get("entropy_end", self.hp.get("entropy_coef", 0.0))),
-                update_number,
-                total_updates,
+                policy_update_number,
+                total_policy_updates,
             )
         else:
             entropy_coef = float(self.hp["entropy_coef"])
-        auxiliary_coef = scheduled_auxiliary_coefficient(
-            float(self.hp.get("auxiliary_start", 0.05)),
-            float(self.hp.get("auxiliary_floor", 0.01)),
-            update_number,
-            int(self.hp.get("auxiliary_decay_updates", 1500)),
+        if critic_bootstrap:
+            entropy_coef = 0.0
+        sft_kl_coef = scheduled_entropy_coefficient(
+            float(self.hp.get("sft_kl_coef_start", 0.0)),
+            float(self.hp.get("sft_kl_coef_end", 0.0)),
+            policy_update_number,
+            max(1, int(self.hp.get("sft_kl_anneal_updates", total_policy_updates))),
         )
+        if critic_bootstrap:
+            sft_kl_coef = 0.0
+        if sft_kl_coef > 0.0 and self.reference_model is None:
+            raise RuntimeError(
+                "SFT KL anchor is enabled but no frozen reference model was loaded; "
+                "start PPO with --init-model or resume an anchored PPO checkpoint"
+            )
         epochs_started = 0
         epochs_completed = 0
         executed_samples = 0
@@ -635,8 +732,6 @@ class PPOLearner:
                 legal_mask, token_lengths = batch["legal_mask"], batch["token_lengths"]
                 actions, old_logprobs = batch["actions"], batch["old_logprobs"]
                 adv, returns = batch["advantages"], batch["returns"]
-                teacher_mask = batch["teacher_mask"]
-                teacher_supervised = batch["teacher_supervised"]
                 executed_samples += plan.global_batch_size
                 executed_tokens += plan.minibatch_tokens
                 executed_padded_input_tokens += plan.padded_input_tokens
@@ -651,7 +746,19 @@ class PPOLearner:
                             token_lengths,
                             critic_factors=critic_factors,
                             critic_lengths=critic_lengths,
+                            detach_critic_public=critic_bootstrap,
+                            critic_public_grad_scale=self.critic_public_grad_scale,
                         )
+                        reference_output = None
+                        if sft_kl_coef > 0.0:
+                            assert self.reference_model is not None
+                            with torch.no_grad():
+                                reference_output = self.reference_model.forward_policy(
+                                    token_factors,
+                                    token_numeric,
+                                    legal_mask,
+                                    token_lengths,
+                                )
                 with self._gpu_stage("update/distribution_and_loss"):
                     # The model promotes its policy/value outputs to FP32.  Keep
                     # the PPO ratio, loss and their gradients in FP32 as well.
@@ -686,16 +793,22 @@ class PPOLearner:
                     entropy_values = -(probabilities * safe_logprobabilities).sum(-1)
                     legal_action_counts = legal_mask.sum(-1).float().clamp_min(2.0)
                     normalized_entropy_values = entropy_values / legal_action_counts.log()
-                    teacher_counts = teacher_mask.sum(-1).float().clamp_min(1.0)
-                    teacher_distribution = teacher_mask.float() / teacher_counts[:, None]
-                    auxiliary_loss_values = -(teacher_distribution * safe_logprobabilities).sum(-1)
-                    auxiliary_loss_values = auxiliary_loss_values * teacher_supervised.float()
-                    loss_values = (
-                        policy_loss_values
-                        + float(self.hp["value_coef"]) * value_loss
-                        - entropy_coef * entropy_values
-                        + auxiliary_coef * auxiliary_loss_values
-                    )
+                    if reference_output is None:
+                        sft_reference_kl_values = torch.zeros_like(policy_loss_values)
+                    else:
+                        sft_reference_kl_values = categorical_kl_values(
+                            output["policy_logits"],
+                            reference_output["policy_logits"],
+                        )
+                    if critic_bootstrap:
+                        loss_values = value_loss
+                    else:
+                        loss_values = (
+                            policy_loss_values
+                            + float(self.hp["value_coef"]) * value_loss
+                            - entropy_coef * entropy_values
+                            + sft_kl_coef * sft_reference_kl_values
+                        )
                     weighted_count = sample_weights.sum().clamp_min(1.0)
                     policy_loss = (policy_loss_values * sample_weights).sum() / weighted_count
                     value_loss_scalar = (value_loss * sample_weights).sum() / weighted_count
@@ -730,9 +843,9 @@ class PPOLearner:
                     ("entropy", entropy_values),
                     ("entropy_normalized", normalized_entropy_values),
                     ("approx_kl", kl_values),
+                    ("sft_reference_kl", sft_reference_kl_values),
                     ("clipfrac", clipfrac_values),
                     ("ratio", ratio),
-                    ("auxiliary_loss", auxiliary_loss_values),
                 ):
                     detached = (values.detach() * sample_weights).sum()
                     if name in metric_sample_sums:
@@ -766,7 +879,11 @@ class PPOLearner:
             batch_mode_id_sum += BATCH_MODE_IDS[batch_mode]
             batch_mode_epochs += 1
             epochs_completed += 1
-            if float(self.hp["target_kl"]) > 0 and epoch_kl_sum is not None:
+            if (
+                not critic_bootstrap
+                and float(self.hp["target_kl"]) > 0
+                and epoch_kl_sum is not None
+            ):
                 epoch_kl_count_tensor = torch.tensor(float(epoch_kl_count), device=self.device)
                 if distributed:
                     dist.all_reduce(epoch_kl_sum, op=dist.ReduceOp.SUM)
@@ -801,12 +918,17 @@ class PPOLearner:
             "update/batch_cache_free_mb": float(batch_cache_free_mb),
             "update/batch_cache_threshold_mb": float(batch_cache_threshold_mb),
             "update/batch_cache_fallbacks": float(batch_cache_fallbacks),
-            "system/learning_rate": float(learning_rate),
-            "system/entropy_coef": float(entropy_coef),
-            "system/auxiliary_coef": float(auxiliary_coef),
-            "teacher/supervised_fraction": float(
-                np.mean([transition.teacher_supervised for transition in transitions])
+            "system/learning_rate": float(branch_learning_rates["actor"]),
+            "system/actor_learning_rate": float(branch_learning_rates["actor"]),
+            "system/shared_learning_rate": float(branch_learning_rates["shared"]),
+            "system/critic_learning_rate": float(branch_learning_rates["critic"]),
+            "system/critic_public_grad_scale": float(
+                0.0 if critic_bootstrap else self.critic_public_grad_scale
             ),
+            "system/entropy_coef": float(entropy_coef),
+            "system/sft_kl_coef": float(sft_kl_coef),
+            "training/critic_bootstrap": float(critic_bootstrap),
+            "training/policy_update": float(policy_update_number),
         })
         sample_count_tensor = torch.tensor(float(metric_sample_count), device=self.device)
         if distributed:
@@ -844,29 +966,51 @@ class PPOLearner:
         extra_state: dict[str, Any] | None = None,
     ) -> None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        torch.save({
+        payload = {
             "model": self.weights(),
             "optimizer": self.optimizer.state_dict(),
             "model_config": asdict(self.config),
             "train_config": train_config,
             "iteration": self.iteration,
+            "ppo_format_version": 2,
             "torch_rng": torch.get_rng_state(),
             "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
             "python_rng": random.getstate(),
             "numpy_rng": np.random.get_state(),
-            "token_schema_version": 8,
+            "token_schema_version": TOKEN_SCHEMA_VERSION,
             "extra_state": dict(extra_state or {}),
-        }, path)
+        }
+        if self.reference_model is not None:
+            payload["sft_reference_model"] = {
+                name: value.detach().cpu()
+                for name, value in self.reference_model.state_dict().items()
+            }
+        torch.save(payload, path)
 
     def load(self, path: str | Path) -> None:
         payload = torch.load(path, map_location=self.device, weights_only=False)
-        schema = int(payload.get("token_schema_version", 0))
-        if schema != 8:
+        if int(payload.get("ppo_format_version", 0)) != 2:
             raise RuntimeError(
-                f"checkpoint token schema {schema} is incompatible with required V8 schema 8; "
-                "start a new V8 run instead"
+                "legacy PPO checkpoints cannot be resumed; use --init-model to load their model weights"
+            )
+        schema = int(payload.get("token_schema_version", 0))
+        if schema != TOKEN_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"checkpoint token schema {schema} is incompatible with required schema "
+                f"{TOKEN_SCHEMA_VERSION}; start a new run instead"
             )
         self.model.load_state_dict(payload["model"])
+        reference_state = payload.get("sft_reference_model")
+        if reference_state is not None:
+            self.reference_model = KyokuTransformerActorCritic(self.config).to(self.device)
+            self.reference_model.load_state_dict(reference_state)
+            self.reference_model.requires_grad_(False)
+            self.reference_model.eval()
+        elif float(self.hp.get("sft_kl_coef_start", 0.0)) > 0.0:
+            raise RuntimeError(
+                "PPO checkpoint does not contain the frozen SFT reference required "
+                "by the configured KL anchor"
+            )
         self.optimizer.load_state_dict(payload["optimizer"])
         self.iteration = int(payload.get("iteration", 0))
         if "torch_rng" in payload:
@@ -880,3 +1024,27 @@ class PPOLearner:
                 torch.cuda.set_rng_state_all([
                     state.cpu() for state in payload["cuda_rng"]
                 ])
+
+    def load_model_weights(self, path: str | Path) -> None:
+        """Initialize a fresh PPO optimizer from a schema-compatible model checkpoint."""
+        payload = torch.load(path, map_location=self.device, weights_only=False)
+        schema = int(payload.get("token_schema_version", 0))
+        if schema != TOKEN_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"checkpoint token schema {schema} is incompatible with required schema "
+                f"{TOKEN_SCHEMA_VERSION}"
+            )
+        self.model.load_state_dict(payload["model"])
+        self.reference_model = KyokuTransformerActorCritic(self.config).to(self.device)
+        self.reference_model.load_state_dict(payload["model"])
+        self.reference_model.requires_grad_(False)
+        self.reference_model.eval()
+        if (
+            payload.get("training_stage") == "sft"
+            and payload.get("training_mode") == "actor_only"
+            and bool(self.hp.get("zero_value_head_on_sft_init", True))
+        ):
+            nn.init.zeros_(self.model.value_head.weight)
+            if self.model.value_head.bias is not None:
+                nn.init.zeros_(self.model.value_head.bias)
+        self.iteration = 0

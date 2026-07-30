@@ -13,6 +13,12 @@ except ImportError:  # pragma: no cover
 
 from riichi_ppo_v1.model.bridge import BatchedStateBridge, Decision, action_jsons
 from riichi_ppo_v1.model.validation import assert_observation_roundtrip
+from riichi_ppo_v1.training.opponents.heuristic import HeuristicPolicy
+from riichi_ppo_v1.training.rewards import (
+    DecisionAnalysisBatch,
+    EfficiencyAnalyzer,
+    PublicStateTracker,
+)
 
 
 @unittest.skipUnless(riichi is not None, "local RiichiEnv and riichi extensions are not installed")
@@ -22,6 +28,18 @@ class RealActionCasesTest(unittest.TestCase):
         observed = {__import__("json").loads(value)["type"] for value in action_jsons(observation)}
         self.assertTrue(required <= observed, (required, observed))
         assert_observation_roundtrip(bridge, 0, int(observation.player_id), observation)
+
+    @staticmethod
+    def heuristic_action(observation, public=None, *, defensive=False):
+        public = public or PublicStateTracker(1)
+        analyzer = EfficiencyAnalyzer()
+        decision = Decision(0, int(observation.player_id), observation)
+        analysis = DecisionAnalysisBatch.build(
+            [decision], analyzer=analyzer, public=public,
+        )
+        return HeuristicPolicy(
+            analyzer, public, defensive=defensive,
+        ).select_batch([decision], analysis)[0]
 
     def test_draw_window_reach_ankan_and_kyushu(self) -> None:
         env = helper_setup_env(
@@ -190,3 +208,46 @@ class RealActionCasesTest(unittest.TestCase):
         self.assertNotIn(0, responses)
         for seat, observation in responses.items():
             self.assert_window(observation, {"none"})
+
+    def test_heuristic_declines_speculative_real_kans(self) -> None:
+        # The draw exposes both reach and ankan.  The heuristic may reach or
+        # discard, but must no longer kan merely because the action is legal.
+        env = helper_setup_env(
+            hands=[[0, 1, 2, 4, 8, 12, 16, 20, 36, 40, 44, 108, 112], [], [], []],
+            current_player=0,
+            active_players=[0],
+            drawn_tile=3,
+            wall=list(range(136)),
+        )
+        action = self.heuristic_action(env.get_observation(0))
+        self.assertNotEqual(__import__("json").loads(action.to_mjai())["type"], "ankan")
+
+        # This real kakan worsens an inexpensive shape and is declined.
+        env = helper_setup_env(
+            hands=[[3, 4, 8, 12, 36, 40, 44, 72, 76, 108], [], [], []],
+            melds=[[Meld(MeldType.Pon, tiles=[0, 1, 2], opened=True)], [], [], []],
+            active_players=[0],
+            current_player=0,
+            phase=Phase.WaitAct,
+            needs_tsumo=False,
+            drawn_tile=13,
+        )
+        action = self.heuristic_action(env.get_observation(0))
+        self.assertEqual(__import__("json").loads(action.to_mjai())["type"], "dahai")
+
+    def test_defensive_heuristic_passes_real_call_window_under_multiple_riichi(self) -> None:
+        env = helper_setup_env(
+            hands=[
+                [0, 4, 8, 12, 16, 20, 24, 36, 40, 44, 48, 52, 56],
+                [1, 2, 3, 6, 10, 14, 18, 22, 26, 30, 34, 38, 42], [], [],
+            ],
+            current_player=0,
+            active_players=[0],
+            drawn_tile=108,
+            wall=list(range(136)),
+        )
+        response = env.step({0: Action(ActionType.DISCARD, tile=0)})[1]
+        public = PublicStateTracker(1)
+        public.riichi[0, 2:] = True
+        action = self.heuristic_action(response, public, defensive=True)
+        self.assertEqual(__import__("json").loads(action.to_mjai())["type"], "none")

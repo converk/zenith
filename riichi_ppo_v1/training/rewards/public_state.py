@@ -37,10 +37,19 @@ class PublicStateTracker:
         self.riichi = np.zeros((int(num_envs), NUM_PLAYERS), dtype=np.bool_)
         self.discard_counts = np.zeros(int(num_envs), dtype=np.int16)
         self.completed_discard_counts = np.zeros(int(num_envs), dtype=np.int16)
+        self.discard_counts_by_seat = np.zeros(
+            (int(num_envs), NUM_PLAYERS), dtype=np.int16,
+        )
+        self.completed_discard_counts_by_seat = np.zeros(
+            (int(num_envs), NUM_PLAYERS), dtype=np.int16,
+        )
         # Only open melds count as furo. Kakan upgrades an existing pon and
         # therefore must not increment this table-level count.
         self.open_meld_counts = np.zeros((int(num_envs), NUM_PLAYERS), dtype=np.int8)
         self.completed_open_meld_counts = np.zeros(int(num_envs), dtype=np.int8)
+        self.completed_open_meld_counts_by_seat = np.zeros(
+            (int(num_envs), NUM_PLAYERS), dtype=np.int8,
+        )
         self.events = 0
 
     def reset(self, indices: list[int] | tuple[int, ...]) -> None:
@@ -49,6 +58,7 @@ class PublicStateTracker:
             self.discard_masks[int(index)].fill(0)
             self.riichi[int(index)].fill(False)
             self.discard_counts[int(index)] = 0
+            self.discard_counts_by_seat[int(index)].fill(0)
             self.open_meld_counts[int(index)].fill(0)
 
     def remaining(self, env_index: int, own_counts: np.ndarray) -> np.ndarray:
@@ -80,7 +90,13 @@ class PublicStateTracker:
                 # event batch. Snapshot before that reset so completed-hand
                 # metrics cannot be reported as zero.
                 self.completed_discard_counts[env_index] = self.discard_counts[env_index]
+                self.completed_discard_counts_by_seat[env_index] = (
+                    self.discard_counts_by_seat[env_index]
+                )
                 self.completed_open_meld_counts[env_index] = self.open_meld_counts[env_index].sum()
+                self.completed_open_meld_counts_by_seat[env_index] = (
+                    self.open_meld_counts[env_index]
+                )
             if kind == "start_kyoku":
                 self.reset([env_index])
                 marker = tile_type(event.get("dora_marker"))
@@ -93,6 +109,7 @@ class PublicStateTracker:
             self.open_meld_counts[env_index, actor] += 1
         if kind == "dahai":
             self.discard_counts[env_index] += 1
+            self.discard_counts_by_seat[env_index, actor] += 1
         tile_values: list[str | None] = []
         if kind in {"dahai", "dora"}:
             tile_values.append(event.get("pai"))

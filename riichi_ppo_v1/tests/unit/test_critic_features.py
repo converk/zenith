@@ -3,11 +3,13 @@ from types import SimpleNamespace
 import numpy as np
 
 from riichi_ppo_v1.model.critic_features import (
-    FIELD_OPPONENT_MELD_TILE,
-    FIELD_OPPONENT_RIVER,
+    FIELD_PUBLIC_MELD_TILE,
+    FIELD_PUBLIC_RIVER,
     FIELD_OPPONENT_HAND,
+    SEGMENT_PUBLIC_SUMMARY,
     collect_visible_table_state,
     encode_critic_features,
+    encode_public_summary,
 )
 
 
@@ -38,7 +40,7 @@ def test_collects_true_hands_from_four_self_observations_and_preserves_red_fives
     assert features.factors.shape == (4, 10)
 
 
-def test_compact_opponent_rivers_and_melds_are_critic_only_opt_in() -> None:
+def test_compact_four_seat_rivers_and_melds_are_actor_visible_only() -> None:
     pon = SimpleNamespace(
         meld_type="pon",
         tiles=[0, 1, 2],
@@ -57,16 +59,19 @@ def test_compact_opponent_rivers_and_melds_are_critic_only_opt_in() -> None:
     }
 
     table = collect_visible_table_state(observations, include_public_state=True)
-    baseline = encode_critic_features(table, observer=0)
-    features = encode_critic_features(table, observer=0, include_public_state=True)
+    critic = encode_critic_features(table, observer=0)
+    features = encode_public_summary(table, observer=0)
 
-    assert features.length == baseline.length + 5
-    river_rows = features.factors[features.factors[:, 2] == FIELD_OPPONENT_RIVER]
+    assert critic.length == 3
+    assert np.all(critic.factors[:, 2] == FIELD_OPPONENT_HAND)
+    assert features.length == 5
+    assert np.all(features.factors[:, 0] == SEGMENT_PUBLIC_SUMMARY)
+    river_rows = features.factors[features.factors[:, 2] == FIELD_PUBLIC_RIVER]
     assert {tuple(row) for row in river_rows.tolist()} == {
-        (4, 4, FIELD_OPPONENT_RIVER, 2, 1, 5, 0, 1, 0, 1),
-        (4, 4, FIELD_OPPONENT_RIVER, 2, 1, 5, 1, 1, 0, 1),
-        (4, 4, FIELD_OPPONENT_RIVER, 2, 1, 6, 0, 1, 0, 1),
+        (3, 4, FIELD_PUBLIC_RIVER, 2, 1, 5, 0, 1, 0, 1),
+        (3, 4, FIELD_PUBLIC_RIVER, 2, 1, 5, 1, 1, 0, 1),
+        (3, 4, FIELD_PUBLIC_RIVER, 2, 1, 6, 0, 1, 0, 1),
     }
-    meld_tile_rows = features.factors[features.factors[:, 2] == FIELD_OPPONENT_MELD_TILE]
-    assert meld_tile_rows.tolist() == [[4, 4, FIELD_OPPONENT_MELD_TILE, 2, 1, 1, 0, 3, 1, 1]]
-    assert any(row.tolist() == [4, 5, 2, 2, 1, 1, 0, 3, 1, 1] for row in features.factors)
+    meld_tile_rows = features.factors[features.factors[:, 2] == FIELD_PUBLIC_MELD_TILE]
+    assert meld_tile_rows.tolist() == [[3, 4, FIELD_PUBLIC_MELD_TILE, 2, 1, 1, 0, 3, 1, 1]]
+    assert any(row.tolist() == [3, 5, 2, 2, 1, 1, 0, 3, 1, 1] for row in features.factors)

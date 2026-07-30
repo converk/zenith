@@ -7,7 +7,13 @@ import numpy as np
 from riichienv import Action, ActionType, Conditions, HandEvaluator, Meld, MeldType
 
 from riichi_ppo_v1.model.bridge import Decision
-from riichi_ppo_v1.training.rewards import DecisionAnalysisBatch, EfficiencyAnalyzer, public_remaining
+from riichi_ppo_v1.training.opponents.heuristic import HeuristicPolicy
+from riichi_ppo_v1.training.rewards import (
+    DecisionAnalysisBatch,
+    EfficiencyAnalyzer,
+    PublicStateTracker,
+    public_remaining,
+)
 from riichi_ppo_v1.training.rewards.decision import (
     Candidate,
     DecisionAnalysis,
@@ -107,6 +113,32 @@ def test_closed_no_ron_yaku_keeps_riichi_and_tsumo_routes_separate() -> None:
     assert candidate.riichi_route
     assert candidate.live_ron == 0
     assert candidate.live_tsumo > 0
+    assert candidate.ron_value_sum == 0
+    assert candidate.tsumo_value_sum > 0
+    assert candidate.riichi_ron_points > 0
+    assert candidate.riichi_ron_value_sum > 0
+
+
+def test_close_one_shanten_discards_receive_second_order_ukeire_scores() -> None:
+    # 123m 456m 78p 23s 55s EE: several equal-ukeire one-shanten cuts
+    # differ in the quality of their next shapes.
+    hand = [0, 4, 8, 12, 16, 20, 60, 64, 76, 80, 88, 89, 108, 109]
+    actions = [Action(ActionType.DISCARD, tile) for tile in hand]
+    obs = observation(hand, actions)
+    decision = Decision(0, 0, obs)
+    analyzer = EfficiencyAnalyzer()
+    row = DecisionAnalysisBatch.build(
+        [decision], analyzer=analyzer,
+    ).for_decision(decision)
+    policy = HeuristicPolicy(
+        analyzer, PublicStateTracker(1), defensive=False,
+    )
+
+    bonuses = policy._second_order_bonuses(list(row.candidates), row)
+
+    assert len(bonuses) >= 2
+    assert min(bonuses.values()) > 0
+    assert len(set(bonuses.values())) >= 2
 
 
 def test_double_wind_open_pon_is_recognized_as_yaku() -> None:

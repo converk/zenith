@@ -84,7 +84,22 @@ class SemanticMetrics:
     tsumo_wins: int = 0
     ron_wins: int = 0
     deal_ins: int = 0
+    tsumo_losses: int = 0
     draws: int = 0
+    selected_shanten: list[float] = field(default_factory=list)
+    selected_effective_shanten: list[float] = field(default_factory=list)
+    first_riichis: int = 0
+    chase_riichis: int = 0
+    dangerous_calls: int = 0
+    bad_kans: int = 0
+    accepted_kans: int = 0
+    decision_groups: Counter[str] = field(default_factory=Counter)
+    action_groups: Counter[str] = field(default_factory=Counter)
+    kyoku_group_points: dict[str, list[float]] = field(default_factory=dict)
+    kyoku_group_wins: Counter[str] = field(default_factory=Counter)
+    kyoku_group_deal_ins: Counter[str] = field(default_factory=Counter)
+    kyoku_group_tsumo_losses: Counter[str] = field(default_factory=Counter)
+    kyoku_group_draws: Counter[str] = field(default_factory=Counter)
     rewards: list[float] = field(default_factory=list)
     reward_efficiency: list[float] = field(default_factory=list)
     reward_kyoku: list[float] = field(default_factory=list)
@@ -92,6 +107,7 @@ class SemanticMetrics:
     reward_weighted_kyoku: list[float] = field(default_factory=list)
     completed_matches: int = 0
     match_ranks: list[int] = field(default_factory=list)
+    match_point_deltas: list[float] = field(default_factory=list)
     match_kyoku_lengths: list[float] = field(default_factory=list)
     match_discard_counts: list[float] = field(default_factory=list)
     policy_decisions: Counter[str] = field(default_factory=Counter)
@@ -106,20 +122,38 @@ class SemanticMetrics:
     rule_tenpai_preference: list[float] = field(default_factory=list)
 
     def record_decision(self, action_id: int, legal_mask: np.ndarray, *, threat: bool = False,
-                        genbutsu_to_all: bool = False, genbutsu_count: int = 0) -> None:
+                        genbutsu_to_all: bool = False, genbutsu_count: int = 0,
+                        seat: int | None = None, dealer: bool | None = None,
+                        phase: str | None = None, prior_riichi_count: int = 0) -> None:
         self.decisions += 1
-        self.actions[action_kind(action_id)] += 1
+        kind = action_kind(action_id)
+        self.actions[kind] += 1
         legal = np.asarray(legal_mask, dtype=np.bool_)
         self.legal_actions.append(float(legal.sum()))
         self.riichi_opportunities += int(bool(legal[75]))
-        self.call_opportunities += int(bool(legal[76:239].any()))
+        self.call_opportunities += int(bool(legal[76:171].any()))
         if threat and action_kind(action_id) in {"discard", "tsumogiri"}:
             self.threat_discards += 1
             self.genbutsu_all += int(genbutsu_to_all)
             self.genbutsu_coverage.append(float(genbutsu_count))
+        if kind == "riichi":
+            self.first_riichis += int(prior_riichi_count == 0)
+            self.chase_riichis += int(prior_riichi_count > 0)
+        groups: list[str] = []
+        if seat is not None:
+            groups.append(f"seat_{int(seat)}")
+        if dealer is not None:
+            groups.append("dealer" if dealer else "nondealer")
+        if phase:
+            groups.append(f"phase_{phase}")
+        for group in groups:
+            self.decision_groups[group] += 1
+            self.action_groups[f"{group}/{kind}"] += 1
 
     def record_efficiency(self, *, reward: float, shanten_gap: int | None = None,
-                          ukeire_loss: float | None = None) -> None:
+                          ukeire_loss: float | None = None,
+                          selected_shanten: int | None = None,
+                          selected_effective_shanten: int | None = None) -> None:
         self.efficiency_rewards.append(float(reward))
         if shanten_gap is not None:
             self.shanten_gaps.append(float(shanten_gap))
@@ -127,6 +161,20 @@ class SemanticMetrics:
         if ukeire_loss is not None:
             self.ukeire_losses.append(float(ukeire_loss))
             self.optimal_ukeire.append(float(ukeire_loss == 0.0))
+        if selected_shanten is not None:
+            self.selected_shanten.append(float(selected_shanten))
+        if selected_effective_shanten is not None:
+            self.selected_effective_shanten.append(float(selected_effective_shanten))
+
+    def record_rule_action(
+        self, action_id: int, *, threat: bool, bad_kan: bool = False,
+    ) -> None:
+        kind = action_kind(action_id)
+        is_call = kind in {"chi", "pon", "daiminkan"}
+        is_kan = kind in {"daiminkan", "ankan", "kakan"}
+        self.dangerous_calls += int(is_call and threat)
+        self.accepted_kans += int(is_kan)
+        self.bad_kans += int(is_kan and bad_kan)
 
     def record_transition_reward(self, transition: object) -> None:
         efficiency = float(getattr(transition, "discard_regret", 0.0))
@@ -175,7 +223,8 @@ class SemanticMetrics:
         self.bad_calls += int(accepted_call and bad_call)
 
     def record_kyoku(self, learner_seats: Iterable[int], score_deltas: Iterable[float], events: Iterable[Iterable[str]],
-                     *, discard_count: int | None = None, open_meld_count: int | None = None) -> None:
+                     *, discard_count: int | None = None, open_meld_count: int | None = None,
+                     dealer_seat: int | None = None, phase: str | None = None) -> None:
         seats = set(int(seat) for seat in learner_seats)
         deltas = [float(value) / 1000.0 for value in score_deltas]
         rows: list[dict[str, object]] = []
@@ -200,6 +249,11 @@ class SemanticMetrics:
                 self.kyoku_discard_counts.append(float(discard_count))
             won = [row for row in horas if int(row.get("actor", -1)) == seat]
             dealt = [row for row in horas if int(row.get("target", -1)) == seat and int(row.get("actor", -1)) != seat]
+            lost_to_tsumo = any(
+                int(row.get("actor", -1)) != seat
+                and int(row.get("target", -2)) == int(row.get("actor", -1))
+                for row in horas
+            )
             if won:
                 self.wins += 1
                 self.win_points.append(point)
@@ -208,9 +262,22 @@ class SemanticMetrics:
             if dealt:
                 self.deal_ins += 1
                 self.deal_in_points.append(point)
+            if lost_to_tsumo:
+                self.tsumo_losses += 1
             if is_draw:
                 self.draws += 1
                 self.draw_points.append(point)
+            groups = [f"seat_{seat}"]
+            if dealer_seat is not None:
+                groups.append("dealer" if seat == int(dealer_seat) else "nondealer")
+            if phase:
+                groups.append(f"phase_{phase}")
+            for group in groups:
+                self.kyoku_group_points.setdefault(group, []).append(point)
+                self.kyoku_group_wins[group] += int(bool(won))
+                self.kyoku_group_deal_ins[group] += int(bool(dealt))
+                self.kyoku_group_tsumo_losses[group] += int(lost_to_tsumo)
+                self.kyoku_group_draws[group] += int(is_draw)
 
     def record_match_length(self, kyoku_count: int, *, discard_count: int | None = None) -> None:
         """Record one completed physical hanchan without assigning a seat rank."""
@@ -220,7 +287,7 @@ class SemanticMetrics:
             self.match_discard_counts.append(float(discard_count))
 
     def record_match_result(self, learner_seat: int, final_scores: Iterable[float], *, kyoku_count: int | None = None,
-                            discard_count: int | None = None) -> None:
+                            discard_count: int | None = None, point_delta: float | None = None) -> None:
         """Record the candidate's final placement for evaluation reporting only.
 
         Equal final scores are broken by seat id to give every completed match
@@ -235,6 +302,8 @@ class SemanticMetrics:
         ranking = sorted(range(len(scores)), key=lambda index: (-scores[index], index))
         self.match_ranks.append(ranking.index(seat) + 1)
         self.completed_matches += 1
+        if point_delta is not None:
+            self.match_point_deltas.append(float(point_delta))
         if kyoku_count is not None:
             self.match_kyoku_lengths.append(float(kyoku_count))
         if discard_count is not None:
@@ -253,6 +322,7 @@ class SemanticMetrics:
             f"{prefix}/kyoku/tsumo_rate": _rate(self.tsumo_wins, kyokus),
             f"{prefix}/kyoku/ron_rate": _rate(self.ron_wins, kyokus),
             f"{prefix}/kyoku/deal_in_rate": _rate(self.deal_ins, kyokus),
+            f"{prefix}/kyoku/tsumo_loss_rate": _rate(self.tsumo_losses, kyokus),
             f"{prefix}/kyoku/win_points_mean": _mean(self.win_points),
             f"{prefix}/kyoku/deal_in_points_mean": _mean(self.deal_in_points),
             f"{prefix}/kyoku/draw_rate": _rate(self.draws, kyokus),
@@ -264,12 +334,21 @@ class SemanticMetrics:
             f"{prefix}/action/riichi_opportunity_count": float(self.riichi_opportunities),
             f"{prefix}/action/call_opportunity_count": float(self.call_opportunities),
             f"{prefix}/action/riichi_opportunity_accept_rate": _rate(self.actions["riichi"], self.riichi_opportunities),
-            f"{prefix}/action/call_opportunity_accept_rate": _rate(sum(self.actions[key] for key in ("chi", "pon", "daiminkan", "ankan", "kakan")), self.call_opportunities),
+            f"{prefix}/action/call_opportunity_accept_rate": _rate(
+                sum(self.actions[key] for key in ("chi", "pon", "daiminkan")),
+                self.call_opportunities,
+            ),
+            f"{prefix}/action/first_riichi_rate": _rate(self.first_riichis, kyokus),
+            f"{prefix}/action/chase_riichi_rate": _rate(self.chase_riichis, kyokus),
             f"{prefix}/efficiency/reward_mean": _mean(self.efficiency_rewards),
             f"{prefix}/efficiency/optimal_shanten_rate": _mean(self.optimal_shanten),
             f"{prefix}/efficiency/optimal_ukeire_rate": _mean(self.optimal_ukeire),
             f"{prefix}/efficiency/shanten_gap_mean": _mean(self.shanten_gaps),
             f"{prefix}/efficiency/ukeire_loss_mean": _mean(self.ukeire_losses),
+            f"{prefix}/efficiency/selected_shanten_mean": _mean(self.selected_shanten),
+            f"{prefix}/efficiency/selected_effective_shanten_mean": _mean(
+                self.selected_effective_shanten,
+            ),
             f"{prefix}/defense/threat_discard_count": float(self.threat_discards),
             f"{prefix}/defense/genbutsu_all_rate": _rate(self.genbutsu_all, self.threat_discards),
             f"{prefix}/defense/genbutsu_coverage_mean": _mean(self.genbutsu_coverage),
@@ -281,6 +360,10 @@ class SemanticMetrics:
             ),
             f"{prefix}/rules/effective_ron_tiles_mean": _mean(self.effective_ron_tiles),
             f"{prefix}/rules/bad_call_rate": _rate(self.bad_calls, self.accepted_calls),
+            f"{prefix}/rules/dangerous_call_rate": _rate(
+                self.dangerous_calls, self.accepted_calls,
+            ),
+            f"{prefix}/rules/bad_kan_rate": _rate(self.bad_kans, self.accepted_kans),
             f"{prefix}/fixed/structural_optimal_rate": _mean(self.structural_optimal),
             f"{prefix}/fixed/rule_tenpai_preference_accuracy": _mean(
                 self.rule_tenpai_preference,
@@ -291,11 +374,40 @@ class SemanticMetrics:
             f"{prefix}/match/mean_rank": _mean([float(rank) for rank in self.match_ranks]),
             f"{prefix}/match/top2_rate": _rate(sum(rank <= 2 for rank in self.match_ranks), matches),
             f"{prefix}/match/last_place_rate": _rate(sum(rank == 4 for rank in self.match_ranks), matches),
+            f"{prefix}/match/point_delta_mean": _mean(self.match_point_deltas),
+            f"{prefix}/match/point_delta_p10": _percentile(self.match_point_deltas, 10),
+            f"{prefix}/match/point_delta_p50": _percentile(self.match_point_deltas, 50),
+            f"{prefix}/match/point_delta_p90": _percentile(self.match_point_deltas, 90),
+            f"{prefix}/match/positive_point_delta_rate": _rate(
+                sum(delta > 0.0 for delta in self.match_point_deltas), matches,
+            ),
             f"{prefix}/match/length_kyokus_mean": _mean(self.match_kyoku_lengths),
             f"{prefix}/match/discard_count_mean": _mean(self.match_discard_counts),
         }
         for kind in ("pass", "discard", "tsumogiri", "riichi", "chi", "pon", "daiminkan", "ankan", "kakan", "hora", "kyushu"):
             result[f"{prefix}/action/{kind}_rate"] = _rate(self.actions[kind], self.decisions)
+        for group, count in sorted(self.decision_groups.items()):
+            result[f"{prefix}/breakdown/{group}/decision_count"] = float(count)
+            for kind in ("pass", "discard", "tsumogiri", "riichi", "chi", "pon", "daiminkan", "ankan", "kakan"):
+                result[f"{prefix}/breakdown/{group}/{kind}_rate"] = _rate(
+                    self.action_groups[f"{group}/{kind}"], count,
+                )
+        for group, points in sorted(self.kyoku_group_points.items()):
+            count = len(points)
+            result[f"{prefix}/breakdown/{group}/kyoku_count"] = float(count)
+            result[f"{prefix}/breakdown/{group}/point_delta_mean"] = _mean(points)
+            result[f"{prefix}/breakdown/{group}/win_rate"] = _rate(
+                self.kyoku_group_wins[group], count,
+            )
+            result[f"{prefix}/breakdown/{group}/deal_in_rate"] = _rate(
+                self.kyoku_group_deal_ins[group], count,
+            )
+            result[f"{prefix}/breakdown/{group}/tsumo_loss_rate"] = _rate(
+                self.kyoku_group_tsumo_losses[group], count,
+            )
+            result[f"{prefix}/breakdown/{group}/draw_rate"] = _rate(
+                self.kyoku_group_draws[group], count,
+            )
         for name, values in (("efficiency", self.reward_efficiency), ("kyoku", self.reward_kyoku),
                              ("weighted_efficiency", self.reward_weighted_efficiency), ("weighted_kyoku", self.reward_weighted_kyoku)):
             result[f"{prefix}/reward/{name}_mean"] = _mean(values)

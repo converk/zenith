@@ -7,6 +7,13 @@ def config(*, context_tokens: int = 64) -> ModelConfig:
     return ModelConfig(layers=2, shared_layers=1, critic_layers=1, d_model=32, query_heads=2, kv_heads=1, head_dim=16, ffn_dim=64, context_tokens=context_tokens)
 
 
+def test_default_model_topology_is_three_plus_one_plus_two() -> None:
+    model = KyokuTransformerActorCritic(ModelConfig())
+    assert len(model.public_backbone.blocks) == 3
+    assert len(model.actor_backbone.blocks) == 1
+    assert len(model.critic_backbone.blocks) == 2
+
+
 def semantic_token_inputs(batch: int, length: int):
     factors = torch.zeros(batch, length, 10, dtype=torch.long)
     numeric = torch.zeros(batch, length, 8)
@@ -118,6 +125,31 @@ def test_critic_receives_every_shared_public_token() -> None:
     assert int(captured["lengths"][0]) == public_length + int(critic_lengths[0]) + 1
 
 
+def test_critic_public_gradient_scale_only_reduces_shared_value_gradient() -> None:
+    torch.manual_seed(7)
+    full = KyokuTransformerActorCritic(config())
+    scaled = KyokuTransformerActorCritic(config())
+    scaled.load_state_dict(full.state_dict())
+    factors, numeric = semantic_token_inputs(1, 3)
+    critic_factors = torch.ones(1, 2, 10, dtype=torch.long)
+    kwargs = {
+        "token_lengths": torch.tensor([2]),
+        "critic_factors": critic_factors,
+        "critic_lengths": torch.tensor([2]),
+    }
+    full(factors, numeric, critic_public_grad_scale=1.0, **kwargs)["value"].sum().backward()
+    scaled(factors, numeric, critic_public_grad_scale=0.25, **kwargs)["value"].sum().backward()
+
+    full_shared = full.public_backbone.blocks[0].attention.qkv.weight.grad
+    scaled_shared = scaled.public_backbone.blocks[0].attention.qkv.weight.grad
+    full_critic = full.critic_backbone.blocks[0].attention.qkv.weight.grad
+    scaled_critic = scaled.critic_backbone.blocks[0].attention.qkv.weight.grad
+    assert full_shared is not None and scaled_shared is not None
+    assert full_critic is not None and scaled_critic is not None
+    torch.testing.assert_close(scaled_shared, full_shared * 0.25)
+    torch.testing.assert_close(scaled_critic, full_critic)
+
+
 def test_critic_padding_does_not_change_value() -> None:
     torch.manual_seed(8)
     model = KyokuTransformerActorCritic(config()).eval()
@@ -172,6 +204,6 @@ def test_value_loss_updates_only_shared_public_and_critic_branches() -> None:
     )
 
 
-def test_mid_parameter_count_matches_the_v5_budget() -> None:
+def test_mid_parameter_count_matches_the_three_plus_one_plus_two_budget() -> None:
     model = KyokuTransformerActorCritic(ModelConfig.preset("mid"))
-    assert sum(parameter.numel() for parameter in model.parameters()) == 3_673_970
+    assert sum(parameter.numel() for parameter in model.parameters()) == 2_825_330

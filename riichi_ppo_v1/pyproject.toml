@@ -20,6 +20,10 @@ dependencies = [
 riichi-ppo-train = "riichi_ppo_v1.training.train:main"
 riichi-ppo-smoke = "riichi_ppo_v1.training.train:smoke_main"
 riichi-ppo-validate = "riichi_ppo_v1.tests.validate:main"
+riichi-sft-prepare = "riichi_ppo_v1.sft.prepare:main"
+riichi-sft-train = "riichi_ppo_v1.sft.train:main"
+riichi-sft-precompute = "riichi_ppo_v1.sft.precompute:main"
+riichi-sft-audit = "riichi_ppo_v1.sft.audit:main"
 
 [tool.setuptools]
 packages = [
@@ -29,6 +33,7 @@ packages = [
   "riichi_ppo_v1.training",
   "riichi_ppo_v1.training.rewards",
   "riichi_ppo_v1.training.opponents",
+  "riichi_ppo_v1.sft",
 ]
 package-dir = {riichi_ppo_v1 = "."}
 

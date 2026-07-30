@@ -14,10 +14,8 @@ const KIND_EVENT: u8 = 1;
 const KIND_SCORE: u8 = 2;
 const KIND_COUNTER: u8 = 3;
 const KIND_TILE_COUNT: u8 = 4;
-const KIND_MASKED: u8 = 7;
 
 const VIS_PUBLIC: u8 = 1;
-const VIS_MASKED: u8 = 2;
 
 #[derive(Clone, Copy)]
 struct SemanticToken {
@@ -178,11 +176,6 @@ impl PlayerKyokuStateMachine {
         }
         if let Some(tile) = drawn {
             out.push(tile_count_token(5, ACTOR_SELF, tile, 1, VIS_PUBLIC));
-        }
-        for relative in [ACTOR_SHIMOCHA, ACTOR_TOIMEN, ACTOR_KAMICHA] {
-            out.push(SemanticToken::categorical([
-                SEGMENT_ACTOR_STATE, KIND_MASKED, 1, relative, 0, 0, 0, 0, 0, VIS_MASKED,
-            ]));
         }
         Ok(())
     }
