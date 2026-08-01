@@ -13,6 +13,9 @@ import numpy as np
 class HandAnalysis:
     shanten: int
     improving_mask: int
+    standard_shanten: int | None = None
+    seven_pairs_shanten: int | None = None
+    thirteen_orphans_shanten: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,8 +244,13 @@ class EfficiencyAnalyzer:
                     np.ascontiguousarray([item[1][0] for item in unique], dtype=np.uint8),
                     np.asarray([item[1][1] for item in unique], dtype=np.uint8),
                 )
-                return [HandAnalysis(int(analysis.shanten[row, 0]), int(analysis.improving_type_mask[row]))
-                        for row in range(len(unique))]
+                return [HandAnalysis(
+                    int(analysis.shanten[row, 0]),
+                    int(analysis.improving_type_mask[row]),
+                    int(analysis.shanten[row, 1]),
+                    int(analysis.shanten[row, 2]),
+                    int(analysis.shanten[row, 3]),
+                ) for row in range(len(unique))]
         except ImportError:
             pass
         from riichienv import calculate_shanten

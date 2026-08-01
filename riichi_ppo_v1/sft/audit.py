@@ -234,7 +234,10 @@ def audit_kyoku(content: str, *, identity: str) -> dict[str, Any]:
 def validate_encoded_chunk(path: Path) -> dict[str, int]:
     """Parse a materialized actor-only chunk exactly as SFT training does."""
     with np.load(path, allow_pickle=False) as stored:
-        required = {"factors", "numeric", "offsets", "legal", "actions"}
+        required = {
+            "factors", "numeric", "offsets", "legal", "actions", "value_targets", "teacher_masks",
+            "years", "game_ids", "kyoku_indices", "seats", "decision_indices",
+        }
         if set(stored.files) != required:
             raise AssertionError(f"cache keys differ: {sorted(stored.files)}")
         factors, numeric, offsets, legal, actions = (stored[name] for name in ("factors", "numeric", "offsets", "legal", "actions"))
@@ -248,6 +251,16 @@ def validate_encoded_chunk(path: Path) -> dict[str, int]:
             raise AssertionError("cache offsets must partition non-empty token rows")
         if actions.dtype != np.uint8 or legal.dtype != np.uint8 or legal.shape != (len(actions), 31):
             raise AssertionError("cache actions or packed legal masks are malformed")
+        if stored["value_targets"].shape != (len(actions),) or not np.issubdtype(stored["value_targets"].dtype, np.floating):
+            raise AssertionError("cache value targets are malformed")
+        if stored["teacher_masks"].dtype != np.uint8 or stored["teacher_masks"].shape != (len(actions), 31):
+            raise AssertionError("cache packed teacher masks are malformed")
+        identity_fields = ("years", "game_ids", "kyoku_indices", "seats", "decision_indices")
+        if any(stored[name].shape != (len(actions),) for name in identity_fields):
+            raise AssertionError("cache per-sample identity is malformed")
+        identities = list(zip(*(stored[name].tolist() for name in identity_fields), strict=True))
+        if len(set(identities)) != len(identities):
+            raise AssertionError("cache contains duplicate per-sample identities")
         masks = np.unpackbits(legal, axis=1, bitorder="little", count=241).astype(np.bool_)
         totals: Counter[str] = Counter()
         for row, action in enumerate(actions):
@@ -259,14 +272,12 @@ def validate_encoded_chunk(path: Path) -> dict[str, int]:
                 raise AssertionError(f"cache row {row} expert action is outside its legal mask")
             candidates = token_rows[:, 0] == _SEGMENT_CANDIDATE
             public = token_rows[:, 0] == SEGMENT_PUBLIC_SUMMARY
-            if int(candidates.sum()) != int(masks[row].sum()):
+            if int(candidates.sum()) != 2 * int(masks[row].sum()):
                 raise AssertionError(f"cache row {row} has unmatched candidate-action tokens and legal mask")
-            if public.any() and not np.all(public[np.flatnonzero(public)[0]:]):
-                raise AssertionError(f"cache row {row} public summary is not a suffix")
             if candidates.any() and not np.all(candidates[np.flatnonzero(candidates)[0]:np.flatnonzero(candidates)[-1] + 1]):
                 raise AssertionError(f"cache row {row} candidate tokens are not contiguous")
-            if public.any() and candidates.any() and np.flatnonzero(candidates)[-1] >= np.flatnonzero(public)[0]:
-                raise AssertionError(f"cache row {row} candidates must precede public summary")
+            if public.any() and candidates.any() and np.flatnonzero(public)[-1] >= np.flatnonzero(candidates)[0]:
+                raise AssertionError(f"cache row {row} public summary must precede candidates")
             totals["history_tokens"] += int(np.count_nonzero(token_rows[:, 0] == 1))
             totals["state_tokens"] += int(np.count_nonzero(token_rows[:, 0] == 2))
             totals["candidate_tokens"] += int(candidates.sum())
@@ -311,7 +322,13 @@ def _roundtrip_cache(records: list[tuple[str, str]]) -> tuple[dict[str, Any], di
     samples: list[SftSample] = []
     for identity, content in records:
         year, game_id, kyoku_index = _member_metadata(identity.rsplit(":", 1)[1])
-        rows = encode_kyoku(content, year=year, game_id=game_id, kyoku_index=kyoku_index, include_critic=False)
+        try:
+            rows = encode_kyoku(
+                content, year=year, game_id=game_id,
+                kyoku_index=kyoku_index, include_critic=False,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"cache round-trip failed for {identity}") from exc
         _assert_public_history(rows, identity)
         samples.extend(rows)
     with tempfile.TemporaryDirectory(prefix="riichi-sft-audit-") as directory:

@@ -28,6 +28,10 @@ from torch.utils.tensorboard import SummaryWriter
 import yaml
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
+from ..model.feature_schema import (
+    DECISION_ANALYSIS_VERSION, RUST_ANALYSIS_VERSION, feature_schema_sha256,
+    legacy_encoder_sha256,
+)
 from ..model.schema import TOKEN_SCHEMA_VERSION
 from .data import SftSample, iter_split_samples
 from .heuristic_evaluation import evaluate_against_heuristics
@@ -42,6 +46,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "context_tokens": 4096,
     "critic_layers": 2,
     "epochs": 1,
+    "max_train_steps": 0,
     "batch_size": 512,
     "learning_rate": 1.5e-4,
     "min_learning_rate": 2e-5,
@@ -50,9 +55,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "adam_beta1": 0.9,
     "adam_beta2": 0.999,
     "adam_epsilon": 1e-8,
-    "max_grad_norm": 0.5,
+    "max_grad_norm": 1.0,
     "train_critic": False,
-    "value_coef": 0.5,
+    "train_public_value": True,
+    "policy_head_type": "isolated_action_query",
+    "group_coef": 0.25,
+    "public_value_coef": 0.10,
+    "rule_coef": 0.05,
+    "rule_decay_fraction": 0.20,
     "gamma": 0.99,
     "inference_dtype": "bf16",
     "shuffle_buffer_kyokus": 8192,
@@ -74,6 +84,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tensorboard_enabled": True,
     "tensorboard_dirname": "tensorboard",
     "resume": None,
+    "ablation_aligned_batches": False,
+    "ablation_identity_reference_dataset": None,
 }
 
 
@@ -92,6 +104,46 @@ def dataset_manifest_hash(dataset: Path) -> str:
     return hashlib.sha256((dataset / "manifest.json").read_bytes()).hexdigest()
 
 
+def assert_ablation_cache_alignment(dataset: Path, reference: Path) -> None:
+    """Require paired v11/v13 caches to contain the same exact sample stream."""
+    manifests = []
+    for path in (dataset, reference):
+        manifest_path = path / "manifest.json"
+        if not manifest_path.is_file():
+            raise RuntimeError(f"aligned ablation cache manifest is missing: {manifest_path}")
+        manifests.append(json.loads(manifest_path.read_text(encoding="utf-8")))
+    current, paired = manifests
+    schemas = {
+        int(current.get("token_schema_version", -1)),
+        int(paired.get("token_schema_version", -1)),
+    }
+    if schemas != {11, TOKEN_SCHEMA_VERSION}:
+        raise RuntimeError(
+            f"aligned ablation requires one schema-11 and one schema-{TOKEN_SCHEMA_VERSION} cache"
+        )
+    if current.get("selection_manifest_sha256") != paired.get("selection_manifest_sha256"):
+        raise RuntimeError("aligned ablation caches use different selected kyoku sequences")
+    current_identity = current.get("sample_identity_contract")
+    paired_identity = paired.get("sample_identity_contract")
+    if not isinstance(current_identity, dict) or not isinstance(paired_identity, dict):
+        raise RuntimeError(
+            "aligned ablation caches lack the complete sample identity contract; re-encode both caches"
+        )
+    for split in ("train", "validation"):
+        left = current_identity.get(split)
+        right = paired_identity.get(split)
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            raise RuntimeError(f"aligned ablation caches lack {split} sample identities")
+        required = (
+            "samples", "sequence_sha256", "sharded_sequence_sha256",
+            "supervision_sequence_sha256",
+        )
+        if any(left.get(field) != right.get(field) for field in required):
+            raise RuntimeError(
+                f"aligned ablation {split} identity, supervision, or chunk layout differs"
+            )
+
+
 def collate_samples(
     samples: list[SftSample],
     device: torch.device,
@@ -105,33 +157,37 @@ def collate_samples(
     lengths = torch.empty(batch, dtype=torch.long)
     legal = torch.empty((batch, 241), dtype=torch.bool)
     actions = torch.empty(batch, dtype=torch.long)
+    targets = torch.empty(batch, dtype=torch.float32)
+    teachers = torch.zeros((batch, 241), dtype=torch.bool)
     for row, sample in enumerate(samples):
         factors[row, :sample.token_length] = torch.from_numpy(sample.token_factors)
         numeric[row, :sample.token_length] = torch.from_numpy(sample.token_numeric)
         lengths[row] = sample.token_length
         legal[row] = torch.from_numpy(sample.legal_mask)
         actions[row] = sample.action
+        targets[row] = sample.value_target
+        if sample.teacher_mask is not None:
+            teachers[row] = torch.from_numpy(sample.teacher_mask)
     result = {
         "token_factors": factors.to(device, non_blocking=True),
         "token_numeric": numeric.to(device, non_blocking=True),
         "token_lengths": lengths.to(device, non_blocking=True),
         "legal_mask": legal.to(device, non_blocking=True),
         "actions": actions.to(device, non_blocking=True),
+        "value_targets": targets.to(device, non_blocking=True),
+        "teacher_masks": teachers.to(device, non_blocking=True),
     }
     if include_critic:
         max_critic = max(sample.critic_length for sample in samples)
         critic = torch.zeros((batch, max_critic, 10), dtype=torch.uint8)
         critic_lengths = torch.empty(batch, dtype=torch.long)
-        targets = torch.empty(batch, dtype=torch.float32)
         for row, sample in enumerate(samples):
             if sample.critic_length:
                 critic[row, :sample.critic_length] = torch.from_numpy(sample.critic_factors)
             critic_lengths[row] = sample.critic_length
-            targets[row] = sample.value_target
         result.update({
             "critic_factors": critic.to(device, non_blocking=True),
             "critic_lengths": critic_lengths.to(device, non_blocking=True),
-            "value_targets": targets.to(device, non_blocking=True),
         })
     return result
 
@@ -142,6 +198,7 @@ def length_bucketed_batches(
     *,
     window_batches: int,
     rng: random.Random | None = None,
+    align_across_schemas: bool = False,
 ) -> Iterator[list[SftSample]]:
     """Make low-padding batches without exposing a sorted curriculum.
 
@@ -154,7 +211,8 @@ def length_bucketed_batches(
     capacity = max(batch_size, batch_size * window_batches)
 
     def drain(rows: list[SftSample]) -> Iterator[list[SftSample]]:
-        rows.sort(key=lambda item: item.token_length)
+        if not align_across_schemas:
+            rows.sort(key=lambda item: item.token_length)
         batches = [rows[index:index + batch_size] for index in range(0, len(rows), batch_size)]
         if rng is not None:
             rng.shuffle(batches)
@@ -182,14 +240,59 @@ def _action_group(action_id: int) -> str:
     if 133 <= action_id <= 169:
         return "pon"
     if action_id == 170:
-        return "daiminkan"
+        return "kan"
     if 171 <= action_id <= 204:
-        return "ankan"
+        return "kan"
     if 205 <= action_id <= 238:
-        return "kakan"
+        return "kan"
     if action_id == 239:
         return "hora"
     return "ryukyoku"
+
+
+_GROUP_IDS = tuple(_action_group(action) for action in range(241))
+_GROUP_NAMES = ("pass", "discard", "reach", "chi", "pon", "kan", "hora", "ryukyoku")
+_GROUP_SLICES = (
+    slice(0, 1), slice(1, 75), slice(75, 76), slice(76, 133),
+    slice(133, 170), slice(170, 239), slice(239, 240), slice(240, 241),
+)
+_ACTION_GROUP_INDEX = torch.tensor(
+    [_GROUP_NAMES.index(value) for value in _GROUP_IDS], dtype=torch.long,
+)
+
+
+def group_classification_loss(logits: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+    """CE over logsumexp action groups, only where >=2 groups are legal."""
+    grouped, available = grouped_action_logits(logits)
+    targets = _ACTION_GROUP_INDEX.to(actions.device)[actions]
+    eligible = available.sum(dim=1) >= 2
+    if not bool(eligible.any()):
+        return logits.new_zeros(())
+    return F.cross_entropy(grouped[eligible], targets[eligible])
+
+
+def grouped_action_logits(logits: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Aggregate fixed actions into the eight strategic action groups."""
+    group_logits = []
+    legal_groups = []
+    for columns in _GROUP_SLICES:
+        values = logits[:, columns]
+        group_logits.append(torch.logsumexp(values, dim=1))
+        legal_groups.append(torch.isfinite(values).any(dim=1))
+    grouped = torch.stack(group_logits, dim=1)
+    available = torch.stack(legal_groups, dim=1)
+    return grouped, available
+
+
+def rule_teacher_loss(logits: torch.Tensor, teacher_mask: torch.Tensor) -> torch.Tensor:
+    """Uniform soft-target CE over tied best rule candidates."""
+    counts = teacher_mask.sum(dim=1)
+    eligible = (counts >= 1) & (torch.isfinite(logits).sum(dim=1) >= 2)
+    if not bool(eligible.any()):
+        return logits.new_zeros(())
+    log_probs = F.log_softmax(logits[eligible], dim=1)
+    targets = teacher_mask[eligible].float() / counts[eligible, None]
+    return -(targets * log_probs.masked_fill(~teacher_mask[eligible], 0.0)).sum(dim=1).mean()
 
 
 def _model_config(config: dict[str, Any]) -> ModelConfig:
@@ -197,6 +300,7 @@ def _model_config(config: dict[str, Any]) -> ModelConfig:
     values = asdict(base)
     values["context_tokens"] = int(config["context_tokens"])
     values["critic_layers"] = int(config.get("critic_layers", base.critic_layers))
+    values["policy_head_type"] = str(config.get("policy_head_type", "isolated_action_query"))
     return ModelConfig(**values)
 
 
@@ -224,8 +328,16 @@ def _save_checkpoint(
         "model_config": asdict(module.config),
         "sft_config": config,
         "training_stage": "sft",
-        "training_mode": "joint_actor_critic" if bool(config["train_critic"]) else "actor_only",
-        "token_schema_version": TOKEN_SCHEMA_VERSION,
+        "training_mode": (
+            "joint_actor_critic" if bool(config["train_critic"])
+            else ("actor_public_value" if bool(config.get("train_public_value", True)) else "actor_only")
+        ),
+        "token_schema_version": int(config.get("token_schema_version", TOKEN_SCHEMA_VERSION)),
+        "feature_schema_sha256": config.get("feature_schema_sha256"),
+        "rust_analysis_version": config.get("rust_analysis_version"),
+        "decision_analysis_version": config.get("decision_analysis_version"),
+        "legacy_encoder_sha256": config.get("legacy_encoder_sha256"),
+        "policy_head_type": module.config.policy_head_type,
         "dataset_manifest_hash": manifest_hash,
         "epoch": epoch,
         "global_step": global_step,
@@ -251,6 +363,7 @@ def evaluate(
 ) -> dict[str, float]:
     model.eval()
     train_critic = bool(config["train_critic"])
+    train_value = train_critic or bool(config.get("train_public_value", True))
     batch_size = max(1, int(config["batch_size"]) // max(1, int(config["learner_gpus"])))
     samples = iter_split_samples(
         dataset,
@@ -264,10 +377,16 @@ def evaluate(
         samples,
         batch_size,
         window_batches=int(config["length_bucket_window_batches"]),
+        align_across_schemas=bool(config.get("ablation_aligned_batches", False)),
     )
     totals = {
         "samples": 0.0, "policy_ce_sum": 0.0, "value_huber_sum": 0.0,
         "value_abs_sum": 0.0, "value_sq_sum": 0.0, "top1": 0.0, "top3": 0.0,
+        "group_top1": 0.0, "group_samples": 0.0,
+        "reach_brier_sum": 0.0, "reach_opportunities": 0.0,
+        "rule_samples": 0.0, "optimal_shanten": 0.0,
+        "optimal_ukeire_samples": 0.0, "optimal_ukeire": 0.0,
+        "call_pass_samples": 0.0, "call_pass_correct": 0.0,
     }
     group_correct: dict[str, list[int]] = {}
     maximum = (
@@ -287,11 +406,12 @@ def evaluate(
             rows = rows[:remaining]
         batch = collate_samples(rows, device, include_critic=train_critic)
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
-            if train_critic:
+            if train_value:
                 output = model(
                     batch["token_factors"], batch["token_numeric"], batch["legal_mask"],
-                    batch["token_lengths"], critic_factors=batch["critic_factors"],
-                    critic_lengths=batch["critic_lengths"],
+                    batch["token_lengths"],
+                    critic_factors=batch.get("critic_factors"),
+                    critic_lengths=batch.get("critic_lengths"),
                 )
             else:
                 output = model.forward_policy(
@@ -304,7 +424,7 @@ def evaluate(
         top = logits.topk(3, dim=-1).indices
         totals["samples"] += len(rows)
         totals["policy_ce_sum"] += float(ce.sum())
-        if train_critic:
+        if train_value:
             values = output["value"].float()
             value_targets = batch["value_targets"]
             huber = F.huber_loss(values, value_targets, reduction="none")
@@ -314,6 +434,44 @@ def evaluate(
             totals["value_sq_sum"] += float(error.square().sum())
         totals["top1"] += float((top[:, 0] == targets).sum())
         totals["top3"] += float((top == targets[:, None]).any(-1).sum())
+        if int(config.get("token_schema_version", TOKEN_SCHEMA_VERSION)) == TOKEN_SCHEMA_VERSION:
+            for sample, predicted in zip(rows, top[:, 0].tolist(), strict=True):
+                offense = (sample.token_factors[:, 0] == 7) & (sample.token_factors[:, 9] == 1)
+                action_ids = sample.token_factors[offense, 2].astype(np.int64) - 1
+                structural = sample.token_factors[offense, 4].astype(np.int64)
+                ukeire = sample.token_numeric[offense, 3]
+                comparable = structural > 0
+                if comparable.any() and int(predicted) in action_ids[comparable]:
+                    best_shanten = int(structural[comparable].min())
+                    chosen = int(np.flatnonzero(action_ids == int(predicted))[0])
+                    totals["rule_samples"] += 1
+                    shanten_ok = int(structural[chosen]) == best_shanten
+                    totals["optimal_shanten"] += float(shanten_ok)
+                    if shanten_ok:
+                        best_ukeire = float(ukeire[structural == best_shanten].max())
+                        totals["optimal_ukeire_samples"] += 1
+                        totals["optimal_ukeire"] += float(np.isclose(float(ukeire[chosen]), best_ukeire))
+        grouped, available_groups = grouped_action_logits(logits)
+        group_targets = _ACTION_GROUP_INDEX.to(targets.device)[targets]
+        group_eligible = available_groups.sum(dim=1) >= 2
+        totals["group_top1"] += float((grouped.argmax(dim=1)[group_eligible] == group_targets[group_eligible]).sum())
+        totals["group_samples"] += float(group_eligible.sum())
+        call_groups = torch.tensor([3, 4, 5], device=targets.device)
+        call_or_pass = available_groups[:, 0] & available_groups[:, 3:6].any(dim=1)
+        if bool(call_or_pass.any()):
+            predicted_groups = grouped.argmax(dim=1)
+            predicted_call = (predicted_groups[:, None] == call_groups).any(dim=1)
+            target_call = (group_targets[:, None] == call_groups).any(dim=1)
+            totals["call_pass_samples"] += float(call_or_pass.sum())
+            totals["call_pass_correct"] += float((predicted_call[call_or_pass] == target_call[call_or_pass]).sum())
+        reach_opportunity = batch["legal_mask"][:, 75]
+        if bool(reach_opportunity.any()):
+            reach_probability = logits.softmax(dim=1)[:, 75]
+            reach_target = targets.eq(75).float()
+            totals["reach_brier_sum"] += float(
+                (reach_probability[reach_opportunity] - reach_target[reach_opportunity]).square().sum()
+            )
+            totals["reach_opportunities"] += float(reach_opportunity.sum())
         for row, target, predictions in zip(rows, targets.tolist(), top.tolist(), strict=True):
             group = _action_group(row.action)
             counts = group_correct.setdefault(group, [0, 0, 0])
@@ -326,8 +484,16 @@ def evaluate(
         "validation/policy_ce": totals["policy_ce_sum"] / count,
         "validation/top1": totals["top1"] / count,
         "validation/top3": totals["top3"] / count,
+        "validation/action_group_top1": totals["group_top1"] / max(totals["group_samples"], 1.0),
+        "validation/reach_opportunity_brier": totals["reach_brier_sum"] / max(totals["reach_opportunities"], 1.0),
+        "validation/reach_opportunities": totals["reach_opportunities"],
+        "validation/optimal_shanten_rate": totals["optimal_shanten"] / max(totals["rule_samples"], 1.0),
+        "validation/optimal_ukeire_rate": totals["optimal_ukeire"] / max(totals["optimal_ukeire_samples"], 1.0),
+        "validation/optimal_ukeire_samples": totals["optimal_ukeire_samples"],
+        "validation/rule_samples": totals["rule_samples"],
+        "validation/call_pass_accuracy": totals["call_pass_correct"] / max(totals["call_pass_samples"], 1.0),
     }
-    if train_critic:
+    if train_value:
         result.update({
             "validation/value_huber": totals["value_huber_sum"] / count,
             "validation/value_mae": totals["value_abs_sum"] / count,
@@ -337,9 +503,9 @@ def evaluate(
         result[f"validation/top1_{group}"] = correct / max(group_count, 1)
         result[f"validation/top3_{group}"] = top3_correct / max(group_count, 1)
     result["validation/loss"] = result["validation/policy_ce"]
-    if train_critic:
+    if train_value:
         result["validation/loss"] += (
-            float(config["value_coef"]) * result["validation/value_huber"]
+            float(config["public_value_coef"]) * result["validation/value_huber"]
         )
     return result
 
@@ -372,10 +538,15 @@ def _train_worker_impl(
         dist.init_process_group("nccl", rank=rank, world_size=world_size, device_id=device)
     model = KyokuTransformerActorCritic(_model_config(config)).to(device)
     train_critic = bool(config["train_critic"])
-    critic_roots = {"critic_embedding", "critic_backbone", "value_head", "value_query"}
+    train_value = train_critic or bool(config.get("train_public_value", True))
+    frozen_roots: set[str] = set()
     if not train_critic:
+        frozen_roots.add("critic_embedding")
+    if not train_value:
+        frozen_roots.update({"critic_backbone", "value_head", "value_query"})
+    if frozen_roots:
         for name, parameter in model.named_parameters():
-            if name.split(".", 1)[0] in critic_roots:
+            if name.split(".", 1)[0] in frozen_roots:
                 parameter.requires_grad_(False)
     optimized_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
     optimizer = torch.optim.AdamW(
@@ -387,11 +558,38 @@ def _train_worker_impl(
         fused=device.type == "cuda",
     )
     manifest = json.loads((dataset / "manifest.json").read_text(encoding="utf-8"))
+    raw_dataset = manifest.get("format") == "riichi-sft-kyoku-v1"
+    dataset_schema = int(manifest.get("token_schema_version", TOKEN_SCHEMA_VERSION if raw_dataset else -1))
+    if dataset_schema not in {11, TOKEN_SCHEMA_VERSION}:
+        raise RuntimeError(f"unsupported SFT dataset schema {dataset_schema}; schema 12 must be re-encoded")
+    requested_schema = int(config.get("token_schema_version", dataset_schema))
+    if requested_schema != dataset_schema:
+        raise RuntimeError(
+            f"SFT config requests schema {requested_schema}, but dataset is schema {dataset_schema}"
+        )
+    policy_head_type = str(config.get("policy_head_type", "isolated_action_query"))
+    if dataset_schema == 11 and policy_head_type != "legacy_fixed":
+        raise RuntimeError("schema-11 data is supported only by the legacy_fixed baseline")
+    config["token_schema_version"] = dataset_schema
+    config["feature_schema_sha256"] = manifest.get(
+        "feature_schema_sha256", feature_schema_sha256() if raw_dataset else None,
+    )
+    config["rust_analysis_version"] = manifest.get(
+        "rust_analysis_version", RUST_ANALYSIS_VERSION if raw_dataset else None,
+    )
+    config["decision_analysis_version"] = manifest.get(
+        "decision_analysis_version", DECISION_ANALYSIS_VERSION if raw_dataset else None,
+    )
+    config["legacy_encoder_sha256"] = manifest.get(
+        "legacy_encoder_sha256", legacy_encoder_sha256() if dataset_schema == 11 and raw_dataset else None,
+    )
     train_decisions = int(manifest["counts"]["train_decisions"])
     estimated_steps = max(
         1,
         math.ceil(train_decisions / int(config["batch_size"])) * int(config["epochs"]),
     )
+    if int(config.get("max_train_steps", 0)) > 0:
+        estimated_steps = min(estimated_steps, int(config["max_train_steps"]))
     warmup = max(1, int(estimated_steps * float(config["warmup_fraction"])))
 
     def lr_scale(step: int) -> float:
@@ -410,11 +608,25 @@ def _train_worker_impl(
     best_heuristic_point_delta = float("-inf")
     if config.get("resume"):
         payload = torch.load(config["resume"], map_location=device, weights_only=False)
-        if int(payload.get("token_schema_version", 0)) != TOKEN_SCHEMA_VERSION:
+        if int(payload.get("token_schema_version", 0)) != dataset_schema:
             raise RuntimeError("SFT resume checkpoint has an incompatible token schema")
+        if payload.get("feature_schema_sha256") != config.get("feature_schema_sha256"):
+            raise RuntimeError("SFT resume checkpoint has an incompatible feature schema hash")
+        if payload.get("rust_analysis_version") != config.get("rust_analysis_version"):
+            raise RuntimeError("SFT resume checkpoint has an incompatible Rust analysis version")
+        if payload.get("decision_analysis_version") != config.get("decision_analysis_version"):
+            raise RuntimeError("SFT resume checkpoint has an incompatible decision-analysis version")
+        if payload.get("legacy_encoder_sha256") != config.get("legacy_encoder_sha256"):
+            raise RuntimeError("SFT resume checkpoint has an incompatible legacy encoder hash")
+        checkpoint_head = payload.get("policy_head_type", payload.get("model_config", {}).get("policy_head_type"))
+        if checkpoint_head != model.config.policy_head_type:
+            raise RuntimeError("SFT resume checkpoint has an incompatible policy head type")
         if payload.get("dataset_manifest_hash") != manifest_hash:
             raise RuntimeError("SFT resume checkpoint belongs to a different dataset manifest")
-        expected_mode = "joint_actor_critic" if train_critic else "actor_only"
+        expected_mode = (
+            "joint_actor_critic" if train_critic
+            else ("actor_public_value" if train_value else "actor_only")
+        )
         if payload.get("training_mode", expected_mode) != expected_mode:
             raise RuntimeError("SFT resume checkpoint training mode differs from current config")
         model.load_state_dict(payload["model"])
@@ -479,14 +691,18 @@ def _train_worker_impl(
                 local_batch,
                 window_batches=int(config["length_bucket_window_batches"]),
                 rng=random.Random(int(config["seed"]) + epoch * 1_000_003 + rank),
+                align_across_schemas=bool(config.get("ablation_aligned_batches", False)),
             )
             for batch_index, rows in enumerate(batches):
+                if int(config.get("max_train_steps", 0)) > 0 and global_step >= int(config["max_train_steps"]):
+                    break
                 if epoch == start_epoch and batch_index < skip_steps:
                     continue
                 step_started = last_step_end
                 batch = collate_samples(rows, device, include_critic=train_critic)
-                effective_tokens = sum(sample.token_length + 1 for sample in rows)
-                padded_tokens = len(rows) * (max(sample.token_length for sample in rows) + 1)
+                query_extra = int(str(config.get("policy_head_type")) == "legacy_fixed")
+                effective_tokens = sum(sample.token_length + query_extra for sample in rows)
+                padded_tokens = len(rows) * (max(sample.token_length for sample in rows) + query_extra)
                 local_samples += len(rows)
                 local_effective_tokens += effective_tokens
                 local_padded_tokens += padded_tokens
@@ -494,11 +710,12 @@ def _train_worker_impl(
                 with torch.autocast(
                     device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16
                 ):
-                    if train_critic:
+                    if train_value:
                         model_output = model(
                             batch["token_factors"], batch["token_numeric"], batch["legal_mask"],
-                            batch["token_lengths"], critic_factors=batch["critic_factors"],
-                            critic_lengths=batch["critic_lengths"],
+                            batch["token_lengths"],
+                            critic_factors=batch.get("critic_factors"),
+                            critic_lengths=batch.get("critic_lengths"),
                         )
                     else:
                         model_output = model(
@@ -506,14 +723,24 @@ def _train_worker_impl(
                             batch["token_lengths"], policy_only=True,
                         )
                     policy_loss = F.cross_entropy(model_output["policy_logits"].float(), batch["actions"])
-                    if train_critic:
+                    group_loss = group_classification_loss(
+                        model_output["policy_logits"].float(), batch["actions"],
+                    )
+                    rule_loss = rule_teacher_loss(
+                        model_output["policy_logits"].float(), batch["teacher_masks"],
+                    )
+                    rule_progress = global_step / max(
+                        estimated_steps * float(config["rule_decay_fraction"]), 1.0,
+                    )
+                    rule_weight = float(config["rule_coef"]) * max(0.0, 1.0 - rule_progress)
+                    loss = policy_loss + float(config["group_coef"]) * group_loss + rule_weight * rule_loss
+                    if train_value:
                         value_loss = F.huber_loss(
                             model_output["value"].float(), batch["value_targets"]
                         )
-                        loss = policy_loss + float(config["value_coef"]) * value_loss
+                        loss = loss + float(config["public_value_coef"]) * value_loss
                     else:
                         value_loss = None
-                        loss = policy_loss
                 loss.backward()
                 grad_norm = nn.utils.clip_grad_norm_(model.parameters(), float(config["max_grad_norm"]))
                 optimizer.step()
@@ -832,6 +1059,13 @@ def main() -> None:
         config["learner_gpus"] = args.learner_gpus
     output = resolve_output(config, args.output)
     config["checkpoint_dir"] = str(output)
+    if bool(config.get("ablation_aligned_batches", False)):
+        reference_value = config.get("ablation_identity_reference_dataset")
+        if not reference_value:
+            raise RuntimeError(
+                "ablation_aligned_batches requires ablation_identity_reference_dataset"
+            )
+        assert_ablation_cache_alignment(args.dataset, Path(str(reference_value)))
     world_size = int(config["learner_gpus"]) if str(config["device"]).startswith("cuda") else 1
     if world_size > 1:
         os.environ.setdefault("MASTER_ADDR", "127.0.0.1")

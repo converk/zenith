@@ -387,7 +387,10 @@ def main() -> None:
                 _generations,
                 _critic,
                 _critic_lengths,
-            ) = bridge.prepare(policy_decisions, analysis)
+            ) = bridge.prepare(
+                policy_decisions, analysis,
+                token_schema_version=int(getattr(model, "token_schema_version", 13)),
+            )
             with torch.autocast(
                 device_type=model_device.type,
                 dtype=torch.bfloat16,

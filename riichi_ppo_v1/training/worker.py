@@ -13,6 +13,7 @@ except ImportError:  # imported lazily by the command line program
     ray = None
 
 from ..model.bridge import BatchedStateBridge, Decision, NUM_PLAYERS
+from ..model.schema import TOKEN_SCHEMA_VERSION
 from .profiling import StageProfiler
 from .rewards import DecisionAnalysisBatch, EfficiencyAnalyzer, PublicStateTracker
 from .trajectory import Transition, finish_kyoku
@@ -77,6 +78,7 @@ if ray is not None:
                 [[] for _ in range(NUM_PLAYERS)] for _ in range(self.num_envs)
             ]
             self.model_decisions = 0
+            self.token_schema_version = int(config.get("token_schema_version", TOKEN_SCHEMA_VERSION))
             self.recorded_decisions = 0
             self.deferred_reset_indices: set[int] = set()
             self.semantic = SemanticMetrics()
@@ -106,7 +108,10 @@ if ray is not None:
                     _history_generations,
                     critic_factors,
                     critic_lengths,
-                ) = self.bridge.prepare(decisions, analysis_batch)
+                ) = self.bridge.prepare(
+                    decisions, analysis_batch,
+                    token_schema_version=self.token_schema_version,
+                )
             request = self.inference.infer.remote(
                 worker_id=self.worker_id,
                 namespace=namespace,
@@ -226,6 +231,7 @@ if ray is not None:
                     with self.profiler.stage("rollout/reward_analysis"):
                         analysis_batch = DecisionAnalysisBatch.build(
                             policy_decisions, analyzer=self.efficiency, public=self.public,
+                            profiler=self.profiler,
                         )
                     request, prepared = self._submit_model_actions(
                         policy_decisions, "eval" if greedy else "rollout", greedy,

@@ -22,6 +22,7 @@ from ..model.critic_features import (
     encode_public_summary,
 )
 from ..model.semantic_validation import assert_actor_token_semantics, assert_critic_token_semantics
+from ..model.schema import TOKEN_SCHEMA_VERSION
 from ..training.rewards.decision import DecisionAnalysisBatch, action_id
 from ..training.rewards.efficiency import EfficiencyAnalyzer
 
@@ -38,6 +39,8 @@ class SftSample:
     game_id: str
     kyoku_index: int
     seat: int
+    decision_index: int = 0
+    teacher_mask: np.ndarray | None = None
 
     @property
     def token_length(self) -> int:
@@ -72,8 +75,13 @@ def encode_kyoku(
     gamma: float = 0.99,
     analyzer: EfficiencyAnalyzer | None = None,
     include_critic: bool = True,
+    token_schema_version: int = TOKEN_SCHEMA_VERSION,
 ) -> list[SftSample]:
     """Replay one JSONL kyoku and encode all four players' decisions."""
+    if int(token_schema_version) == 11:
+        from ..model.feature_schema import assert_legacy_replay_runtime
+
+        assert_legacy_replay_runtime()
     from riichienv import MjaiReplay
     import riichi
 
@@ -82,11 +90,9 @@ def encode_kyoku(
     if len(kyokus) != 1:
         raise ValueError(f"SFT record must contain exactly one kyoku, got {len(kyokus)}")
     kyoku = kyokus[0]
-    point_deltas: list[int] | None = None
-    if include_critic:
-        point_deltas = [int(value) for value in kyoku.grp_features()["delta_scores"]]
-        if len(point_deltas) != 4:
-            raise ValueError("SFT kyoku must contain four point deltas")
+    point_deltas = [int(value) for value in kyoku.grp_features()["delta_scores"]]
+    if len(point_deltas) != 4:
+        raise ValueError("SFT kyoku must contain four point deltas")
     analyzer = analyzer or EfficiencyAnalyzer()
     # Each seat has an independent chronological replay stream.  Keep that
     # ordering intact, but place the four streams in separate state-machine
@@ -149,15 +155,31 @@ def encode_kyoku(
     if not pending:
         return []
     decisions = [Decision(0, seat, observation) for seat, observation, _expert, _factors, _numeric, _legal, _action in pending]
-    analysis = DecisionAnalysisBatch.build(decisions, analyzer=analyzer)
+    analysis = DecisionAnalysisBatch.build(
+        decisions, analyzer=analyzer, token_schema_version=token_schema_version,
+    )
     legal_batch = np.stack([legal for _seat, _observation, _expert, _factors, _numeric, legal, _action in pending])
-    candidate_factors, candidate_numeric = analysis.candidate_tokens(decisions, legal_batch)
+    if int(token_schema_version) == 11:
+        candidate_factors, candidate_numeric = analysis.legacy_candidate_tokens(decisions, legal_batch)
+        state_factors = [np.zeros((0, 10), dtype=np.uint8) for _ in decisions]
+        state_numeric = [np.zeros((0, 8), dtype=np.float32) for _ in decisions]
+    elif int(token_schema_version) == TOKEN_SCHEMA_VERSION:
+        candidate_factors, candidate_numeric = analysis.candidate_tokens(decisions, legal_batch)
+        state_factors, state_numeric = analysis.state_tokens(decisions)
+    else:
+        raise ValueError(f"unsupported token schema {token_schema_version}; expected 11 or {TOKEN_SCHEMA_VERSION}")
+    teacher_masks = analysis.teacher_masks(decisions)
     seat_samples: list[list[SftSample]] = [[] for _ in range(4)]
     for row, (seat, observation, _expert_action, factors, numeric, legal, target_action) in enumerate(pending):
-        factors, numeric = _append_rows(factors, numeric, candidate_factors[row], candidate_numeric[row])
         table_state = collect_replay_table_state(observation)
         public = encode_public_summary(table_state, seat)
-        factors, numeric = _append_rows(factors, numeric, public.factors)
+        if int(token_schema_version) == 11:
+            factors, numeric = _append_rows(factors, numeric, candidate_factors[row], candidate_numeric[row])
+            factors, numeric = _append_rows(factors, numeric, public.factors)
+        else:
+            factors, numeric = _append_rows(factors, numeric, public.factors)
+            factors, numeric = _append_rows(factors, numeric, state_factors[row], state_numeric[row])
+            factors, numeric = _append_rows(factors, numeric, candidate_factors[row], candidate_numeric[row])
         critic = encode_critic_features(table_state, seat) if include_critic else None
         seat_samples[seat].append(SftSample(
             token_factors=factors,
@@ -169,15 +191,16 @@ def encode_kyoku(
                 critic.factors.copy() if critic is not None else np.zeros((0, 10), dtype=np.uint8)
             ),
             year=int(year), game_id=str(game_id), kyoku_index=int(kyoku_index), seat=seat,
+            decision_index=len(seat_samples[seat]),
+            teacher_mask=teacher_masks[row].copy(),
         ))
     all_samples: list[SftSample] = []
     for seat in range(4):
         seat_samples_for_seat = seat_samples[seat]
-        if point_deltas is not None:
-            terminal = float(np.clip(point_deltas[seat], -12_000, 12_000) / 1_000.0)
-            remaining = len(seat_samples_for_seat) - 1
-            for index, sample in enumerate(seat_samples_for_seat):
-                sample.value_target = float(terminal * float(gamma) ** (remaining - index))
+        terminal = float(np.clip(point_deltas[seat], -12_000, 12_000) / 1_000.0)
+        remaining = len(seat_samples_for_seat) - 1
+        for index, sample in enumerate(seat_samples_for_seat):
+            sample.value_target = float(terminal * float(gamma) ** (remaining - index))
         all_samples.extend(seat_samples_for_seat)
     if all_samples:
         max_tokens = max(sample.token_length for sample in all_samples)
@@ -187,7 +210,8 @@ def encode_kyoku(
         for row, sample in enumerate(all_samples):
             actor_factors[row, :sample.token_length] = sample.token_factors
             actor_numeric[row, :sample.token_length] = sample.token_numeric
-        assert_actor_token_semantics(actor_factors, actor_numeric, actor_lengths)
+        if int(token_schema_version) == TOKEN_SCHEMA_VERSION:
+            assert_actor_token_semantics(actor_factors, actor_numeric, actor_lengths)
         if include_critic:
             max_critic = max(sample.critic_length for sample in all_samples)
             critic_factors = np.zeros((len(all_samples), max_critic, 10), dtype=np.uint8)
@@ -225,7 +249,7 @@ def iter_split_samples(
     if manifest_path.exists():
         import json
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest.get("format") == "riichi-sft-encoded-v1":
+        if str(manifest.get("format", "")).startswith("riichi-sft-encoded-v"):
             if include_critic:
                 raise ValueError("the encoded subset is actor-only; set train_critic: false")
             from .precompute import iter_precomputed_samples

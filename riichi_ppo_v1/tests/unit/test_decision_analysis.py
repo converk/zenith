@@ -7,6 +7,7 @@ import numpy as np
 from riichienv import Action, ActionType, Conditions, HandEvaluator, Meld, MeldType
 
 from riichi_ppo_v1.model.bridge import Decision
+from riichi_ppo_v1.model.feature_schema import BREAK_MELD
 from riichi_ppo_v1.training.opponents.heuristic import HeuristicPolicy
 from riichi_ppo_v1.training.rewards import (
     DecisionAnalysisBatch,
@@ -111,12 +112,33 @@ def test_closed_no_ron_yaku_keeps_riichi_and_tsumo_routes_separate() -> None:
     ).for_decision(decision).candidates[0]
     assert candidate.structural_shanten == 0
     assert candidate.riichi_route
+    assert not candidate.has_yaku
+    assert candidate.can_tsumo
+    assert candidate.has_legal_route
     assert candidate.live_ron == 0
     assert candidate.live_tsumo > 0
     assert candidate.ron_value_sum == 0
     assert candidate.tsumo_value_sum > 0
     assert candidate.riichi_ron_points > 0
     assert candidate.riichi_ron_value_sum > 0
+
+
+def test_declared_riichi_does_not_turn_riichi_itself_into_damaten_yaku() -> None:
+    # The same no-intrinsic-ron-yaku hand remains legal after declaring
+    # riichi, but the riichi yaku must not populate the damaten-yaku field.
+    hand = [0, 4, 8, 12, 16, 20, 60, 64, 68, 76, 80, 84, 88, 108]
+    east = Action(ActionType.DISCARD, 108)
+    obs = observation(hand, [east])
+    obs.riichi_declared = [True, False, False, False]
+    decision = Decision(0, 0, obs)
+    candidate = DecisionAnalysisBatch.build(
+        [decision], analyzer=EfficiencyAnalyzer(),
+    ).for_decision(decision).candidates[0]
+    assert not candidate.has_yaku
+    assert not candidate.riichi_route
+    assert candidate.has_legal_route
+    assert candidate.live_ron > 0
+    assert candidate.live_tsumo > 0
 
 
 def test_close_one_shanten_discards_receive_second_order_ukeire_scores() -> None:
@@ -216,9 +238,65 @@ def test_parallel_best_teacher_and_candidate_tokens_align_to_legal_mask() -> Non
     for candidate in row.candidates:
         legal[0, candidate.action_id] = True
     factors, numeric = batch.candidate_tokens([decision], legal)
-    assert factors[0].shape == (int(legal.sum()), 10)
-    assert numeric[0].shape == (int(legal.sum()), 8)
-    assert np.all(factors[0][:, 2] == np.flatnonzero(legal) + 1)
+    assert factors[0].shape == (2 * int(legal.sum()), 10)
+    assert numeric[0].shape == (2 * int(legal.sum()), 8)
+    assert np.all(factors[0][0::2, 2] == np.flatnonzero(legal) + 1)
+    assert np.array_equal(factors[0][0::2, 2], factors[0][1::2, 2])
+    assert np.all(factors[0][0::2, 9] == 1)
+    assert np.all(factors[0][1::2, 9] == 2)
+
+
+def test_ankan_and_kakan_simulations_keep_all_four_kan_tiles() -> None:
+    # 9m indicator makes 1m dora. Both kan variants must preserve four copies
+    # in the simulated meld rather than dropping the added/closed fourth tile.
+    ankan_hand = [0, 1, 2, 3, 4, 8, 12, 16, 20, 36, 40, 44, 72, 76]
+    ankan = Action(ActionType.ANKAN, 0, [0, 1, 2, 3])
+    ankan_obs = observation(ankan_hand, [ankan])
+    ankan_obs.dora_indicators = [32]
+    ankan_decision = Decision(0, 0, ankan_obs)
+    ankan_row = DecisionAnalysisBatch.build(
+        [ankan_decision], analyzer=EfficiencyAnalyzer(),
+    ).for_decision(ankan_decision)
+    assert ankan_row.candidates[0].preserve_dora == 4
+
+    pon = Meld(MeldType.Pon, [0, 1, 2], True)
+    kakan_hand = [3, 4, 8, 12, 16, 20, 36, 40, 44, 72, 76]
+    kakan = Action(ActionType.KAKAN, 3, [0, 1, 2, 3])
+    kakan_obs = observation(kakan_hand, [kakan], melds=[pon])
+    kakan_obs.dora_indicators = [32]
+    kakan_decision = Decision(0, 0, kakan_obs)
+    kakan_row = DecisionAnalysisBatch.build(
+        [kakan_decision], analyzer=EfficiencyAnalyzer(),
+    ).for_decision(kakan_decision)
+    assert kakan_row.candidates[0].preserve_dora == 4
+
+
+def test_equal_dora_indicators_multiply_preserved_candidate_dora() -> None:
+    hand = [0, 1, 2, 3, 4, 8, 12, 16, 20, 36, 40, 44, 72, 76]
+    ankan = Action(ActionType.ANKAN, 0, [0, 1, 2, 3])
+    obs = observation(hand, [ankan])
+    obs.dora_indicators = [32, 32]  # both 9m indicators select 1m
+    decision = Decision(0, 0, obs)
+    batch = DecisionAnalysisBatch.build([decision], analyzer=EfficiencyAnalyzer())
+    candidate = batch.for_decision(decision).candidates[0]
+    assert candidate.preserve_dora == 8
+    legal = np.zeros((1, 241), dtype=bool)
+    legal[0, candidate.action_id] = True
+    factors, _numeric = batch.candidate_tokens([decision], legal)
+    assert int(factors[0][0, 3]) == 7  # clipped at six, then shifted by one
+
+
+def test_native_ankan_with_only_representative_tile_is_normalized() -> None:
+    hand = [108, 109, 110, 111, 0, 4, 8, 12, 16, 20, 36, 40, 44, 72]
+    ankan = Action(ActionType.ANKAN, 108)
+    obs = observation(hand, [ankan])
+    decision = Decision(0, 0, obs)
+    batch = DecisionAnalysisBatch.build([decision], analyzer=EfficiencyAnalyzer())
+    candidate = batch.for_decision(decision).candidates[0]
+
+    assert candidate.action_id == 198
+    assert candidate.open_meld_count == 1
+    assert sum(candidate.concealed_counts) + 3 * candidate.open_meld_count == 13
 
 
 def test_actor_analysis_ignores_opponent_concealed_hands() -> None:
@@ -233,3 +311,76 @@ def test_actor_analysis_ignores_opponent_concealed_hands() -> None:
         analysis = DecisionAnalysisBatch.build([decision], analyzer=EfficiencyAnalyzer())
         rows.append([(item.action_id, item.rank) for item in analysis.for_decision(decision).candidates])
     assert rows[0] == rows[1]
+
+
+def test_pass_candidate_explicitly_records_a_foregone_win() -> None:
+    hand = [0, 4, 8, 12, 16, 20, 36, 40, 44, 72, 76, 80, 84]
+    passed = FakeAction('{"type":"none"}')
+    hora = FakeAction('{"type":"hora"}')
+    obs = observation(hand, [passed, hora])
+    obs.drawn_tile = None
+    decision = Decision(0, 0, obs)
+    batch = DecisionAnalysisBatch.build(
+        [decision], analyzer=EfficiencyAnalyzer(), token_schema_version=13,
+    )
+    row = batch.for_decision(decision)
+    assert len(row.candidates) == 1
+    assert row.candidates[0].action_id == 0
+    assert row.candidates[0].foregone_win
+    legal = np.zeros((1, 241), dtype=bool)
+    legal[0, [0, 239]] = True
+    factors, numeric = batch.candidate_tokens([decision], legal)
+    assert int(factors[0][1, 4]) == 1  # pass has an applicable risk summary
+    assert float(numeric[0][1, 7]) == 1.0
+    assert not factors[0][2, 3:9].any()  # terminal hora offense is explicit N/A
+    assert not factors[0][3, 3:9].any()  # terminal hora defense is explicit N/A
+
+
+def test_discarding_one_of_four_copies_does_not_claim_to_break_a_triplet() -> None:
+    hand = [0, 1, 2, 3, 4, 8, 12, 16, 20, 36, 40, 44, 72, 76]
+    discard = Action(ActionType.DISCARD, 0)
+    obs = observation(hand, [discard])
+    decision = Decision(0, 0, obs)
+    candidate = DecisionAnalysisBatch.build(
+        [decision], analyzer=EfficiencyAnalyzer(),
+    ).for_decision(decision).candidates[0]
+    assert candidate.structure_known_mask & BREAK_MELD
+    assert not candidate.structure_break_mask & BREAK_MELD
+
+
+def test_temporary_and_riichi_missed_win_states_are_furiten() -> None:
+    hand = [0, 4, 8, 12, 16, 20, 60, 64, 68, 76, 80, 84, 88, 108]
+    discard = Action(ActionType.DISCARD, 108)
+    for field in ("missed_agari_doujun", "missed_agari_riichi"):
+        obs = observation(hand, [discard])
+        setattr(obs, field, True)
+        decision = Decision(0, 0, obs)
+        candidate = DecisionAnalysisBatch.build(
+            [decision], analyzer=EfficiencyAnalyzer(),
+        ).for_decision(decision).candidates[0]
+        assert candidate.furiten
+        assert candidate.live_ron == 0
+
+
+def test_schema_11_keeps_kan_candidate_features_frozen_as_na() -> None:
+    hand = [0, 1, 2, 3, 4, 8, 12, 16, 20, 36, 40, 44, 72, 76]
+    ankan = Action(ActionType.ANKAN, 0, [0, 1, 2, 3])
+    obs = observation(hand, [ankan])
+    decision = Decision(0, 0, obs)
+    row = DecisionAnalysisBatch.build(
+        [decision], analyzer=EfficiencyAnalyzer(), token_schema_version=11,
+    ).for_decision(decision)
+    assert row.candidates == ()
+
+
+def test_red_and_normal_five_discards_keep_distinct_protocol_candidates() -> None:
+    hand = [16, 17, 0, 4, 8, 12, 20, 36, 40, 44, 72, 76, 80, 108]
+    actions = [Action(ActionType.DISCARD, 16), Action(ActionType.DISCARD, 17)]
+    obs = observation(hand, actions)
+    obs.drawn_tile = 108
+    decision = Decision(0, 0, obs)
+    row = DecisionAnalysisBatch.build(
+        [decision], analyzer=EfficiencyAnalyzer(),
+    ).for_decision(decision)
+    assert len(row.candidates) == 2
+    assert len({candidate.action_id for candidate in row.candidates}) == 2

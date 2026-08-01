@@ -24,8 +24,10 @@ from riichi_ppo_v1.model import KyokuTransformerActorCritic, ModelConfig
 from riichi_ppo_v1.sft.data import iter_split_samples
 from riichi_ppo_v1.sft.train import (
     collate_samples,
+    group_classification_loss,
     length_bucketed_batches,
     load_config,
+    rule_teacher_loss,
 )
 
 
@@ -53,11 +55,15 @@ def _worker(
     preset = ModelConfig.preset(str(config["model_size"]))
     model_values = asdict(preset)
     model_values["context_tokens"] = int(config["context_tokens"])
+    model_values["critic_layers"] = int(config.get("critic_layers", preset.critic_layers))
+    model_values["policy_head_type"] = str(config.get("policy_head_type", "isolated_action_query"))
     model = KyokuTransformerActorCritic(ModelConfig(**model_values)).to(device)
+    train_value = bool(config.get("train_public_value", True))
     for name, parameter in model.named_parameters():
-        if name.split(".", 1)[0] in {
-            "critic_embedding", "critic_backbone", "value_head", "value_query",
-        }:
+        root = name.split(".", 1)[0]
+        if root == "critic_embedding" or (not train_value and root in {
+            "critic_backbone", "value_head", "value_query",
+        }):
             parameter.requires_grad_(False)
     model = DistributedDataParallel(
         model, device_ids=[rank], broadcast_buffers=False,
@@ -91,7 +97,7 @@ def _worker(
         str(config["inference_dtype"]).lower() == "bf16"
         and torch.cuda.is_bf16_supported()
     )
-    rows_out: list[tuple[float, float, float, float, float]] = []
+    rows_out: list[tuple[float, float, float, float, float, float, float, float, float]] = []
     model.train()
     for step in range(1, int(steps) + 1):
         dist.barrier()
@@ -99,22 +105,34 @@ def _worker(
         started = time.perf_counter()
         rows = next(batches)
         batch = collate_samples(rows, device, include_critic=False)
-        effective_tokens = sum(sample.token_length + 1 for sample in rows)
-        padded_tokens = len(rows) * (max(sample.token_length for sample in rows) + 1)
+        query_extra = int(str(config.get("policy_head_type")) == "legacy_fixed")
+        effective_tokens = sum(sample.token_length + query_extra for sample in rows)
+        padded_tokens = len(rows) * (max(sample.token_length for sample in rows) + query_extra)
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast(
             device_type="cuda", dtype=torch.bfloat16, enabled=use_bf16,
         ):
+            forward_started = torch.cuda.Event(enable_timing=True)
+            forward_finished = torch.cuda.Event(enable_timing=True)
+            forward_started.record()
             output = model(
                 batch["token_factors"],
                 batch["token_numeric"],
                 batch["legal_mask"],
                 batch["token_lengths"],
-                policy_only=True,
+                policy_only=not train_value,
             )
-            loss = F.cross_entropy(
+            forward_finished.record()
+            policy_loss = F.cross_entropy(
                 output["policy_logits"].float(), batch["actions"],
             )
+            group_loss = group_classification_loss(output["policy_logits"].float(), batch["actions"])
+            rule_loss = rule_teacher_loss(output["policy_logits"].float(), batch["teacher_masks"])
+            loss = policy_loss + float(config.get("group_coef", 0.0)) * group_loss + float(config.get("rule_coef", 0.0)) * rule_loss
+            if train_value:
+                loss = loss + float(config.get("public_value_coef", 0.0)) * F.huber_loss(
+                    output["value"].float(), batch["value_targets"],
+                )
         loss.backward()
         grad_norm = nn.utils.clip_grad_norm_(
             model.parameters(), float(config["max_grad_norm"]),
@@ -122,6 +140,19 @@ def _worker(
         optimizer.step()
         torch.cuda.synchronize(device)
         elapsed = time.perf_counter() - started
+        forward_ms = float(forward_started.elapsed_time(forward_finished))
+        model.eval()
+        infer_started = torch.cuda.Event(enable_timing=True)
+        infer_finished = torch.cuda.Event(enable_timing=True)
+        with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_bf16):
+            infer_started.record()
+            model.module.forward_policy(
+                batch["token_factors"], batch["token_numeric"], batch["legal_mask"], batch["token_lengths"],
+            )
+            infer_finished.record()
+        torch.cuda.synchronize(device)
+        inference_ms = float(infer_started.elapsed_time(infer_finished))
+        model.train()
 
         values = torch.tensor(
             [
@@ -129,7 +160,11 @@ def _worker(
                 float(len(rows)),
                 float(effective_tokens),
                 float(padded_tokens),
+                float(torch.cuda.memory_allocated(device) / 2**20),
+                float(torch.cuda.memory_reserved(device) / 2**20),
                 float(torch.cuda.max_memory_allocated(device) / 2**20),
+                forward_ms,
+                inference_ms,
             ],
             dtype=torch.float64,
             device=device,
@@ -137,7 +172,7 @@ def _worker(
         elapsed_max = values[0].clone()
         dist.all_reduce(elapsed_max, op=dist.ReduceOp.MAX)
         dist.all_reduce(values[1:4], op=dist.ReduceOp.SUM)
-        dist.all_reduce(values[4], op=dist.ReduceOp.MAX)
+        dist.all_reduce(values[4:], op=dist.ReduceOp.MAX)
         loss_value = loss.detach()
         grad_value = torch.as_tensor(grad_norm, device=device)
         dist.all_reduce(loss_value, op=dist.ReduceOp.SUM)
@@ -151,7 +186,9 @@ def _worker(
             tokens_per_s = global_effective / max(elapsed_s, 1e-9)
             padding = 1.0 - global_effective / max(global_padded, 1.0)
             rows_out.append((
-                elapsed_s, samples_per_s, tokens_per_s, padding, float(values[4]),
+                elapsed_s, samples_per_s, tokens_per_s, padding,
+                float(values[4]), float(values[5]), float(values[6]),
+                float(values[7]), float(values[8]),
             ))
             print(
                 f"step={step} elapsed_s={elapsed_s:.4f} "
@@ -160,7 +197,10 @@ def _worker(
                 f"padding_fraction={padding:.4f} "
                 f"loss={float(loss_value) / world_size:.5f} "
                 f"grad_norm={float(grad_value) / world_size:.5f} "
-                f"peak_gpu_memory_mb={float(values[4]):.1f}",
+                f"gpu_allocated_mb={float(values[4]):.1f} "
+                f"gpu_reserved_mb={float(values[5]):.1f} "
+                f"peak_gpu_memory_mb={float(values[6]):.1f}",
+                f" decoder_forward_ms={float(values[7]):.3f} inference_batch_ms={float(values[8]):.3f}",
                 flush=True,
             )
 
@@ -174,6 +214,8 @@ def _worker(
         print(
             f"summary measured_steps={len(warm)} warmup_steps={len(rows_out)-len(warm)} "
             f"elapsed_s={elapsed_total:.4f} samples={samples_total} "
+            f"step_time_mean_s={np.mean([row[0] for row in warm]):.4f} "
+            f"step_time_p95_s={np.quantile([row[0] for row in warm], 0.95):.4f} "
             f"samples_per_s={samples_total / max(elapsed_total, 1e-9):.2f} "
             f"step_samples_per_s_mean={rates.mean():.2f} "
             f"step_samples_per_s_std={rates.std(ddof=1) if len(rates) > 1 else 0.0:.2f} "
@@ -183,6 +225,8 @@ def _worker(
             f"padding_fraction_mean={paddings.mean():.4f} "
             f"padding_fraction_min={paddings.min():.4f} "
             f"padding_fraction_max={paddings.max():.4f}",
+            f" decoder_forward_ms_mean={np.mean([row[7] for row in warm]):.3f} "
+            f"inference_batch_ms_mean={np.mean([row[8] for row in warm]):.3f}",
             flush=True,
         )
     dist.barrier()
@@ -196,7 +240,7 @@ def main() -> None:
         default=Path("datasets/tenhou_sft_2024_2025"),
     )
     parser.add_argument("--config", type=Path)
-    parser.add_argument("--steps", type=int, default=10)
+    parser.add_argument("--steps", type=int, default=3)
     args = parser.parse_args()
     if args.steps <= 0:
         raise ValueError("--steps must be positive")

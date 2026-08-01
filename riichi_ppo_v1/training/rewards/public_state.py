@@ -35,6 +35,7 @@ class PublicStateTracker:
         self.visible = np.zeros((int(num_envs), 34), dtype=np.int16)
         self.discard_masks = np.zeros((int(num_envs), NUM_PLAYERS), dtype=object)
         self.riichi = np.zeros((int(num_envs), NUM_PLAYERS), dtype=np.bool_)
+        self.post_riichi_safe_masks = np.zeros((int(num_envs), NUM_PLAYERS), dtype=object)
         self.discard_counts = np.zeros(int(num_envs), dtype=np.int16)
         self.completed_discard_counts = np.zeros(int(num_envs), dtype=np.int16)
         self.discard_counts_by_seat = np.zeros(
@@ -57,6 +58,7 @@ class PublicStateTracker:
             self.visible[int(index)].fill(0)
             self.discard_masks[int(index)].fill(0)
             self.riichi[int(index)].fill(False)
+            self.post_riichi_safe_masks[int(index)].fill(0)
             self.discard_counts[int(index)] = 0
             self.discard_counts_by_seat[int(index)].fill(0)
             self.open_meld_counts[int(index)].fill(0)
@@ -125,6 +127,12 @@ class PublicStateTracker:
                 self.visible[env_index, kind_index] += 1
                 if kind == "dahai":
                     self.discard_masks[env_index, actor] = int(self.discard_masks[env_index, actor]) | (1 << kind_index)
+                    for opponent in np.flatnonzero(self.riichi[env_index]):
+                        if int(opponent) != actor:
+                            self.post_riichi_safe_masks[env_index, opponent] = (
+                                int(self.post_riichi_safe_masks[env_index, opponent])
+                                | (1 << kind_index)
+                            )
         self.events += 1
 
     def is_genbutsu_to_all_riichi(self, env_index: int, tile: int) -> bool:
@@ -136,6 +144,12 @@ class PublicStateTracker:
 
     def has_riichi_threat(self, env_index: int, seat: int) -> bool:
         return bool(np.any(np.delete(self.riichi[int(env_index)], int(seat))))
+
+    def passed_after_riichi(self, env_index: int, opponent: int, tile: int) -> bool:
+        return bool(
+            int(self.post_riichi_safe_masks[int(env_index), int(opponent)])
+            & (1 << int(tile))
+        )
 
     def metrics(self) -> dict[str, float]:
         return {"public_state/events": float(self.events)}

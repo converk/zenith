@@ -8,14 +8,23 @@ import zipfile
 
 import numpy as np
 import torch
+import pytest
 from torch.nn import functional as F
 
 from riichi_ppo_v1.model import KyokuTransformerActorCritic, ModelConfig
 from riichi_ppo_v1.model.critic_features import FIELD_OPPONENT_HAND, SEGMENT_PUBLIC_SUMMARY
+from riichi_ppo_v1.model.feature_schema import (
+    DECISION_ANALYSIS_VERSION,
+    RUST_ANALYSIS_VERSION,
+    feature_schema_sha256,
+)
 from riichi_ppo_v1.model.schema import TOKEN_SCHEMA_VERSION
 from riichi_ppo_v1.sft.data import encode_kyoku, iter_split_samples
 from riichi_ppo_v1.sft.audit import audit_kyoku, select_coverage_kyokus, validate_encoded_chunk
-from riichi_ppo_v1.sft.precompute import _write_chunk
+from riichi_ppo_v1.sft.precompute import (
+    _empty_field_statistics, _require_complete_action_coverage,
+    _selection_bucket, _write_chunk, encoded_identity_digests, selected_any,
+)
 from riichi_ppo_v1.sft.prepare import (
     _json_lines,
     _zip_directory_is_readable,
@@ -23,7 +32,9 @@ from riichi_ppo_v1.sft.prepare import (
     split_game_events,
     stable_split,
 )
-from riichi_ppo_v1.sft.train import collate_samples, load_config
+from riichi_ppo_v1.sft.train import (
+    assert_ablation_cache_alignment, collate_samples, load_config,
+)
 from riichi_ppo_v1.training.learner import PPOLearner
 
 
@@ -58,7 +69,9 @@ def test_replay_encoder_emits_all_seats_public_suffix_and_private_hands() -> Non
     assert all(np.all(sample.critic_factors[:, 2] == FIELD_OPPONENT_HAND) for sample in samples)
     with_public = next(sample for sample in reversed(samples) if SEGMENT_PUBLIC_SUMMARY in sample.token_factors[:, 0])
     first_public = int(np.flatnonzero(with_public.token_factors[:, 0] == SEGMENT_PUBLIC_SUMMARY)[0])
-    assert np.all(with_public.token_factors[first_public:, 0] == SEGMENT_PUBLIC_SUMMARY)
+    first_query = int(np.flatnonzero(with_public.token_factors[:, 0] == 7)[0])
+    assert first_public < first_query
+    assert np.all(with_public.token_factors[first_query:, 0] == 7)
     for seat in range(4):
         seat_rows = [sample for sample in samples if sample.seat == seat]
         assert seat_rows[-1].value_target == [-4.0, -3.0, -2.0, 9.0][seat]
@@ -99,8 +112,23 @@ def test_encoded_sft_chunk_parses_model_inputs_masks_and_expert_actions() -> Non
     assert structure["rows"] == len(samples)
     assert structure["history_tokens"] > 0
     assert structure["state_tokens"] > 0
-    assert structure["candidate_tokens"] == sum(int(sample.legal_mask.sum()) for sample in samples)
+    assert structure["candidate_tokens"] == 2 * sum(int(sample.legal_mask.sum()) for sample in samples)
     assert structure["public_tokens"] > 0
+
+
+def test_early_abortive_draw_is_preserved_as_expert_action_240() -> None:
+    content = "\n".join((
+        '{"type":"start_game","names":["a","b","c","d"],"kyoku_first":0,"aka_flag":true}',
+        '{"type":"start_kyoku","bakaze":"E","dora_marker":"7s","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"tehais":[["1m","9m","1p","9p","1s","9s","E","S","W","N","P","F","C"],["2m","3m","4m","2p","3p","4p","2s","3s","4s","5s","6s","7s","8s"],["2m","3m","4m","2p","3p","4p","2s","3s","4s","5s","6s","7s","8s"],["2m","3m","4m","2p","3p","4p","2s","3s","4s","5s","6s","7s","8s"]]}',
+        '{"type":"tsumo","actor":0,"pai":"1m"}',
+        '{"type":"ryukyoku","deltas":[0,0,0,0]}',
+        '{"type":"end_kyoku"}',
+        '{"type":"end_game"}',
+    )) + "\n"
+    samples = encode_kyoku(content, include_critic=False)
+    assert len(samples) == 1
+    assert samples[0].action == 240
+    assert bool(samples[0].legal_mask[240])
 
 
 def test_encoded_sft_shards_are_disjoint_across_ddp_ranks() -> None:
@@ -112,8 +140,11 @@ def test_encoded_sft_shards_are_disjoint_across_ddp_ranks() -> None:
         for index in range(4):
             _write_chunk(train / f"train-{index:05d}.npz", samples[index:index + 1])
         (root / "manifest.json").write_text(json.dumps({
-            "format": "riichi-sft-encoded-v1",
+            "format": "riichi-sft-encoded-v3",
             "token_schema_version": TOKEN_SCHEMA_VERSION,
+            "feature_schema_sha256": feature_schema_sha256(),
+            "rust_analysis_version": RUST_ANALYSIS_VERSION,
+            "decision_analysis_version": DECISION_ANALYSIS_VERSION,
         }))
         rank0 = list(iter_split_samples(
             root, "train", seed=7, shuffle=False, rank=0, world_size=2,
@@ -127,6 +158,85 @@ def test_encoded_sft_shards_are_disjoint_across_ddp_ranks() -> None:
     assert [sample.action for sample in rank1] == [samples[1].action, samples[3].action]
 
 
+def test_incomplete_schema12_cache_is_rejected_with_reencode_guidance() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / "manifest.json").write_text(json.dumps({
+            "format": "riichi-sft-encoded-v2", "token_schema_version": 12,
+        }))
+        with pytest.raises(RuntimeError, match="re-encode as schema 13"):
+            list(iter_split_samples(root, "train", shuffle=False, include_critic=False))
+
+
+def test_subset_selection_is_by_game_id_not_individual_kyoku() -> None:
+    names = ("2025-game-identity-00.jsonl", "2025-game-identity-07.jsonl")
+    outcomes = [selected_any(name, 5, (0, 1)) for name in names]
+    assert outcomes[0] == outcomes[1]
+
+
+def test_canary_and_production_subset_use_independent_hash_namespaces() -> None:
+    buckets = [
+        (
+            _selection_bucket(f"game-{index}", "subset", 1000),
+            _selection_bucket(f"game-{index}", "canary", 1000),
+        )
+        for index in range(100)
+    ]
+    assert any(subset != canary for subset, canary in buckets)
+
+
+def test_semantic_canary_rejects_missing_action_groups() -> None:
+    statistics = _empty_field_statistics()
+    with pytest.raises(RuntimeError, match="legal:pass"):
+        _require_complete_action_coverage(statistics)
+    statistics["legal_actions"][:] = 1
+    statistics["expert_actions"][:] = 1
+    _require_complete_action_coverage(statistics)
+
+
+def test_v13_cache_requires_complete_analysis_metadata() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / "manifest.json").write_text(json.dumps({
+            "format": "riichi-sft-encoded-v3",
+            "token_schema_version": TOKEN_SCHEMA_VERSION,
+            "feature_schema_sha256": feature_schema_sha256(),
+            "rust_analysis_version": RUST_ANALYSIS_VERSION,
+        }))
+        with pytest.raises(RuntimeError, match="decision-analysis"):
+            list(iter_split_samples(root, "train", shuffle=False, include_critic=False))
+
+
+def test_ablation_alignment_checks_full_identity_sequence_and_chunk_layout() -> None:
+    samples = encode_kyoku(
+        _first_kyoku(), year=2025, game_id="aligned", kyoku_index=3,
+        include_critic=False,
+    )[:2]
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        datasets = [root / "v11", root / "v13"]
+        for dataset, schema in zip(datasets, (11, TOKEN_SCHEMA_VERSION), strict=True):
+            for split in ("train", "validation"):
+                target = dataset / split
+                target.mkdir(parents=True)
+                _write_chunk(target / f"{split}-00000.npz", samples)
+            identity = {
+                split: encoded_identity_digests(dataset, split)
+                for split in ("train", "validation")
+            }
+            (dataset / "manifest.json").write_text(json.dumps({
+                "token_schema_version": schema,
+                "selection_manifest_sha256": "same-selection",
+                "sample_identity_contract": identity,
+            }))
+        assert_ablation_cache_alignment(datasets[0], datasets[1])
+        manifest = json.loads((datasets[1] / "manifest.json").read_text())
+        manifest["sample_identity_contract"]["train"]["sequence_sha256"] = "different"
+        (datasets[1] / "manifest.json").write_text(json.dumps(manifest))
+        with pytest.raises(RuntimeError, match="identity"):
+            assert_ablation_cache_alignment(datasets[0], datasets[1])
+
+
 def test_actor_only_replay_and_batch_omit_private_critic_data() -> None:
     samples = encode_kyoku(
         _first_kyoku(), year=2024, game_id="fixture", kyoku_index=0,
@@ -134,11 +244,12 @@ def test_actor_only_replay_and_batch_omit_private_critic_data() -> None:
     )
     assert samples
     assert all(sample.critic_length == 0 for sample in samples)
-    assert all(sample.value_target == 0.0 for sample in samples)
+    assert any(sample.value_target != 0.0 for sample in samples)
     batch = collate_samples(samples[:2], torch.device("cpu"), include_critic=False)
     assert "critic_factors" not in batch
     assert "critic_lengths" not in batch
-    assert "value_targets" not in batch
+    assert "value_targets" in batch
+    assert "teacher_masks" in batch
 
 
 def test_actor_only_backward_does_not_change_critic_parameters() -> None:
@@ -236,6 +347,9 @@ def test_ppo_model_only_initialization_resets_iteration_and_optimizer() -> None:
         torch.save({
             "model": source.weights(),
             "token_schema_version": TOKEN_SCHEMA_VERSION,
+            "feature_schema_sha256": feature_schema_sha256(),
+            "rust_analysis_version": RUST_ANALYSIS_VERSION,
+            "decision_analysis_version": DECISION_ANALYSIS_VERSION,
             "training_stage": "sft",
             "training_mode": "actor_only",
         }, path)

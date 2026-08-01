@@ -17,6 +17,7 @@ from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
+from ..model.feature_schema import DECISION_ANALYSIS_VERSION, RUST_ANALYSIS_VERSION, feature_schema_sha256
 from ..model.schema import TOKEN_SCHEMA_VERSION
 from .profiling import StageProfiler
 from .trajectory import Transition
@@ -320,6 +321,9 @@ class PPOLearner:
             context_tokens=int(hyperparameters.get("context_tokens", 4096)),
             critic_layers=int(
                 hyperparameters.get("critic_layers", preset.critic_layers)
+            ),
+            policy_head_type=str(
+                hyperparameters.get("policy_head_type", preset.policy_head_type)
             ),
         )
         self.model = KyokuTransformerActorCritic(self.config).to(self.device)
@@ -982,6 +986,10 @@ class PPOLearner:
             "python_rng": random.getstate(),
             "numpy_rng": np.random.get_state(),
             "token_schema_version": TOKEN_SCHEMA_VERSION,
+            "feature_schema_sha256": feature_schema_sha256(),
+            "rust_analysis_version": RUST_ANALYSIS_VERSION,
+            "decision_analysis_version": DECISION_ANALYSIS_VERSION,
+            "policy_head_type": self.config.policy_head_type,
             "extra_state": dict(extra_state or {}),
         }
         if self.reference_model is not None:
@@ -1003,6 +1011,12 @@ class PPOLearner:
                 f"checkpoint token schema {schema} is incompatible with required schema "
                 f"{TOKEN_SCHEMA_VERSION}; start a new run instead"
             )
+        if payload.get("feature_schema_sha256") != feature_schema_sha256():
+            raise RuntimeError("checkpoint feature schema hash is incompatible with this build")
+        if int(payload.get("rust_analysis_version", -1)) != RUST_ANALYSIS_VERSION:
+            raise RuntimeError("checkpoint Rust analysis version is incompatible with this build")
+        if int(payload.get("decision_analysis_version", -1)) != DECISION_ANALYSIS_VERSION:
+            raise RuntimeError("checkpoint decision-analysis version is incompatible with this build")
         self.model.load_state_dict(payload["model"])
         reference_state = payload.get("sft_reference_model")
         if reference_state is not None:
@@ -1038,6 +1052,15 @@ class PPOLearner:
                 f"checkpoint token schema {schema} is incompatible with required schema "
                 f"{TOKEN_SCHEMA_VERSION}"
             )
+        if payload.get("feature_schema_sha256") != feature_schema_sha256():
+            raise RuntimeError("checkpoint feature schema hash is incompatible with this build")
+        if int(payload.get("rust_analysis_version", -1)) != RUST_ANALYSIS_VERSION:
+            raise RuntimeError("checkpoint Rust analysis version is incompatible with this build")
+        if int(payload.get("decision_analysis_version", -1)) != DECISION_ANALYSIS_VERSION:
+            raise RuntimeError("checkpoint decision-analysis version is incompatible with this build")
+        checkpoint_head = payload.get("policy_head_type", payload.get("model_config", {}).get("policy_head_type"))
+        if checkpoint_head is not None and str(checkpoint_head) != self.config.policy_head_type:
+            raise RuntimeError("checkpoint policy head type is incompatible with PPO configuration")
         self.model.load_state_dict(payload["model"])
         self.reference_model = KyokuTransformerActorCritic(self.config).to(self.device)
         self.reference_model.load_state_dict(payload["model"])

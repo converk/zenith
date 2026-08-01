@@ -22,3 +22,6 @@ pub mod state_3p;
 mod yaku_checker;
 
 pub use hand_evaluator::check_riichi_candidates;
+
+/// Bump whenever replay decisions or their emitted observation semantics change.
+pub const REPLAY_SEMANTICS_VERSION: u32 = 1;

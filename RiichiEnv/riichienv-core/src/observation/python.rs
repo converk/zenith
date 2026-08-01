@@ -14,7 +14,7 @@ use super::helpers::get_next_tile;
 impl Observation {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (player_id, hands, melds, discards, dora_indicators, scores, riichi_declared, legal_actions, events, honba, riichi_sticks, round_wind, oya, kyoku_index, waits, is_tenpai, riichi_sutehais, last_tedashis, last_discard, drawn_tile=None))]
+    #[pyo3(signature = (player_id, hands, melds, discards, dora_indicators, scores, riichi_declared, legal_actions, events, honba, riichi_sticks, round_wind, oya, kyoku_index, waits, is_tenpai, riichi_sutehais, last_tedashis, last_discard, riichi_accepted, riichi_declaration_indices, missed_agari_doujun, missed_agari_riichi, tiles_left, tsumogiri_flags, drawn_tile=None))]
     pub fn py_new(
         player_id: u8,
         hands: Vec<Vec<u8>>,
@@ -35,6 +35,12 @@ impl Observation {
         riichi_sutehais: Vec<Option<u8>>,
         last_tedashis: Vec<Option<u8>>,
         last_discard: Option<u32>,
+        riichi_accepted: Vec<bool>,
+        riichi_declaration_indices: Vec<Option<u8>>,
+        missed_agari_doujun: bool,
+        missed_agari_riichi: bool,
+        tiles_left: u8,
+        tsumogiri_flags: Vec<Vec<bool>>,
         drawn_tile: Option<u8>,
     ) -> Self {
         let hands: [Vec<u8>; 4] = hands.try_into().expect("expected 4 hands");
@@ -44,12 +50,21 @@ impl Observation {
         let riichi_declared: [bool; 4] = riichi_declared
             .try_into()
             .expect("expected 4 riichi_declared");
+        let riichi_accepted: [bool; 4] = riichi_accepted
+            .try_into()
+            .expect("expected 4 riichi_accepted");
+        let riichi_declaration_indices: [Option<u8>; 4] = riichi_declaration_indices
+            .try_into()
+            .expect("expected 4 riichi_declaration_indices");
         let riichi_sutehais: [Option<u8>; 4] = riichi_sutehais
             .try_into()
             .expect("expected 4 riichi_sutehais");
         let last_tedashis: [Option<u8>; 4] =
             last_tedashis.try_into().expect("expected 4 last_tedashis");
-        Self::new(
+        let tsumogiri_flags: [Vec<bool>; 4] = tsumogiri_flags
+            .try_into()
+            .expect("expected 4 tsumogiri_flags");
+        let mut observation = Self::new(
             player_id,
             hands,
             melds,
@@ -57,6 +72,11 @@ impl Observation {
             dora_indicators,
             scores,
             riichi_declared,
+            riichi_accepted,
+            riichi_declaration_indices,
+            missed_agari_doujun,
+            missed_agari_riichi,
+            tiles_left,
             legal_actions,
             events,
             honba,
@@ -70,7 +90,9 @@ impl Observation {
             last_tedashis,
             last_discard,
             drawn_tile,
-        )
+        );
+        observation.tsumogiri_flags = tsumogiri_flags;
+        observation
     }
 
     #[getter]
@@ -163,6 +185,22 @@ impl Observation {
         dict.set_item("riichi_sticks", self.riichi_sticks)?;
         dict.set_item("round_wind", self.round_wind)?;
         dict.set_item("oya", self.oya)?;
+        dict.set_item("kyoku_index", self.kyoku_index)?;
+        dict.set_item("waits", self.waits.clone())?;
+        dict.set_item("is_tenpai", self.is_tenpai)?;
+        dict.set_item("riichi_sutehais", self.riichi_sutehais)?;
+        dict.set_item("last_tedashis", self.last_tedashis)?;
+        dict.set_item("last_discard", self.last_discard)?;
+        dict.set_item("riichi_accepted", self.riichi_accepted)?;
+        dict.set_item(
+            "riichi_declaration_indices",
+            self.riichi_declaration_indices,
+        )?;
+        dict.set_item("missed_agari_doujun", self.missed_agari_doujun)?;
+        dict.set_item("missed_agari_riichi", self.missed_agari_riichi)?;
+        dict.set_item("tiles_left", self.tiles_left)?;
+        dict.set_item("tsumogiri_flags", self.tsumogiri_flags.clone())?;
+        dict.set_item("drawn_tile", self.drawn_tile)?;
 
         Ok(dict.unbind().into())
     }

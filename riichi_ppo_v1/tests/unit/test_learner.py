@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+from riichi_ppo_v1.model.feature_schema import DECISION_ANALYSIS_VERSION, RUST_ANALYSIS_VERSION, feature_schema_sha256
 from riichi_ppo_v1.model.schema import TOKEN_SCHEMA_VERSION
 from tempfile import TemporaryDirectory
 
@@ -301,7 +302,8 @@ def test_checkpoint_records_schema_metadata_and_restores_state() -> None:
         assert set(payload) == {
             "model", "optimizer", "model_config", "train_config", "iteration",
             "torch_rng", "cuda_rng", "python_rng", "numpy_rng", "token_schema_version", "extra_state",
-            "ppo_format_version",
+            "ppo_format_version", "feature_schema_sha256", "rust_analysis_version",
+            "decision_analysis_version", "policy_head_type",
         }
         assert payload["token_schema_version"] == TOKEN_SCHEMA_VERSION
         assert payload["ppo_format_version"] == 2
@@ -325,6 +327,9 @@ def test_model_initialization_starts_joint_ppo() -> None:
         torch.save({
             "model": source.weights(),
             "token_schema_version": TOKEN_SCHEMA_VERSION,
+            "feature_schema_sha256": feature_schema_sha256(),
+            "rust_analysis_version": RUST_ANALYSIS_VERSION,
+            "decision_analysis_version": DECISION_ANALYSIS_VERSION,
             "training_stage": "sft",
             "training_mode": "actor_only",
         }, path)
@@ -373,6 +378,9 @@ def test_actor_only_sft_initialization_bootstraps_critic_before_policy() -> None
         torch.save({
             "model": source.weights(),
             "token_schema_version": TOKEN_SCHEMA_VERSION,
+            "feature_schema_sha256": feature_schema_sha256(),
+            "rust_analysis_version": RUST_ANALYSIS_VERSION,
+            "decision_analysis_version": DECISION_ANALYSIS_VERSION,
             "training_stage": "sft",
             "training_mode": "actor_only",
         }, path)
@@ -418,6 +426,9 @@ def test_anchored_ppo_checkpoint_restores_frozen_sft_reference() -> None:
         torch.save({
             "model": source.weights(),
             "token_schema_version": TOKEN_SCHEMA_VERSION,
+            "feature_schema_sha256": feature_schema_sha256(),
+            "rust_analysis_version": RUST_ANALYSIS_VERSION,
+            "decision_analysis_version": DECISION_ANALYSIS_VERSION,
             "training_stage": "sft",
             "training_mode": "actor_only",
         }, sft_path)

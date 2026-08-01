@@ -47,6 +47,10 @@ fn calculate_shanten_3p_py(hand_tiles: Vec<u32>) -> i32 {
 
 #[pymodule]
 fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add(
+        "REPLAY_SEMANTICS_VERSION",
+        riichienv_core::REPLAY_SEMANTICS_VERSION,
+    )?;
     m.add_class::<riichienv_core::types::Meld>()?;
     m.add_class::<riichienv_core::types::MeldType>()?;
     m.add_class::<riichienv_core::types::Wind>()?;

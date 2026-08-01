@@ -1,9 +1,18 @@
 import json
+import inspect
 
 from riichienv import Action, ActionType, Observation
 
 
 class TestActionToMjaiFormat:
+    def test_v13_observation_fields_are_required(self):
+        signature = inspect.signature(Observation)
+        for name in (
+            "riichi_accepted", "riichi_declaration_indices",
+            "missed_agari_doujun", "missed_agari_riichi", "tiles_left",
+        ):
+            assert signature.parameters[name].default is inspect.Parameter.empty
+
     def test_action_to_mjai_dahai(self):
         act = Action(ActionType.DISCARD, tile=53)
         mjai = act.to_mjai()
@@ -61,7 +70,19 @@ class TestActionToMjaiFormat:
             [None] * 4,  # riichi_sutehais
             [None] * 4,  # last_tedashis
             None,  # last_discard
+            [False] * 4,  # riichi_accepted
+            [None] * 4,  # riichi_declaration_indices
+            False,  # missed_agari_doujun
+            False,  # missed_agari_riichi
+            70,  # tiles_left
+            [[False, True], [], [], []],  # tsumogiri_flags
         )
+
+        assert obs.tsumogiri_flags == [[False, True], [], [], []]
+        snapshot = obs.to_dict()
+        assert snapshot["tsumogiri_flags"] == [[False, True], [], [], []]
+        assert snapshot["tiles_left"] == 70
+        assert snapshot["riichi_accepted"] == [False] * 4
 
         mjai_dict = {"type": "dahai", "pai": "5p"}
         selected = obs.select_action_from_mjai(mjai_dict)

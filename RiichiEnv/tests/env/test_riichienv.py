@@ -88,6 +88,7 @@ class TestRiichiEnv:
         # WaitAct phase for the next player
         assert env.phase == Phase.WaitAct
         assert env.current_player == 1
+        assert obs_dict[1].tsumogiri_flags[0] == [True]
         assert list(obs_dict.keys()) == [1]
 
         # Game end condition is checked via `env.done()`

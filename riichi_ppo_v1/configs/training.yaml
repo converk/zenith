@@ -1,10 +1,12 @@
 # 当前训练流程：SFT 初始化后的四席 current-policy 自博弈 PPO。
 seed: 1
+token_schema_version: 13
 device: cuda
 learner_gpus: 2
 iterations: 5000
 model_size: mid
 context_tokens: 4096
+policy_head_type: isolated_action_query
 critic_layers: 2
 inference_dtype: bf16
 game_mode: 4p-red-half

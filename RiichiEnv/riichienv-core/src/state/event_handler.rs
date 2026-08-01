@@ -370,6 +370,7 @@ impl GameStateEventHandler for GameState {
                 self.players[s].nagashi_eligible &= crate::types::is_terminal_tile(t);
 
                 if *is_liqi || *is_wliqi {
+                    self.riichi_sutehais[s] = Some(t);
                     if !self.players[s].riichi_declared {
                         self.players[s].riichi_declared = true;
                         if *is_wliqi {
@@ -395,9 +396,13 @@ impl GameStateEventHandler for GameState {
                 if let Some(rp) = self.riichi_pending_acceptance.take() {
                     self.players[rp as usize].score -= 1000;
                     self.riichi_sticks += 1;
-                    self._push_mjai_event(serde_json::json!({"type": "reach_accepted", "actor": rp}));
+                    self._push_mjai_event(
+                        serde_json::json!({"type": "reach_accepted", "actor": rp}),
+                    );
                 }
-                self._push_mjai_event(serde_json::json!({"type": "tsumo", "actor": *seat, "pai": tid_to_mjai(*tile)}));
+                self._push_mjai_event(
+                    serde_json::json!({"type": "tsumo", "actor": *seat, "pai": tid_to_mjai(*tile)}),
+                );
                 self.players[*seat].hand.push(*tile);
                 self.drawn_tile = Some(*tile);
                 self.current_player = *seat as u8;
@@ -423,15 +428,29 @@ impl GameStateEventHandler for GameState {
                 if let Some(rp) = self.riichi_pending_acceptance.take() {
                     self.players[rp as usize].score -= 1000;
                     self.riichi_sticks += 1;
-                    self._push_mjai_event(serde_json::json!({"type": "reach_accepted", "actor": rp}));
+                    self._push_mjai_event(
+                        serde_json::json!({"type": "reach_accepted", "actor": rp}),
+                    );
                 }
                 let mtype_str = match meld_type {
-                    MeldType::Chi => "chi", MeldType::Pon => "pon", MeldType::Daiminkan => "daiminkan", _ => "",
+                    MeldType::Chi => "chi",
+                    MeldType::Pon => "pon",
+                    MeldType::Daiminkan => "daiminkan",
+                    _ => "",
                 };
                 if !mtype_str.is_empty() {
                     let target = froms.iter().find(|&&f| f != *seat).copied().unwrap_or(0);
-                    let called_tile = tiles.iter().zip(froms.iter()).find(|&(_, &f)| f != *seat).map(|(&t, _)| t);
-                    let consumed: Vec<String> = tiles.iter().zip(froms.iter()).filter(|&(_, &f)| f == *seat).map(|(&t, _)| tid_to_mjai(t)).collect();
+                    let called_tile = tiles
+                        .iter()
+                        .zip(froms.iter())
+                        .find(|&(_, &f)| f != *seat)
+                        .map(|(&t, _)| t);
+                    let consumed: Vec<String> = tiles
+                        .iter()
+                        .zip(froms.iter())
+                        .filter(|&(_, &f)| f == *seat)
+                        .map(|(&t, _)| tid_to_mjai(t))
+                        .collect();
                     self._push_mjai_event(serde_json::json!({
                         "type": mtype_str, "actor": *seat, "target": target,
                         "pai": called_tile.map(tid_to_mjai).unwrap_or_default(), "consumed": consumed,
@@ -519,16 +538,15 @@ impl GameStateEventHandler for GameState {
                 ..
             } => {
                 let ev = if *meld_type == MeldType::Ankan {
-                        let t_val = tiles[0] / 4;
-                        let consumed_tids =
-                            [t_val * 4, t_val * 4 + 1, t_val * 4 + 2, t_val * 4 + 3];
-                        let consumed_strs: Vec<String> =
-                            consumed_tids.iter().map(|&t| tid_to_mjai(t)).collect();
-                        serde_json::json!({
-                            "type": "ankan",
-                            "actor": *seat,
-                            "consumed": consumed_strs,
-                        })
+                    let t_val = tiles[0] / 4;
+                    let consumed_tids = [t_val * 4, t_val * 4 + 1, t_val * 4 + 2, t_val * 4 + 3];
+                    let consumed_strs: Vec<String> =
+                        consumed_tids.iter().map(|&t| tid_to_mjai(t)).collect();
+                    serde_json::json!({
+                        "type": "ankan",
+                        "actor": *seat,
+                        "consumed": consumed_strs,
+                    })
                 } else {
                     // Kakan
                     let pai_str = tid_to_mjai(tiles[0]);
@@ -539,7 +557,9 @@ impl GameStateEventHandler for GameState {
                     let consumed: Vec<String> = self.players[*seat]
                         .melds
                         .iter()
-                        .find(|meld| meld.meld_type == MeldType::Pon && meld.tiles[0] / 4 == tiles[0] / 4)
+                        .find(|meld| {
+                            meld.meld_type == MeldType::Pon && meld.tiles[0] / 4 == tiles[0] / 4
+                        })
                         .map(|meld| meld.tiles.iter().map(|&tile| tid_to_mjai(tile)).collect())
                         .unwrap_or_default();
                     serde_json::json!({
@@ -609,7 +629,9 @@ impl GameStateEventHandler for GameState {
             }
             LogAction::Dora { dora_marker } => {
                 self.wall.dora_indicators.push(*dora_marker);
-                self._push_mjai_event(serde_json::json!({"type": "dora", "dora_marker": tid_to_mjai(*dora_marker)}));
+                self._push_mjai_event(
+                    serde_json::json!({"type": "dora", "dora_marker": tid_to_mjai(*dora_marker)}),
+                );
             }
             LogAction::Hule { hules } => {
                 // If a riichi deposit is pending and this is a ron, the deposit

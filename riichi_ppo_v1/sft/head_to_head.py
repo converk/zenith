@@ -20,6 +20,7 @@ import numpy as np
 import torch
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
+from ..model.feature_schema import DECISION_ANALYSIS_VERSION, RUST_ANALYSIS_VERSION, feature_schema_sha256
 from ..model.bridge import BatchedStateBridge, NUM_PLAYERS
 from ..model.schema import TOKEN_SCHEMA_VERSION
 from ..training.rewards import (
@@ -93,17 +94,29 @@ def _load_model(path: str | Path, device: torch.device) -> KyokuTransformerActor
     checkpoint = Path(path)
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
     schema = int(payload.get("token_schema_version", 0))
-    if schema != TOKEN_SCHEMA_VERSION:
+    if schema not in {11, TOKEN_SCHEMA_VERSION}:
         raise RuntimeError(
-            f"{checkpoint} uses token schema {schema}; required {TOKEN_SCHEMA_VERSION}"
+            f"{checkpoint} uses unsupported token schema {schema}"
         )
+    if schema == TOKEN_SCHEMA_VERSION:
+        if payload.get("feature_schema_sha256") != feature_schema_sha256():
+            raise RuntimeError(f"{checkpoint} has a missing or incompatible v13 feature hash")
+        if int(payload.get("rust_analysis_version", -1)) != RUST_ANALYSIS_VERSION:
+            raise RuntimeError(f"{checkpoint} has an incompatible Rust analysis version")
+        if int(payload.get("decision_analysis_version", -1)) != DECISION_ANALYSIS_VERSION:
+            raise RuntimeError(f"{checkpoint} has an incompatible decision-analysis version")
     model_config = payload.get("model_config")
     if not isinstance(model_config, dict):
         raise RuntimeError(f"{checkpoint} is missing model_config")
+    model_config = dict(model_config)
+    model_config.setdefault(
+        "policy_head_type", "legacy_fixed" if schema == 11 else "isolated_action_query"
+    )
     state = payload.get("model")
     if not isinstance(state, dict):
         raise RuntimeError(f"{checkpoint} is missing model state")
     model = KyokuTransformerActorCritic(ModelConfig(**model_config))
+    model.token_schema_version = schema
     model.load_state_dict(state, strict=True)
     model.to(device)
     model.eval()
@@ -226,7 +239,10 @@ def evaluate_2v2(
                     _generations,
                     _critic,
                     _critic_lengths,
-                ) = bridge.prepare(policy_decisions, analysis)
+                ) = bridge.prepare(
+                    policy_decisions, analysis,
+                    token_schema_version=int(getattr(model, "token_schema_version", TOKEN_SCHEMA_VERSION)),
+                )
                 with torch.autocast(
                     device_type=model_device.type,
                     dtype=torch.bfloat16,

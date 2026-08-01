@@ -164,7 +164,7 @@ def test_three_step_training_writes_validation_and_best_checkpoint(
         scalar_tags = set(accumulator.Tags()["scalars"])
         assert "SFT/训练/Top-1 准确率 (top1)" in scalar_tags
         assert "SFT/验证/loss" in scalar_tags
-        assert not any("value_huber" in tag for tag in scalar_tags)
+        assert any("value_huber" in tag for tag in scalar_tags)
 
         previous_best = float(latest["best_validation_loss"])
         config["resume"] = str(output / "latest.pt")

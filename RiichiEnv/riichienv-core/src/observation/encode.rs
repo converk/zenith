@@ -604,6 +604,11 @@ mod tests {
             vec![],     // dora_indicators
             [25000; 4], // scores
             [false; 4], // riichi_declared
+            [false; 4], // riichi_accepted
+            [None; 4],  // riichi_declaration_indices
+            false,      // missed_agari_doujun
+            false,      // missed_agari_riichi
+            0,          // tiles_left
             vec![],     // legal_actions
             vec![],     // events
             0,          // honba

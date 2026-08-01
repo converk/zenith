@@ -29,6 +29,18 @@ pub struct Observation {
     pub dora_indicators: Vec<u32>,
     pub scores: [i32; 4],
     pub riichi_declared: [bool; 4],
+    /// Whether each declaration has passed the declaration-discard response window.
+    pub riichi_accepted: [bool; 4],
+    /// Zero-based index of each player's declaration discard in their river.
+    pub riichi_declaration_indices: [Option<u8>; 4],
+    /// Furiten caused by declining a legal win during the current go-around.
+    /// Only the observing player's value is exposed; this is private own state.
+    pub missed_agari_doujun: bool,
+    /// Persistent furiten caused by declining a legal win after declaring riichi.
+    /// Only the observing player's value is exposed; this is private own state.
+    pub missed_agari_riichi: bool,
+    /// Number of drawable live-wall tiles remaining.
+    pub tiles_left: u8,
 
     pub(crate) _legal_actions: Vec<Action>,
 
@@ -69,6 +81,11 @@ impl Observation {
         dora_indicators: Vec<u8>,
         scores: [i32; 4],
         riichi_declared: [bool; 4],
+        riichi_accepted: [bool; 4],
+        riichi_declaration_indices: [Option<u8>; 4],
+        missed_agari_doujun: bool,
+        missed_agari_riichi: bool,
+        tiles_left: u8,
         legal_actions: Vec<Action>,
         events: Vec<String>,
         honba: u8,
@@ -95,6 +112,11 @@ impl Observation {
             dora_indicators: dora_u32,
             scores,
             riichi_declared,
+            riichi_accepted,
+            riichi_declaration_indices,
+            missed_agari_doujun,
+            missed_agari_riichi,
+            tiles_left,
             _legal_actions: legal_actions,
             events,
             cached_progression: None,
@@ -189,6 +211,11 @@ mod tests {
             vec![],
             [25000, 25000, 25000, 25000],
             [false, false, false, false],
+            [false, false, false, false],
+            [None, None, None, None],
+            false,
+            false,
+            0,
             actions,
             vec![],
             0,

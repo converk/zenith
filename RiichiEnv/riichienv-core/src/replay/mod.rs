@@ -296,10 +296,43 @@ impl KyokuStepIterator {
                 Action::DealTile { .. }
                 | Action::Dora { .. }
                 | Action::BaBei { .. }
-                | Action::NoTile
                 | Action::LiuJu { .. } => {
                     slf.state.apply_log_action(action);
                     slf.idx += 1;
+                }
+                Action::NoTile => {
+                    // MJAI uses the same terminal event for exhaustive draws
+                    // and player-declared nine-terminals.  Recover the latter
+                    // only when it is a legal action in the current state;
+                    // otherwise this remains a non-decision terminal event.
+                    let pid = slf.state.current_player;
+                    let env_action = EnvAction::new(
+                        crate::action::ActionType::KyushuKyuhai,
+                        None,
+                        Vec::new(),
+                        None,
+                    );
+                    let observation = slf.state.get_observation_for_replay(
+                        pid,
+                        &env_action,
+                        &format!("{:?}", action),
+                    );
+                    slf.state.apply_log_action(action);
+                    slf.idx += 1;
+                    let Ok(obs) = observation else { continue };
+                    if let Some(target) = slf.filter_seat {
+                        if pid != target
+                            || (slf.skip_single_action && obs._legal_actions.len() <= 1)
+                        {
+                            continue;
+                        }
+                        let py = slf.py();
+                        return Ok(Some((obs, env_action).into_pyobject(py)?.unbind().into()));
+                    }
+                    let py = slf.py();
+                    return Ok(Some(
+                        (pid, obs, env_action).into_pyobject(py)?.unbind().into(),
+                    ));
                 }
                 Action::Other(_) => {
                     slf.idx += 1;
@@ -717,12 +750,40 @@ impl KyokuStepIterator3P {
 
             let action = &actions[slf.idx];
             match action {
-                Action::DealTile { .. }
-                | Action::Dora { .. }
-                | Action::NoTile
-                | Action::LiuJu { .. } => {
+                Action::DealTile { .. } | Action::Dora { .. } | Action::LiuJu { .. } => {
                     slf.state.apply_log_action(action);
                     slf.idx += 1;
+                }
+                Action::NoTile => {
+                    let pid = slf.state.current_player;
+                    let env_action = EnvAction::new(
+                        crate::action::ActionType::KyushuKyuhai,
+                        None,
+                        Vec::new(),
+                        None,
+                    );
+                    let observation = slf.state.get_observation_for_replay(
+                        pid,
+                        &env_action,
+                        &format!("{:?}", action),
+                    );
+                    slf.state.apply_log_action(action);
+                    slf.idx += 1;
+                    let Ok(obs) = observation else { continue };
+                    let action_3p = Action3P::from_action(env_action);
+                    if let Some(target) = slf.filter_seat {
+                        if pid != target
+                            || (slf.skip_single_action && obs._legal_actions.len() <= 1)
+                        {
+                            continue;
+                        }
+                        let py = slf.py();
+                        return Ok(Some((obs, action_3p).into_pyobject(py)?.unbind().into()));
+                    }
+                    let py = slf.py();
+                    return Ok(Some(
+                        (pid, obs, action_3p).into_pyobject(py)?.unbind().into(),
+                    ));
                 }
                 Action::Other(_) => {
                     slf.idx += 1;

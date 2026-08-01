@@ -14,12 +14,13 @@ use pyo3::prelude::*;
 
 use crate::mjai_kyoku_state_machine::MjaiKyokuStateMachineManager;
 
-const HAND_ANALYSIS_VERSION: u32 = 2;
+const HAND_ANALYSIS_VERSION: u32 = 4;
 const SHANTEN_UNAVAILABLE: i8 = 127;
 
 #[pymodule]
 fn riichi(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<MjaiKyokuStateMachineManager>()?;
     analysis::register(m)?;
+    m.add("ANALYSIS_VERSION", HAND_ANALYSIS_VERSION)?;
     Ok(())
 }

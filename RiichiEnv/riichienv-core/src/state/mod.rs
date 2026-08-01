@@ -228,6 +228,14 @@ impl GameState {
         let discards: [Vec<u8>; 4] = std::array::from_fn(|i| self.players[i].discards.clone());
         let scores: [i32; 4] = std::array::from_fn(|i| self.players[i].score);
         let riichi_declared: [bool; 4] = std::array::from_fn(|i| self.players[i].riichi_declared);
+        let riichi_accepted: [bool; 4] = std::array::from_fn(|i| {
+            self.players[i].riichi_declared && self.riichi_pending_acceptance != Some(i as u8)
+        });
+        let riichi_declaration_indices: [Option<u8>; 4] = std::array::from_fn(|i| {
+            self.players[i]
+                .riichi_declaration_index
+                .and_then(|value| u8::try_from(value).ok())
+        });
 
         #[cfg_attr(not(feature = "python"), allow(unused_mut))]
         let mut obs = Observation::new(
@@ -238,6 +246,11 @@ impl GameState {
             self.wall.dora_indicators.clone(),
             scores,
             riichi_declared,
+            riichi_accepted,
+            riichi_declaration_indices,
+            self.players[pid].missed_agari_doujun,
+            self.players[pid].missed_agari_riichi,
+            self.wall.drawable_count,
             legal_actions,
             new_events,
             self.honba,
@@ -252,6 +265,13 @@ impl GameState {
             self.last_discard.map(|(tile, _pid)| tile as u32),
             self.drawn_tile,
         );
+        obs.tsumogiri_flags = std::array::from_fn(|player| {
+            self.players[player]
+                .discard_from_hand
+                .iter()
+                .map(|from_hand| !from_hand)
+                .collect()
+        });
 
         // Attach pre-computed progression snapshot.
         #[cfg(feature = "python")]

@@ -1,10 +1,34 @@
 import torch
 
 from riichi_ppo_v1.model import KyokuTransformerActorCritic, ModelConfig
+from riichi_ppo_v1.model.architecture import isolated_action_layout
 
 
 def config(*, context_tokens: int = 64) -> ModelConfig:
     return ModelConfig(layers=2, shared_layers=1, critic_layers=1, d_model=32, query_heads=2, kv_heads=1, head_dim=16, ffn_dim=64, context_tokens=context_tokens)
+
+
+def isolated_inputs(action_ids=(0, 5)):
+    length = 3 + 2 * len(action_ids)
+    factors, numeric = semantic_token_inputs(1, length)
+    factors[:, 2, 0] = 2
+    legal = torch.zeros(1, 241, dtype=torch.bool)
+    for pair, action in enumerate(action_ids):
+        offense, defense = 3 + 2 * pair, 4 + 2 * pair
+        factors[0, offense, 0] = factors[0, defense, 0] = 7
+        factors[0, offense, 2] = factors[0, defense, 2] = action + 1
+        factors[0, offense, 9] = 1
+        factors[0, defense, 9] = 2
+        legal[0, action] = True
+    return factors, numeric, legal, torch.tensor([length])
+
+
+def isolated_config() -> ModelConfig:
+    return ModelConfig(
+        layers=2, shared_layers=1, critic_layers=1, d_model=32,
+        query_heads=2, kv_heads=1, head_dim=16, ffn_dim=64,
+        context_tokens=64, policy_head_type="isolated_action_query",
+    )
 
 
 def test_default_model_topology_is_three_plus_one_plus_two() -> None:
@@ -207,3 +231,68 @@ def test_value_loss_updates_only_shared_public_and_critic_branches() -> None:
 def test_mid_parameter_count_matches_the_three_plus_one_plus_two_budget() -> None:
     model = KyokuTransformerActorCritic(ModelConfig.preset("mid"))
     assert sum(parameter.numel() for parameter in model.parameters()) == 2_825_330
+    isolated = KyokuTransformerActorCritic(ModelConfig(policy_head_type="isolated_action_query"))
+    assert sum(parameter.numel() for parameter in isolated.parameters()) <= int(2_825_330 * 1.10)
+
+
+def test_isolated_action_queries_are_permutation_invariant() -> None:
+    torch.manual_seed(12)
+    model = KyokuTransformerActorCritic(isolated_config()).eval()
+    first = isolated_inputs((0, 5, 75))
+    second = isolated_inputs((75, 0, 5))
+    with torch.no_grad():
+        a = model(*first)
+        b = model(*second)
+    torch.testing.assert_close(a["raw_policy_logits"][:, [0, 5, 75]], b["raw_policy_logits"][:, [0, 5, 75]])
+    torch.testing.assert_close(a["value"], b["value"])
+
+
+def test_isolated_action_queries_mask_illegal_and_handle_single_action() -> None:
+    model = KyokuTransformerActorCritic(isolated_config()).eval()
+    factors, numeric, legal, lengths = isolated_inputs((239,))
+    output = model(factors, numeric, legal, lengths)
+    assert torch.isfinite(output["raw_policy_logits"]).all()
+    assert torch.isneginf(output["policy_logits"][~legal]).all()
+    probabilities = output["policy_logits"].softmax(-1)
+    assert probabilities[0, 239] == 1
+    entropy = -(probabilities * output["policy_logits"].log_softmax(-1).nan_to_num()).sum(-1)
+    assert entropy.item() == 0.0
+
+
+def test_isolated_action_queries_reject_missing_pair() -> None:
+    model = KyokuTransformerActorCritic(isolated_config())
+    factors, numeric, legal, lengths = isolated_inputs((0, 5))
+    lengths[0] -= 1
+    try:
+        model(factors, numeric, legal, lengths)
+    except ValueError as error:
+        assert "each legal action" in str(error)
+    else:  # pragma: no cover
+        raise AssertionError("a missing defense query must be rejected")
+
+
+def test_isolated_layout_enforces_visibility_and_4096_boundary() -> None:
+    state_tokens = 4096 - 2 * 241
+    factors = torch.zeros((1, 4096, 10), dtype=torch.long)
+    factors[0, :state_tokens, 0] = 2
+    legal = torch.ones((1, 241), dtype=torch.bool)
+    for action in range(241):
+        offense = state_tokens + 2 * action
+        defense = offense + 1
+        factors[0, offense:defense + 1, 0] = 7
+        factors[0, offense:defense + 1, 2] = action + 1
+        factors[0, offense, 9] = 1
+        factors[0, defense, 9] = 2
+    mask, valid, positions, state, defense_ids = isolated_action_layout(
+        factors, torch.tensor([4096]), legal,
+    )
+    assert valid.all() and int(state.sum()) == state_tokens
+    first_offense, first_defense = state_tokens, state_tokens + 1
+    second_offense = state_tokens + 2
+    assert not bool(mask[0, 0, 0, first_offense])
+    assert bool(mask[0, 0, first_offense, state_tokens - 1])
+    assert bool(mask[0, 0, first_defense, first_offense])
+    assert not bool(mask[0, 0, first_defense, second_offense])
+    assert int(positions[0, first_offense]) == state_tokens
+    assert int(positions[0, second_offense]) == state_tokens
+    assert int(defense_ids[0, -1]) == 240

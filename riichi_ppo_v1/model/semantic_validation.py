@@ -68,10 +68,26 @@ def assert_actor_token_semantics(factors: np.ndarray, numeric: np.ndarray, lengt
         _assert_factor_ranges(rows, label=f"actor[{index}]")
         if np.any(~np.isfinite(numeric[index, :int(length)])):
             raise AssertionError(f"actor[{index}] contains non-finite numeric features")
-        if np.any(~np.isin(rows[:, 0], (SEGMENT_HISTORY, SEGMENT_STATE, SEGMENT_PUBLIC_SUMMARY, 7))):
+        contract_rows = np.isin(rows[:, 0], (6, 7))
+        if np.any(np.abs(numeric[index, :int(length)][contract_rows]) > 1.0):
+            maximum = float(np.abs(numeric[index, :int(length)][contract_rows]).max())
+            raise AssertionError(
+                f"actor[{index}] schema-13 numeric feature exceeds frozen range: {maximum}"
+            )
+        if np.any(~np.isin(rows[:, 0], (SEGMENT_HISTORY, SEGMENT_STATE, SEGMENT_PUBLIC_SUMMARY, 6, 7))):
             raise AssertionError(f"actor[{index}] contains a critic-only or unknown segment")
-        if np.any(rows[:, 9] == 2):
+        if np.any((rows[:, 0] != 7) & (rows[:, 9] == 2)):
             raise AssertionError(f"actor[{index}] has hidden information")
+        queries = rows[:, 0] == 7
+        if np.any(queries):
+            first = int(np.flatnonzero(queries)[0])
+            if np.any(queries[:first]) or np.any(~queries[first:]):
+                raise AssertionError(f"actor[{index}] action queries are not a suffix")
+            query_rows = rows[first:]
+            if len(query_rows) % 2 or np.any(query_rows[0::2, 9] != 1) or np.any(query_rows[1::2, 9] != 2):
+                raise AssertionError(f"actor[{index}] action queries are not offense/defense pairs")
+            if np.any(query_rows[0::2, 2] != query_rows[1::2, 2]):
+                raise AssertionError(f"actor[{index}] paired action ids differ")
         public = rows[rows[:, 0] == SEGMENT_PUBLIC_SUMMARY]
         if public.size:
             if np.any(public[:, 9] != 1) or np.any(~np.isin(public[:, 3], (1, 2, 3, 4))):
