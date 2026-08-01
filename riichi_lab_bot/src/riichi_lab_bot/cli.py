@@ -29,8 +29,8 @@ def _default_checkpoint() -> str:
     return str(
         repository
         / "checkpoints"
-        / "train_riichi_v10_sft"
-        / "best_heuristic.pt"
+        / "train_riichi_v11_sft_40pct_2v2_selection"
+        / "best_heuristic.snapshot.pt"
     )
 
 
@@ -132,6 +132,7 @@ def main() -> None:
                     game=game + 1,
                     seed=args.seed + game,
                     max_steps=args.max_steps,
+                    recorder=recorder,
                 )
                 payload = {
                     **result.__dict__,

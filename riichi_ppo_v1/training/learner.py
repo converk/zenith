@@ -392,7 +392,11 @@ class PPOLearner:
             return
         if self.device.type != "cuda":
             raise RuntimeError("distributed PPO currently requires CUDA")
-        self.model = DistributedDataParallel(self.model, device_ids=[self.device.index or 0])
+        self.model = DistributedDataParallel(
+            self.model,
+            device_ids=[self.device.index or 0],
+            find_unused_parameters=True,
+        )
         self.distributed = True
 
     def _sync_cuda(self) -> None:

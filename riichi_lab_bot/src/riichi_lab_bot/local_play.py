@@ -46,6 +46,7 @@ def play_local_game(
     game: int,
     seed: int,
     max_steps: int = 4000,
+    recorder: Any = None,
 ) -> LocalGameResult:
     from riichienv import RiichiEnv
 
@@ -57,6 +58,7 @@ def play_local_game(
     }
     metrics = SessionMetrics()
     request_id = 0
+    global_step = 0
     started = time.perf_counter()
     for step in range(max_steps):
         for seat, observation in observations.items():
@@ -85,6 +87,17 @@ def play_local_game(
             request_id += 1
             if safe.payload is None:
                 metrics.withheld_actions += 1
+                if recorder is not None:
+                    recorder.emit(
+                        "action_withheld",
+                        game=game,
+                        seed=seed,
+                        step=global_step,
+                        seat=int(seat),
+                        reason=safe.reason,
+                        inference_ms=inference.elapsed_ms,
+                        action_id=inference.action_id,
+                    )
                 raise RuntimeError(
                     f"local action was withheld: {safe.reason}"
                 )
@@ -99,6 +112,21 @@ def play_local_game(
                 metrics.model_actions += 1
             else:
                 metrics.fallback_actions += 1
+            if recorder is not None:
+                recorder.emit(
+                    "action_sent",
+                    game=game,
+                    seed=seed,
+                    step=global_step,
+                    seat=int(seat),
+                    request_id=request_id - 1,
+                    action_id=inference.action_id,
+                    source=safe.source,
+                    payload=safe.payload,
+                    inference_ms=inference.elapsed_ms,
+                    legal_action_count=len(possible),
+                )
+            global_step += 1
         if not actions:
             if env.done():
                 break

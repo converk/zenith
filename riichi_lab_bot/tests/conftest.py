@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import sys
 
@@ -14,6 +15,9 @@ def repository_root() -> Path:
 
 
 def default_checkpoint() -> Path:
+    override = os.environ.get("BOT_TEST_CHECKPOINT")
+    if override:
+        return Path(override).expanduser().resolve()
     return (
         repository_root()
         / "checkpoints"

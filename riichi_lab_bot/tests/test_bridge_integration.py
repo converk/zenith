@@ -60,6 +60,7 @@ def test_serialized_observation_model_action_roundtrip() -> None:
 def test_single_seat_bridge_matches_training_bridge() -> None:
     riichi = pytest.importorskip("riichi")
     training_bridge = pytest.importorskip("riichi_ppo_v1.model.bridge")
+    rewards = pytest.importorskip("riichi_ppo_v1.training.rewards")
     from riichienv import BatchedRiichiEnv
 
     env = BatchedRiichiEnv(
@@ -70,6 +71,8 @@ def test_single_seat_bridge_matches_training_bridge() -> None:
         riichi.MjaiKyokuStateMachineManager(1), 1
     )
     online = {seat: OnlineStateBridge(seat) for seat in range(4)}
+    analyzer = rewards.EfficiencyAnalyzer(131_072)
+    public = rewards.PublicStateTracker(1)
     pending = {seat: [] for seat in range(4)}
     rng = random.Random(20260731)
     compared = [0, 0, 0, 0]
@@ -77,12 +80,19 @@ def test_single_seat_bridge_matches_training_bridge() -> None:
         for seat, observation in rows[0].items():
             pending[seat].extend(observation.new_events())
         reference.sync(rows)
+        public.update(reference.last_events)
         for seat, observation in rows[0].items():
             if not observation.legal_actions():
                 continue
-            expected = reference.prepare(
-                [training_bridge.Decision(0, seat, observation)]
+            # The training path injects segment=7 candidate tokens when an
+            # analysis is supplied, mirroring SFT/PPO/head-to-head.  The bot
+            # must reproduce the *same* token sequence, which is the contract
+            # that keeps online action selection identical to local training.
+            decision = training_bridge.Decision(0, int(seat), observation)
+            analysis = rewards.DecisionAnalysisBatch.build(
+                [decision], analyzer=analyzer, public=public,
             )
+            expected = reference.prepare([decision], analysis)
             server_observation = observation_with_events(
                 observation, pending[seat]
             )
