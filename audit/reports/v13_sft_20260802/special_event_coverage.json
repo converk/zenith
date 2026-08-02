@@ -1,0 +1,54 @@
+{
+  "sampled_kyokus": 27,
+  "coverage_counts": {
+    "tsumo": 12,
+    "red_five": 26,
+    "ron": 5,
+    "multiple_riichi": 3,
+    "multiple_melds": 17,
+    "long_river_15plus": 13,
+    "duplicate_dora_indicator": 1
+  },
+  "witness_identities": {
+    "tsumo": [
+      2024,
+      "2024111515gm-00a9-0000-be5e6504",
+      0
+    ],
+    "red_five": [
+      2024,
+      "2024111515gm-00a9-0000-be5e6504",
+      0
+    ],
+    "ron": [
+      2025,
+      "2025070113gm-00a9-0000-5d4f1c68",
+      7
+    ],
+    "multiple_riichi": [
+      2024,
+      "2024040419gm-00a9-0000-55ae2f21",
+      9
+    ],
+    "multiple_melds": [
+      2024,
+      "2024040419gm-00a9-0000-55ae2f21",
+      9
+    ],
+    "long_river_15plus": [
+      2024,
+      "2024040419gm-00a9-0000-55ae2f21",
+      9
+    ],
+    "duplicate_dora_indicator": [
+      2024,
+      "2024060608gm-00a9-0000-bce6d47d",
+      8
+    ]
+  },
+  "not_directly_observable_from_converted_mjai": [
+    "haitei",
+    "houtei",
+    "ordinary_vs_special_ryukyoku reason when deltas are identical"
+  ]
+}

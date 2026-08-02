@@ -1,0 +1,15 @@
+{
+  "command": "CUDA_DEVICE=0,3 conda run --no-capture-output -n Mahjong-AI python audit/reports/v13_sft_20260802/scripts/benchmark_sft_timed.py --dataset datasets/tenhou_sft_2024_2025_encoded_40pct_v13_v16 --config riichi_ppo_v1/configs/sft.yaml --steps 3",
+  "global_batch": 512,
+  "learner_gpus": 2,
+  "local_batch": 256,
+  "iterations": [
+    {"iteration": 1, "warmup": true, "elapsed_s": 3.0044, "global_samples_per_s": 170.42, "per_rank_samples_per_s": 85.21, "effective_tokens_per_s": 8003.04, "padding_fraction": 0.1304, "gpu_allocated_mb_max": 56.4, "gpu_reserved_mb_max": 930.0, "gpu_peak_mb_max": 674.1, "forward_ms_max": 1806.461, "backward_ms_max": 67.738, "optimizer_ms_max": 6.521},
+    {"iteration": 2, "warmup": false, "elapsed_s": 0.0346, "global_samples_per_s": 14790.67, "per_rank_samples_per_s": 7395.335, "effective_tokens_per_s": 845899.41, "padding_fraction": 0.0388, "gpu_allocated_mb_max": 56.8, "gpu_reserved_mb_max": 1046.0, "gpu_peak_mb_max": 766.1, "forward_ms_max": 10.711, "backward_ms_max": 13.871, "optimizer_ms_max": 0.273},
+    {"iteration": 3, "warmup": false, "elapsed_s": 0.3661, "global_samples_per_s": 1398.55, "per_rank_samples_per_s": 699.275, "effective_tokens_per_s": 85434.47, "padding_fraction": 0.0226, "gpu_allocated_mb_max": 56.9, "gpu_reserved_mb_max": 1166.0, "gpu_peak_mb_max": 793.9, "forward_ms_max": 345.275, "backward_ms_max": 9.966, "optimizer_ms_max": 0.273}
+  ],
+  "measured_two_iteration_aggregate": {"elapsed_s": 0.4007, "global_samples_per_s": 2555.47, "per_rank_samples_per_s": 1277.735, "padding_fraction_mean": 0.0307, "forward_ms_mean": 177.993, "backward_ms_mean": 11.919, "optimizer_ms_mean": 0.273},
+  "row_plan_header_scan_seconds": 0.7729937117546797,
+  "caveat": "GPU 0 and GPU 4 were shared with unrelated long-running processes; iteration 2/3 variance is too large for a stable capacity estimate.",
+  "ppo_only_requested_fields": {"target_kl": "not applicable to SFT", "update_epochs": "not applicable to SFT", "kyokus_per_worker": "not applicable to encoded SFT"}
+}

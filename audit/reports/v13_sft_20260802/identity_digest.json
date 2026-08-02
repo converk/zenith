@@ -1,0 +1,28 @@
+{
+  "raw_index_rows": 3846384,
+  "raw_selection": {
+    "denominator": 5,
+    "remainders": [0, 1],
+    "train_kyokus": 1523056,
+    "validation_kyokus": 15574,
+    "train_games": 143802,
+    "validation_games": 1461,
+    "record_duplicates": 0,
+    "location_mismatches": 0,
+    "whole_game_selection_failures": 0,
+    "train_validation_game_overlap": 0,
+    "selection_manifest_sha256_in_manifest_order": "b0c4f9d7acaabaa626b766275e2961342ba21fcc03de11fd4cb9f3f48918f3da",
+    "matches_encoded_manifest": true
+  },
+  "encoded": {
+    "train_decisions": 93943903,
+    "validation_decisions": 959045,
+    "train_identity_sequence_sha256": "a94bd33920303062da53560fa96c641af92945b10edef80e878e7ea8b1337816",
+    "validation_identity_sequence_sha256": "54e4139b58e409ba38fd957d70ffdf8d586c70b307bc0839bf69e62315954eba",
+    "duplicate_kyoku_blocks": 0,
+    "decision_continuity_failures": 0,
+    "train_validation_game_overlap": 0,
+    "train_validation_kyoku_overlap": 0
+  },
+  "note": "The encoded identity digests are audit-specific streaming digests, not the optional sample_identity_contract format. The formal manifest has sample_identity_contract=null."
+}

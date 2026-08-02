@@ -1,0 +1,17 @@
+{
+  "tests": [
+    {"suite": "riichi cargo workspace", "result": "6 passed", "wall_seconds": 4.02, "note": "required Conda lib directory in LD_LIBRARY_PATH for libpython3.12.so"},
+    {"suite": "RiichiEnv cargo workspace", "result": "117 passed", "wall_seconds": 2.72},
+    {"suite": "riichi_ppo_v1 Python", "result": "190 passed", "warnings": 2, "wall_seconds": 13.74},
+    {"suite": "RiichiEnv Python", "result": "282 passed, 2 skipped", "wall_seconds": 2.47},
+    {"suite": "git diff --check", "result": "passed"},
+    {"suite": "full formal NPZ structural scan", "result": "6486/6486 shards passed", "elapsed_seconds": 424.808},
+    {"suite": "stratified replay selected rows", "result": "27/27 kyokus exact"},
+    {"suite": "full selected-kyoku replay", "result": "1833/1833 decisions exact"},
+    {"suite": "rare directed replay", "result": "516/516 decisions exact"},
+    {"suite": "all-action static protocol round trip", "result": "241/241 IDs exact"},
+    {"suite": "online random action round trip", "result": "16 games; all offered actions exact"},
+    {"suite": "two-resume fixed-horizon canary", "result": "identity/model/optimizer/scheduler/RNG exact"},
+    {"suite": "fixed 96-match heuristic run", "result": "two runs bitwise equal excluding elapsed"}
+  ]
+}

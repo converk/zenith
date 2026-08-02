@@ -1,0 +1,94 @@
+{
+  "model_config": {
+    "layers": 4,
+    "shared_layers": 3,
+    "critic_layers": 2,
+    "d_model": 192,
+    "query_heads": 8,
+    "kv_heads": 2,
+    "head_dim": 24,
+    "ffn_dim": 576,
+    "context_tokens": 4096,
+    "rope_base": 10000.0,
+    "eps": 1e-06,
+    "policy_head_type": "isolated_action_query"
+  },
+  "total_parameters": 2816066,
+  "trainable_parameters": 1851649,
+  "frozen_parameters": 964417,
+  "optimizer_parameters": 1851649,
+  "parameter_tensors": 51,
+  "state_dict_tensors": 51,
+  "modules": {
+    "actor_backbone": {
+      "total": 424512,
+      "trainable": 424512,
+      "tensors": 7
+    },
+    "critic_backbone": {
+      "total": 848832,
+      "trainable": 0,
+      "tensors": 13
+    },
+    "critic_embedding": {
+      "total": 115200,
+      "trainable": 0,
+      "tensors": 2
+    },
+    "policy_head": {
+      "total": 37441,
+      "trainable": 37441,
+      "tensors": 5
+    },
+    "public_backbone": {
+      "total": 1272960,
+      "trainable": 1272960,
+      "tensors": 18
+    },
+    "token_embedding": {
+      "total": 116736,
+      "trainable": 116736,
+      "tensors": 3
+    },
+    "value_head": {
+      "total": 193,
+      "trainable": 0,
+      "tensors": 2
+    },
+    "value_query": {
+      "total": 192,
+      "trainable": 0,
+      "tensors": 1
+    }
+  },
+  "checkpoints": {
+    "latest.pt": {
+      "global_step": 15000,
+      "epoch": 0,
+      "state_dict_tensors": 51,
+      "shape_mismatches": {},
+      "missing_current_tensors": [],
+      "optimizer_parameter_ids": 33,
+      "optimizer_state_entries": 33,
+      "data_cursor": null,
+      "rank_steps": [
+        15000,
+        15000
+      ]
+    },
+    "best.pt": {
+      "global_step": 18000,
+      "epoch": 0,
+      "state_dict_tensors": 51,
+      "shape_mismatches": {},
+      "missing_current_tensors": [],
+      "optimizer_parameter_ids": 33,
+      "optimizer_state_entries": 33,
+      "data_cursor": null,
+      "rank_steps": [
+        18000,
+        18000
+      ]
+    }
+  }
+}

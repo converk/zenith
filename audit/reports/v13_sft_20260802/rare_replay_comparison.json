@@ -1,0 +1,197 @@
+{
+  "scenarios": 7,
+  "kyokus": 7,
+  "decisions": 516,
+  "all_exact": true,
+  "details": [
+    {
+      "scenario": "ordinary_draw_pattern",
+      "identity": [
+        2024,
+        "2024010318gm-00a9-0000-e2936dff",
+        9
+      ],
+      "fresh_rows": 100,
+      "formal_rows": 100,
+      "all_exact": true,
+      "mismatches": [],
+      "independent_audit": {
+        "identity": "datasets/tenhou_sft_2024_2025/train/train-00004.tar:2024-2024010318gm-00a9-0000-e2936dff-09.mjson",
+        "decisions": 100,
+        "events": {
+          "dahai": 72,
+          "chi": 1,
+          "pon": 1,
+          "daiminkan": 0,
+          "ankan": 0,
+          "kakan": 0,
+          "reach": 1,
+          "reach_accepted": 1,
+          "dora": 0
+        }
+      }
+    },
+    {
+      "scenario": "multi_ron",
+      "identity": [
+        2024,
+        "2024010320gm-00a9-0000-618f4cca",
+        6
+      ],
+      "fresh_rows": 78,
+      "formal_rows": 78,
+      "all_exact": true,
+      "mismatches": [],
+      "independent_audit": {
+        "identity": "datasets/tenhou_sft_2024_2025/train/train-00004.tar:2024-2024010320gm-00a9-0000-618f4cca-06.mjson",
+        "decisions": 78,
+        "events": {
+          "dahai": 60,
+          "chi": 3,
+          "pon": 3,
+          "daiminkan": 0,
+          "ankan": 0,
+          "kakan": 1,
+          "reach": 0,
+          "reach_accepted": 0,
+          "dora": 1
+        }
+      }
+    },
+    {
+      "scenario": "last_tile_win_pattern",
+      "identity": [
+        2024,
+        "2024010321gm-00a9-0000-5739ed63",
+        11
+      ],
+      "fresh_rows": 88,
+      "formal_rows": 88,
+      "all_exact": true,
+      "mismatches": [],
+      "independent_audit": {
+        "identity": "datasets/tenhou_sft_2024_2025/train/train-00004.tar:2024-2024010321gm-00a9-0000-5739ed63-11.mjson",
+        "decisions": 88,
+        "events": {
+          "dahai": 73,
+          "chi": 2,
+          "pon": 2,
+          "daiminkan": 0,
+          "ankan": 0,
+          "kakan": 0,
+          "reach": 0,
+          "reach_accepted": 0,
+          "dora": 0
+        }
+      }
+    },
+    {
+      "scenario": "chankan",
+      "identity": [
+        2024,
+        "2024010321gm-00a9-0000-627f0c4c",
+        7
+      ],
+      "fresh_rows": 67,
+      "formal_rows": 67,
+      "all_exact": true,
+      "mismatches": [],
+      "independent_audit": {
+        "identity": "datasets/tenhou_sft_2024_2025/train/train-00004.tar:2024-2024010321gm-00a9-0000-627f0c4c-07.mjson",
+        "decisions": 67,
+        "events": {
+          "dahai": 54,
+          "chi": 2,
+          "pon": 3,
+          "daiminkan": 0,
+          "ankan": 0,
+          "kakan": 1,
+          "reach": 0,
+          "reach_accepted": 0,
+          "dora": 0
+        }
+      }
+    },
+    {
+      "scenario": "rinshan",
+      "identity": [
+        2024,
+        "2024010220gm-00a9-0000-faa70f38",
+        3
+      ],
+      "fresh_rows": 95,
+      "formal_rows": 95,
+      "all_exact": true,
+      "mismatches": [],
+      "independent_audit": {
+        "identity": "datasets/tenhou_sft_2024_2025/train/train-00002.tar:2024-2024010220gm-00a9-0000-faa70f38-03.mjson",
+        "decisions": 95,
+        "events": {
+          "dahai": 72,
+          "chi": 2,
+          "pon": 2,
+          "daiminkan": 0,
+          "ankan": 0,
+          "kakan": 1,
+          "reach": 0,
+          "reach_accepted": 0,
+          "dora": 0
+        }
+      }
+    },
+    {
+      "scenario": "four_winds",
+      "identity": [
+        2024,
+        "2024011200gm-00a9-0000-eb00a242",
+        0
+      ],
+      "fresh_rows": 4,
+      "formal_rows": 4,
+      "all_exact": true,
+      "mismatches": [],
+      "independent_audit": {
+        "identity": "datasets/tenhou_sft_2024_2025/train/train-00015.tar:2024-2024011200gm-00a9-0000-eb00a242-00.mjson",
+        "decisions": 4,
+        "events": {
+          "dahai": 4,
+          "chi": 0,
+          "pon": 0,
+          "daiminkan": 0,
+          "ankan": 0,
+          "kakan": 0,
+          "reach": 0,
+          "reach_accepted": 0,
+          "dora": 0
+        }
+      }
+    },
+    {
+      "scenario": "houtei",
+      "identity": [
+        2024,
+        "2024010501gm-00a9-0000-2bf8954c",
+        2
+      ],
+      "fresh_rows": 84,
+      "formal_rows": 84,
+      "all_exact": true,
+      "mismatches": [],
+      "independent_audit": {
+        "identity": "datasets/tenhou_sft_2024_2025/train/train-00006.tar:2024-2024010501gm-00a9-0000-2bf8954c-02.mjson",
+        "decisions": 84,
+        "events": {
+          "dahai": 71,
+          "chi": 1,
+          "pon": 0,
+          "daiminkan": 0,
+          "ankan": 0,
+          "kakan": 0,
+          "reach": 1,
+          "reach_accepted": 1,
+          "dora": 0
+        }
+      }
+    }
+  ]
+}

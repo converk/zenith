@@ -1,0 +1,68 @@
+{
+  "searched_tars": 940,
+  "selected_subset": "denominator=5 remainders=0,1",
+  "witnesses": {
+    "ordinary_draw_pattern": {
+      "tar": "datasets/tenhou_sft_2024_2025/train/train-00004.tar",
+      "member": "2024-2024010318gm-00a9-0000-e2936dff-09.mjson",
+      "events": 151,
+      "tsumo_count": 70,
+      "hora_count": 0
+    },
+    "multi_ron": {
+      "tar": "datasets/tenhou_sft_2024_2025/train/train-00004.tar",
+      "member": "2024-2024010320gm-00a9-0000-618f4cca-06.mjson",
+      "events": 129,
+      "tsumo_count": 55,
+      "hora_count": 2
+    },
+    "last_tile_win_pattern": {
+      "tar": "datasets/tenhou_sft_2024_2025/train/train-00004.tar",
+      "member": "2024-2024010321gm-00a9-0000-5739ed63-11.mjson",
+      "events": 152,
+      "tsumo_count": 70,
+      "hora_count": 1
+    },
+    "chankan": {
+      "tar": "datasets/tenhou_sft_2024_2025/train/train-00004.tar",
+      "member": "2024-2024010321gm-00a9-0000-627f0c4c-07.mjson",
+      "events": 115,
+      "tsumo_count": 50,
+      "hora_count": 1
+    },
+    "rinshan": {
+      "tar": "datasets/tenhou_sft_2024_2025/train/train-00002.tar",
+      "member": "2024-2024010220gm-00a9-0000-faa70f38-03.mjson",
+      "events": 152,
+      "tsumo_count": 70,
+      "hora_count": 1
+    },
+    "four_winds": {
+      "tar": "datasets/tenhou_sft_2024_2025/train/train-00015.tar",
+      "member": "2024-2024011200gm-00a9-0000-eb00a242-00.mjson",
+      "events": 13,
+      "tsumo_count": 4,
+      "hora_count": 0
+    },
+    "houtei": {
+      "tar": "datasets/tenhou_sft_2024_2025/train/train-00006.tar",
+      "member": "2024-2024010501gm-00a9-0000-2bf8954c-02.mjson",
+      "hora": {
+        "type": "hora",
+        "actor": 1,
+        "target": 3,
+        "deltas": [
+          0,
+          6500,
+          0,
+          -4500
+        ],
+        "ura_markers": [
+          "7p"
+        ]
+      }
+    }
+  },
+  "missing": [],
+  "elapsed_seconds": 49.877704575657845
+}

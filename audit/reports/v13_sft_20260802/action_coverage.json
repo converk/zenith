@@ -1,0 +1,34 @@
+{
+  "expert_strata": {
+    "pass": 2,
+    "discard_tedashi": 2,
+    "discard_tsumogiri": 2,
+    "reach": 2,
+    "chi": 2,
+    "pon": 2,
+    "daiminkan": 2,
+    "ankan": 2,
+    "kakan": 2,
+    "hora": 2,
+    "kyushu": 2,
+    "high_context": 5
+  },
+  "source_events": {
+    "start_game": 27,
+    "start_kyoku": 27,
+    "tsumo": 1382,
+    "dahai": 1447,
+    "reach": 15,
+    "reach_accepted": 14,
+    "hora": 17,
+    "end_kyoku": 27,
+    "end_game": 27,
+    "pon": 36,
+    "chi": 51,
+    "daiminkan": 3,
+    "dora": 11,
+    "ryukyoku": 10,
+    "ankan": 4,
+    "kakan": 4
+  }
+}

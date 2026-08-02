@@ -1,0 +1,30 @@
+{
+  "source_rows": {
+    "train": 3807907,
+    "validation": 38477
+  },
+  "source_games": {
+    "train": 359687,
+    "validation": 3625
+  },
+  "selected_kyokus": {
+    "train": 1523056,
+    "validation": 15574
+  },
+  "selected_games": {
+    "train": 143802,
+    "validation": 1461
+  },
+  "selected_record_duplicates": 0,
+  "location_mismatches": 0,
+  "train_validation_game_overlap": 0,
+  "selected_train_validation_game_overlap": 0,
+  "index_order_selection_sha256": "91dc015f38044ddb1b74684ad5f37f375ace994ea0ba930f5ae1dd08aa60f153",
+  "elapsed_seconds": 42.39206407405436,
+  "whole_game_selection_failures": 0,
+  "formal_order_selected_kyokus": {
+    "train": 1523056,
+    "validation": 15574
+  },
+  "selection_manifest_sha256_in_manifest_order": "b0c4f9d7acaabaa626b766275e2961342ba21fcc03de11fd4cb9f3f48918f3da"
+}
