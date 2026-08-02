@@ -19,7 +19,7 @@ inference_max_batch_size: 512
 inference_batch_wait_ms: 5.0
 inference_batch_target_rows: 0
 inference_batch_target_workers: 0
-kyokus_per_worker: 16
+kyokus_per_worker: 1
 
 # 标准 PPO。每个 transition 只在所属小局结算时得到终局分差 reward。
 # 保留到倍满以上的点差信息，同时限制极少数异常/多倍役满样本。
@@ -54,7 +54,7 @@ weight_decay: 0.01
 # 标准 SFT → PPO 衔接：actor-only SFT 导入后将 value head 置零，先固定
 # actor/shared 表征训练私有 critic，再以冻结的 SFT actor 作为 KL reference。
 zero_value_head_on_sft_init: true
-critic_bootstrap_updates: 30
+critic_bootstrap_updates: 40
 critic_bootstrap_learning_rate: 0.00002
 # 正式 PPO 中 value loss 回传到 shared public backbone 的梯度倍率。
 critic_public_grad_scale: 0.25
