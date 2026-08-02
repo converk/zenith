@@ -421,30 +421,11 @@ def main() -> None:
                 if decision.seat_id in ppo_seats
             ]
             if model_decisions:
-                (
-                    factors,
-                    numeric,
-                    lengths,
-                    legal,
-                    _generations,
-                    _critic,
-                    _critic_lengths,
-                ) = bridge.prepare(
-                    model_decisions, analysis,
-                    token_schema_version=int(getattr(model, "token_schema_version", 13)),
+                prepared = model.policy_adapter.prepare(bridge, model_decisions, analysis)
+                factors, numeric, lengths, legal = (
+                    prepared.factors, prepared.numeric, prepared.lengths, prepared.legal,
                 )
-                with torch.autocast(
-                    device_type=device.type,
-                    dtype=torch.bfloat16,
-                    enabled=use_bf16,
-                ):
-                    output = model.forward_policy(
-                        _tensor(factors, device),
-                        _tensor(numeric, device),
-                        _tensor(legal, device),
-                        _tensor(lengths, device),
-                    )
-                logits = output["policy_logits"].to(dtype=torch.float32)
+                logits = model.policy_adapter.masked_logits(prepared)
                 probs = torch.softmax(logits, dim=-1).tolist()
                 action_ids_chosen = logits.argmax(-1).tolist()
                 legal_mask = np.asarray(legal, dtype=bool)

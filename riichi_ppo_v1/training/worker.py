@@ -13,7 +13,6 @@ except ImportError:  # imported lazily by the command line program
     ray = None
 
 from ..model.bridge import BatchedStateBridge, Decision, NUM_PLAYERS
-from ..model.schema import TOKEN_SCHEMA_VERSION
 from .profiling import StageProfiler
 from .rewards import (
     DecisionAnalysisBatch,
@@ -83,7 +82,6 @@ if ray is not None:
                 [[] for _ in range(NUM_PLAYERS)] for _ in range(self.num_envs)
             ]
             self.model_decisions = 0
-            self.token_schema_version = int(config.get("token_schema_version", TOKEN_SCHEMA_VERSION))
             self.recorded_decisions = 0
             self.kyoku_reward_clip_points = int(
                 config.get("kyoku_reward_clip_points", 24_000)
@@ -118,10 +116,7 @@ if ray is not None:
                     _history_generations,
                     critic_factors,
                     critic_lengths,
-                ) = self.bridge.prepare(
-                    decisions, analysis_batch,
-                    token_schema_version=self.token_schema_version,
-                )
+                ) = self.bridge.prepare(decisions, analysis_batch)
             request = self.inference.infer.remote(
                 worker_id=self.worker_id,
                 namespace=namespace,

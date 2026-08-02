@@ -1001,6 +1001,15 @@ class PPOLearner:
 
     def load(self, path: str | Path) -> None:
         payload = torch.load(path, map_location=self.device, weights_only=False)
+        required = {
+            "model", "optimizer", "model_config", "iteration", "torch_rng",
+            "cuda_rng", "python_rng", "numpy_rng", "token_schema_version",
+            "feature_schema_sha256", "rust_analysis_version",
+            "decision_analysis_version", "policy_head_type",
+        }
+        missing = sorted(required - payload.keys())
+        if missing:
+            raise RuntimeError("PPO exact resume checkpoint is missing: " + ", ".join(missing))
         if int(payload.get("ppo_format_version", 0)) != 2:
             raise RuntimeError(
                 "legacy PPO checkpoints cannot be resumed; use --init-model to load their model weights"
@@ -1030,18 +1039,14 @@ class PPOLearner:
                 "by the configured KL anchor"
             )
         self.optimizer.load_state_dict(payload["optimizer"])
-        self.iteration = int(payload.get("iteration", 0))
-        if "torch_rng" in payload:
-            # Checkpoints are loaded onto the learner device so model/optimizer
-            # tensors restore without an extra copy.  PyTorch's default RNG
-            # state is CPU-only, however; DDP CUDA resume must move it back.
-            torch.set_rng_state(payload["torch_rng"].cpu())
-            random.setstate(payload["python_rng"])
-            np.random.set_state(payload["numpy_rng"])
-            if payload.get("cuda_rng") is not None and torch.cuda.is_available():
-                torch.cuda.set_rng_state_all([
-                    state.cpu() for state in payload["cuda_rng"]
-                ])
+        self.iteration = int(payload["iteration"])
+        # Checkpoints are loaded onto the learner device so model/optimizer
+        # tensors restore without an extra copy. PyTorch's default RNG is CPU-only.
+        torch.set_rng_state(payload["torch_rng"].cpu())
+        random.setstate(payload["python_rng"])
+        np.random.set_state(payload["numpy_rng"])
+        if payload["cuda_rng"] is not None and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all([state.cpu() for state in payload["cuda_rng"]])
 
     def load_model_weights(self, path: str | Path) -> None:
         """Initialize a fresh PPO optimizer from a schema-compatible model checkpoint."""
@@ -1058,8 +1063,11 @@ class PPOLearner:
             raise RuntimeError("checkpoint Rust analysis version is incompatible with this build")
         if int(payload.get("decision_analysis_version", -1)) != DECISION_ANALYSIS_VERSION:
             raise RuntimeError("checkpoint decision-analysis version is incompatible with this build")
-        checkpoint_head = payload.get("policy_head_type", payload.get("model_config", {}).get("policy_head_type"))
-        if checkpoint_head is not None and str(checkpoint_head) != self.config.policy_head_type:
+        model_config = payload.get("model_config")
+        if not isinstance(model_config, dict) or "policy_head_type" not in model_config:
+            raise RuntimeError("weights-only checkpoint is missing explicit model_config.policy_head_type")
+        checkpoint_head = model_config["policy_head_type"]
+        if str(checkpoint_head) != self.config.policy_head_type:
             raise RuntimeError("checkpoint policy head type is incompatible with PPO configuration")
         self.model.load_state_dict(payload["model"])
         self.reference_model = KyokuTransformerActorCritic(self.config).to(self.device)

@@ -19,22 +19,13 @@ import zipfile
 
 import numpy as np
 
-from ..model.schema import TOKEN_SCHEMA_VERSION
 from ..model.feature_schema import (
-    DECISION_ANALYSIS_VERSION,
     ENCODED_FORMAT,
-    RUST_ANALYSIS_VERSION,
-    assert_legacy_replay_runtime,
-    feature_schema_sha256,
-    legacy_encoder_component_sha256,
-    legacy_encoder_sha256,
 )
 from ..training.rewards.efficiency import EfficiencyAnalyzer
 from .data import SftSample, _member_metadata, encode_kyoku
+from .contract import SFT_CONTRACT_VERSION, validate_v13_manifest
 
-
-LEGACY_ENCODED_FORMAT = "riichi-sft-encoded-v1"
-REJECTED_V12_FORMAT = "riichi-sft-encoded-v2"
 
 
 def _assert_public_history(samples: list[SftSample], source: str) -> None:
@@ -284,7 +275,6 @@ def _precompute_source_shard(
     game_sample_remainder: int = 0,
     progress_queue: Any | None = None,
     progress_every_kyokus: int = 32,
-    token_schema_version: int = TOKEN_SCHEMA_VERSION,
 ) -> tuple[str, int, int, int, dict[str, list[int]]]:
     """Encode one source tar in an isolated process and write unique chunks."""
     shard = Path(source_shard)
@@ -315,7 +305,6 @@ def _precompute_source_shard(
             samples = encode_kyoku(
                 _decode(file.read()), year=year, game_id=game_id, kyoku_index=kyoku_index,
                 analyzer=analyzer, include_critic=False,
-                token_schema_version=token_schema_version,
             )
             _assert_public_history(samples, f"{shard}:{member.name}")
             _accumulate_field_statistics(statistics, samples)
@@ -352,7 +341,6 @@ def precompute(
     progress_every_kyokus: int = 32,
     game_sample_denominator: int = 1,
     game_sample_remainder: int = 0,
-    token_schema_version: int = TOKEN_SCHEMA_VERSION,
     require_complete_action_coverage: bool = False,
     require_identity_contract: bool = False,
 ) -> None:
@@ -367,10 +355,6 @@ def precompute(
         raise ValueError("game sample remainder must be in [0, game sample denominator)")
     if progress_every_kyokus <= 0:
         raise ValueError("progress_every_kyokus must be positive")
-    if int(token_schema_version) not in {11, TOKEN_SCHEMA_VERSION}:
-        raise ValueError(f"--token-schema must be 11 or {TOKEN_SCHEMA_VERSION}; schema 12 is intentionally unsupported")
-    if int(token_schema_version) == 11:
-        assert_legacy_replay_runtime()
     audit_reports = [output.with_name(f"{output.name}-audit-r{value}.json") for value in remainders]
     if not skip_audit:
         from .audit import audit_dataset, write_audit_report
@@ -410,7 +394,6 @@ def precompute(
             pending = {
                 executor.submit(
                     _precompute_source_shard, *task, progress_queue, progress_every_kyokus,
-                    token_schema_version,
                 ) for task in tasks
             }
             while pending:
@@ -455,8 +438,8 @@ def precompute(
             if int(digest["samples"]) != int(counts[f"{split}_decisions"]):
                 raise RuntimeError(f"encoded {split} identity count differs from decision count")
     manifest = {
-        "format": ENCODED_FORMAT if int(token_schema_version) == TOKEN_SCHEMA_VERSION else LEGACY_ENCODED_FORMAT,
-        "token_schema_version": int(token_schema_version),
+        "format": ENCODED_FORMAT,
+        "sft_contract_version": SFT_CONTRACT_VERSION,
         "source_manifest_sha256": hashlib.sha256((source / "manifest.json").read_bytes()).hexdigest(),
         "subset_denominator": denominator,
         "subset_remainders": list(remainders),
@@ -473,13 +456,6 @@ def precompute(
         "counts": counts,
         "selection_manifest_sha256": selection_manifest_sha256,
         "sample_identity_contract": identity_contract,
-        "feature_schema_sha256": feature_schema_sha256() if int(token_schema_version) == TOKEN_SCHEMA_VERSION else None,
-        "legacy_encoder_sha256": legacy_encoder_sha256() if int(token_schema_version) == 11 else None,
-        "legacy_encoder_components_sha256": (
-            legacy_encoder_component_sha256() if int(token_schema_version) == 11 else None
-        ),
-        "rust_analysis_version": RUST_ANALYSIS_VERSION if int(token_schema_version) == TOKEN_SCHEMA_VERSION else None,
-        "decision_analysis_version": DECISION_ANALYSIS_VERSION if int(token_schema_version) == TOKEN_SCHEMA_VERSION else None,
         "field_statistics": {
             "categorical_na_by_slot": field_statistics["categorical_na"].tolist(),
             "categorical_total_by_slot": field_statistics["categorical_total"].tolist(),
@@ -507,27 +483,7 @@ def iter_precomputed_samples(
     world_size: int = 1,
 ) -> Iterator[SftSample]:
     manifest = json.loads((dataset / "manifest.json").read_text(encoding="utf-8"))
-    encoded_format = manifest.get("format")
-    schema = int(manifest.get("token_schema_version", -1))
-    if encoded_format == REJECTED_V12_FORMAT or schema == 12:
-        raise RuntimeError("schema 12 is incomplete and unsupported; re-encode as schema 13")
-    if encoded_format not in {ENCODED_FORMAT, LEGACY_ENCODED_FORMAT}:
-        raise ValueError(f"not an encoded SFT dataset: {dataset}")
-    if schema not in ({TOKEN_SCHEMA_VERSION} if encoded_format == ENCODED_FORMAT else {11}):
-        raise RuntimeError("encoded SFT token schema is incompatible with this code")
-    if schema == TOKEN_SCHEMA_VERSION:
-        if manifest.get("feature_schema_sha256") != feature_schema_sha256():
-            raise RuntimeError("encoded SFT feature schema hash is incompatible; re-encode the cache")
-        if int(manifest.get("rust_analysis_version", -1)) != RUST_ANALYSIS_VERSION:
-            raise RuntimeError("encoded SFT Rust analysis version is incompatible; re-encode the cache")
-        if int(manifest.get("decision_analysis_version", -1)) != DECISION_ANALYSIS_VERSION:
-            raise RuntimeError("encoded SFT decision-analysis version is incompatible; re-encode the cache")
-    else:
-        assert_legacy_replay_runtime()
-        if manifest.get("legacy_encoder_sha256") != legacy_encoder_sha256():
-            raise RuntimeError("encoded schema-11 legacy encoder hash is incompatible; re-encode the cache")
-        if manifest.get("legacy_encoder_components_sha256") != legacy_encoder_component_sha256():
-            raise RuntimeError("encoded schema-11 legacy encoder components differ; re-encode the cache")
+    validate_v13_manifest(manifest)
     paths = sorted((dataset / split).glob(f"{split}-*.npz"))
     rng = random.Random(seed)
     if shuffle:
@@ -618,14 +574,13 @@ def main() -> None:
     parser.add_argument("--progress-every-kyokus", type=int, default=32, help="worker progress update interval")
     parser.add_argument("--game-sample-denominator", type=int, default=1)
     parser.add_argument("--game-sample-remainder", type=int, default=0)
-    parser.add_argument("--token-schema", type=int, choices=(11, TOKEN_SCHEMA_VERSION), default=TOKEN_SCHEMA_VERSION)
     parser.add_argument(
         "--require-complete-action-coverage", action="store_true",
         help="fail unless every legal and expert action group is represented",
     )
     parser.add_argument(
         "--require-identity-contract", action="store_true",
-        help="hash the complete identity sequence and chunk layout for paired ablations",
+        help="hash the complete identity sequence and chunk layout for auditability",
     )
     args = parser.parse_args()
     selected_remainders = (
@@ -640,7 +595,6 @@ def main() -> None:
         progress_every_kyokus=args.progress_every_kyokus,
         game_sample_denominator=args.game_sample_denominator,
         game_sample_remainder=args.game_sample_remainder,
-        token_schema_version=args.token_schema,
         require_complete_action_coverage=args.require_complete_action_coverage,
         require_identity_contract=args.require_identity_contract,
     )

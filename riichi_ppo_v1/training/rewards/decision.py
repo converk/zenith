@@ -783,7 +783,7 @@ class DecisionAnalysisBatch:
         analyzer: EfficiencyAnalyzer,
         public: object | None = None,
         profiler: object | None = None,
-        token_schema_version: int = 13,
+        _legacy_v11: bool = False,
     ) -> "DecisionAnalysisBatch":
         decisions = list(decisions)
         remaining_by_row = [
@@ -801,7 +801,7 @@ class DecisionAnalysisBatch:
             melds = _own_melds(observation)
             response_kinds = (
                 {"chi", "pon", "daiminkan"}
-                if int(token_schema_version) == 11
+                if _legacy_v11
                 else {"chi", "pon", "daiminkan", "hora", "ron"}
             )
             response_window = any(
@@ -862,7 +862,7 @@ class DecisionAnalysisBatch:
                     jobs.append((row, action, aid, post, call_melds))
                     hands.append(_counts(post))
                     opened.append(len(call_melds))
-                elif int(token_schema_version) != 11 and kind == "ankan":
+                elif not _legacy_v11 and kind == "ankan":
                     post = hand.copy()
                     values = list(consumed_tiles(action))
                     tile = getattr(action, "tile", None)
@@ -887,7 +887,7 @@ class DecisionAnalysisBatch:
                     jobs.append((row, action, aid, post, call_melds))
                     hands.append(_counts(post))
                     opened.append(len(call_melds))
-                elif int(token_schema_version) != 11 and kind == "kakan":
+                elif not _legacy_v11 and kind == "kakan":
                     # Kakan consumes one concealed tile and upgrades an existing
                     # pon, so the fixed-meld count does not change.
                     post = hand.copy()
@@ -922,7 +922,7 @@ class DecisionAnalysisBatch:
             remaining = remaining_by_row[row]
             candidate = _candidate(
                 decisions[row], action, aid, hand, melds, structural, remaining, public,
-                legacy=int(token_schema_version) == 11,
+                legacy=_legacy_v11,
             )
             grouped[row].setdefault(aid, []).append(candidate)
         if profiler is not None:
@@ -936,7 +936,7 @@ class DecisionAnalysisBatch:
                 collapsed.append(replace(selected, legal_discard_count=len(variants)))
             kinds = {action_kind(action) for action in actions_by_row[row]}
             foregone_win = bool(
-                int(token_schema_version) != 11 and kinds & {"hora", "ron", "tsumo"}
+                not _legacy_v11 and kinds & {"hora", "ron", "tsumo"}
             )
             non_pass = [item for item in collapsed if action_kind(item.action) not in {"none", "pass"}]
             if non_pass:
@@ -959,7 +959,7 @@ class DecisionAnalysisBatch:
             candidates = tuple(collapsed)
             best = min((candidate.rank for candidate in candidates), default=None)
             teacher = np.zeros(NUM_ACTIONS, dtype=np.bool_)
-            if int(token_schema_version) == 11 and best is not None:
+            if _legacy_v11 and best is not None:
                 for candidate in candidates:
                     if candidate.rank == best:
                         teacher[candidate.action_id] = True
@@ -978,12 +978,27 @@ class DecisionAnalysisBatch:
                 ("dahai" if "dahai" in kinds else
                  ("call" if kinds & {"chi", "pon", "daiminkan"} else ""))
             )
-            if not supervised or (int(token_schema_version) != 11 and len(candidates) < 2):
+            if not supervised or (not _legacy_v11 and len(candidates) < 2):
                 teacher.fill(False)
             rows[id(decision)] = DecisionAnalysis(
                 decision, actions_by_row[row], candidates, best, teacher, supervised,
             )
         return cls(rows, analyzer, public)
+
+    @classmethod
+    def build_legacy_v11(
+        cls,
+        decisions: Iterable[object],
+        *,
+        analyzer: EfficiencyAnalyzer,
+        public: object | None = None,
+        profiler: object | None = None,
+    ) -> "DecisionAnalysisBatch":
+        """Frozen compatibility hook; only ``legacy.v11`` may call this."""
+        return cls.build(
+            decisions, analyzer=analyzer, public=public, profiler=profiler,
+            _legacy_v11=True,
+        )
 
     def for_decision(self, decision: object) -> DecisionAnalysis:
         row = self._rows.get(id(decision))
@@ -1177,42 +1192,4 @@ class DecisionAnalysisBatch:
             numeric_rows.append(numeric)
             if profiler is not None:
                 profiler.add("features/token_fill", time.perf_counter() - fill_started)
-        return factor_rows, numeric_rows
-
-    def legacy_candidate_tokens(
-        self, decisions: Iterable[object], legal_masks: np.ndarray,
-    ) -> tuple[list[np.ndarray], list[np.ndarray]]:
-        """Reproduce schema-11 one-token candidates for baseline evaluation."""
-        factor_rows: list[np.ndarray] = []
-        numeric_rows: list[np.ndarray] = []
-        for row_index, decision in enumerate(decisions):
-            analysis = self.for_decision(decision)
-            by_id = {candidate.action_id: candidate for candidate in analysis.candidates}
-            legal_ids = np.flatnonzero(legal_masks[row_index])
-            factors = np.zeros((len(legal_ids), 10), dtype=np.uint8)
-            numeric = np.zeros((len(legal_ids), 8), dtype=np.float32)
-            threats = sum(bool(value) for value in getattr(decision.observation, "riichi_declared", ()))
-            best_shanten = min((item.structural_shanten for item in analysis.candidates), default=0)
-            for token, aid_value in enumerate(legal_ids):
-                aid = int(aid_value)
-                candidate = by_id.get(aid)
-                factors[token, :4] = (7, _action_type_code(aid), min(aid + 1, 255), min(threats, 3))
-                if candidate is None:
-                    continue
-                factors[token, 4] = min(candidate.structural_shanten + 1, 7)
-                factors[token, 5] = min(candidate.effective_shanten + 1, 15)
-                factors[token, 6] = int(candidate.has_yaku) + 2 * int(candidate.riichi_route)
-                factors[token, 7] = int(candidate.open_no_yaku) + 2 * int(candidate.furiten) + 4 * int(candidate.closed)
-                factors[token, 8] = min(candidate.ron_points // 1000, 15) + 16 * min(candidate.tsumo_points // 1000, 15)
-                factors[token, 9] = int(candidate.four_visible)
-                numeric[token] = (
-                    candidate.structural_shanten / 6.0, candidate.effective_shanten / 6.0,
-                    (candidate.structural_shanten - best_shanten) / 3.0,
-                    candidate.ukeire / 40.0, candidate.live_ron / 16.0,
-                    candidate.live_tsumo / 16.0,
-                    max(candidate.ron_points, candidate.tsumo_points) / 12000.0,
-                    candidate.genbutsu_coverage / 3.0,
-                )
-            factor_rows.append(factors)
-            numeric_rows.append(numeric)
         return factor_rows, numeric_rows

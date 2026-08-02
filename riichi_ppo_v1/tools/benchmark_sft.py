@@ -97,17 +97,18 @@ def _worker(
         str(config["inference_dtype"]).lower() == "bf16"
         and torch.cuda.is_bf16_supported()
     )
-    rows_out: list[tuple[float, float, float, float, float, float, float, float, float]] = []
+    rows_out: list[tuple[float, ...]] = []
     model.train()
     for step in range(1, int(steps) + 1):
         dist.barrier()
         torch.cuda.synchronize(device)
         started = time.perf_counter()
+        loader_started = time.perf_counter()
         rows = next(batches)
         batch = collate_samples(rows, device, include_critic=False)
-        query_extra = int(str(config.get("policy_head_type")) == "legacy_fixed")
-        effective_tokens = sum(sample.token_length + query_extra for sample in rows)
-        padded_tokens = len(rows) * (max(sample.token_length for sample in rows) + query_extra)
+        loader_s = time.perf_counter() - loader_started
+        effective_tokens = sum(sample.token_length for sample in rows)
+        padded_tokens = len(rows) * max(sample.token_length for sample in rows)
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast(
             device_type="cuda", dtype=torch.bfloat16, enabled=use_bf16,
@@ -133,14 +134,24 @@ def _worker(
                 loss = loss + float(config.get("public_value_coef", 0.0)) * F.huber_loss(
                     output["value"].float(), batch["value_targets"],
                 )
+        backward_started = torch.cuda.Event(enable_timing=True)
+        backward_finished = torch.cuda.Event(enable_timing=True)
+        backward_started.record()
         loss.backward()
+        backward_finished.record()
         grad_norm = nn.utils.clip_grad_norm_(
             model.parameters(), float(config["max_grad_norm"]),
         )
+        optimizer_started = torch.cuda.Event(enable_timing=True)
+        optimizer_finished = torch.cuda.Event(enable_timing=True)
+        optimizer_started.record()
         optimizer.step()
+        optimizer_finished.record()
         torch.cuda.synchronize(device)
         elapsed = time.perf_counter() - started
         forward_ms = float(forward_started.elapsed_time(forward_finished))
+        backward_ms = float(backward_started.elapsed_time(backward_finished))
+        optimizer_ms = float(optimizer_started.elapsed_time(optimizer_finished))
         model.eval()
         infer_started = torch.cuda.Event(enable_timing=True)
         infer_finished = torch.cuda.Event(enable_timing=True)
@@ -165,6 +176,9 @@ def _worker(
                 float(torch.cuda.max_memory_allocated(device) / 2**20),
                 forward_ms,
                 inference_ms,
+                backward_ms,
+                optimizer_ms,
+                loader_s * 1000.0,
             ],
             dtype=torch.float64,
             device=device,
@@ -188,7 +202,8 @@ def _worker(
             rows_out.append((
                 elapsed_s, samples_per_s, tokens_per_s, padding,
                 float(values[4]), float(values[5]), float(values[6]),
-                float(values[7]), float(values[8]),
+                float(values[7]), float(values[8]), float(values[9]),
+                float(values[10]), float(values[11]),
             ))
             print(
                 f"step={step} elapsed_s={elapsed_s:.4f} "
@@ -200,7 +215,9 @@ def _worker(
                 f"gpu_allocated_mb={float(values[4]):.1f} "
                 f"gpu_reserved_mb={float(values[5]):.1f} "
                 f"peak_gpu_memory_mb={float(values[6]):.1f}",
-                f" decoder_forward_ms={float(values[7]):.3f} inference_batch_ms={float(values[8]):.3f}",
+                f" forward_ms={float(values[7]):.3f} backward_ms={float(values[9]):.3f} "
+                f"optimizer_ms={float(values[10]):.3f} loader_ms={float(values[11]):.3f} "
+                f"inference_batch_ms={float(values[8]):.3f}",
                 flush=True,
             )
 
@@ -217,6 +234,7 @@ def _worker(
             f"step_time_mean_s={np.mean([row[0] for row in warm]):.4f} "
             f"step_time_p95_s={np.quantile([row[0] for row in warm], 0.95):.4f} "
             f"samples_per_s={samples_total / max(elapsed_total, 1e-9):.2f} "
+            f"per_rank_samples_per_s={samples_total / max(elapsed_total, 1e-9) / world_size:.2f} "
             f"step_samples_per_s_mean={rates.mean():.2f} "
             f"step_samples_per_s_std={rates.std(ddof=1) if len(rates) > 1 else 0.0:.2f} "
             f"step_samples_per_s_min={rates.min():.2f} "
@@ -225,7 +243,10 @@ def _worker(
             f"padding_fraction_mean={paddings.mean():.4f} "
             f"padding_fraction_min={paddings.min():.4f} "
             f"padding_fraction_max={paddings.max():.4f}",
-            f" decoder_forward_ms_mean={np.mean([row[7] for row in warm]):.3f} "
+            f" forward_ms_mean={np.mean([row[7] for row in warm]):.3f} "
+            f"backward_ms_mean={np.mean([row[9] for row in warm]):.3f} "
+            f"optimizer_ms_mean={np.mean([row[10] for row in warm]):.3f} "
+            f"loader_ms_mean={np.mean([row[11] for row in warm]):.3f} "
             f"inference_batch_ms_mean={np.mean([row[8] for row in warm]):.3f}",
             flush=True,
         )

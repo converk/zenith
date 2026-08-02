@@ -19,10 +19,8 @@ if os.environ.get("CUDA_DEVICE") and not os.environ.get("CUDA_VISIBLE_DEVICES"):
 import numpy as np
 import torch
 
-from ..model import KyokuTransformerActorCritic, ModelConfig
-from ..model.feature_schema import DECISION_ANALYSIS_VERSION, RUST_ANALYSIS_VERSION, feature_schema_sha256
 from ..model.bridge import BatchedStateBridge, NUM_PLAYERS
-from ..model.schema import TOKEN_SCHEMA_VERSION
+from .policy_adapter import load_policy_adapter
 from ..training.rewards import (
     DecisionAnalysisBatch,
     EfficiencyAnalyzer,
@@ -37,18 +35,11 @@ def balanced_team_a_seats(hanchan_count: int) -> list[tuple[int, int]]:
     if count <= 0 or count % 2:
         raise ValueError("hanchan_count must be a positive even number")
     pairs = list(combinations(range(NUM_PLAYERS), 2))
-    schedule = pairs * (count // len(pairs))
-    remainder = count % len(pairs)
-    if remainder:
-        # An even remainder can be filled by complementary seat pairs, keeping
-        # every physical seat equally represented for both checkpoints.
-        balanced_remainder = (
-            (0, 1),
-            (2, 3),
-            (0, 2),
-            (1, 3),
-        )
-        schedule.extend(balanced_remainder[:remainder])
+    schedule: list[tuple[int, int]] = []
+    for pair_index in range(count // 2):
+        seats = pairs[pair_index % len(pairs)]
+        complement = tuple(seat for seat in range(NUM_PLAYERS) if seat not in seats)
+        schedule.extend((seats, complement))
     seat_counts = Counter(seat for seats in schedule for seat in seats)
     if len(schedule) != count or set(seat_counts.values()) != {count // 2}:
         raise RuntimeError(f"failed to construct a seat-balanced schedule: {seat_counts}")
@@ -90,47 +81,30 @@ def select_winner(
     return model_a, "stable_model_a_fallback"
 
 
-def _load_model(path: str | Path, device: torch.device) -> KyokuTransformerActorCritic:
-    checkpoint = Path(path)
-    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    schema = int(payload.get("token_schema_version", 0))
-    if schema not in {11, TOKEN_SCHEMA_VERSION}:
-        raise RuntimeError(
-            f"{checkpoint} uses unsupported token schema {schema}"
-        )
-    if schema == TOKEN_SCHEMA_VERSION:
-        if payload.get("feature_schema_sha256") != feature_schema_sha256():
-            raise RuntimeError(f"{checkpoint} has a missing or incompatible v13 feature hash")
-        if int(payload.get("rust_analysis_version", -1)) != RUST_ANALYSIS_VERSION:
-            raise RuntimeError(f"{checkpoint} has an incompatible Rust analysis version")
-        if int(payload.get("decision_analysis_version", -1)) != DECISION_ANALYSIS_VERSION:
-            raise RuntimeError(f"{checkpoint} has an incompatible decision-analysis version")
-    model_config = payload.get("model_config")
-    if not isinstance(model_config, dict):
-        raise RuntimeError(f"{checkpoint} is missing model_config")
-    model_config = dict(model_config)
-    model_config.setdefault(
-        "policy_head_type", "legacy_fixed" if schema == 11 else "isolated_action_query"
-    )
-    state = payload.get("model")
-    if not isinstance(state, dict):
-        raise RuntimeError(f"{checkpoint} is missing model state")
-    model = KyokuTransformerActorCritic(ModelConfig(**model_config))
-    model.token_schema_version = schema
-    model.load_state_dict(state, strict=True)
-    model.to(device)
-    model.eval()
-    return model
-
-
 def _tensor(value: np.ndarray, device: torch.device) -> torch.Tensor:
     return torch.from_numpy(value).to(device, non_blocking=device.type == "cuda")
+
+
+def _load_model(path: str | Path, device: torch.device) -> torch.nn.Module:
+    """Compatibility shim for diagnostic tools; loading remains adapter-owned."""
+    adapter = load_policy_adapter(path, device=device)
+    model = adapter.model
+    model.policy_adapter = adapter
+    return model
 
 
 def _bf16_supported(device: torch.device) -> bool:
     if device.type != "cuda":
         return False
     return bool(torch.cuda.get_device_properties(device).major >= 8)
+
+
+def _action_group(action_id: int) -> str:
+    boundaries = (
+        (1, "pass"), (75, "discard"), (76, "reach"), (133, "chi"),
+        (170, "pon"), (239, "kan"), (240, "hora"), (241, "ryukyoku"),
+    )
+    return next(name for end, name in boundaries if int(action_id) < end)
 
 
 @torch.inference_mode()
@@ -165,12 +139,12 @@ def evaluate_2v2(
         raise RuntimeError("CUDA evaluation requested but CUDA is unavailable")
     model_a_path = str(Path(model_a_path).resolve())
     model_b_path = str(Path(model_b_path).resolve())
-    model_a = _load_model(model_a_path, device_a)
-    model_b = _load_model(model_b_path, device_b)
-    use_bf16_a = _bf16_supported(device_a)
-    use_bf16_b = _bf16_supported(device_b)
+    adapter_a = load_policy_adapter(model_a_path, device=device_a)
+    adapter_b = load_policy_adapter(model_b_path, device=device_b)
     schedule = balanced_team_a_seats(hanchan_count)
-    parallel = max(1, min(int(parallel_hanchans), int(hanchan_count)))
+    base_schedule = schedule[::2]
+    parallel_pairs = max(1, min(int(parallel_hanchans) // 2, len(base_schedule)))
+    parallel = 2 * parallel_pairs
     started = time.perf_counter()
 
     wins_a = 0
@@ -182,129 +156,104 @@ def evaluate_2v2(
     individual_rank_sum_a = 0
     individual_rank_sum_b = 0
     completed = 0
+    paired_point_diffs: dict[int, list[int]] = {}
+    action_counts = {"a": Counter(), "b": Counter()}
 
-    for batch_start in range(0, hanchan_count, parallel):
-        team_a_by_env = schedule[batch_start : batch_start + parallel]
-        batch_size = len(team_a_by_env)
-        envs = BatchedRiichiEnv(
-            batch_size,
-            seed=int(seed_base) + batch_start,
-            step_threads=batch_size,
-            game_mode=game_mode,
-        )
-        bridge = BatchedStateBridge(
-            riichi.MjaiKyokuStateMachineManager(batch_size),
-            batch_size,
-        )
-        observations = list(envs.reset())
-        bridge.sync(observations)
-        public = PublicStateTracker(batch_size)
-        public.update(bridge.last_events)
-        analyzer = EfficiencyAnalyzer(131_072)
-        active_envs = set(range(batch_size))
-
-        for _step in range(int(max_steps)):
-            actions_by_env: list[dict[int, Any]] = [
-                {} for _ in range(batch_size)
+    for pair_start in range(0, len(base_schedule), parallel_pairs):
+        base_seats = base_schedule[pair_start : pair_start + parallel_pairs]
+        for swapped in (False, True):
+            team_a_by_env = [
+                tuple(seat for seat in range(NUM_PLAYERS) if seat not in seats)
+                if swapped else seats
+                for seats in base_seats
             ]
-            decisions = active_decisions(observations, active_envs)
-            analysis = (
-                DecisionAnalysisBatch.build(
-                    decisions,
-                    analyzer=analyzer,
-                    public=public,
-                )
-                if decisions
-                else None
+            batch_size = len(team_a_by_env)
+            # Reusing the exact seed range for the swapped pass gives every
+            # pair identical walls and initial states.
+            envs = BatchedRiichiEnv(
+                batch_size,
+                seed=int(seed_base) + pair_start,
+                step_threads=batch_size,
+                game_mode=game_mode,
             )
-            for policy_name, model, model_device, use_bf16 in (
-                ("a", model_a, device_a, use_bf16_a),
-                ("b", model_b, device_b, use_bf16_b),
-            ):
-                policy_decisions = [
-                    decision
-                    for decision in decisions
-                    if (
-                        decision.seat_id in team_a_by_env[decision.env_index]
-                    )
-                    == (policy_name == "a")
-                ]
-                if not policy_decisions:
-                    continue
-                (
-                    factors,
-                    numeric,
-                    lengths,
-                    legal,
-                    _generations,
-                    _critic,
-                    _critic_lengths,
-                ) = bridge.prepare(
-                    policy_decisions, analysis,
-                    token_schema_version=int(getattr(model, "token_schema_version", TOKEN_SCHEMA_VERSION)),
-                )
-                with torch.autocast(
-                    device_type=model_device.type,
-                    dtype=torch.bfloat16,
-                    enabled=use_bf16,
-                ):
-                    output = model.forward_policy(
-                        _tensor(factors, model_device),
-                        _tensor(numeric, model_device),
-                        _tensor(legal, model_device),
-                        _tensor(lengths, model_device),
-                    )
-                action_ids = output["policy_logits"].argmax(-1).tolist()
-                actions = bridge.decode(policy_decisions, action_ids)
-                for decision, action in zip(
-                    policy_decisions, actions, strict=True,
-                ):
-                    actions_by_env[decision.env_index][decision.seat_id] = action
-
-            observations = list(envs.step_batch(actions_by_env))
+            bridge = BatchedStateBridge(
+                riichi.MjaiKyokuStateMachineManager(batch_size), batch_size,
+            )
+            observations = list(envs.reset())
             bridge.sync(observations)
+            public = PublicStateTracker(batch_size)
             public.update(bridge.last_events)
-            done = envs.done()
-            scores_by_env = envs.scores()
-            for env_index in list(active_envs):
-                if not bool(done[env_index]):
-                    continue
-                scores = [int(value) for value in scores_by_env[env_index]]
-                team_a = set(team_a_by_env[env_index])
-                team_score_a = sum(scores[seat] for seat in team_a)
-                team_score_b = sum(
-                    scores[seat] for seat in range(NUM_PLAYERS)
-                    if seat not in team_a
+            analyzer = EfficiencyAnalyzer(131_072)
+            active_envs = set(range(batch_size))
+
+            for _step in range(int(max_steps)):
+                actions_by_env: list[dict[int, Any]] = [
+                    {} for _ in range(batch_size)
+                ]
+                decisions = active_decisions(observations, active_envs)
+                analysis = (
+                    DecisionAnalysisBatch.build(
+                        decisions, analyzer=analyzer, public=public,
+                    )
+                    if decisions
+                    else None
                 )
-                point_diff = team_score_a - team_score_b
-                team_point_diff_sum += point_diff
-                if point_diff > 0:
-                    wins_a += 1
-                elif point_diff < 0:
-                    wins_b += 1
-                else:
-                    ties += 1
-                ranking = sorted(
-                    range(NUM_PLAYERS),
-                    key=lambda seat: (-scores[seat], seat),
-                )
-                if ranking[0] in team_a:
-                    first_places_a += 1
-                else:
-                    first_places_b += 1
-                for rank, seat in enumerate(ranking, start=1):
-                    if seat in team_a:
-                        individual_rank_sum_a += rank
+                for policy_name, adapter in (("a", adapter_a), ("b", adapter_b)):
+                    policy_decisions = [
+                        decision for decision in decisions
+                        if (decision.seat_id in team_a_by_env[decision.env_index])
+                        == (policy_name == "a")
+                    ]
+                    if not policy_decisions:
+                        continue
+                    prepared = adapter.prepare(bridge, policy_decisions, analysis)
+                    action_ids = adapter.masked_logits(prepared).argmax(-1).tolist()
+                    action_counts[policy_name].update(int(value) for value in action_ids)
+                    actions = bridge.decode(policy_decisions, action_ids)
+                    for decision, action in zip(policy_decisions, actions, strict=True):
+                        actions_by_env[decision.env_index][decision.seat_id] = action
+
+                observations = list(envs.step_batch(actions_by_env))
+                bridge.sync(observations)
+                public.update(bridge.last_events)
+                done = envs.done()
+                scores_by_env = envs.scores()
+                for env_index in list(active_envs):
+                    if not bool(done[env_index]):
+                        continue
+                    scores = [int(value) for value in scores_by_env[env_index]]
+                    team_a = set(team_a_by_env[env_index])
+                    team_score_a = sum(scores[seat] for seat in team_a)
+                    team_score_b = sum(
+                        scores[seat] for seat in range(NUM_PLAYERS) if seat not in team_a
+                    )
+                    point_diff = team_score_a - team_score_b
+                    paired_point_diffs.setdefault(pair_start + env_index, []).append(point_diff)
+                    team_point_diff_sum += point_diff
+                    if point_diff > 0:
+                        wins_a += 1
+                    elif point_diff < 0:
+                        wins_b += 1
                     else:
-                        individual_rank_sum_b += rank
-                active_envs.remove(env_index)
-                completed += 1
-            if not active_envs:
-                break
-        else:
-            raise RuntimeError(
-                f"2v2 batch {batch_start // parallel} exceeded {max_steps} steps"
-            )
+                        ties += 1
+                    ranking = sorted(range(NUM_PLAYERS), key=lambda seat: (-scores[seat], seat))
+                    if ranking[0] in team_a:
+                        first_places_a += 1
+                    else:
+                        first_places_b += 1
+                    for rank, seat in enumerate(ranking, start=1):
+                        if seat in team_a:
+                            individual_rank_sum_a += rank
+                        else:
+                            individual_rank_sum_b += rank
+                    active_envs.remove(env_index)
+                    completed += 1
+                if not active_envs:
+                    break
+            else:
+                raise RuntimeError(
+                    f"paired 2v2 batch {pair_start // parallel_pairs} exceeded {max_steps} steps"
+                )
         print(
             f"head_to_head completed={completed}/{hanchan_count} "
             f"wins_a={wins_a} wins_b={wins_b} ties={ties} "
@@ -325,13 +274,38 @@ def evaluate_2v2(
     elapsed = time.perf_counter() - started
     scored_wins_a = wins_a + 0.5 * ties
     scored_wins_b = wins_b + 0.5 * ties
+    if any(len(values) != 2 for values in paired_point_diffs.values()):
+        raise RuntimeError("paired evaluation did not complete both seat-swapped games")
+    paired = np.asarray(
+        [np.mean(paired_point_diffs[index]) for index in sorted(paired_point_diffs)],
+        dtype=np.float64,
+    )
+    paired_se = float(paired.std(ddof=1) / np.sqrt(len(paired))) if len(paired) > 1 else 0.0
+
+    def action_rates(policy: str) -> dict[str, float]:
+        grouped = Counter()
+        for action_id, count in action_counts[policy].items():
+            grouped[_action_group(action_id)] += count
+        total = max(sum(grouped.values()), 1)
+        return {name: grouped[name] / total for name in (
+            "pass", "discard", "reach", "chi", "pon", "kan", "hora", "ryukyoku",
+        )}
+
     return {
-        "schema_version": 1,
+        "protocol_version": 2,
         "game_mode": game_mode,
         "hanchan_count": int(hanchan_count),
         "parallel_hanchans": parallel,
         "seed_base": int(seed_base),
         "greedy": True,
+        "paired_walls": True,
+        "seat_swap_within_pair": True,
+        "paired_point_diff_mean": float(paired.mean()),
+        "paired_point_diff_standard_error": paired_se,
+        "paired_point_diff_95ci": [
+            float(paired.mean() - 1.96 * paired_se),
+            float(paired.mean() + 1.96 * paired_se),
+        ],
         "model_a_device": str(device_a),
         "model_b_device": str(device_b),
         "team_win_definition": "higher sum of the two teammates' final scores; tie counts 0.5",
@@ -350,6 +324,8 @@ def evaluate_2v2(
             "first_place_count": first_places_a,
             "first_place_rate": first_places_a / hanchan_count,
             "individual_mean_rank": individual_rank_sum_a / (2 * hanchan_count),
+            "action_type_rates": action_rates("a"),
+            "metadata": adapter_a.metadata(),
         },
         "model_b": {
             "checkpoint": model_b_path,
@@ -360,6 +336,8 @@ def evaluate_2v2(
             "first_place_count": first_places_b,
             "first_place_rate": first_places_b / hanchan_count,
             "individual_mean_rank": individual_rank_sum_b / (2 * hanchan_count),
+            "action_type_rates": action_rates("b"),
+            "metadata": adapter_b.metadata(),
         },
         "selected_checkpoint": selected,
         "selection_reason": selection_reason,

@@ -153,15 +153,12 @@ class BatchedStateBridge:
             return np.asarray(end_kyoku, dtype=np.bool_), np.asarray(end_game, dtype=np.bool_)
 
     def prepare(
-        self, decisions: list[Decision], analysis: Any | None = None, *,
-        token_schema_version: int = 13,
+        self, decisions: list[Decision], analysis: Any | None = None,
     ) -> tuple[
         np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray
     ]:
         if not decisions:
             raise ValueError("cannot prepare an empty decision batch")
-        if int(token_schema_version) not in {11, 13}:
-            raise ValueError("token schema 12 is incomplete and unsupported; use 11 or 13")
         batch_indices = [decision.batch_index for decision in decisions]
         with self.profiler.stage("state/legal_action_json"):
             action_rows = [_action_jsons_and_decision_flag(decision.observation) for decision in decisions]
@@ -205,20 +202,6 @@ class BatchedStateBridge:
             history_generations_a = np.asarray(history_generations, dtype=np.int64)
             critic_factors_a = np.asarray(critic_factors, dtype=np.uint8)
             critic_lengths_a = np.asarray(critic_lengths, dtype=np.int64)
-        if analysis is not None and int(token_schema_version) == 11:
-            with self.profiler.stage("state/legacy_candidate_feature_encode"):
-                legacy_factors, legacy_numeric = analysis.legacy_candidate_tokens(decisions, mask_a)
-                new_lengths = token_lengths_a + np.asarray([len(row) for row in legacy_factors], dtype=np.int64)
-                width = int(new_lengths.max())
-                extended_factors = np.zeros((len(decisions), width, 10), dtype=np.uint8)
-                extended_numeric = np.zeros((len(decisions), width, 8), dtype=np.float32)
-                for row, (extra_factors, extra_numeric) in enumerate(zip(legacy_factors, legacy_numeric, strict=True)):
-                    base = int(token_lengths_a[row])
-                    extended_factors[row, :base] = factors_a[row, :base]
-                    extended_numeric[row, :base] = numeric_a[row, :base]
-                    extended_factors[row, base:base + len(extra_factors)] = extra_factors
-                    extended_numeric[row, base:base + len(extra_numeric)] = extra_numeric
-                factors_a, numeric_a, token_lengths_a = extended_factors, extended_numeric, new_lengths
         with self.profiler.stage("state/public_summary_append"):
             new_lengths = token_lengths_a + np.asarray(
                 [feature.length for feature in public_features], dtype=np.int64,
@@ -239,7 +222,7 @@ class BatchedStateBridge:
             factors_a = extended_factors
             numeric_a = extended_numeric
             token_lengths_a = new_lengths
-        if analysis is not None and int(token_schema_version) == 13:
+        if analysis is not None:
             # v13 requires every non-action row to precede the first query.
             with self.profiler.stage("state/v13_state_analysis"):
                 state_factors, state_numeric = analysis.state_tokens(decisions)

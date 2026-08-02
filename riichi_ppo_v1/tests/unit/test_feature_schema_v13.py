@@ -13,8 +13,6 @@ from riichi_ppo_v1.model.feature_schema import (
     FEATURE_SCHEMA_VERSION,
     RUST_ANALYSIS_VERSION,
     feature_schema_sha256,
-    legacy_encoder_component_sha256,
-    legacy_encoder_sha256,
 )
 from riichi_ppo_v1.model.actor_features import (
     _event_threat_rows,
@@ -48,10 +46,6 @@ def test_v13_contract_is_stable_and_versioned() -> None:
     assert RUST_ANALYSIS_VERSION == 4 == riichi.ANALYSIS_VERSION
     assert DECISION_ANALYSIS_VERSION == 16
     assert len(feature_schema_sha256()) == 64
-    components = legacy_encoder_component_sha256()
-    assert "RiichiEnv/riichienv-core/src/replay/mod.rs" in components
-    assert "riichi_ppo_v1/sft/data.py" in components
-    assert len(legacy_encoder_sha256()) == 64
 
 
 def test_rust_batch_matches_scalar_python_reference_for_random_13_and_14_tile_hands() -> None:

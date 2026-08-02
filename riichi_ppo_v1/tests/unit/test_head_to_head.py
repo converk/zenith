@@ -15,6 +15,10 @@ def test_320_hanchan_schedule_is_exactly_seat_balanced() -> None:
         2: 160,
         3: 160,
     }
+    assert all(
+        set(schedule[index]).isdisjoint(schedule[index + 1])
+        for index in range(0, len(schedule), 2)
+    )
 
 
 def test_schedule_requires_a_positive_even_count() -> None:

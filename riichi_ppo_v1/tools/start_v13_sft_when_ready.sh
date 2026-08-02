@@ -23,22 +23,12 @@ while [[ ! -s "$DATASET/manifest.json" ]]; do
 done
 
 "$CONDA" run -n Mahjong-AI python - "$DATASET/manifest.json" <<'PY'
-import json
 import sys
 from pathlib import Path
 
-manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-expected = {
-    "format": "riichi-sft-encoded-v3",
-    "token_schema_version": 13,
-    "rust_analysis_version": 4,
-    "decision_analysis_version": 16,
-}
-for name, value in expected.items():
-    if manifest.get(name) != value:
-        raise SystemExit(
-            f"incompatible completed cache: {name}={manifest.get(name)!r}, expected {value!r}"
-        )
+from riichi_ppo_v1.sft.contract import load_manifest, validate_v13_manifest
+
+validate_v13_manifest(load_manifest(Path(sys.argv[1]).parent))
 PY
 
 if [[ -d "$OUTPUT" ]] && [[ -n "$(find "$OUTPUT" -mindepth 1 -print -quit)" ]]; then

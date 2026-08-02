@@ -2,6 +2,7 @@ import gzip
 import io
 import json
 from collections import Counter
+from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import tarfile
@@ -35,8 +36,7 @@ from riichi_ppo_v1.sft.prepare import (
     stable_split,
 )
 from riichi_ppo_v1.sft.train import (
-    assert_ablation_cache_alignment, collate_samples, length_bucketed_batches,
-    load_config,
+    collate_samples, length_bucketed_batches, load_config,
 )
 from riichi_ppo_v1.training.learner import PPOLearner
 
@@ -250,13 +250,13 @@ def test_encoded_sft_shard_columns_are_decompressed_once(monkeypatch: pytest.Mon
     assert all(accesses[name] == 1 for name in expected)
 
 
-def test_incomplete_schema12_cache_is_rejected_with_reencode_guidance() -> None:
+def test_unknown_encoded_contract_is_rejected_fail_closed() -> None:
     with TemporaryDirectory() as directory:
         root = Path(directory)
         (root / "manifest.json").write_text(json.dumps({
             "format": "riichi-sft-encoded-v2", "token_schema_version": 12,
         }))
-        with pytest.raises(RuntimeError, match="re-encode as schema 13"):
+        with pytest.raises(RuntimeError, match="only the v13 encoded SFT format"):
             list(iter_split_samples(root, "train", shuffle=False, include_critic=False))
 
 
@@ -295,38 +295,8 @@ def test_v13_cache_requires_complete_analysis_metadata() -> None:
             "feature_schema_sha256": feature_schema_sha256(),
             "rust_analysis_version": RUST_ANALYSIS_VERSION,
         }))
-        with pytest.raises(RuntimeError, match="decision-analysis"):
+        with pytest.raises(RuntimeError, match="supported v13 SFT contract"):
             list(iter_split_samples(root, "train", shuffle=False, include_critic=False))
-
-
-def test_ablation_alignment_checks_full_identity_sequence_and_chunk_layout() -> None:
-    samples = encode_kyoku(
-        _first_kyoku(), year=2025, game_id="aligned", kyoku_index=3,
-        include_critic=False,
-    )[:2]
-    with TemporaryDirectory() as directory:
-        root = Path(directory)
-        datasets = [root / "v11", root / "v13"]
-        for dataset, schema in zip(datasets, (11, TOKEN_SCHEMA_VERSION), strict=True):
-            for split in ("train", "validation"):
-                target = dataset / split
-                target.mkdir(parents=True)
-                _write_chunk(target / f"{split}-00000.npz", samples)
-            identity = {
-                split: encoded_identity_digests(dataset, split)
-                for split in ("train", "validation")
-            }
-            (dataset / "manifest.json").write_text(json.dumps({
-                "token_schema_version": schema,
-                "selection_manifest_sha256": "same-selection",
-                "sample_identity_contract": identity,
-            }))
-        assert_ablation_cache_alignment(datasets[0], datasets[1])
-        manifest = json.loads((datasets[1] / "manifest.json").read_text())
-        manifest["sample_identity_contract"]["train"]["sequence_sha256"] = "different"
-        (datasets[1] / "manifest.json").write_text(json.dumps(manifest))
-        with pytest.raises(RuntimeError, match="identity"):
-            assert_ablation_cache_alignment(datasets[0], datasets[1])
 
 
 def test_actor_only_replay_and_batch_omit_private_critic_data() -> None:
@@ -369,7 +339,7 @@ def test_actor_only_backward_does_not_change_critic_parameters() -> None:
     )
     F.cross_entropy(output["policy_logits"], batch["actions"]).backward()
     optimizer.step()
-    assert model.policy_head.weight.grad is not None
+    assert any(parameter.grad is not None for parameter in model.policy_head.parameters())
     assert model.token_embedding.table.weight.grad is not None
     for name, parameter in model.named_parameters():
         if name in before:
@@ -419,7 +389,7 @@ def test_prepare_zip_to_shard_and_joint_loss_backward() -> None:
             output["value"], batch["value_targets"]
         )
         loss.backward()
-        assert model.policy_head.weight.grad is not None
+        assert any(parameter.grad is not None for parameter in model.policy_head.parameters())
         assert model.value_head.weight.grad is not None
 
 
@@ -444,6 +414,7 @@ def test_ppo_model_only_initialization_resets_iteration_and_optimizer() -> None:
             "decision_analysis_version": DECISION_ANALYSIS_VERSION,
             "training_stage": "sft",
             "training_mode": "actor_only",
+            "model_config": asdict(source.config),
         }, path)
         target = PPOLearner("mid", "cpu", **kwargs)
         target.iteration = 99

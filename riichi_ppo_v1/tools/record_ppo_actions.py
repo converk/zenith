@@ -379,30 +379,11 @@ def main() -> None:
             ]
             if not policy_decisions:
                 continue
-            (
-                factors,
-                numeric,
-                lengths,
-                legal,
-                _generations,
-                _critic,
-                _critic_lengths,
-            ) = bridge.prepare(
-                policy_decisions, analysis,
-                token_schema_version=int(getattr(model, "token_schema_version", 13)),
+            prepared = model.policy_adapter.prepare(bridge, policy_decisions, analysis)
+            factors, numeric, lengths, legal = (
+                prepared.factors, prepared.numeric, prepared.lengths, prepared.legal,
             )
-            with torch.autocast(
-                device_type=model_device.type,
-                dtype=torch.bfloat16,
-                enabled=use_bf16,
-            ):
-                output = model.forward_policy(
-                    _tensor(factors, model_device),
-                    _tensor(numeric, model_device),
-                    _tensor(legal, model_device),
-                    _tensor(lengths, model_device),
-                )
-            logits = output["policy_logits"]
+            logits = model.policy_adapter.masked_logits(prepared)
             action_ids = logits.argmax(-1).tolist()
             mjai_actions = bridge.state_machine.decode_actions(
                 [decision.batch_index for decision in policy_decisions],

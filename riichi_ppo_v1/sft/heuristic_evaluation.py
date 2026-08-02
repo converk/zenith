@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -11,6 +12,7 @@ import torch
 from torch import nn
 
 from ..model.bridge import BatchedStateBridge, NUM_PLAYERS
+from .policy_adapter import PolicyAdapter, V13PolicyAdapter, load_policy_adapter
 from .evaluation_cases import DEFENSE, EFFICIENCY, evaluation_cases
 from ..training.metrics import SemanticMetrics
 from ..training.opponents.heuristic import HeuristicPolicy
@@ -30,13 +32,9 @@ def _phase(discard_count: int) -> str:
     return "late"
 
 
-def _tensor(value: np.ndarray, device: torch.device) -> torch.Tensor:
-    return torch.from_numpy(value).to(device, non_blocking=device.type == "cuda")
-
-
 @torch.inference_mode()
 def evaluate_against_heuristics(
-    model: nn.Module,
+    model: nn.Module | PolicyAdapter,
     device: torch.device,
     config: dict[str, Any],
     *,
@@ -65,13 +63,14 @@ def evaluate_against_heuristics(
         1, int(config.get("heuristic_evaluation_parallel_hanchan_count", 1)),
     )
     metrics = SemanticMetrics()
-    use_bf16 = bool(
-        str(config.get("inference_dtype", "bf16")).lower() == "bf16"
-        and device.type == "cuda"
-        and torch.cuda.is_bf16_supported()
-    )
-    was_training = model.training
-    model.eval()
+    if hasattr(model, "prepare") and hasattr(model, "masked_logits"):
+        adapter = model
+        policy_model = adapter.model
+    else:
+        policy_model = model
+        adapter = V13PolicyAdapter(policy_model, device, Path("in-memory-v13"))
+    was_training = policy_model.training
+    policy_model.eval()
     started = time.perf_counter()
 
     for batch_start in range(0, count, parallel_hanchans):
@@ -144,27 +143,9 @@ def evaluate_against_heuristics(
                     actions_by_env[decision.env_index][decision.seat_id] = action
 
             if candidate_decisions:
-                (
-                    factors,
-                    numeric,
-                    lengths,
-                    legal,
-                    _generations,
-                    _critic,
-                    _critic_lengths,
-                ) = bridge.prepare(candidate_decisions, analysis)
-                with torch.autocast(
-                    device_type=device.type,
-                    dtype=torch.bfloat16,
-                    enabled=use_bf16,
-                ):
-                    output = model.forward_policy(
-                        _tensor(factors, device),
-                        _tensor(numeric, device),
-                        _tensor(legal, device),
-                        _tensor(lengths, device),
-                    )
-                action_ids = output["policy_logits"].argmax(-1).tolist()
+                prepared = adapter.prepare(bridge, candidate_decisions, analysis)
+                legal = prepared.legal
+                action_ids = adapter.masked_logits(prepared).argmax(-1).tolist()
                 candidate_actions = bridge.decode(candidate_decisions, action_ids)
                 for decision, action_id, action, legal_row in zip(
                     candidate_decisions, action_ids, candidate_actions, legal, strict=True,
@@ -245,5 +226,19 @@ def evaluate_against_heuristics(
         count / max(summary["heuristic_eval/performance/elapsed_s"], 1e-9)
     )
     if was_training:
-        model.train()
+        policy_model.train()
     return summary
+
+
+def evaluate_checkpoint_against_heuristics(
+    checkpoint: str,
+    device: torch.device,
+    config: dict[str, Any],
+    *,
+    hanchan_count: int | None = None,
+    cycle: int = 0,
+) -> dict[str, float]:
+    adapter = load_policy_adapter(checkpoint, device=device)
+    return evaluate_against_heuristics(
+        adapter, device, config, hanchan_count=hanchan_count, cycle=cycle,
+    )

@@ -311,18 +311,8 @@ def evaluate_2v2_detailed(
                 ]
                 if not policy_decisions:
                     continue
-                factors, numeric, lengths, legal, _g, _c, _cl = bridge.prepare(
-                    policy_decisions, analysis,
-                    token_schema_version=int(getattr(model, "token_schema_version", 13)),
-                )
-                with torch.autocast(device_type=model_device.type, dtype=torch.bfloat16, enabled=use_bf16):
-                    output = model.forward_policy(
-                        _tensor(factors, model_device),
-                        _tensor(numeric, model_device),
-                        _tensor(legal, model_device),
-                        _tensor(lengths, model_device),
-                    )
-                action_ids = output["policy_logits"].argmax(-1).tolist()
+                prepared = model.policy_adapter.prepare(bridge, policy_decisions, analysis)
+                action_ids = model.policy_adapter.masked_logits(prepared).argmax(-1).tolist()
                 actions = bridge.decode(policy_decisions, action_ids)
                 for decision, action in zip(policy_decisions, actions, strict=True):
                     actions_by_env[decision.env_index][decision.seat_id] = action

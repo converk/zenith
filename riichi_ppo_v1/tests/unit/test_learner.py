@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+from dataclasses import asdict
 from riichi_ppo_v1.model.feature_schema import DECISION_ANALYSIS_VERSION, RUST_ANALYSIS_VERSION, feature_schema_sha256
 from riichi_ppo_v1.model.schema import TOKEN_SCHEMA_VERSION
 from tempfile import TemporaryDirectory
@@ -332,6 +333,7 @@ def test_model_initialization_starts_joint_ppo() -> None:
             "decision_analysis_version": DECISION_ANALYSIS_VERSION,
             "training_stage": "sft",
             "training_mode": "actor_only",
+            "model_config": asdict(source.config),
         }, path)
         learner = PPOLearner("mid", "cpu", **kwargs)
         learner.load_model_weights(path)
@@ -383,6 +385,7 @@ def test_actor_only_sft_initialization_bootstraps_critic_before_policy() -> None
             "decision_analysis_version": DECISION_ANALYSIS_VERSION,
             "training_stage": "sft",
             "training_mode": "actor_only",
+            "model_config": asdict(source.config),
         }, path)
         learner = PPOLearner("mid", "cpu", **kwargs)
         learner.load_model_weights(path)
@@ -431,6 +434,7 @@ def test_anchored_ppo_checkpoint_restores_frozen_sft_reference() -> None:
             "decision_analysis_version": DECISION_ANALYSIS_VERSION,
             "training_stage": "sft",
             "training_mode": "actor_only",
+            "model_config": asdict(source.config),
         }, sft_path)
         source.load_model_weights(sft_path)
         checkpoint_path = f"{directory}/ppo.pt"

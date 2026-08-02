@@ -320,9 +320,7 @@ def test_pass_candidate_explicitly_records_a_foregone_win() -> None:
     obs = observation(hand, [passed, hora])
     obs.drawn_tile = None
     decision = Decision(0, 0, obs)
-    batch = DecisionAnalysisBatch.build(
-        [decision], analyzer=EfficiencyAnalyzer(), token_schema_version=13,
-    )
+    batch = DecisionAnalysisBatch.build([decision], analyzer=EfficiencyAnalyzer())
     row = batch.for_decision(decision)
     assert len(row.candidates) == 1
     assert row.candidates[0].action_id == 0
@@ -367,8 +365,8 @@ def test_schema_11_keeps_kan_candidate_features_frozen_as_na() -> None:
     ankan = Action(ActionType.ANKAN, 0, [0, 1, 2, 3])
     obs = observation(hand, [ankan])
     decision = Decision(0, 0, obs)
-    row = DecisionAnalysisBatch.build(
-        [decision], analyzer=EfficiencyAnalyzer(), token_schema_version=11,
+    row = DecisionAnalysisBatch.build_legacy_v11(
+        [decision], analyzer=EfficiencyAnalyzer(),
     ).for_decision(decision)
     assert row.candidates == ()
 

@@ -1,7 +1,7 @@
 """Semantic-token decoder-only GQA actor-critic.
 
 v13 adds isolated two-token action queries while retaining the legacy fixed
-241-way head so old checkpoints remain loadable for ablations and evaluation.
+241-way head so frozen v11 checkpoints remain loadable by the legacy adapter.
 """
 
 from __future__ import annotations

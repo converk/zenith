@@ -1,5 +1,4 @@
 seed: 1
-token_schema_version: 13
 device: cuda
 learner_gpus: 2
 model_size: mid

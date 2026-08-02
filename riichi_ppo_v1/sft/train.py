@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 from contextlib import nullcontext
 from dataclasses import asdict
-import hashlib
 import itertools
 import json
 import math
@@ -29,19 +28,15 @@ from torch.utils.tensorboard import SummaryWriter
 import yaml
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
-from ..model.feature_schema import (
-    DECISION_ANALYSIS_VERSION, RUST_ANALYSIS_VERSION, feature_schema_sha256,
-    legacy_encoder_sha256,
-)
-from ..model.schema import TOKEN_SCHEMA_VERSION
 from .data import SftSample, iter_split_samples
+from .checkpoint import checkpoint_payload, load_exact_resume, load_v13_weights_only
+from .contract import dataset_manifest_hash, load_manifest, training_mode, validate_v13_manifest
 from .heuristic_evaluation import evaluate_against_heuristics
 from .tensorboard import SftMetricWindow, write_sft_scalars
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "seed": 1,
-    "token_schema_version": TOKEN_SCHEMA_VERSION,
     "device": "cuda",
     "learner_gpus": 2,
     "model_size": "mid",
@@ -49,6 +44,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "critic_layers": 2,
     "epochs": 1,
     "max_train_steps": 0,
+    "stop_after_steps": 0,
     "batch_size": 512,
     "learning_rate": 1.5e-4,
     "min_learning_rate": 2e-5,
@@ -86,8 +82,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tensorboard_enabled": True,
     "tensorboard_dirname": "tensorboard",
     "resume": None,
-    "ablation_aligned_batches": False,
-    "ablation_identity_reference_dataset": None,
+    "init_model": None,
 }
 
 
@@ -104,6 +99,16 @@ def load_config(path: Path | None) -> dict[str, Any]:
 
 def validate_config(config: dict[str, Any]) -> None:
     """Reject launch-time settings whose effective semantics are ambiguous."""
+    obsolete = {
+        "token_schema_version", "feature_schema_sha256", "rust_analysis_version",
+        "decision_analysis_version", "legacy_encoder_sha256",
+        "legacy_encoder_components_sha256", "ablation_aligned_batches",
+        "ablation_identity_reference_dataset",
+    } & config.keys()
+    if obsolete:
+        raise ValueError("obsolete SFT configuration fields: " + ", ".join(sorted(obsolete)))
+    if config.get("policy_head_type") != "isolated_action_query":
+        raise ValueError("v13 SFT requires policy_head_type=isolated_action_query")
     world_size = (
         int(config["learner_gpus"])
         if str(config["device"]).startswith("cuda") else 1
@@ -123,50 +128,6 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("actor-only SFT requires public_value_coef=0")
     if int(config.get("validation_samples_per_run", 0)) < 0:
         raise ValueError("validation_samples_per_run must be nonnegative")
-
-
-def dataset_manifest_hash(dataset: Path) -> str:
-    return hashlib.sha256((dataset / "manifest.json").read_bytes()).hexdigest()
-
-
-def assert_ablation_cache_alignment(dataset: Path, reference: Path) -> None:
-    """Require paired v11/v13 caches to contain the same exact sample stream."""
-    manifests = []
-    for path in (dataset, reference):
-        manifest_path = path / "manifest.json"
-        if not manifest_path.is_file():
-            raise RuntimeError(f"aligned ablation cache manifest is missing: {manifest_path}")
-        manifests.append(json.loads(manifest_path.read_text(encoding="utf-8")))
-    current, paired = manifests
-    schemas = {
-        int(current.get("token_schema_version", -1)),
-        int(paired.get("token_schema_version", -1)),
-    }
-    if schemas != {11, TOKEN_SCHEMA_VERSION}:
-        raise RuntimeError(
-            f"aligned ablation requires one schema-11 and one schema-{TOKEN_SCHEMA_VERSION} cache"
-        )
-    if current.get("selection_manifest_sha256") != paired.get("selection_manifest_sha256"):
-        raise RuntimeError("aligned ablation caches use different selected kyoku sequences")
-    current_identity = current.get("sample_identity_contract")
-    paired_identity = paired.get("sample_identity_contract")
-    if not isinstance(current_identity, dict) or not isinstance(paired_identity, dict):
-        raise RuntimeError(
-            "aligned ablation caches lack the complete sample identity contract; re-encode both caches"
-        )
-    for split in ("train", "validation"):
-        left = current_identity.get(split)
-        right = paired_identity.get(split)
-        if not isinstance(left, dict) or not isinstance(right, dict):
-            raise RuntimeError(f"aligned ablation caches lack {split} sample identities")
-        required = (
-            "samples", "sequence_sha256", "sharded_sequence_sha256",
-            "supervision_sequence_sha256",
-        )
-        if any(left.get(field) != right.get(field) for field in required):
-            raise RuntimeError(
-                f"aligned ablation {split} identity, supervision, or chunk layout differs"
-            )
 
 
 def collate_samples(
@@ -285,6 +246,8 @@ _ACTION_GROUP_INDEX = torch.tensor(
     [_GROUP_NAMES.index(value) for value in _GROUP_IDS], dtype=torch.long,
 )
 
+_LAST_RANK_RNG_STATES: list[dict[str, Any]] = []
+
 
 def group_classification_loss(logits: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
     """CE over logsumexp action groups, only where >=2 groups are legal."""
@@ -325,7 +288,7 @@ def _model_config(config: dict[str, Any]) -> ModelConfig:
     values = asdict(base)
     values["context_tokens"] = int(config["context_tokens"])
     values["critic_layers"] = int(config.get("critic_layers", base.critic_layers))
-    values["policy_head_type"] = str(config.get("policy_head_type", "isolated_action_query"))
+    values["policy_head_type"] = str(config["policy_head_type"])
     return ModelConfig(**values)
 
 
@@ -339,48 +302,31 @@ def _save_checkpoint(
     manifest_hash: str,
     epoch: int,
     global_step: int,
-    rank_steps: list[int],
+    rank_batches_consumed: list[int],
     best_validation_loss: float = float("inf"),
     best_heuristic_point_delta: float = float("-inf"),
     metrics: dict[str, float] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    module = model.module if isinstance(model, DistributedDataParallel) else model
-    torch.save({
-        "model": {name: value.detach().cpu() for name, value in module.state_dict().items()},
-        "optimizer": optimizer.state_dict(),
-        "scheduler": scheduler.state_dict(),
-        "model_config": asdict(module.config),
-        "sft_config": config,
-        "training_stage": "sft",
-        "training_mode": (
-            "joint_actor_critic" if bool(config["train_critic"])
-            else ("actor_public_value" if bool(config.get("train_public_value", True)) else "actor_only")
-        ),
-        "token_schema_version": int(config.get("token_schema_version", TOKEN_SCHEMA_VERSION)),
-        "feature_schema_sha256": config.get("feature_schema_sha256"),
-        "rust_analysis_version": config.get("rust_analysis_version"),
-        "decision_analysis_version": config.get("decision_analysis_version"),
-        "legacy_encoder_sha256": config.get("legacy_encoder_sha256"),
-        "policy_head_type": module.config.policy_head_type,
-        "dataset_manifest_hash": manifest_hash,
-        "epoch": epoch,
-        "global_step": global_step,
-        "rank_steps": rank_steps,
-        "data_cursor": {
-            "version": 1,
-            "epoch": int(epoch),
-            "rank_batches_consumed": [int(value) for value in rank_steps],
-            "world_size": len(rank_steps),
-        },
-        "best_validation_loss": float(best_validation_loss),
-        "best_heuristic_point_delta": float(best_heuristic_point_delta),
-        "metrics": dict(metrics or {}),
-        "torch_rng": torch.get_rng_state(),
-        "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
-        "numpy_rng": np.random.get_state(),
-        "python_rng": random.getstate(),
-    }, path)
+    rank_rng_states = _LAST_RANK_RNG_STATES
+    if len(rank_rng_states) != len(rank_batches_consumed):
+        rank_rng_states = [_local_rng_state()]
+    payload = checkpoint_payload(
+        model, optimizer, scheduler,
+        config=config,
+        manifest_hash=manifest_hash,
+        mode=training_mode(config),
+        epoch=epoch,
+        global_step=global_step,
+        rank_batches_consumed=rank_batches_consumed,
+        best_validation_loss=best_validation_loss,
+        best_heuristic_point_delta=best_heuristic_point_delta,
+        metrics=dict(metrics or {}),
+        rank_rng_states=rank_rng_states,
+    )
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    torch.save(payload, temporary)
+    os.replace(temporary, path)
 
 
 @torch.no_grad()
@@ -427,7 +373,7 @@ def evaluate(
         samples,
         batch_size,
         window_batches=int(config["length_bucket_window_batches"]),
-        align_across_schemas=bool(config.get("ablation_aligned_batches", False)),
+        align_across_schemas=False,
     )
     use_bf16 = bool(
         str(config.get("inference_dtype", "bf16")).lower() == "bf16"
@@ -465,23 +411,22 @@ def evaluate(
             totals["value_sq_sum"] += float(error.square().sum())
         totals["top1"] += float((top[:, 0] == targets).sum())
         totals["top3"] += float((top == targets[:, None]).any(-1).sum())
-        if int(config.get("token_schema_version", TOKEN_SCHEMA_VERSION)) == TOKEN_SCHEMA_VERSION:
-            for sample, predicted in zip(rows, top[:, 0].tolist(), strict=True):
-                offense = (sample.token_factors[:, 0] == 7) & (sample.token_factors[:, 9] == 1)
-                action_ids = sample.token_factors[offense, 2].astype(np.int64) - 1
-                structural = sample.token_factors[offense, 4].astype(np.int64)
-                ukeire = sample.token_numeric[offense, 3]
-                comparable = structural > 0
-                if comparable.any() and int(predicted) in action_ids[comparable]:
-                    best_shanten = int(structural[comparable].min())
-                    chosen = int(np.flatnonzero(action_ids == int(predicted))[0])
-                    totals["rule_samples"] += 1
-                    shanten_ok = int(structural[chosen]) == best_shanten
-                    totals["optimal_shanten"] += float(shanten_ok)
-                    if shanten_ok:
-                        best_ukeire = float(ukeire[structural == best_shanten].max())
-                        totals["optimal_ukeire_samples"] += 1
-                        totals["optimal_ukeire"] += float(np.isclose(float(ukeire[chosen]), best_ukeire))
+        for sample, predicted in zip(rows, top[:, 0].tolist(), strict=True):
+            offense = (sample.token_factors[:, 0] == 7) & (sample.token_factors[:, 9] == 1)
+            action_ids = sample.token_factors[offense, 2].astype(np.int64) - 1
+            structural = sample.token_factors[offense, 4].astype(np.int64)
+            ukeire = sample.token_numeric[offense, 3]
+            comparable = structural > 0
+            if comparable.any() and int(predicted) in action_ids[comparable]:
+                best_shanten = int(structural[comparable].min())
+                chosen = int(np.flatnonzero(action_ids == int(predicted))[0])
+                totals["rule_samples"] += 1
+                shanten_ok = int(structural[chosen]) == best_shanten
+                totals["optimal_shanten"] += float(shanten_ok)
+                if shanten_ok:
+                    best_ukeire = float(ukeire[structural == best_shanten].max())
+                    totals["optimal_ukeire_samples"] += 1
+                    totals["optimal_ukeire"] += float(np.isclose(float(ukeire[chosen]), best_ukeire))
         grouped, available_groups = grouped_action_logits(logits)
         group_targets = _ACTION_GROUP_INDEX.to(targets.device)[targets]
         group_eligible = available_groups.sum(dim=1) >= 2
@@ -541,12 +486,25 @@ def evaluate(
     return result
 
 
-def _rank_steps(world_size: int, local_steps: int) -> list[int]:
+def _gather_rank_progress(world_size: int, local_steps: int) -> list[int]:
+    global _LAST_RANK_RNG_STATES
+    local_state = _local_rng_state()
     if world_size == 1:
+        _LAST_RANK_RNG_STATES = [local_state]
         return [local_steps]
     gathered: list[Any] = [None] * world_size
-    dist.all_gather_object(gathered, int(local_steps))
-    return [int(value) for value in gathered]
+    dist.all_gather_object(gathered, (int(local_steps), local_state))
+    _LAST_RANK_RNG_STATES = [value[1] for value in gathered]
+    return [int(value[0]) for value in gathered]
+
+
+def _local_rng_state() -> dict[str, Any]:
+    return {
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
+        "numpy": np.random.get_state(),
+        "python": random.getstate(),
+    }
 
 
 def _train_worker_impl(
@@ -569,6 +527,12 @@ def _train_worker_impl(
     if distributed:
         dist.init_process_group("nccl", rank=rank, world_size=world_size, device_id=device)
     model = KyokuTransformerActorCritic(_model_config(config)).to(device)
+    if config.get("init_model"):
+        initialized = load_v13_weights_only(config["init_model"], device=device)
+        if initialized.config != model.config:
+            raise RuntimeError("weights-only initialization model_config differs from training config")
+        model.load_state_dict(initialized.state_dict(), strict=True)
+        del initialized
     train_critic = bool(config["train_critic"])
     train_value = train_critic or bool(config.get("train_public_value", True))
     frozen_roots: set[str] = set()
@@ -589,36 +553,16 @@ def _train_worker_impl(
         weight_decay=float(config["weight_decay"]),
         fused=device.type == "cuda",
     )
-    manifest = json.loads((dataset / "manifest.json").read_text(encoding="utf-8"))
+    manifest = load_manifest(dataset)
     raw_dataset = manifest.get("format") == "riichi-sft-kyoku-v1"
+    if not raw_dataset:
+        validate_v13_manifest(manifest)
     if distributed and raw_dataset:
         raise RuntimeError(
             "distributed SFT requires a precomputed encoded dataset so rank sample counts can be balanced"
         )
-    dataset_schema = int(manifest.get("token_schema_version", TOKEN_SCHEMA_VERSION if raw_dataset else -1))
-    if dataset_schema not in {11, TOKEN_SCHEMA_VERSION}:
-        raise RuntimeError(f"unsupported SFT dataset schema {dataset_schema}; schema 12 must be re-encoded")
-    requested_schema = int(config.get("token_schema_version", dataset_schema))
-    if requested_schema != dataset_schema:
-        raise RuntimeError(
-            f"SFT config requests schema {requested_schema}, but dataset is schema {dataset_schema}"
-        )
-    policy_head_type = str(config.get("policy_head_type", "isolated_action_query"))
-    if dataset_schema == 11 and policy_head_type != "legacy_fixed":
-        raise RuntimeError("schema-11 data is supported only by the legacy_fixed baseline")
-    config["token_schema_version"] = dataset_schema
-    config["feature_schema_sha256"] = manifest.get(
-        "feature_schema_sha256", feature_schema_sha256() if raw_dataset else None,
-    )
-    config["rust_analysis_version"] = manifest.get(
-        "rust_analysis_version", RUST_ANALYSIS_VERSION if raw_dataset else None,
-    )
-    config["decision_analysis_version"] = manifest.get(
-        "decision_analysis_version", DECISION_ANALYSIS_VERSION if raw_dataset else None,
-    )
-    config["legacy_encoder_sha256"] = manifest.get(
-        "legacy_encoder_sha256", legacy_encoder_sha256() if dataset_schema == 11 and raw_dataset else None,
-    )
+    if config["policy_head_type"] != "isolated_action_query":
+        raise RuntimeError("v13 SFT training requires isolated_action_query")
     train_decisions = int(manifest["counts"]["train_decisions"])
     if distributed:
         samples_per_rank, extra_samples = divmod(train_decisions, world_size)
@@ -658,57 +602,29 @@ def _train_worker_impl(
     best_validation_loss = float("inf")
     best_heuristic_point_delta = float("-inf")
     if config.get("resume"):
-        payload = torch.load(config["resume"], map_location=device, weights_only=False)
-        if int(payload.get("token_schema_version", 0)) != dataset_schema:
-            raise RuntimeError("SFT resume checkpoint has an incompatible token schema")
-        if payload.get("feature_schema_sha256") != config.get("feature_schema_sha256"):
-            raise RuntimeError("SFT resume checkpoint has an incompatible feature schema hash")
-        if payload.get("rust_analysis_version") != config.get("rust_analysis_version"):
-            raise RuntimeError("SFT resume checkpoint has an incompatible Rust analysis version")
-        if payload.get("decision_analysis_version") != config.get("decision_analysis_version"):
-            raise RuntimeError("SFT resume checkpoint has an incompatible decision-analysis version")
-        if payload.get("legacy_encoder_sha256") != config.get("legacy_encoder_sha256"):
-            raise RuntimeError("SFT resume checkpoint has an incompatible legacy encoder hash")
-        checkpoint_head = payload.get("policy_head_type", payload.get("model_config", {}).get("policy_head_type"))
-        if checkpoint_head != model.config.policy_head_type:
-            raise RuntimeError("SFT resume checkpoint has an incompatible policy head type")
-        if payload.get("dataset_manifest_hash") != manifest_hash:
-            raise RuntimeError("SFT resume checkpoint belongs to a different dataset manifest")
-        expected_mode = (
-            "joint_actor_critic" if train_critic
-            else ("actor_public_value" if train_value else "actor_only")
+        payload = load_exact_resume(
+            config["resume"], model_config=model.config,
+            training_mode=training_mode(config),
+            dataset_manifest_hash=manifest_hash, world_size=world_size,
         )
-        if payload.get("training_mode", expected_mode) != expected_mode:
-            raise RuntimeError("SFT resume checkpoint training mode differs from current config")
         model.load_state_dict(payload["model"])
         optimizer.load_state_dict(payload["optimizer"])
         scheduler.load_state_dict(payload["scheduler"])
-        cursor = payload.get("data_cursor")
-        if cursor is not None:
-            if int(cursor.get("version", -1)) != 1:
-                raise RuntimeError("SFT resume checkpoint has an unsupported data cursor")
-            if int(cursor.get("world_size", world_size)) != world_size:
-                raise RuntimeError("SFT resume checkpoint data cursor uses a different world size")
-            start_epoch = int(cursor.get("epoch", 0))
-            rank_progress = cursor.get("rank_batches_consumed", [])
-        else:
-            # Backward compatibility for checkpoints written before the
-            # versioned cursor was introduced.  Their rank_steps are valid for
-            # the first resume from an uninterrupted run.
-            start_epoch = int(payload.get("epoch", 0))
-            rank_progress = payload.get("rank_steps", [])
-        global_step = int(payload.get("global_step", 0))
-        skip_steps = int(rank_progress[rank]) if rank < len(rank_progress) else 0
+        cursor = payload["data_cursor"]
+        start_epoch = int(cursor["epoch"])
+        rank_progress = cursor["rank_batches_consumed"]
+        global_step = int(payload["global_step"])
+        skip_steps = int(rank_progress[rank])
         best_validation_loss = float(payload.get("best_validation_loss", float("inf")))
         best_heuristic_point_delta = float(
             payload.get("best_heuristic_point_delta", float("-inf"))
         )
-        if "torch_rng" in payload:
-            torch.set_rng_state(payload["torch_rng"].cpu())
-            np.random.set_state(payload["numpy_rng"])
-            random.setstate(payload["python_rng"])
-        if payload.get("cuda_rng") is not None and torch.cuda.is_available():
-            torch.cuda.set_rng_state_all([state.cpu() for state in payload["cuda_rng"]])
+        rng_state = payload["rank_rng_states"][rank]
+        torch.set_rng_state(rng_state["torch"].cpu())
+        np.random.set_state(rng_state["numpy"])
+        random.setstate(rng_state["python"])
+        if rng_state["cuda"] is not None and torch.cuda.is_available():
+            torch.cuda.set_rng_state(rng_state["cuda"].cpu(), device=device)
     writer: SummaryWriter | None = None
     if rank == 0 and bool(config.get("tensorboard_enabled", True)):
         tensorboard_path = output / str(config.get("tensorboard_dirname", "tensorboard"))
@@ -758,9 +674,13 @@ def _train_worker_impl(
                 local_batch,
                 window_batches=int(config["length_bucket_window_batches"]),
                 rng=random.Random(int(config["seed"]) + epoch * 1_000_003 + rank),
-                align_across_schemas=bool(config.get("ablation_aligned_batches", False)),
+                align_across_schemas=False,
             )
             for batch_index, rows in enumerate(batches):
+                stop_after = int(config.get("stop_after_steps", 0))
+                if stop_after > 0 and global_step >= stop_after:
+                    stop_training = True
+                    break
                 if int(config.get("max_train_steps", 0)) > 0 and global_step >= int(config["max_train_steps"]):
                     stop_training = True
                     break
@@ -768,9 +688,8 @@ def _train_worker_impl(
                     continue
                 step_started = last_step_end
                 batch = collate_samples(rows, device, include_critic=train_critic)
-                query_extra = int(str(config.get("policy_head_type")) == "legacy_fixed")
-                effective_tokens = sum(sample.token_length + query_extra for sample in rows)
-                padded_tokens = len(rows) * (max(sample.token_length for sample in rows) + query_extra)
+                effective_tokens = sum(sample.token_length for sample in rows)
+                padded_tokens = len(rows) * max(sample.token_length for sample in rows)
                 local_samples += len(rows)
                 local_effective_tokens += effective_tokens
                 local_padded_tokens += padded_tokens
@@ -893,7 +812,7 @@ def _train_worker_impl(
                     and global_step % heuristic_interval == 0
                 )
                 if checkpoint_due or validation_due or heuristic_due:
-                    progress = _rank_steps(world_size, steps_in_epoch)
+                    progress = _gather_rank_progress(world_size, steps_in_epoch)
                     if rank == 0:
                         if validation_due:
                             module = (
@@ -916,7 +835,7 @@ def _train_worker_impl(
                                 _save_checkpoint(
                                     output / "best.pt", model, optimizer, scheduler,
                                     config=config, manifest_hash=manifest_hash, epoch=epoch,
-                                    global_step=global_step, rank_steps=progress,
+                                    global_step=global_step, rank_batches_consumed=progress,
                                     best_validation_loss=best_validation_loss,
                                     best_heuristic_point_delta=best_heuristic_point_delta,
                                     metrics=validation,
@@ -958,7 +877,7 @@ def _train_worker_impl(
                                     manifest_hash=manifest_hash,
                                     epoch=epoch,
                                     global_step=global_step,
-                                    rank_steps=progress,
+                                    rank_batches_consumed=progress,
                                     best_validation_loss=best_validation_loss,
                                     best_heuristic_point_delta=best_heuristic_point_delta,
                                     metrics=heuristic_metrics,
@@ -984,7 +903,7 @@ def _train_worker_impl(
                             _save_checkpoint(
                                 output / "latest.pt", model, optimizer, scheduler,
                                 config=config, manifest_hash=manifest_hash, epoch=epoch,
-                                global_step=global_step, rank_steps=progress,
+                                global_step=global_step, rank_batches_consumed=progress,
                                 best_validation_loss=best_validation_loss,
                                 best_heuristic_point_delta=best_heuristic_point_delta,
                             )
@@ -1007,7 +926,7 @@ def _train_worker_impl(
             skip_steps = 0
     if distributed:
         dist.barrier()
-    progress = _rank_steps(world_size, cursor_steps_in_epoch)
+    progress = _gather_rank_progress(world_size, cursor_steps_in_epoch)
     throughput_values = torch.tensor(
         [local_samples, local_effective_tokens, local_padded_tokens],
         dtype=torch.float64,
@@ -1063,7 +982,7 @@ def _train_worker_impl(
                     manifest_hash=manifest_hash,
                     epoch=cursor_epoch,
                     global_step=global_step,
-                    rank_steps=progress,
+                    rank_batches_consumed=progress,
                     best_validation_loss=best_validation_loss,
                     best_heuristic_point_delta=best_heuristic_point_delta,
                     metrics=final_heuristic,
@@ -1071,7 +990,7 @@ def _train_worker_impl(
         _save_checkpoint(
             output / "latest.pt", model, optimizer, scheduler,
             config=config, manifest_hash=manifest_hash, epoch=cursor_epoch,
-            global_step=global_step, rank_steps=progress,
+            global_step=global_step, rank_batches_consumed=progress,
             best_validation_loss=min(
                 best_validation_loss, float(metrics["validation/loss"])
             ),
@@ -1083,7 +1002,7 @@ def _train_worker_impl(
             _save_checkpoint(
                 output / "best.pt", model, optimizer, scheduler,
                 config=config, manifest_hash=manifest_hash, epoch=cursor_epoch,
-                global_step=global_step, rank_steps=progress,
+                global_step=global_step, rank_batches_consumed=progress,
                 best_validation_loss=best_validation_loss, metrics=metrics,
                 best_heuristic_point_delta=best_heuristic_point_delta,
             )
@@ -1131,23 +1050,36 @@ def main() -> None:
         help="SFT config (defaults to the repository's canonical sft.yaml)",
     )
     parser.add_argument("--resume", type=Path)
+    parser.add_argument("--init-model", type=Path)
     parser.add_argument("--device")
     parser.add_argument("--learner-gpus", type=int)
+    parser.add_argument("--max-train-steps", type=int)
+    parser.add_argument("--stop-after-steps", type=int)
     args = parser.parse_args()
     config = load_config(args.config)
     if args.resume:
         config["resume"] = str(args.resume)
+    if args.init_model:
+        config["init_model"] = str(args.init_model)
     if args.device:
         config["device"] = args.device
     if args.learner_gpus is not None:
         config["learner_gpus"] = args.learner_gpus
+    if args.max_train_steps is not None:
+        config["max_train_steps"] = args.max_train_steps
+    if args.stop_after_steps is not None:
+        config["stop_after_steps"] = args.stop_after_steps
     validate_config(config)
     output = resolve_output(config, args.output)
     config["checkpoint_dir"] = str(output)
+    if config.get("resume") and config.get("init_model"):
+        raise ValueError("--resume and --init-model are mutually exclusive")
     if config.get("resume"):
         resume_path = Path(str(config["resume"]))
         if not resume_path.is_file():
             raise FileNotFoundError(f"SFT resume checkpoint does not exist: {resume_path}")
+    elif config.get("init_model") and not Path(str(config["init_model"])).is_file():
+        raise FileNotFoundError(f"SFT initialization checkpoint does not exist: {config['init_model']}")
     elif output.exists() and (
         not output.is_dir() or any(output.iterdir())
     ):
@@ -1155,13 +1087,6 @@ def main() -> None:
             f"refusing to overwrite non-empty fresh-training output: {output}; "
             "choose a new --output directory"
         )
-    if bool(config.get("ablation_aligned_batches", False)):
-        reference_value = config.get("ablation_identity_reference_dataset")
-        if not reference_value:
-            raise RuntimeError(
-                "ablation_aligned_batches requires ablation_identity_reference_dataset"
-            )
-        assert_ablation_cache_alignment(args.dataset, Path(str(reference_value)))
     world_size = int(config["learner_gpus"]) if str(config["device"]).startswith("cuda") else 1
     if str(config["device"]).startswith("cuda") and torch.cuda.device_count() < world_size:
         raise RuntimeError(

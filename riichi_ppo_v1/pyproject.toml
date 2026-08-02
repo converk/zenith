@@ -29,6 +29,8 @@ riichi-sft-audit = "riichi_ppo_v1.sft.audit:main"
 packages = [
   "riichi_ppo_v1",
   "riichi_ppo_v1.model",
+  "riichi_ppo_v1.legacy",
+  "riichi_ppo_v1.legacy.v11",
   "riichi_ppo_v1.tests",
   "riichi_ppo_v1.training",
   "riichi_ppo_v1.training.rewards",

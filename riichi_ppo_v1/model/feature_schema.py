@@ -9,48 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
 
 FEATURE_SCHEMA_VERSION = 13
 ENCODED_FORMAT = "riichi-sft-encoded-v3"
 RUST_ANALYSIS_VERSION = 4
 DECISION_ANALYSIS_VERSION = 16
-LEGACY_ENCODER_VERSION = 11
-RIICHIENV_REPLAY_SEMANTICS_VERSION = 1
-
-LEGACY_ENCODER_SOURCE_FILES = (
-    "riichi_ppo_v1/sft/data.py",
-    "riichi_ppo_v1/sft/precompute.py",
-    "riichi_ppo_v1/model/bridge.py",
-    "riichi_ppo_v1/model/critic_features.py",
-    "riichi_ppo_v1/model/schema.py",
-    "riichi_ppo_v1/training/rewards/decision.py",
-    "riichi_ppo_v1/training/rewards/efficiency.py",
-    "riichi_ppo_v1/training/rewards/public_state.py",
-    "riichi/src/analysis.rs",
-    "riichi/src/lib.rs",
-    "RiichiEnv/riichienv-core/src/agari.rs",
-    "RiichiEnv/riichienv-core/src/hand_evaluator.rs",
-    "RiichiEnv/riichienv-core/src/score.rs",
-    "RiichiEnv/riichienv-core/src/types.rs",
-    "RiichiEnv/riichienv-core/src/yaku.rs",
-    "RiichiEnv/riichienv-core/src/observation/encode.rs",
-    "RiichiEnv/riichienv-core/src/observation/mod.rs",
-    "RiichiEnv/riichienv-core/src/observation/python.rs",
-    "RiichiEnv/riichienv-core/src/replay/mjai_replay.rs",
-    "RiichiEnv/riichienv-core/src/replay/mod.rs",
-    "RiichiEnv/riichienv-core/src/state/event_handler.rs",
-    "RiichiEnv/riichienv-core/src/state/mod.rs",
-    "RiichiEnv/riichienv-python/src/lib.rs",
-)
-
-LEGACY_ENCODER_CONTRACT = {
-    "version": LEGACY_ENCODER_VERSION,
-    "riichienv_replay_semantics_version": RIICHIENV_REPLAY_SEMANTICS_VERSION,
-    "rule_state": "river_furiten_only;has_yaku_is_ron_or_tsumo;no_strict_v13_fields",
-    "candidate_rows": "one_global_query_per_legal_action",
-    "source_files": LEGACY_ENCODER_SOURCE_FILES,
-}
 
 STATE_SUMMARY_SEGMENT = 6
 ACTION_QUERY_SEGMENT = 7
@@ -160,37 +123,6 @@ FEATURE_CONTRACT = {
 def feature_schema_sha256() -> str:
     payload = json.dumps(FEATURE_CONTRACT, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def legacy_encoder_sha256() -> str:
-    digest = hashlib.sha256()
-    payload = json.dumps(LEGACY_ENCODER_CONTRACT, sort_keys=True, separators=(",", ":"))
-    digest.update(payload.encode("utf-8"))
-    digest.update(b"\n")
-    for name, component in legacy_encoder_component_sha256().items():
-        digest.update(f"{name}\0{component}\n".encode("utf-8"))
-    return digest.hexdigest()
-
-
-def legacy_encoder_component_sha256() -> dict[str, str]:
-    root = Path(__file__).resolve().parents[2]
-    result: dict[str, str] = {}
-    for relative in LEGACY_ENCODER_SOURCE_FILES:
-        path = root / relative
-        if not path.is_file():
-            raise RuntimeError(f"legacy encoder source is missing: {path}")
-        result[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
-    return result
-
-
-def assert_legacy_replay_runtime() -> None:
-    import riichienv
-
-    actual = int(getattr(riichienv, "REPLAY_SEMANTICS_VERSION", -1))
-    if actual != RIICHIENV_REPLAY_SEMANTICS_VERSION:
-        raise RuntimeError(
-            "installed riichienv replay semantics are incompatible; rebuild the extension"
-        )
 
 
 def encode_shanten(value: int | None, *, maximum: int) -> int:
