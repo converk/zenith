@@ -15,7 +15,12 @@ except ImportError:  # imported lazily by the command line program
 from ..model.bridge import BatchedStateBridge, Decision, NUM_PLAYERS
 from ..model.schema import TOKEN_SCHEMA_VERSION
 from .profiling import StageProfiler
-from .rewards import DecisionAnalysisBatch, EfficiencyAnalyzer, PublicStateTracker
+from .rewards import (
+    DecisionAnalysisBatch,
+    EfficiencyAnalyzer,
+    PublicStateTracker,
+    terminal_kyoku_reward,
+)
 from .trajectory import Transition, finish_kyoku
 from .metrics import SemanticMetrics
 
@@ -80,6 +85,11 @@ if ray is not None:
             self.model_decisions = 0
             self.token_schema_version = int(config.get("token_schema_version", TOKEN_SCHEMA_VERSION))
             self.recorded_decisions = 0
+            self.kyoku_reward_clip_points = int(
+                config.get("kyoku_reward_clip_points", 24_000)
+            )
+            if self.kyoku_reward_clip_points <= 0:
+                raise ValueError("kyoku_reward_clip_points must be positive")
             self.deferred_reset_indices: set[int] = set()
             self.semantic = SemanticMetrics()
             self.lineups: list[tuple[str, str, str, str]] = [("current",) * NUM_PLAYERS for _ in range(self.num_envs)]
@@ -279,7 +289,10 @@ if ray is not None:
                         open_meld_count=int(self.public.completed_open_meld_counts[env_index]),
                     )
                     for seat in range(NUM_PLAYERS):
-                        reward = float(np.clip((scores[seat] - self.start_scores[env_index][seat]), -12_000, 12_000) / 1_000.0)
+                        reward = terminal_kyoku_reward(
+                            scores[seat] - self.start_scores[env_index][seat],
+                            self.kyoku_reward_clip_points,
+                        )
                         pending = self.pending[env_index][seat]
                         if record and self.lineups[env_index][seat] == "current":
                             with self.profiler.stage("rollout/finish_kyoku_gae"):

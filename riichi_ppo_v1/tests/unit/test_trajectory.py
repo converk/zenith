@@ -1,4 +1,7 @@
 import numpy as np
+import pytest
+
+from riichi_ppo_v1.training.rewards import terminal_kyoku_reward
 
 from riichi_ppo_v1.training.learner import length_bucketed_minibatches, transition_length_metrics
 from riichi_ppo_v1.training.trajectory import Transition, finish_kyoku
@@ -6,6 +9,14 @@ from riichi_ppo_v1.training.trajectory import Transition, finish_kyoku
 
 def transition(value: float) -> Transition:
     return Transition(np.zeros((1, 10), dtype=np.uint8), np.zeros((1, 8), dtype=np.float32), 1, np.ones(241, dtype=bool), 0, 0.0, value)
+
+
+def test_terminal_kyoku_reward_uses_configured_symmetric_clip() -> None:
+    assert terminal_kyoku_reward(12_000, 24_000) == 12.0
+    assert terminal_kyoku_reward(30_000, 24_000) == 24.0
+    assert terminal_kyoku_reward(-30_000, 24_000) == -24.0
+    with pytest.raises(ValueError, match="must be positive"):
+        terminal_kyoku_reward(1_000, 0)
 
 
 def test_gae_does_not_cross_kyoku_boundaries() -> None:

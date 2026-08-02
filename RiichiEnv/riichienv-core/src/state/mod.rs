@@ -1372,6 +1372,10 @@ impl GameState {
         self.needs_tsumo = true;
 
         if self.players[pid as usize].riichi_stage {
+            // A tile-less Riichi action is committed by this follow-up
+            // discard. Keep every declaration field in sync with the
+            // one-step Riichi(tile=Some(...)) path above.
+            self.riichi_sutehais[pid as usize] = Some(tile);
             self.players[pid as usize].riichi_declared = true;
             if self.is_first_turn {
                 self.players[pid as usize].double_riichi_declared = true;

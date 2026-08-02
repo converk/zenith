@@ -7,12 +7,14 @@ from tempfile import TemporaryDirectory
 import zipfile
 
 import pytest
+import numpy as np
 import torch
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 from torch.utils.tensorboard import SummaryWriter
 
 from riichi_ppo_v1.model import ModelConfig
 from riichi_ppo_v1.sft import train as sft_train
+from riichi_ppo_v1.sft.data import SftSample
 from riichi_ppo_v1.sft.prepare import _json_lines, prepare_archives, split_game_events, stable_split
 from riichi_ppo_v1.sft.tensorboard import SftMetricWindow, write_sft_scalars
 
@@ -90,9 +92,69 @@ def test_metric_window_and_event_projection_are_actor_only_aware(tmp_path: Path)
 def test_output_defaults_to_config_and_cli_override_wins() -> None:
     config = sft_train.load_config(None)
     assert sft_train.resolve_output(config, None) == Path(
-        "checkpoints/checkpoints/train_riichi_v10_sft"
+        "checkpoints/train_riichi_v13_sft"
     )
     assert sft_train.resolve_output(config, Path("/tmp/custom-sft")) == Path("/tmp/custom-sft")
+
+
+def test_actor_only_config_validation_rejects_inconsistent_value_loss() -> None:
+    config = sft_train.load_config(None)
+    config["public_value_coef"] = 0.1
+    with pytest.raises(ValueError, match="actor-only"):
+        sft_train.validate_config(config)
+    config["public_value_coef"] = 0.0
+    config["batch_size"] = 513
+    with pytest.raises(ValueError, match="divisible"):
+        sft_train.validate_config(config)
+
+
+def test_validation_limit_is_applied_before_length_bucketing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    samples = [
+        SftSample(
+            token_factors=np.zeros((length, 10), dtype=np.uint8),
+            token_numeric=np.zeros((length, 8), dtype=np.float32),
+            legal_mask=np.ones(241, dtype=np.bool_),
+            action=0,
+            value_target=0.0,
+            critic_factors=np.zeros((0, 10), dtype=np.uint8),
+            year=2025,
+            game_id=f"game-{index}",
+            kyoku_index=0,
+            seat=0,
+            decision_index=index,
+            teacher_mask=np.zeros(241, dtype=np.bool_),
+        )
+        for index, length in enumerate((9, 8, 1, 2))
+    ]
+    selected: list[str] = []
+
+    def fake_samples(*_args: object, **_kwargs: object):
+        yield from samples
+
+    def capture_batches(rows, batch_size: int, **_kwargs: object):
+        materialized = list(rows)
+        selected.extend(sample.game_id for sample in materialized)
+        yield from (
+            materialized[index:index + batch_size]
+            for index in range(0, len(materialized), batch_size)
+        )
+
+    class FakeModel(torch.nn.Module):
+        def forward_policy(self, factors, numeric, legal, lengths):
+            del factors, numeric, lengths
+            return {"policy_logits": torch.zeros_like(legal, dtype=torch.float32)}
+
+    monkeypatch.setattr(sft_train, "iter_split_samples", fake_samples)
+    monkeypatch.setattr(sft_train, "length_bucketed_batches", capture_batches)
+    config = sft_train.load_config(None)
+    config.update({"device": "cpu", "learner_gpus": 1, "batch_size": 2})
+    metrics = sft_train.evaluate(
+        FakeModel(), Path("unused"), config, torch.device("cpu"), max_samples=2,
+    )
+    assert metrics["validation/samples"] == 2
+    assert selected == ["game-0", "game-1"]
 
 
 def test_train_worker_closes_writer_when_training_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -164,7 +226,7 @@ def test_three_step_training_writes_validation_and_best_checkpoint(
         scalar_tags = set(accumulator.Tags()["scalars"])
         assert "SFT/训练/Top-1 准确率 (top1)" in scalar_tags
         assert "SFT/验证/loss" in scalar_tags
-        assert any("value_huber" in tag for tag in scalar_tags)
+        assert not any("value_huber" in tag for tag in scalar_tags)
 
         previous_best = float(latest["best_validation_loss"])
         config["resume"] = str(output / "latest.pt")
@@ -172,3 +234,55 @@ def test_three_step_training_writes_validation_and_best_checkpoint(
         resumed = torch.load(output / "latest.pt", map_location="cpu", weights_only=False)
         assert resumed["global_step"] == 3
         assert float(resumed["best_validation_loss"]) <= previous_best
+
+
+def test_resume_cursor_remains_cumulative_across_multiple_restarts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        train_id, validation_id = _game_ids_on_opposite_sides()
+        archive_path = root / "2024.zip"
+        payload = _first_kyoku()
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            archive.writestr(f"2024/{train_id}.mjson", payload)
+            archive.writestr(f"2024/{validation_id}.mjson", payload)
+        dataset = root / "dataset"
+        prepare_archives(
+            {2024: archive_path}, dataset,
+            shard_size=4, validation_percent=50,
+        )
+        output = root / "output"
+        config = sft_train.load_config(None)
+        config.update({
+            "device": "cpu",
+            "learner_gpus": 1,
+            "epochs": 1,
+            "max_train_steps": 1,
+            "batch_size": 16,
+            "checkpoint_interval_steps": 0,
+            "validation_interval_steps": 0,
+            "validation_max_samples": 4,
+            "heuristic_evaluation_enabled": False,
+            "tensorboard_enabled": False,
+            "shuffle_buffer_kyokus": 1,
+            "length_bucket_window_batches": 1,
+            "checkpoint_dir": str(output),
+        })
+        monkeypatch.setattr(sft_train, "_model_config", _small_model_config)
+
+        for target_step in (1, 2, 3):
+            config["max_train_steps"] = target_step
+            if target_step > 1:
+                config["resume"] = str(output / "latest.pt")
+            sft_train.train_worker(0, 1, config, dataset, output)
+            checkpoint = torch.load(
+                output / "latest.pt", map_location="cpu", weights_only=False,
+            )
+            assert checkpoint["global_step"] == target_step
+            assert checkpoint["data_cursor"] == {
+                "version": 1,
+                "epoch": 0,
+                "rank_batches_consumed": [target_step],
+                "world_size": 1,
+            }

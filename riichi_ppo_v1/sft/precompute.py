@@ -15,6 +15,7 @@ import random
 import tarfile
 import time
 from typing import Any, Iterator
+import zipfile
 
 import numpy as np
 
@@ -533,8 +534,39 @@ def iter_precomputed_samples(
         rng.shuffle(paths)
     if not 0 <= int(rank) < int(world_size):
         raise ValueError("rank must be in [0, world_size)")
-    paths = paths[int(rank)::int(world_size)]
-    for path in paths:
+
+    # Partition one deterministic global row stream into equally sized,
+    # contiguous rank intervals.  File-striding can differ by hundreds of
+    # thousands of decisions because encoded chunks have different row counts,
+    # leaving one DDP rank to train alone at the end of an epoch.  Contiguous
+    # intervals keep almost every NPZ exclusive to one rank (only interval
+    # boundary files can be shared) while differing by at most one sample.
+    def row_count(path: Path) -> int:
+        with zipfile.ZipFile(path) as archive, archive.open("actions.npy") as member:
+            version = np.lib.format.read_magic(member)
+            if version == (1, 0):
+                shape, _fortran, _dtype = np.lib.format.read_array_header_1_0(member)
+            elif version in {(2, 0), (3, 0)}:
+                shape, _fortran, _dtype = np.lib.format.read_array_header_2_0(member)
+            else:  # pragma: no cover - NumPy rejects this before normal loading too.
+                raise RuntimeError(f"unsupported NPY header version {version} in {path}")
+        if len(shape) != 1:
+            raise RuntimeError(f"encoded actions must be one-dimensional: {path}")
+        return int(shape[0])
+
+    path_rows = [(path, row_count(path)) for path in paths]
+    total_rows = sum(rows for _path, rows in path_rows)
+    rows_per_rank, extra = divmod(total_rows, int(world_size))
+    interval_start = int(rank) * rows_per_rank + min(int(rank), extra)
+    interval_end = interval_start + rows_per_rank + int(int(rank) < extra)
+    global_start = 0
+    for path, rows in path_rows:
+        global_end = global_start + rows
+        selected_start = max(interval_start, global_start) - global_start
+        selected_end = min(interval_end, global_end) - global_start
+        global_start = global_end
+        if selected_start >= selected_end:
+            continue
         with np.load(path, allow_pickle=False) as data:
             offsets, factors, numeric, legal, actions = (data[name] for name in ("offsets", "factors", "numeric", "legal", "actions"))
             values = data["value_targets"] if "value_targets" in data else np.zeros(len(actions), dtype=np.float32)
@@ -542,18 +574,28 @@ def iter_precomputed_samples(
             required_identity = ("years", "game_ids", "kyoku_indices", "seats", "decision_indices")
             if any(name not in data for name in required_identity):
                 raise RuntimeError(f"encoded cache lacks per-sample identity: {path}")
+            # NpzFile does not cache members: every ``data[name]`` access
+            # reopens and decompresses the complete embedded .npy payload.
+            # Materialize shard-level identity columns once before iterating
+            # rows, just like the factors, targets and teacher masks above.
+            years, game_ids, kyoku_indices, seats, decision_indices = (
+                data[name] for name in required_identity
+            )
             order = list(range(len(actions)))
             if shuffle:
-                rng.shuffle(order)
-            for row in order:
+                # Derive file-local order independently so every rank agrees on
+                # boundary files without replaying RNG operations for files it
+                # does not open.
+                random.Random(f"riichi-sft-row-order-v1\0{seed}\0{path.name}").shuffle(order)
+            for row in order[selected_start:selected_end]:
                 start, end = int(offsets[row]), int(offsets[row + 1])
                 yield SftSample(
                     factors[start:end].copy(), numeric[start:end].astype(np.float32),
                     np.unpackbits(legal[row], bitorder="little", count=241).astype(np.bool_), int(actions[row]),
                     float(values[row]), np.zeros((0, 10), dtype=np.uint8),
-                    int(data["years"][row]), str(data["game_ids"][row]),
-                    int(data["kyoku_indices"][row]), int(data["seats"][row]),
-                    int(data["decision_indices"][row]),
+                    int(years[row]), str(game_ids[row]),
+                    int(kyoku_indices[row]), int(seats[row]),
+                    int(decision_indices[row]),
                     (np.unpackbits(teachers[row], bitorder="little", count=241).astype(np.bool_)
                      if teachers is not None else np.zeros(241, dtype=np.bool_)),
                 )

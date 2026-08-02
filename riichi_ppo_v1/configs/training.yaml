@@ -22,6 +22,8 @@ inference_batch_target_workers: 0
 kyokus_per_worker: 16
 
 # 标准 PPO。每个 transition 只在所属小局结算时得到终局分差 reward。
+# 保留到倍满以上的点差信息，同时限制极少数异常/多倍役满样本。
+kyoku_reward_clip_points: 24000
 gamma: 0.99
 gae_lambda: 0.95
 ppo_clip: 0.20

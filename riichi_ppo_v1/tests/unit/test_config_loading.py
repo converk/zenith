@@ -20,6 +20,7 @@ class ConfigLoadingTest(unittest.TestCase):
         self.assertEqual(config["update_epochs"], 4)
         self.assertEqual(config["minibatch_size"], 512)
         self.assertEqual(config["kyokus_per_worker"], 16)
+        self.assertEqual(config["kyoku_reward_clip_points"], 24000)
         self.assertEqual(config["total_updates"], 5000)
         self.assertEqual(config["checkpoint_dir"], "checkpoints/train_riichi_ppo")
         self.assertIsNone(config["resume"])

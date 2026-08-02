@@ -1,6 +1,7 @@
 """Local rollout reward components; none of these alter environment rules."""
 
 from .efficiency import DiscardAnalysisBatch, EfficiencyAnalyzer, efficiency_reward, selected_efficiency_rewards
+from .terminal import terminal_kyoku_reward
 from .decision import (
     Candidate,
     DecisionAnalysis,
@@ -19,6 +20,7 @@ __all__ = (
     "PublicStateTracker",
     "efficiency_reward",
     "selected_efficiency_rewards",
+    "terminal_kyoku_reward",
     "Candidate",
     "DecisionAnalysis",
     "DecisionAnalysisBatch",

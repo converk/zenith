@@ -573,6 +573,35 @@ mod unit_tests {
     }
 
     #[test]
+    fn test_apply_mjai_event_tileless_reach_records_declaration_discard() {
+        use crate::replay::MjaiEvent;
+
+        let mut state = create_test_state(2);
+        state.players[1].hand.push(88);
+        state.apply_mjai_event(MjaiEvent::Reach { actor: 1 });
+        state.apply_mjai_event(MjaiEvent::Dahai {
+            actor: 1,
+            pai: "5sr".to_string(),
+            tsumogiri: false,
+        });
+        assert!(state.players[1].riichi_declared);
+        assert_eq!(state.riichi_sutehais[1], Some(88));
+        assert_eq!(state.players[1].riichi_declaration_index, Some(0));
+
+        let mut sanma = create_sanma_test_state(5);
+        sanma.players[2].hand.push(52);
+        sanma.apply_mjai_event(MjaiEvent::Reach { actor: 2 });
+        sanma.apply_mjai_event(MjaiEvent::Dahai {
+            actor: 2,
+            pai: "5pr".to_string(),
+            tsumogiri: false,
+        });
+        assert!(sanma.players[2].riichi_declared);
+        assert_eq!(sanma.riichi_sutehais[2], Some(52));
+        assert_eq!(sanma.players[2].riichi_declaration_index, Some(0));
+    }
+
+    #[test]
     fn test_apply_mjai_event_start_kyoku_resets_pre_tsumo_wall_4p() {
         use crate::replay::MjaiEvent;
 
@@ -891,6 +920,17 @@ mod unit_tests {
         );
         state.step(&actions2);
 
+        assert_eq!(
+            state.riichi_sutehais[pid_us],
+            Some(88),
+            "the follow-up discard must become the Riichi declaration tile"
+        );
+        assert_eq!(
+            state.players[pid_us].riichi_declaration_index,
+            Some(state.players[pid_us].discards.len() - 1),
+            "the Riichi declaration river index must identify the follow-up discard"
+        );
+
         // 他家にクレームがある場合は WaitResponse → 全員パス
         if state.phase == Phase::WaitResponse {
             let mut pass_actions = HashMap::new();
@@ -1045,6 +1085,48 @@ mod unit_tests {
         assert_eq!(game_mode::num_players(), 3);
         assert_eq!(game_mode::starting_score(), 35000);
         assert_eq!(game_mode::tenpai_pool(), 2000);
+    }
+
+    #[test]
+    fn test_sanma_tileless_riichi_records_declaration_discard() {
+        use crate::action::{Action, ActionType};
+        use std::collections::HashMap;
+
+        let mut state = create_sanma_test_state(5);
+        let pid = state.current_player;
+        let pid_us = pid as usize;
+
+        // 123p 456p 789p 12s 11z + an unrelated drawn 5s. Discarding 5s
+        // returns to tenpai, so it is legal after a tile-less Riichi action.
+        state.players[pid_us].hand = vec![36, 40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 88, 108, 109];
+        state.players[pid_us].hand.sort();
+        state.players[pid_us].melds.clear();
+        state.players[pid_us].score = 35000;
+        state.players[pid_us].riichi_declared = false;
+        state.players[pid_us].riichi_stage = false;
+        state.players[pid_us].forbidden_discards.clear();
+        state.drawn_tile = Some(88);
+        state.phase = Phase::WaitAct;
+        state.active_players = vec![pid];
+
+        let mut reach = HashMap::new();
+        reach.insert(pid, Action::new(ActionType::Riichi, None, vec![], None));
+        state.step(&reach);
+        assert!(state.players[pid_us].riichi_stage);
+
+        let mut discard = HashMap::new();
+        discard.insert(
+            pid,
+            Action::new(ActionType::Discard, Some(88), vec![], None),
+        );
+        state.step(&discard);
+
+        assert!(state.players[pid_us].riichi_declared);
+        assert_eq!(state.riichi_sutehais[pid_us], Some(88));
+        assert_eq!(
+            state.players[pid_us].riichi_declaration_index,
+            Some(state.players[pid_us].discards.len() - 1),
+        );
     }
 
     #[test]

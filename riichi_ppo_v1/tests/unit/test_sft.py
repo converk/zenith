@@ -1,6 +1,7 @@
 import gzip
 import io
 import json
+from collections import Counter
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import tarfile
@@ -20,6 +21,7 @@ from riichi_ppo_v1.model.feature_schema import (
 )
 from riichi_ppo_v1.model.schema import TOKEN_SCHEMA_VERSION
 from riichi_ppo_v1.sft.data import encode_kyoku, iter_split_samples
+from riichi_ppo_v1.sft import precompute as sft_precompute
 from riichi_ppo_v1.sft.audit import audit_kyoku, select_coverage_kyokus, validate_encoded_chunk
 from riichi_ppo_v1.sft.precompute import (
     _empty_field_statistics, _require_complete_action_coverage,
@@ -33,7 +35,8 @@ from riichi_ppo_v1.sft.prepare import (
     stable_split,
 )
 from riichi_ppo_v1.sft.train import (
-    assert_ablation_cache_alignment, collate_samples, load_config,
+    assert_ablation_cache_alignment, collate_samples, length_bucketed_batches,
+    load_config,
 )
 from riichi_ppo_v1.training.learner import PPOLearner
 
@@ -154,8 +157,97 @@ def test_encoded_sft_shards_are_disjoint_across_ddp_ranks() -> None:
             root, "train", seed=7, shuffle=False, rank=1, world_size=2,
             include_critic=False,
         ))
-    assert [sample.action for sample in rank0] == [samples[0].action, samples[2].action]
-    assert [sample.action for sample in rank1] == [samples[1].action, samples[3].action]
+    assert [(sample.seat, sample.decision_index) for sample in rank0] == [
+        (samples[0].seat, samples[0].decision_index),
+        (samples[1].seat, samples[1].decision_index),
+    ]
+    assert [(sample.seat, sample.decision_index) for sample in rank1] == [
+        (samples[2].seat, samples[2].decision_index),
+        (samples[3].seat, samples[3].decision_index),
+    ]
+
+
+def test_encoded_sft_global_plan_balances_odd_rows_without_duplicates() -> None:
+    samples = encode_kyoku(_first_kyoku(), include_critic=False)[:7]
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        train = root / "train"
+        train.mkdir()
+        _write_chunk(train / "train-00000.npz", samples[:2])
+        _write_chunk(train / "train-00001.npz", samples[2:])
+        (root / "manifest.json").write_text(json.dumps({
+            "format": "riichi-sft-encoded-v3",
+            "token_schema_version": TOKEN_SCHEMA_VERSION,
+            "feature_schema_sha256": feature_schema_sha256(),
+            "rust_analysis_version": RUST_ANALYSIS_VERSION,
+            "decision_analysis_version": DECISION_ANALYSIS_VERSION,
+        }))
+        ranks = [
+            list(iter_split_samples(
+                root, "train", seed=19, shuffle=True, rank=rank, world_size=2,
+                include_critic=False,
+            ))
+            for rank in range(2)
+        ]
+    assert [len(rows) for rows in ranks] == [4, 3]
+    identities = [
+        (sample.seat, sample.decision_index)
+        for rows in ranks for sample in rows
+    ]
+    expected = [(sample.seat, sample.decision_index) for sample in samples]
+    assert len(identities) == len(set(identities))
+    assert set(identities) == set(expected)
+    assert [len(list(length_bucketed_batches(rows, 2, window_batches=1))) for rows in ranks] == [2, 2]
+
+
+def test_encoded_sft_shard_columns_are_decompressed_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    samples = encode_kyoku(_first_kyoku(), include_critic=False)[:3]
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        train = root / "train"
+        train.mkdir()
+        _write_chunk(train / "train-00000.npz", samples)
+        (root / "manifest.json").write_text(json.dumps({
+            "format": "riichi-sft-encoded-v3",
+            "token_schema_version": TOKEN_SCHEMA_VERSION,
+            "feature_schema_sha256": feature_schema_sha256(),
+            "rust_analysis_version": RUST_ANALYSIS_VERSION,
+            "decision_analysis_version": DECISION_ANALYSIS_VERSION,
+        }))
+        original_load = np.load
+        accesses: Counter[str] = Counter()
+
+        class CountingArchive:
+            def __init__(self, *args, **kwargs) -> None:
+                self.archive = original_load(*args, **kwargs)
+
+            def __enter__(self):
+                self.archive.__enter__()
+                return self
+
+            def __exit__(self, *args) -> None:
+                self.archive.__exit__(*args)
+
+            def __contains__(self, name: str) -> bool:
+                return name in self.archive
+
+            def __getitem__(self, name: str):
+                accesses[name] += 1
+                return self.archive[name]
+
+        monkeypatch.setattr(sft_precompute.np, "load", CountingArchive)
+        loaded = list(iter_split_samples(
+            root, "train", seed=7, shuffle=False, include_critic=False,
+        ))
+
+    assert len(loaded) == len(samples)
+    expected = {
+        "offsets", "factors", "numeric", "legal", "actions", "value_targets",
+        "teacher_masks", "years", "game_ids", "kyoku_indices", "seats",
+        "decision_indices",
+    }
+    assert set(accesses) == expected
+    assert all(accesses[name] == 1 for name in expected)
 
 
 def test_incomplete_schema12_cache_is_rejected_with_reencode_guidance() -> None:

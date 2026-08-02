@@ -6,6 +6,7 @@ import argparse
 from contextlib import nullcontext
 from dataclasses import asdict
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -40,6 +41,7 @@ from .tensorboard import SftMetricWindow, write_sft_scalars
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "seed": 1,
+    "token_schema_version": TOKEN_SCHEMA_VERSION,
     "device": "cuda",
     "learner_gpus": 2,
     "model_size": "mid",
@@ -57,10 +59,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "adam_epsilon": 1e-8,
     "max_grad_norm": 1.0,
     "train_critic": False,
-    "train_public_value": True,
+    "train_public_value": False,
     "policy_head_type": "isolated_action_query",
     "group_coef": 0.25,
-    "public_value_coef": 0.10,
+    "public_value_coef": 0.0,
     "rule_coef": 0.05,
     "rule_decay_fraction": 0.20,
     "gamma": 0.99,
@@ -70,17 +72,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "checkpoint_interval_steps": 5000,
     "log_interval_steps": 100,
     "validation_max_samples": 0,
-    "validation_interval_steps": 5000,
-    "validation_samples_per_run": 32768,
+    "validation_interval_steps": 6000,
+    "validation_samples_per_run": 150000,
     "heuristic_evaluation_enabled": True,
-    "heuristic_evaluation_interval_steps": 25000,
-    "heuristic_evaluation_hanchan_count": 128,
-    "heuristic_evaluation_parallel_hanchan_count": 1,
-    "heuristic_evaluation_final_hanchan_count": 128,
+    "heuristic_evaluation_interval_steps": 18000,
+    "heuristic_evaluation_hanchan_count": 96,
+    "heuristic_evaluation_parallel_hanchan_count": 24,
+    "heuristic_evaluation_final_hanchan_count": 96,
     "heuristic_evaluation_seed_base": 20260717,
     "heuristic_evaluation_game_mode": "4p-red-half",
     "heuristic_evaluation_max_steps": 4000,
-    "checkpoint_dir": "checkpoints/checkpoints/train_riichi_v10_sft",
+    "checkpoint_dir": "checkpoints/train_riichi_v13_sft",
     "tensorboard_enabled": True,
     "tensorboard_dirname": "tensorboard",
     "resume": None,
@@ -98,6 +100,29 @@ def load_config(path: Path | None) -> dict[str, Any]:
             raise ValueError("SFT config must be a mapping")
         config.update(overlay)
     return config
+
+
+def validate_config(config: dict[str, Any]) -> None:
+    """Reject launch-time settings whose effective semantics are ambiguous."""
+    world_size = (
+        int(config["learner_gpus"])
+        if str(config["device"]).startswith("cuda") else 1
+    )
+    if world_size <= 0:
+        raise ValueError("learner_gpus must be positive")
+    if int(config["batch_size"]) <= 0:
+        raise ValueError("batch_size must be positive")
+    if int(config["batch_size"]) % world_size:
+        raise ValueError("global batch_size must be divisible by learner_gpus")
+    if int(config["epochs"]) <= 0:
+        raise ValueError("epochs must be positive")
+    if int(config["context_tokens"]) <= 0:
+        raise ValueError("context_tokens must be positive")
+    train_value = bool(config["train_critic"]) or bool(config["train_public_value"])
+    if not train_value and float(config["public_value_coef"]) != 0.0:
+        raise ValueError("actor-only SFT requires public_value_coef=0")
+    if int(config.get("validation_samples_per_run", 0)) < 0:
+        raise ValueError("validation_samples_per_run must be nonnegative")
 
 
 def dataset_manifest_hash(dataset: Path) -> str:
@@ -342,6 +367,12 @@ def _save_checkpoint(
         "epoch": epoch,
         "global_step": global_step,
         "rank_steps": rank_steps,
+        "data_cursor": {
+            "version": 1,
+            "epoch": int(epoch),
+            "rank_batches_consumed": [int(value) for value in rank_steps],
+            "world_size": len(rank_steps),
+        },
         "best_validation_loss": float(best_validation_loss),
         "best_heuristic_point_delta": float(best_heuristic_point_delta),
         "metrics": dict(metrics or {}),
@@ -373,12 +404,6 @@ def evaluate(
         shuffle=False,
         include_critic=train_critic,
     )
-    batches = length_bucketed_batches(
-        samples,
-        batch_size,
-        window_batches=int(config["length_bucket_window_batches"]),
-        align_across_schemas=bool(config.get("ablation_aligned_batches", False)),
-    )
     totals = {
         "samples": 0.0, "policy_ce_sum": 0.0, "value_huber_sum": 0.0,
         "value_abs_sum": 0.0, "value_sq_sum": 0.0, "top1": 0.0, "top3": 0.0,
@@ -393,17 +418,23 @@ def evaluate(
         int(config.get("validation_max_samples", 0))
         if max_samples is None else int(max_samples)
     )
+    if maximum:
+        # Select the fixed validation identities before length bucketing.
+        # Truncating after a sorted bucket preferentially retained the shortest
+        # rows from the final, partially consumed window.
+        samples = itertools.islice(samples, maximum)
+    batches = length_bucketed_batches(
+        samples,
+        batch_size,
+        window_batches=int(config["length_bucket_window_batches"]),
+        align_across_schemas=bool(config.get("ablation_aligned_batches", False)),
+    )
     use_bf16 = bool(
         str(config.get("inference_dtype", "bf16")).lower() == "bf16"
         and device.type == "cuda"
         and torch.cuda.is_bf16_supported()
     )
     for rows in batches:
-        if maximum:
-            remaining = maximum - int(totals["samples"])
-            if remaining <= 0:
-                break
-            rows = rows[:remaining]
         batch = collate_samples(rows, device, include_critic=train_critic)
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
             if train_value:
@@ -526,6 +557,7 @@ def _train_worker_impl(
     output: Path,
     writers: list[SummaryWriter],
 ) -> None:
+    validate_config(config)
     seed = int(config["seed"]) + rank
     random.seed(seed)
     np.random.seed(seed)
@@ -559,6 +591,10 @@ def _train_worker_impl(
     )
     manifest = json.loads((dataset / "manifest.json").read_text(encoding="utf-8"))
     raw_dataset = manifest.get("format") == "riichi-sft-kyoku-v1"
+    if distributed and raw_dataset:
+        raise RuntimeError(
+            "distributed SFT requires a precomputed encoded dataset so rank sample counts can be balanced"
+        )
     dataset_schema = int(manifest.get("token_schema_version", TOKEN_SCHEMA_VERSION if raw_dataset else -1))
     if dataset_schema not in {11, TOKEN_SCHEMA_VERSION}:
         raise RuntimeError(f"unsupported SFT dataset schema {dataset_schema}; schema 12 must be re-encoded")
@@ -584,6 +620,21 @@ def _train_worker_impl(
         "legacy_encoder_sha256", legacy_encoder_sha256() if dataset_schema == 11 and raw_dataset else None,
     )
     train_decisions = int(manifest["counts"]["train_decisions"])
+    if distributed:
+        samples_per_rank, extra_samples = divmod(train_decisions, world_size)
+        rank_sample_counts = [
+            samples_per_rank + int(rank_index < extra_samples)
+            for rank_index in range(world_size)
+        ]
+        configured_local_batch = int(config["batch_size"]) // world_size
+        rank_batch_counts = [
+            math.ceil(count / configured_local_batch) for count in rank_sample_counts
+        ]
+        if len(set(rank_batch_counts)) != 1:
+            raise RuntimeError(
+                "the final global batch cannot be split into a non-empty batch on every DDP rank; "
+                "choose a batch_size/world_size combination with a larger final remainder"
+            )
     estimated_steps = max(
         1,
         math.ceil(train_decisions / int(config["batch_size"])) * int(config["epochs"]),
@@ -632,9 +683,21 @@ def _train_worker_impl(
         model.load_state_dict(payload["model"])
         optimizer.load_state_dict(payload["optimizer"])
         scheduler.load_state_dict(payload["scheduler"])
-        start_epoch = int(payload.get("epoch", 0))
+        cursor = payload.get("data_cursor")
+        if cursor is not None:
+            if int(cursor.get("version", -1)) != 1:
+                raise RuntimeError("SFT resume checkpoint has an unsupported data cursor")
+            if int(cursor.get("world_size", world_size)) != world_size:
+                raise RuntimeError("SFT resume checkpoint data cursor uses a different world size")
+            start_epoch = int(cursor.get("epoch", 0))
+            rank_progress = cursor.get("rank_batches_consumed", [])
+        else:
+            # Backward compatibility for checkpoints written before the
+            # versioned cursor was introduced.  Their rank_steps are valid for
+            # the first resume from an uninterrupted run.
+            start_epoch = int(payload.get("epoch", 0))
+            rank_progress = payload.get("rank_steps", [])
         global_step = int(payload.get("global_step", 0))
-        rank_progress = payload.get("rank_steps", [])
         skip_steps = int(rank_progress[rank]) if rank < len(rank_progress) else 0
         best_validation_loss = float(payload.get("best_validation_loss", float("inf")))
         best_heuristic_point_delta = float(
@@ -673,8 +736,12 @@ def _train_worker_impl(
     metric_window = SftMetricWindow() if rank == 0 else None
     model.train()
     join_context = model.join if isinstance(model, DistributedDataParallel) else nullcontext
+    cursor_epoch = start_epoch
+    cursor_steps_in_epoch = skip_steps
+    stop_training = False
     with join_context():
         for epoch in range(start_epoch, int(config["epochs"])):
+            steps_in_epoch = skip_steps if epoch == start_epoch else 0
             sample_stream = iter_split_samples(
                 dataset,
                 "train",
@@ -695,6 +762,7 @@ def _train_worker_impl(
             )
             for batch_index, rows in enumerate(batches):
                 if int(config.get("max_train_steps", 0)) > 0 and global_step >= int(config["max_train_steps"]):
+                    stop_training = True
                     break
                 if epoch == start_epoch and batch_index < skip_steps:
                     continue
@@ -747,6 +815,7 @@ def _train_worker_impl(
                 scheduler.step()
                 step_finished = time.perf_counter()
                 local_steps += 1
+                steps_in_epoch += 1
                 global_step += 1
                 if metric_window is not None:
                     metric_window.update(
@@ -824,7 +893,7 @@ def _train_worker_impl(
                     and global_step % heuristic_interval == 0
                 )
                 if checkpoint_due or validation_due or heuristic_due:
-                    progress = _rank_steps(world_size, local_steps)
+                    progress = _rank_steps(world_size, steps_in_epoch)
                     if rank == 0:
                         if validation_due:
                             module = (
@@ -926,9 +995,19 @@ def _train_worker_impl(
                     last_step_end = time.perf_counter()
                 else:
                     last_step_end = step_finished
+            if stop_training:
+                cursor_epoch = epoch
+                cursor_steps_in_epoch = steps_in_epoch
+                break
+            # The next checkpoint starts at the following epoch rather than
+            # replaying the just-completed one.  Reset the resume skip after the
+            # first resumed epoch so it cannot leak into later epochs.
+            cursor_epoch = epoch + 1
+            cursor_steps_in_epoch = 0
+            skip_steps = 0
     if distributed:
         dist.barrier()
-    progress = _rank_steps(world_size, local_steps)
+    progress = _rank_steps(world_size, cursor_steps_in_epoch)
     throughput_values = torch.tensor(
         [local_samples, local_effective_tokens, local_padded_tokens],
         dtype=torch.float64,
@@ -982,7 +1061,7 @@ def _train_worker_impl(
                     scheduler,
                     config=config,
                     manifest_hash=manifest_hash,
-                    epoch=int(config["epochs"]),
+                    epoch=cursor_epoch,
                     global_step=global_step,
                     rank_steps=progress,
                     best_validation_loss=best_validation_loss,
@@ -991,7 +1070,7 @@ def _train_worker_impl(
                 )
         _save_checkpoint(
             output / "latest.pt", model, optimizer, scheduler,
-            config=config, manifest_hash=manifest_hash, epoch=int(config["epochs"]),
+            config=config, manifest_hash=manifest_hash, epoch=cursor_epoch,
             global_step=global_step, rank_steps=progress,
             best_validation_loss=min(
                 best_validation_loss, float(metrics["validation/loss"])
@@ -1003,7 +1082,7 @@ def _train_worker_impl(
             best_validation_loss = float(metrics["validation/loss"])
             _save_checkpoint(
                 output / "best.pt", model, optimizer, scheduler,
-                config=config, manifest_hash=manifest_hash, epoch=int(config["epochs"]),
+                config=config, manifest_hash=manifest_hash, epoch=cursor_epoch,
                 global_step=global_step, rank_steps=progress,
                 best_validation_loss=best_validation_loss, metrics=metrics,
                 best_heuristic_point_delta=best_heuristic_point_delta,
@@ -1045,7 +1124,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--config", type=Path)
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path(__file__).resolve().parents[1] / "configs" / "sft.yaml",
+        help="SFT config (defaults to the repository's canonical sft.yaml)",
+    )
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--device")
     parser.add_argument("--learner-gpus", type=int)
@@ -1057,8 +1141,20 @@ def main() -> None:
         config["device"] = args.device
     if args.learner_gpus is not None:
         config["learner_gpus"] = args.learner_gpus
+    validate_config(config)
     output = resolve_output(config, args.output)
     config["checkpoint_dir"] = str(output)
+    if config.get("resume"):
+        resume_path = Path(str(config["resume"]))
+        if not resume_path.is_file():
+            raise FileNotFoundError(f"SFT resume checkpoint does not exist: {resume_path}")
+    elif output.exists() and (
+        not output.is_dir() or any(output.iterdir())
+    ):
+        raise FileExistsError(
+            f"refusing to overwrite non-empty fresh-training output: {output}; "
+            "choose a new --output directory"
+        )
     if bool(config.get("ablation_aligned_batches", False)):
         reference_value = config.get("ablation_identity_reference_dataset")
         if not reference_value:
@@ -1067,6 +1163,10 @@ def main() -> None:
             )
         assert_ablation_cache_alignment(args.dataset, Path(str(reference_value)))
     world_size = int(config["learner_gpus"]) if str(config["device"]).startswith("cuda") else 1
+    if str(config["device"]).startswith("cuda") and torch.cuda.device_count() < world_size:
+        raise RuntimeError(
+            f"learner_gpus={world_size}, but only {torch.cuda.device_count()} CUDA devices are visible"
+        )
     if world_size > 1:
         os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
         os.environ.setdefault("MASTER_PORT", str(_free_port()))

@@ -122,7 +122,10 @@ impl GameStateEventHandler for GameState {
                 self.drawn_tile = None;
 
                 if self.players[actor].riichi_stage {
+                    self.riichi_sutehais[actor] = Some(tile);
                     self.players[actor].riichi_declared = true;
+                    self.players[actor].riichi_declaration_index =
+                        Some(self.players[actor].discards.len() - 1);
                     self.players[actor].riichi_stage = false;
                 }
 

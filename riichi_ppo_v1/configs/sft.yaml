@@ -16,10 +16,10 @@ adam_beta2: 0.999
 adam_epsilon: 0.00000001
 max_grad_norm: 1.0
 train_critic: false
-train_public_value: true
+train_public_value: false
 policy_head_type: isolated_action_query
 group_coef: 0.25
-public_value_coef: 0.10
+public_value_coef: 0.0
 rule_coef: 0.05
 rule_decay_fraction: 0.20
 gamma: 0.99
@@ -30,11 +30,11 @@ length_bucket_window_batches: 32
 checkpoint_interval_steps: 5000
 log_interval_steps: 100
 validation_max_samples: 0
-validation_interval_steps: 2000
-validation_samples_per_run: 120000
+validation_interval_steps: 6000
+validation_samples_per_run: 150000
 # 固定种子、四座轮换；候选 SFT actor 使用合法掩码下的确定性 argmax。
 heuristic_evaluation_enabled: true
-heuristic_evaluation_interval_steps: 7000
+heuristic_evaluation_interval_steps: 18000
 heuristic_evaluation_hanchan_count: 96
 heuristic_evaluation_parallel_hanchan_count: 24
 heuristic_evaluation_final_hanchan_count: 96
