@@ -80,6 +80,8 @@ def _summarize_metrics(metrics: dict, total_seats_total: int) -> dict[str, float
         "team_ties": metrics["team_ties"],
         "team_point_diff_mean": metrics["team_point_diff_sum"] / hanchans,
         "team_point_diff_paired_bootstrap_ci95": point_diff_ci,
+        "team_score_mean": metrics["team_score_sum"] / hanchans,
+        "individual_score_mean": metrics["individual_score_sum"] / seat_total,
         "individual_hanchans": seat_total,
         "first_places": metrics["first_places"],
         "first_place_rate": metrics["first_places"] / seat_total,
@@ -90,6 +92,7 @@ def _summarize_metrics(metrics: dict, total_seats_total: int) -> dict[str, float
         "agari_count": metrics["tsumo"] + metrics["ron"],
         "player_kyokus": metrics["player_kyokus"],
         "agari_per_player_kyoku": (metrics["tsumo"] + metrics["ron"]) / max(metrics["player_kyokus"], 1),
+        "agari_per_player_hanchan": (metrics["tsumo"] + metrics["ron"]) / seat_total,
         "tsumo_per_player_kyoku": metrics["tsumo"] / max(metrics["player_kyokus"], 1),
         "ron_per_player_kyoku": metrics["ron"] / max(metrics["player_kyokus"], 1),
         "dealin_count": metrics["dealin"],
@@ -110,6 +113,9 @@ def _summarize_metrics(metrics: dict, total_seats_total: int) -> dict[str, float
         "rank_distribution": dict(metrics["rank_dist"]),
         "bitten_count": metrics["bitten"],
         "bitten_rate": metrics["bitten"] / hanchans,
+        "ryukyoku_count": metrics["ryukyoku"],
+        "ryukyoku_rate": metrics["ryukyoku"] / max(metrics["player_kyokus"] // 2, 1),
+        "ryukyoku_per_hanchan": metrics["ryukyoku"] / hanchans,
     }
 
 
@@ -118,6 +124,8 @@ def _new_metrics(hanchans: int) -> dict:
         "team_wins": 0,
         "team_ties": 0,
         "team_point_diff_sum": 0,
+        "team_score_sum": 0,
+        "individual_score_sum": 0,
         "first_places": 0,
         "rank_sum": 0,
         "rank_dist": Counter(),
@@ -132,6 +140,7 @@ def _new_metrics(hanchans: int) -> dict:
         "player_kyokus_with_call": 0,
         "player_kyokus": 0,
         "bitten": 0,
+        "ryukyoku": 0,
         "hanchans": hanchans,
         "point_diffs": [],
     }
@@ -186,6 +195,13 @@ def _ingest_metrics(
     score_a = sum(scores[s] for s in team_a)
     score_b = sum(scores[s] for s in range(NUM_PLAYERS) if s not in team_a)
     diff = score_a - score_b
+    metrics_a["team_score_sum"] += score_a
+    metrics_b["team_score_sum"] += score_b
+    for seat in range(NUM_PLAYERS):
+        if seat in team_a:
+            metrics_a["individual_score_sum"] += scores[seat]
+        else:
+            metrics_b["individual_score_sum"] += scores[seat]
     metrics_a["team_point_diff_sum"] += diff
     metrics_b["team_point_diff_sum"] += -diff
     metrics_a["point_diffs"].append(diff)
@@ -220,6 +236,9 @@ def _ingest_action_events(
             target_metrics["reach"] += 1
             target_metrics["chase_reach" if reached_this_kyoku else "first_reach"] += 1
             reached_this_kyoku.add(actor)
+        elif kind == "ryukyoku":
+            metrics_a["ryukyoku"] += 1
+            metrics_b["ryukyoku"] += 1
         elif kind in {"chi", "pon", "daiminkan"}:
             actor = int(ev.get("actor", -1))
             (metrics_a if actor in team_a else metrics_b)["calls"] += 1
@@ -411,11 +430,14 @@ def _format_summary_table(result: dict) -> str:
     rows = [
         ("Win rate", "team_win_rate"),
         ("Point diff (mean)", "team_point_diff_mean"),
+        ("Team score (mean)", "team_score_mean"),
+        ("Individual score (mean)", "individual_score_mean"),
         ("First-place rate", "first_place_rate"),
         ("Mean rank", "individual_mean_rank"),
         ("Top seat rate (1st)", "topseat_rate"),
         ("Fourth seat rate (4th)", "fourth_seat_rate"),
         ("Agari / player-kyoku", "agari_per_player_kyoku"),
+        ("Agari / player-hanchan", "agari_per_player_hanchan"),
         ("Tsumo / player-kyoku", "tsumo_per_player_kyoku"),
         ("Ron / player-kyoku", "ron_per_player_kyoku"),
         ("Dealin / player-kyoku", "dealin_per_player_kyoku"),
@@ -425,6 +447,8 @@ def _format_summary_table(result: dict) -> str:
         ("Calls / player-kyoku", "calls_per_player_kyoku"),
         ("Furo player-kyoku rate", "furo_player_kyoku_rate"),
         ("Bitten rate", "bitten_rate"),
+        ("Draw rate (ryukyoku / kyoku)", "ryukyoku_rate"),
+        ("Draws / hanchan", "ryukyoku_per_hanchan"),
         ("Hanchans", "individual_hanchans"),
         ("Rank distribution", "rank_distribution"),
     ]
