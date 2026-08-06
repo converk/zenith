@@ -19,6 +19,7 @@ from torch.nn.parallel import DistributedDataParallel
 from ..model import KyokuTransformerActorCritic, ModelConfig
 from ..model.feature_schema import DECISION_ANALYSIS_VERSION, RUST_ANALYSIS_VERSION, feature_schema_sha256
 from ..model.schema import TOKEN_SCHEMA_VERSION
+from ..sft.contract import SFT_CONTRACT_VERSION
 from .profiling import StageProfiler
 from .trajectory import Transition
 from .metrics import ppo_buffer_metrics
@@ -28,6 +29,32 @@ BATCH_MODE_IDS = {"streaming": 0.0, "prefetch": 1.0, "gpu_cache": 2.0}
 ACTOR_ROOTS = {"actor_backbone", "policy_head", "query"}
 CRITIC_ROOTS = {"critic_embedding", "critic_backbone", "value_head", "value_query"}
 SHARED_ROOTS = {"token_embedding", "public_backbone"}
+_SCHEMA_METADATA_KEYS = {
+    "token_schema_version",
+    "feature_schema_sha256",
+    "rust_analysis_version",
+    "decision_analysis_version",
+}
+
+
+def validate_fresh_model_checkpoint_contract(payload: dict[str, Any]) -> None:
+    """Validate a checkpoint used only for fresh PPO model initialization."""
+    if payload.get("sft_contract_version") == SFT_CONTRACT_VERSION and not (
+        _SCHEMA_METADATA_KEYS & payload.keys()
+    ):
+        return
+    schema = int(payload.get("token_schema_version", 0))
+    if schema != TOKEN_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"checkpoint token schema {schema} is incompatible with required schema "
+            f"{TOKEN_SCHEMA_VERSION}"
+        )
+    if payload.get("feature_schema_sha256") != feature_schema_sha256():
+        raise RuntimeError("checkpoint feature schema hash is incompatible with this build")
+    if int(payload.get("rust_analysis_version", -1)) != RUST_ANALYSIS_VERSION:
+        raise RuntimeError("checkpoint Rust analysis version is incompatible with this build")
+    if int(payload.get("decision_analysis_version", -1)) != DECISION_ANALYSIS_VERSION:
+        raise RuntimeError("checkpoint decision-analysis version is incompatible with this build")
 
 
 @dataclass(frozen=True)
@@ -1051,18 +1078,7 @@ class PPOLearner:
     def load_model_weights(self, path: str | Path) -> None:
         """Initialize a fresh PPO optimizer from a schema-compatible model checkpoint."""
         payload = torch.load(path, map_location=self.device, weights_only=False)
-        schema = int(payload.get("token_schema_version", 0))
-        if schema != TOKEN_SCHEMA_VERSION:
-            raise RuntimeError(
-                f"checkpoint token schema {schema} is incompatible with required schema "
-                f"{TOKEN_SCHEMA_VERSION}"
-            )
-        if payload.get("feature_schema_sha256") != feature_schema_sha256():
-            raise RuntimeError("checkpoint feature schema hash is incompatible with this build")
-        if int(payload.get("rust_analysis_version", -1)) != RUST_ANALYSIS_VERSION:
-            raise RuntimeError("checkpoint Rust analysis version is incompatible with this build")
-        if int(payload.get("decision_analysis_version", -1)) != DECISION_ANALYSIS_VERSION:
-            raise RuntimeError("checkpoint decision-analysis version is incompatible with this build")
+        validate_fresh_model_checkpoint_contract(payload)
         model_config = payload.get("model_config")
         if not isinstance(model_config, dict) or "policy_head_type" not in model_config:
             raise RuntimeError("weights-only checkpoint is missing explicit model_config.policy_head_type")

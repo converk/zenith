@@ -3,6 +3,7 @@ import torch
 from dataclasses import asdict
 from riichi_ppo_v1.model.feature_schema import DECISION_ANALYSIS_VERSION, RUST_ANALYSIS_VERSION, feature_schema_sha256
 from riichi_ppo_v1.model.schema import TOKEN_SCHEMA_VERSION
+from riichi_ppo_v1.sft.contract import SFT_CONTRACT_VERSION
 from tempfile import TemporaryDirectory
 
 from riichi_ppo_v1.training.learner import (
@@ -419,6 +420,69 @@ def test_actor_only_sft_initialization_bootstraps_critic_before_policy() -> None
         assert joint_metrics["training/policy_update"] == 1.0
         assert joint_metrics["system/sft_kl_coef"] > 0.0
         assert not torch.equal(learner.model.policy_head.weight, actor_before)
+
+
+def test_model_initialization_accepts_current_sft_contract_checkpoint() -> None:
+    kwargs = learner_kwargs(
+        gamma=0.99,
+        update_epochs=1,
+        minibatch_size=2,
+    )
+    source = PPOLearner("mid", "cpu", **kwargs)
+    with TemporaryDirectory() as directory:
+        path = f"{directory}/current_sft_contract.pt"
+        torch.save({
+            "model": source.weights(),
+            "sft_contract_version": SFT_CONTRACT_VERSION,
+            "training_stage": "sft",
+            "training_mode": "actor_only",
+            "model_config": asdict(source.config),
+        }, path)
+        learner = PPOLearner("mid", "cpu", **kwargs)
+        learner.load_model_weights(path)
+        assert learner.reference_model is not None
+
+
+def test_distributed_ppo_enables_unused_parameter_search(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeDistributedDataParallel:
+        def __init__(self, module, **kwargs) -> None:
+            captured.update(kwargs)
+            self.module = module
+
+    monkeypatch.setattr(
+        "riichi_ppo_v1.training.learner.DistributedDataParallel",
+        FakeDistributedDataParallel,
+    )
+    learner = PPOLearner("mid", "cpu", **learner_kwargs())
+    learner.device = torch.device("cuda:0")
+    learner.enable_distributed()
+    assert captured.get("find_unused_parameters") is True
+
+
+def test_critic_bootstrap_allows_actor_parameters_outside_loss_graph() -> None:
+    kwargs = learner_kwargs(
+        critic_bootstrap_updates=1,
+        critic_bootstrap_learning_rate=1e-4,
+        sft_kl_coef_start=0.02,
+        sft_kl_coef_end=0.0,
+        update_epochs=1,
+        minibatch_size=2,
+    )
+    learner = PPOLearner("mid", "cpu", **kwargs)
+    rows = [transition(1.0), transition(-1.0)]
+    for row in rows:
+        row.legal_mask[:2] = True
+    rows[1].action = 1
+    metrics = learner.update(rows, shuffle_seed=3)
+    assert metrics["training/critic_bootstrap"] == 1.0
+    missing = [
+        name for name, parameter in learner.model.named_parameters()
+        if parameter.requires_grad and parameter.grad is None
+    ]
+    assert any(name.startswith("policy_head") for name in missing)
+    assert any(name.startswith("actor_backbone") for name in missing)
 
 
 def test_anchored_ppo_checkpoint_restores_frozen_sft_reference() -> None:

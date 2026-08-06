@@ -10,6 +10,12 @@ import torch
 from torch import nn
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
+from ..model.feature_schema import (
+    DECISION_ANALYSIS_VERSION,
+    RUST_ANALYSIS_VERSION,
+    feature_schema_sha256,
+)
+from ..model.schema import TOKEN_SCHEMA_VERSION
 from .contract import (
     DATA_CURSOR_VERSION,
     DATA_PLAN_VERSION,
@@ -147,6 +153,10 @@ def checkpoint_payload(
     return {
         "sft_contract_version": SFT_CONTRACT_VERSION,
         "data_plan_version": DATA_PLAN_VERSION,
+        "token_schema_version": TOKEN_SCHEMA_VERSION,
+        "feature_schema_sha256": feature_schema_sha256(),
+        "rust_analysis_version": RUST_ANALYSIS_VERSION,
+        "decision_analysis_version": DECISION_ANALYSIS_VERSION,
         "model_config": asdict(module.config),
         "training_mode": mode,
         "dataset_manifest_hash": manifest_hash,

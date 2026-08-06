@@ -32,6 +32,7 @@ from .evaluation import (
 from .metrics import RollingKyokuMetrics, append_metric_jsonl, metric_counters
 from .tensorboard import learner_peak_allocated_mb, write_curated_scalars
 from ..model.schema import TOKEN_SCHEMA_VERSION
+from .learner import validate_fresh_model_checkpoint_contract
 
 
 _CONFIG_GROUPS = ("training", "monitoring")
@@ -200,11 +201,10 @@ def run(config: dict[str, Any]) -> None:
             )
     elif config.get("init_model"):
         init_payload = torch.load(config["init_model"], map_location="cpu", weights_only=False)
-        schema = int(init_payload.get("token_schema_version", 0))
-        if schema != TOKEN_SCHEMA_VERSION:
-            raise RuntimeError(
-                f"cannot initialize from token schema {schema}; required schema is {TOKEN_SCHEMA_VERSION}"
-            )
+        try:
+            validate_fresh_model_checkpoint_contract(init_payload)
+        except RuntimeError as exc:
+            raise RuntimeError(f"cannot initialize from incompatible checkpoint: {exc}") from exc
     device = str(config["device"])
     if device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but PyTorch cannot see a CUDA device")
