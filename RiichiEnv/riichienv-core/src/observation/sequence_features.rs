@@ -13,7 +13,7 @@ use crate::parser::mjai_to_tid;
 use super::Observation;
 
 // ── Constants ────────────────────────────────────────────────────────────────
-// These constants are `pub` for Python-side consumption (see riichienv-ml).
+// These constants are `pub` for Python-side consumption.
 #[allow(dead_code)]
 pub const SPARSE_VOCAB_SIZE: usize = 442;
 #[allow(dead_code)]

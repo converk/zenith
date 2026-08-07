@@ -35,17 +35,6 @@ SOUTH = Wind.South
 WEST = Wind.West
 NORTH = Wind.North
 
-
-def _get_viewer(self):
-    # Lazy import to avoid circular dependency: visualizer imports from riichienv
-    from riichienv.visualizer import GameViewer  # noqa: PLC0415
-
-    return GameViewer(self.mjai_log)
-
-
-RiichiEnv.get_viewer = _get_viewer  # type: ignore[attr-defined]
-
-
 __all__ = [
     "consts",
     "convert",

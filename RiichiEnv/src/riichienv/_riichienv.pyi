@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from riichienv.visualizer import GameViewer
+from typing import Any
 
 class GameRule:
     allows_ron_on_ankan_for_kokushi_musou: bool
