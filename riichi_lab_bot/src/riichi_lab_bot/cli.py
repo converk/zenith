@@ -11,8 +11,10 @@ from pathlib import Path
 import sys
 
 from .client import (
+    RANKED_URL,
     VALIDATION_URL,
     play_connection,
+    run_ranked,
 )
 from .local_play import play_local_game
 from .policy import PolicyEngine
@@ -75,6 +77,14 @@ def build_parser() -> argparse.ArgumentParser:
         "validate", parents=[common], help="run one validation game"
     )
     validate.add_argument("--url", default=VALIDATION_URL)
+
+    ranked = subparsers.add_parser(
+        "ranked", parents=[common], help="join ranked matchmaking"
+    )
+    ranked.add_argument("--url", default=RANKED_URL)
+    group = ranked.add_mutually_exclusive_group()
+    group.add_argument("--games", type=int, default=1)
+    group.add_argument("--forever", action="store_true")
     return parser
 
 
@@ -174,6 +184,26 @@ def main() -> None:
             if result.validation_passed is not True:
                 raise SystemExit(2)
             return
+
+        games = None if args.forever else args.games
+        if games is not None and games < 1:
+            raise ValueError("--games must be positive")
+        results = asyncio.run(
+            run_ranked(
+                url=args.url,
+                token=token,
+                policy=policy,
+                recorder=recorder,
+                games=games,
+            )
+        )
+        print(
+            json.dumps(
+                [result.__dict__ for result in results],
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
     except KeyboardInterrupt:
         recorder.emit("interrupted")
         raise SystemExit(130) from None
