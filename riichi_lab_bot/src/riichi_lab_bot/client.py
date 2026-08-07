@@ -1,4 +1,4 @@
-"""RiichiLab WebSocket validation and ranked clients."""
+"""RiichiLab WebSocket validation client."""
 
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ from .safety import choose_safe_response
 from .telemetry import EventRecorder, SessionMetrics
 
 VALIDATION_URL = "wss://game.riichi.dev/ws/validate"
-RANKED_URL = "wss://game.riichi.dev/ws/ranked"
 
 
 class AuthenticationError(RuntimeError):
@@ -61,8 +60,10 @@ async def play_connection(
 ) -> SessionResult:
     from websockets.asyncio.client import connect
 
-    if mode not in {"validate", "ranked"}:
-        raise ValueError("mode must be validate or ranked")
+    if mode != "validate":
+        raise ValueError("mode must be validate")
+    if url.rstrip("/").endswith("/ws/ranked"):
+        raise ValueError("ranked endpoint is disabled")
     metrics = SessionMetrics()
     bridge: OnlineStateBridge | None = None
     seat: int | None = None
@@ -266,8 +267,6 @@ async def play_connection(
                     scores=end_scores,
                     metrics=metrics.summary(),
                 )
-                if mode == "ranked":
-                    break
                 continue
 
             if message_type == "validation_result":
@@ -290,44 +289,3 @@ async def play_connection(
         end_scores,
         metrics.summary(),
     )
-
-
-async def run_ranked(
-    *,
-    url: str,
-    token: str,
-    policy: PolicyEngine,
-    recorder: EventRecorder,
-    games: int | None,
-) -> list[SessionResult]:
-    results: list[SessionResult] = []
-    backoff = 5.0
-    while games is None or len(results) < games:
-        try:
-            result = await play_connection(
-                url=url,
-                mode="ranked",
-                token=token,
-                policy=policy,
-                recorder=recorder,
-            )
-            if result.completed:
-                results.append(result)
-                backoff = 5.0
-                if games is None or len(results) < games:
-                    await asyncio.sleep(2.0)
-            else:
-                raise RuntimeError("ranked connection ended before end_game")
-        except AuthenticationError:
-            raise
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            raise
-        except Exception as exc:
-            recorder.emit(
-                "ranked_reconnect_wait",
-                delay_seconds=backoff,
-                error=f"{type(exc).__name__}: {exc}",
-            )
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2.0, 120.0)
-    return results

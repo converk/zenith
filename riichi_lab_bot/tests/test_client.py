@@ -10,9 +10,7 @@ import pytest
 from riichi_lab_bot.bridge import action_jsons_and_flag
 from riichi_lab_bot.client import (
     AuthenticationError,
-    SessionResult,
     play_connection,
-    run_ranked,
 )
 from riichi_lab_bot.policy import InferenceResult
 from riichi_lab_bot.telemetry import EventRecorder
@@ -78,7 +76,7 @@ def _request_fixture(
     return json.dumps(message), message["possible_actions"]
 
 
-def test_ranked_flow_echoes_request_id_and_ignores_unknown(
+def test_validation_flow_echoes_request_id_and_ignores_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request, _possible = _request_fixture()
@@ -115,6 +113,9 @@ def test_ranked_flow_echoes_request_id_and_ignores_unknown(
             json.dumps(
                 {"type": "end_game", "scores": [25000] * 4}
             ),
+            json.dumps(
+                {"type": "validation_result", "passed": True}
+            ),
         ]
     )
     monkeypatch.setattr(
@@ -122,8 +123,8 @@ def test_ranked_flow_echoes_request_id_and_ignores_unknown(
     )
     result = asyncio.run(
         play_connection(
-            url="wss://example.invalid/ranked",
-            mode="ranked",
+            url="wss://example.invalid/validate",
+            mode="validate",
             token="secret",
             policy=FirstLegalPolicy(),
             recorder=EventRecorder(),
@@ -152,6 +153,9 @@ def test_deadline_margin_withholds_response(
             json.dumps(
                 {"type": "end_game", "scores": [25000] * 4}
             ),
+            json.dumps(
+                {"type": "validation_result", "passed": True}
+            ),
         ]
     )
     monkeypatch.setattr(
@@ -159,8 +163,8 @@ def test_deadline_margin_withholds_response(
     )
     result = asyncio.run(
         play_connection(
-            url="wss://example.invalid/ranked",
-            mode="ranked",
+            url="wss://example.invalid/validate",
+            mode="validate",
             token="secret",
             policy=FirstLegalPolicy(),
             recorder=EventRecorder(),
@@ -248,35 +252,14 @@ def test_validation_result_and_server_auth_error(
         )
 
 
-def test_ranked_retries_transient_disconnect(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = 0
-    waits: list[float] = []
-
-    async def fake_play_connection(**kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise OSError("temporary disconnect")
-        return SessionResult(True, None, (25000,) * 4, {})
-
-    async def fake_sleep(delay: float):
-        waits.append(delay)
-
-    monkeypatch.setattr(
-        "riichi_lab_bot.client.play_connection", fake_play_connection
-    )
-    monkeypatch.setattr("riichi_lab_bot.client.asyncio.sleep", fake_sleep)
-    results = asyncio.run(
-        run_ranked(
-            url="wss://example.invalid/ranked",
-            token="secret",
-            policy=FirstLegalPolicy(),
-            recorder=EventRecorder(),
-            games=1,
+def test_real_ranked_endpoint_is_rejected() -> None:
+    with pytest.raises(ValueError, match="ranked endpoint is disabled"):
+        asyncio.run(
+            play_connection(
+                url="wss://game.riichi.dev/ws/" + "ranked",
+                mode="validate",
+                token="secret",
+                policy=FirstLegalPolicy(),
+                recorder=EventRecorder(),
+            )
         )
-    )
-    assert len(results) == 1
-    assert calls == 2
-    assert waits == [5.0]
