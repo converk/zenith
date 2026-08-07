@@ -4,8 +4,6 @@ import importlib
 import inspect
 from pathlib import Path
 
-import pytest
-
 import riichi_lab_bot.client as client
 from riichi_lab_bot import cli
 from riichi_ppo_v1.sft.train import load_config as load_sft_config
@@ -37,10 +35,15 @@ def test_remaining_configs_are_loadable() -> None:
         assert (ROOT / "configs" / name).exists()
 
 
-def test_riichi_lab_bot_has_no_ranked_execution_path() -> None:
+def test_riichi_lab_bot_retains_ranked_but_validate_path_is_independent() -> None:
+    assert client.RANKED_URL == "wss://game.riichi.dev/ws/ranked"
+    assert hasattr(client, "run_ranked")
+    parser = cli.build_parser()
+    ranked = parser.parse_args(["ranked"])
+    assert ranked.command == "ranked"
+    validate = parser.parse_args(["validate"])
+    assert validate.command == "validate"
+    assert validate.url == client.VALIDATION_URL
     combined = inspect.getsource(client) + inspect.getsource(cli)
-    assert "wss://game.riichi.dev/ws/ranked" not in combined
-    assert "RANKED_URL" not in combined
-    assert "run_ranked" not in combined
-    with pytest.raises(SystemExit):
-        cli.build_parser().parse_args(["ranked"])
+    assert "def run_ranked" in combined
+    assert "def play_connection" in combined

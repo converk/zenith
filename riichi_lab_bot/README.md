@@ -81,11 +81,11 @@ CUDA_DEVICE=2,3 riichi-lab-bot validate \
 `validation_result`；通过时退出码为 0，失败或未收到通过结果时退出码为
 2。validation 只运行一次，不会自动重试。
 
-## 严禁排位
+## 排位说明
 
-本任务只允许连接 `wss://game.riichi.dev/ws/validate`。`client.py` 中保留
-的 `ranked` 子命令和 `RANKED_URL` 属于既有代码，不得执行，也不得通过
-`--url` 指向 ranked 端点。
+`ranked` 子命令与 `RANKED_URL` 按需求保留，供后续线上排位使用。本次清理
+任务的验收不执行 ranked、不传 `--forever`、也不连接真实排位端点；
+`validate` 路径与 ranked 路径相互独立。
 
 ## 配置
 
