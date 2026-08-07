@@ -275,3 +275,46 @@ def test_reach_declared_without_declaration_tile_is_normalized() -> None:
         prepared.token_numeric[None],
         np.asarray([prepared.token_length], dtype=np.int64),
     )
+
+
+def test_server_riichi_snapshot_with_stale_sutehai_and_accepted_missing_prepares(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Server may provide riichi_declared=True but riichi_sutehais=None."""
+    from riichienv import Observation, RiichiEnv
+
+    env = RiichiEnv(game_mode="4p-red-half", seed=42)
+    observation = env.reset()[0]
+    data = json.loads(
+        base64.b64decode(observation.serialize_to_base64()).decode("utf-8")
+    )
+    data["riichi_declared"] = [True, False, False, False]
+    data["riichi_sutehais"] = [None, None, None, None]
+    for field in (
+        "riichi_accepted",
+        "riichi_declaration_indices",
+        "missed_agari_doujun",
+        "missed_agari_riichi",
+        "tiles_left",
+    ):
+        data.pop(field, None)
+    encoded = base64.b64encode(
+        json.dumps(data, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
+    server_observation = ObservationView(
+        Observation.deserialize_from_base64(
+            normalize_observation_base64(encoded)
+        ),
+        missing_fields=missing_observation_fields(encoded),
+    )
+    bridge = OnlineStateBridge(0)
+    bridge.threats.riichi_declared = [True, False, False, False]
+    bridge.threats.riichi_accepted = [True, False, False, False]
+    bridge.threats.riichi_declaration_indices = [12, None, None, None]
+    bridge.threats.riichi_sutehais = [84, None, None, None]
+    bridge.threats.discard_counts = [12, 0, 0, 0]
+    monkeypatch.setattr(
+        bridge.threats, "apply_events", lambda _events: None
+    )
+    prepared = bridge.prepare(server_observation)
+    assert prepared.token_length > 0

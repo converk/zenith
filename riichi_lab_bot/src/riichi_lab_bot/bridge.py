@@ -244,18 +244,14 @@ class OnlineStateBridge:
             self.event_context = new_context
 
         derived_fields = self.threats.fields()
-        raw_declared = list(
-            getattr(observation, "riichi_declared", [False] * NUM_PLAYERS)
-        )
-        raw_sutehais = list(
-            getattr(observation, "riichi_sutehais", [None] * NUM_PLAYERS)
-        )
-        corrected_declared = [
-            bool(declared and sutehai is not None)
-            for declared, sutehai in zip(
-                raw_declared, raw_sutehais, strict=True
-            )
-        ]
+        riichi_overrides = {
+            "riichi_declared": derived_fields["riichi_declared"],
+            "riichi_accepted": derived_fields["riichi_accepted"],
+            "riichi_declaration_indices": derived_fields[
+                "riichi_declaration_indices"
+            ],
+            "riichi_sutehais": derived_fields["riichi_sutehais"],
+        }
         if isinstance(observation, ObservationView):
             observation.set_fields(
                 {
@@ -264,15 +260,14 @@ class OnlineStateBridge:
                     if name in observation.missing_fields
                 }
             )
-            if corrected_declared != raw_declared:
-                observation.set_fields(
-                    {"riichi_declared": corrected_declared}
-                )
+            observation.set_fields(riichi_overrides)
         else:
-            if corrected_declared != raw_declared:
-                observation = ObservationView(
-                    observation, {"riichi_declared": corrected_declared}
-                )
+            current = {
+                name: getattr(observation, name, None)
+                for name in riichi_overrides
+            }
+            if current != riichi_overrides:
+                observation = ObservationView(observation, riichi_overrides)
 
         events_by_player = [
             accepted_events if player == self.seat else []
