@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 
 import numpy as np
@@ -137,6 +138,54 @@ def test_ranked_flow_echoes_request_id_and_ignores_unknown(
     assert result.metrics["defaulted"] == 1
     assert result.metrics["bank_consumed_ms"] == 15000
     assert websocket.sent[0]["request_id"] == 42
+
+
+def test_action_sent_logs_model_action_id(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    request, _possible = _request_fixture()
+    websocket = FakeWebSocket(
+        [
+            json.dumps({"type": "start_game", "id": 0}),
+            request,
+            json.dumps(
+                {
+                    "type": "action_ack",
+                    "request_id": 42,
+                    "status": "accepted",
+                    "elapsed_ms": 3,
+                    "bank_consumed_ms": 0,
+                    "bank_ms": 15000,
+                }
+            ),
+            json.dumps({"type": "validation_result", "passed": True}),
+        ]
+    )
+    monkeypatch.setattr(
+        "websockets.asyncio.client.connect", FakeConnect(websocket)
+    )
+    caplog.set_level(logging.INFO, logger="riichi_lab_bot")
+    result = asyncio.run(
+        play_connection(
+            url="wss://example.invalid/validate",
+            mode="validate",
+            token="secret",
+            policy=FirstLegalPolicy(),
+            recorder=EventRecorder(),
+        )
+    )
+    assert result.validation_passed is True
+    events = [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.name == "riichi_lab_bot"
+    ]
+    sent = [event for event in events if event.get("event") == "action_sent"]
+    assert len(sent) == 1
+    action_id = sent[0].get("action_id")
+    assert isinstance(action_id, int)
+    assert 0 <= action_id < 241
 
 
 def test_deadline_margin_withholds_response(

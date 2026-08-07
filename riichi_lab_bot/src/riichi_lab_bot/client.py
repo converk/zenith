@@ -157,6 +157,7 @@ async def play_connection(
                 prepared = None
                 primary_error: str | None = None
                 inference_ms: float | None = None
+                model_action_id: int | None = None
                 try:
                     observation = _deserialize_observation(encoded)
                     if int(observation.player_id) != seat:
@@ -166,6 +167,7 @@ async def play_connection(
                     prepared = bridge.prepare(observation)
                     inference = policy.infer(prepared)
                     inference_ms = inference.elapsed_ms
+                    model_action_id = inference.action_id
                     metrics.inference_ms.append(inference.elapsed_ms)
                     primary_action = bridge.decode(
                         prepared, inference.action_id
@@ -229,6 +231,7 @@ async def play_connection(
                 recorder.emit(
                     "action_sent",
                     request_id=request_id,
+                    action_id=model_action_id,
                     action_type=safe.payload.get("type"),
                     source=safe.source,
                     elapsed_ms=elapsed_ms,
