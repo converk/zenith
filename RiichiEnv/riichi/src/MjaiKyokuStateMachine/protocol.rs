@@ -269,15 +269,6 @@ const MJAI_TILE_NAMES: [&str; 38] = [
     "9s", "E", "S", "W", "N", "P", "F", "C", "5mr", "5pr", "5sr", "?",
 ];
 
-#[cfg(test)]
-fn tile_name(tile: MjaiTile) -> Result<&'static str, String> {
-    MJAI_TILE_NAMES
-        .get(tile.as_usize())
-        .copied()
-        .filter(|name| *name != "?")
-        .ok_or_else(|| format!("cannot serialize unknown MJAI tile {tile:?}"))
-}
-
 fn tile_from_str(value: &str) -> Option<MjaiTile> {
     MJAI_TILE_NAMES
         .iter()
@@ -289,19 +280,6 @@ fn snapshot_tile(value: &str) -> Result<MjaiTile, String> {
     tile_from_str(value).ok_or_else(|| format!("invalid snapshot tile {value:?}"))
 }
 
-fn round_wind_tile(round_wind: u8) -> Result<MjaiTile, String> {
-    if round_wind < NUM_PLAYERS as u8 {
-        Ok(MjaiTile(27 + round_wind))
-    } else {
-        Err("snapshot.round_wind must be in 0..4".to_owned())
-    }
-}
-
 const fn default_scores() -> [i32; NUM_PLAYERS] {
     [25_000; NUM_PLAYERS]
-}
-
-const fn jikaze_for(self_seat: u8, oya: u8) -> MjaiTile {
-    let relative_oya = (oya + NUM_PLAYERS as u8 - self_seat) % NUM_PLAYERS as u8;
-    MjaiTile(27 + (NUM_PLAYERS as u8 - relative_oya) % NUM_PLAYERS as u8)
 }

@@ -26,16 +26,6 @@ from riichienv._riichienv import (
 import numpy as np
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _action_key(action: Action | Action3P) -> tuple:
-    """Hashable identity for an action (action_type, tile, sorted consume_tiles)."""
-    d = action.to_dict()
-    return (d["type"], d["tile"], tuple(sorted(d["consume_tiles"])))
-
-
 def _check_finite(arr: np.ndarray, name: str) -> None:
     assert np.isfinite(arr).all(), f"{name} contains non-finite values"
 

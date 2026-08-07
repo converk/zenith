@@ -105,10 +105,3 @@ impl TableStateMachine {
         Ok(Some(action_json.clone()))
     }
 }
-
-#[cfg(test)]
-impl TableStateMachine {
-    fn set_legal_actions(&mut self, player_index: u8, action_jsons: Vec<String>) -> Result<(), String> {
-        self.set_legal_action_jsons(player_index, action_jsons)
-    }
-}

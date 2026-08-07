@@ -173,26 +173,3 @@ impl MjaiKyokuStateMachineManager {
         }).collect()
     }
 }
-
-// Legacy one-row helpers remain available to the Rust-only protocol tests so
-// those tests can construct compact fixtures. They are intentionally not
-// Python methods and therefore are not part of the training extension API.
-#[cfg(test)]
-impl MjaiKyokuStateMachineManager {
-    fn apply_player_events(&mut self, batch_index: usize, event_jsons: Vec<String>) -> PyResult<()> {
-        let env_index = batch_index / NUM_PLAYERS;
-        let player_index = (batch_index % NUM_PLAYERS) as u8;
-        let table = self.tables.get_mut(env_index).ok_or_else(|| PyValueError::new_err("batch_index is out of range"))?;
-        let events = event_jsons.into_iter().map(|json| parse_event(&json)).collect::<PyResult<Vec<_>>>()?;
-        table.apply_player_events(player_index, events).map_err(PyValueError::new_err)
-    }
-
-    fn set_legal_actions(&mut self, batch_index: usize, action_jsons: Vec<String>) -> PyResult<()> {
-        let env_index = batch_index / NUM_PLAYERS;
-        let player_index = (batch_index % NUM_PLAYERS) as u8;
-        self.tables.get_mut(env_index)
-            .ok_or_else(|| PyValueError::new_err("batch_index is out of range"))?
-            .set_legal_action_jsons(player_index, action_jsons)
-            .map_err(PyValueError::new_err)
-    }
-}

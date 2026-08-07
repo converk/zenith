@@ -119,18 +119,6 @@ class HanchanGameMode(StandardGameMode):
         super().__init__(end_field=1, target_score=target_score, max_extension_field=2, tobi=tobi)
 
 
-class SuddenDeathIkkyokuGameMode(OneKyokuGameMode):
-    def __init__(self, target_score: int = 30000):
-        super().__init__(target_score=target_score)
-
-    def is_game_over(
-        self, env: "RiichiEnv", is_renchan: bool, is_draw: bool = False, is_midway_draw: bool = False
-    ) -> bool:
-        if any(s >= self.target_score for s in env.scores()):
-            return True
-        return False
-
-
 def get_game_mode(game_type: GameType) -> GameMode:
     if game_type in [GameType.YON_IKKYOKU, GameType.SAN_IKKYOKU]:
         return OneKyokuGameMode(target_score=0, tobi=True)
