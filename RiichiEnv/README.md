@@ -2,7 +2,7 @@
 
 Zenith 使用的 Riichi mahjong 训练环境。核心逻辑位于 Rust crate
 `riichienv-core`，Python 绑定位于 `riichienv-python`，另有独立的 MJAI
-协议状态机子包 `riichi`（Python 模块名仍为 `riichi`）。
+协议状态机子包 `riichienv-state-machine`（Python 模块名仍为 `riichi`）。
 
 ## 目录结构
 
@@ -10,7 +10,7 @@ Zenith 使用的 Riichi mahjong 训练环境。核心逻辑位于 Rust crate
 RiichiEnv/
   riichienv-core/     # 规则、手牌、得分、环境状态机
   riichienv-python/   # PyO3 Python 绑定
-  riichi/             # MJAI 协议状态转换与保存（独立于 riichienv）
+  riichienv-state-machine/ # MJAI 协议状态转换与保存（独立于 riichienv）
   src/riichienv/      # Python 公共 API
   tests/              # 环境与协议测试
   scripts/            # 安装与验证脚本
@@ -24,7 +24,7 @@ RiichiEnv/
 ```bash
 conda activate Mahjong-AI
 bash scripts/install_conda_extension.sh
-bash riichi/scripts/install_conda_extension.sh
+bash riichienv-state-machine/scripts/install_conda_extension.sh
 ```
 
 ## 使用

@@ -724,18 +724,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
-name = "riichi"
-version = "0.1.0"
-dependencies = [
- "numpy",
- "pyo3",
- "rand 0.9.5",
- "rand_pcg",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "riichienv-core"
 version = "0.4.8"
 dependencies = [
@@ -759,6 +747,18 @@ version = "0.4.8"
 dependencies = [
  "pyo3",
  "riichienv-core",
+ "serde_json",
+]
+
+[[package]]
+name = "riichienv-state-machine"
+version = "0.1.0"
+dependencies = [
+ "numpy",
+ "pyo3",
+ "rand 0.9.5",
+ "rand_pcg",
+ "serde",
  "serde_json",
 ]
 

@@ -14,13 +14,13 @@ ML/UI/WASM/visualizer/agents 组件已从本仓库移除。
 ```text
 riichienv-core/   # 纯 Rust：规则、手牌、得分、环境状态机
 riichienv-python/ # PyO3 绑定，依赖 riichienv-core 的 python feature
-riichi/           # 独立 Rust/Python 子包：MJAI 协议状态转换与保存
+riichienv-state-machine/ # 独立 Rust/Python 子包：MJAI 协议状态转换与保存
 src/riichienv/    # Python 公共 API
 tests/            # pytest 测试
 scripts/          # 安装与日志验证脚本
 ```
 
-`riichi` 与 `riichienv` 通过独立类型/序列化边界交互，不互相依赖。
+`riichienv-state-machine` 与 `riichienv` 通过独立类型/序列化边界交互，不互相依赖。
 
 ## Rust 开发
 
@@ -41,7 +41,7 @@ python -m maturin develop --release
 
 ```bash
 bash scripts/install_conda_extension.sh
-bash riichi/scripts/install_conda_extension.sh
+bash riichienv-state-machine/scripts/install_conda_extension.sh
 ```
 
 ## Python 测试

@@ -15,7 +15,7 @@ bridge、WebSocket 客户端和安全校验。运行时需要本仓库提供的 
 
 ```bash
 conda activate Mahjong-AI
-bash RiichiEnv/riichi/scripts/install_conda_extension.sh
+bash RiichiEnv/riichienv-state-machine/scripts/install_conda_extension.sh
 bash RiichiEnv/scripts/install_conda_extension.sh
 python -m pip install -e ./riichi_lab_bot
 ```

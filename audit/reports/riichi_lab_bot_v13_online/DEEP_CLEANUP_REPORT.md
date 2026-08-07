@@ -51,9 +51,9 @@
 | `_seat_tiles`、`_meld_field`、`_meld_state`、`_public_meld_rows` | `riichi_lab_bot/src/riichi_lab_bot/features.py` | 重复实现 | MERGE（收敛到 `critic_features.collect_actor_public_table_state`） |
 | `greedy`、`record`、`reset_completed` 参数 | `riichi_ppo_v1/training/worker.py::_advance_once` | 唯一调用点固定值参数 | INLINE |
 | 旧 v13 checkpoint 格式分支（`contract is None and token_schema_version == 13`） | `riichi_ppo_v1/sft/checkpoint.py`、`sft/policy_adapter.py`、`riichi_lab_bot/.../policy.py` | 旧兼容层 | DELETE（当前 checkpoints 无此格式，见 4.5） |
-| `tile_name`、`round_wind_tile`、`jikaze_for` | `RiichiEnv/riichi/src/MjaiKyokuStateMachine/protocol.rs` | Rust 死代码 | DELETE |
-| `set_legal_actions` | `RiichiEnv/riichi/src/MjaiKyokuStateMachine/table.rs` | Rust `#[cfg(test)]` 死代码 | DELETE |
-| `apply_player_events`、`set_legal_actions` | `RiichiEnv/riichi/src/MjaiKyokuStateMachine/manager.rs` | Rust `#[cfg(test)]` 死代码 | DELETE |
+| `tile_name`、`round_wind_tile`、`jikaze_for` | `RiichiEnv/riichienv-state-machine/src/MjaiKyokuStateMachine/protocol.rs` | Rust 死代码 | DELETE |
+| `set_legal_actions` | `RiichiEnv/riichienv-state-machine/src/MjaiKyokuStateMachine/table.rs` | Rust `#[cfg(test)]` 死代码 | DELETE |
+| `apply_player_events`、`set_legal_actions` | `RiichiEnv/riichienv-state-machine/src/MjaiKyokuStateMachine/manager.rs` | Rust `#[cfg(test)]` 死代码 | DELETE |
 | `checkpoints/checkpoints/train_riichi_v10_sft/best.pt` | `riichi_ppo_v1/README.md` | 死文档路径 | DELETE（改为真实 v13 路径） |
 
 ## 4. 删除/收敛证据包
@@ -137,7 +137,7 @@ checkpoints/train_riichi_v11_sft_40pct/best_heuristic.pt token_schema_version=11
 命令：
 
 ```bash
-python -m coverage run --source=riichi_ppo_v1,riichi_lab_bot,RiichiEnv/src/riichienv,RiichiEnv/riichi \
+python -m coverage run --source=riichi_ppo_v1,riichi_lab_bot,RiichiEnv/src/riichienv,RiichiEnv/riichienv-state-machine \
   -m pytest riichi_ppo_v1/tests riichi_lab_bot/tests RiichiEnv/tests -q
 python -m coverage report --show-missing
 ```
@@ -297,21 +297,21 @@ $ CUDA_DEVICE=2,3 riichi-lab-bot validate --device cuda:0 --dtype fp32 \
 | `RiichiEnv/docs/assets/visualizer2.png` | 其他 |  | KEEP |  |
 | `RiichiEnv/pyproject.toml` | 包配置 |  | KEEP |  |
 | `RiichiEnv/renovate.json` | JSON 数据/输出 |  | KEEP |  |
-| `RiichiEnv/riichi/.gitignore` | 其他 |  | KEEP |  |
-| `RiichiEnv/riichi/Cargo.toml` | 包配置 |  | KEEP |  |
-| `RiichiEnv/riichi/pyproject.toml` | 包配置 |  | KEEP |  |
-| `RiichiEnv/riichi/scripts/install_conda_extension.sh` | Shell 脚本 |  | KEEP |  |
-| `RiichiEnv/riichi/src/MjaiKyokuStateMachine/manager.rs` | Rust 源码 |  | 已清理 | 本任务修改；见证据包 |
-| `RiichiEnv/riichi/src/MjaiKyokuStateMachine/mod.rs` | Rust 源码 | Append-only MJAI-to-model state machines for one four-player kyoku per table. | KEEP |  |
-| `RiichiEnv/riichi/src/MjaiKyokuStateMachine/player.rs` | Rust 源码 |  | KEEP |  |
-| `RiichiEnv/riichi/src/MjaiKyokuStateMachine/protocol.rs` | Rust 源码 |  | 已清理 | 本任务修改；见证据包 |
-| `RiichiEnv/riichi/src/MjaiKyokuStateMachine/semantic_token_tests.rs` | Rust 源码 |  | KEEP |  |
-| `RiichiEnv/riichi/src/MjaiKyokuStateMachine/table.rs` | Rust 源码 |  | 已清理 | 本任务修改；见证据包 |
-| `RiichiEnv/riichi/src/MjaiKyokuStateMachine/types.rs` | Rust 源码 |  | KEEP |  |
-| `RiichiEnv/riichi/src/analysis.rs` | Rust 源码 |  | KEEP |  |
-| `RiichiEnv/riichi/src/lib.rs` | Rust 源码 | Python entry point for the MJAI kyoku state-machine extension. | KEEP |  |
-| `RiichiEnv/riichi/src/shanten.rs` | Rust 源码 |  | KEEP |  |
-| `RiichiEnv/riichi/src/shanten_table.rs` | Rust 源码 |  | KEEP |  |
+| `RiichiEnv/riichienv-state-machine/.gitignore` | 其他 |  | KEEP |  |
+| `RiichiEnv/riichienv-state-machine/Cargo.toml` | 包配置 |  | KEEP |  |
+| `RiichiEnv/riichienv-state-machine/pyproject.toml` | 包配置 |  | KEEP |  |
+| `RiichiEnv/riichienv-state-machine/scripts/install_conda_extension.sh` | Shell 脚本 |  | KEEP |  |
+| `RiichiEnv/riichienv-state-machine/src/MjaiKyokuStateMachine/manager.rs` | Rust 源码 |  | 已清理 | 本任务修改；见证据包 |
+| `RiichiEnv/riichienv-state-machine/src/MjaiKyokuStateMachine/mod.rs` | Rust 源码 | Append-only MJAI-to-model state machines for one four-player kyoku per table. | KEEP |  |
+| `RiichiEnv/riichienv-state-machine/src/MjaiKyokuStateMachine/player.rs` | Rust 源码 |  | KEEP |  |
+| `RiichiEnv/riichienv-state-machine/src/MjaiKyokuStateMachine/protocol.rs` | Rust 源码 |  | 已清理 | 本任务修改；见证据包 |
+| `RiichiEnv/riichienv-state-machine/src/MjaiKyokuStateMachine/semantic_token_tests.rs` | Rust 源码 |  | KEEP |  |
+| `RiichiEnv/riichienv-state-machine/src/MjaiKyokuStateMachine/table.rs` | Rust 源码 |  | 已清理 | 本任务修改；见证据包 |
+| `RiichiEnv/riichienv-state-machine/src/MjaiKyokuStateMachine/types.rs` | Rust 源码 |  | KEEP |  |
+| `RiichiEnv/riichienv-state-machine/src/analysis.rs` | Rust 源码 |  | KEEP |  |
+| `RiichiEnv/riichienv-state-machine/src/lib.rs` | Rust 源码 | Python entry point for the MJAI kyoku state-machine extension. | KEEP |  |
+| `RiichiEnv/riichienv-state-machine/src/shanten.rs` | Rust 源码 |  | KEEP |  |
+| `RiichiEnv/riichienv-state-machine/src/shanten_table.rs` | Rust 源码 |  | KEEP |  |
 | `RiichiEnv/riichienv-core/Cargo.toml` | 包配置 |  | KEEP |  |
 | `RiichiEnv/riichienv-core/README.md` | 文档 |  | KEEP |  |
 | `RiichiEnv/riichienv-core/benches/agari_bench.rs` | Rust 源码 |  | KEEP |  |
