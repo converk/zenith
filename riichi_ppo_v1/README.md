@@ -45,7 +45,7 @@ actor-only SFT checkpoint 会同时成为初始策略和冻结的 KL reference�
 ```bash
 CUDA_DEVICE=0,3 conda run -n Mahjong-AI riichi-ppo-train \
   --device cuda --learner-gpus 2 \
-  --init-model checkpoints/checkpoints/train_riichi_v10_sft/best.pt
+  --init-model checkpoints/train_riichi_v13_sft/best_heuristic.pt
 ```
 
 `resume` 仅恢复新格式 PPO checkpoint（包含 `ppo_format_version: 2`）。旧 PPO checkpoint 不能恢复优化器或旧课程状态，但可通过 `--init-model` 仅加载模型权重。
