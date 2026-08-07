@@ -11,6 +11,9 @@
 - `CUDA_DEVICE=3` (also referred to as `CUDA=3`) maps to physical GPU 4.
 - Use the Conda environment named `Mahjong-AI` for Python commands and training.
 - `RiichiEnv` is this project's training environment.
+- `RiichiEnv/riichi/` is the MJAI protocol state-transition and persistence
+  subcrate/subpackage; the public module name remains `riichi` and it does not
+  depend on `riichienv`.
 - `exp/` contains the existing training framework used as the reference when
   designing or comparing this project's training implementation.
 - `riichi_ppo_v1/` is the primary training-code framework for this project.

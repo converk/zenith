@@ -6,7 +6,7 @@
 
 ```bash
 conda activate Mahjong-AI
-bash riichi/scripts/install_conda_extension.sh
+bash RiichiEnv/riichi/scripts/install_conda_extension.sh
 bash RiichiEnv/scripts/install_conda_extension.sh
 python -m pip install -e riichi_ppo_v1 --no-deps --no-build-isolation
 ```
