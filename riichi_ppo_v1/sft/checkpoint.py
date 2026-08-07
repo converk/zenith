@@ -21,9 +21,7 @@ from .contract import (
     DATA_PLAN_VERSION,
     SFT_CONTRACT_VERSION,
     TRAINING_MODES,
-    validate_v13_manifest,
 )
-from ..model.feature_schema import ENCODED_FORMAT
 
 
 def _require_mapping(payload: Mapping[str, Any], field: str) -> Mapping[str, Any]:
@@ -53,19 +51,7 @@ def load_v13_weights_only(
     if not isinstance(payload, Mapping):
         raise RuntimeError(f"invalid checkpoint payload: {checkpoint}")
     contract = payload.get("sft_contract_version")
-    if contract is None:
-        # Explicit read-only compatibility for the immutable current v13
-        # checkpoint format.  No missing model/head field is synthesized.
-        if payload.get("token_schema_version") != 13:
-            raise RuntimeError("weights-only v13 load requires a v13 checkpoint")
-        validate_v13_manifest({
-            "format": ENCODED_FORMAT,
-            "token_schema_version": payload.get("token_schema_version"),
-            "feature_schema_sha256": payload.get("feature_schema_sha256"),
-            "rust_analysis_version": payload.get("rust_analysis_version"),
-            "decision_analysis_version": payload.get("decision_analysis_version"),
-        })
-    elif contract != SFT_CONTRACT_VERSION:
+    if contract != SFT_CONTRACT_VERSION:
         raise RuntimeError(f"unsupported SFT contract: {contract!r}")
     config = _validate_v13_model_config(_require_mapping(payload, "model_config"))
     state = _require_mapping(payload, "model")

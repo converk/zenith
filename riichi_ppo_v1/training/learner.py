@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import random
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import asdict, dataclass, replace
 from contextlib import contextmanager, nullcontext
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
-import random
 
 import numpy as np
 import torch
@@ -17,13 +17,16 @@ from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
-from ..model.feature_schema import DECISION_ANALYSIS_VERSION, RUST_ANALYSIS_VERSION, feature_schema_sha256
+from ..model.feature_schema import (
+    DECISION_ANALYSIS_VERSION,
+    RUST_ANALYSIS_VERSION,
+    feature_schema_sha256,
+)
 from ..model.schema import TOKEN_SCHEMA_VERSION
 from ..sft.contract import SFT_CONTRACT_VERSION
+from .metrics import ppo_buffer_metrics
 from .profiling import StageProfiler
 from .trajectory import Transition
-from .metrics import ppo_buffer_metrics
-
 
 BATCH_MODE_IDS = {"streaming": 0.0, "prefetch": 1.0, "gpu_cache": 2.0}
 ACTOR_ROOTS = {"actor_backbone", "policy_head", "query"}
@@ -844,10 +847,6 @@ class PPOLearner:
                             - entropy_coef * entropy_values
                             + sft_kl_coef * sft_reference_kl_values
                         )
-                    weighted_count = sample_weights.sum().clamp_min(1.0)
-                    policy_loss = (policy_loss_values * sample_weights).sum() / weighted_count
-                    value_loss_scalar = (value_loss * sample_weights).sum() / weighted_count
-                    entropy = (entropy_values * sample_weights).sum() / weighted_count
                     loss = (loss_values * sample_weights).sum() * plan.loss_scale
                 with self._gpu_stage("update/zero_grad"):
                     self.optimizer.zero_grad(set_to_none=True)

@@ -11,9 +11,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from ..model.bridge import BatchedStateBridge, NUM_PLAYERS
-from .policy_adapter import PolicyAdapter, V13PolicyAdapter, load_policy_adapter
-from .evaluation_cases import DEFENSE, EFFICIENCY, evaluation_cases
+from ..model.bridge import NUM_PLAYERS, BatchedStateBridge
 from ..training.metrics import SemanticMetrics
 from ..training.opponents.heuristic import HeuristicPolicy
 from ..training.rewards import (
@@ -22,6 +20,8 @@ from ..training.rewards import (
     PublicStateTracker,
 )
 from ..training.worker import active_decisions
+from .evaluation_cases import DEFENSE, EFFICIENCY, evaluation_cases
+from .policy_adapter import PolicyAdapter, V13PolicyAdapter
 
 
 def _phase(discard_count: int) -> str:
@@ -228,17 +228,3 @@ def evaluate_against_heuristics(
     if was_training:
         policy_model.train()
     return summary
-
-
-def evaluate_checkpoint_against_heuristics(
-    checkpoint: str,
-    device: torch.device,
-    config: dict[str, Any],
-    *,
-    hanchan_count: int | None = None,
-    cycle: int = 0,
-) -> dict[str, float]:
-    adapter = load_policy_adapter(checkpoint, device=device)
-    return evaluate_against_heuristics(
-        adapter, device, config, hanchan_count=hanchan_count, cycle=cycle,
-    )

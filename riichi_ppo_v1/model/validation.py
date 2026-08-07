@@ -2,28 +2,24 @@
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
 import json
-from pathlib import Path
 import random
+from collections import Counter, defaultdict
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from .bridge import BatchedStateBridge, Decision, NUM_ACTIONS, NUM_PLAYERS, action_jsons
+from .bridge import NUM_ACTIONS, BatchedStateBridge, Decision, action_jsons
 
 EVENT_TYPES = frozenset({
     "start_game", "start_kyoku", "tsumo", "dahai", "chi", "pon", "daiminkan",
     "ankan", "kakan", "dora", "reach", "reach_accepted", "hora", "ryukyoku",
     "end_kyoku", "end_game",
 })
-MODEL_EVENT_TYPES = frozenset({
-    "dahai", "chi", "pon", "daiminkan", "ankan", "kakan", "dora", "reach", "reach_accepted",
-})
 MODEL_ACTION_TYPES = frozenset({
     "none", "dahai", "reach", "chi", "pon", "daiminkan", "ankan", "kakan", "hora", "ryukyoku",
 })
-BLOCK_BY_EVENT = {name: (2 if name in {"chi", "pon", "daiminkan", "ankan", "kakan"} else 1) for name in MODEL_EVENT_TYPES}
 TILE34 = tuple(
     [f"{rank}{suit}" for suit in "mps" for rank in range(1, 10)] + ["E", "S", "W", "N", "P", "F", "C"]
 )

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import numpy as np
-
 from riichi_ppo_v1.training.tensorboard import (
     CURATED_SCALAR_TAGS,
     TENSORBOARD_DISPLAY_TAGS,

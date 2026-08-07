@@ -6,14 +6,18 @@ v13 adds isolated two-token action queries while retaining the legacy fixed
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 
 import torch
-from torch import Tensor, nn
 import torch.nn.functional as F
+from torch import Tensor, nn
 
-from .schema import ACTION_QUERY_DEFENSE, ACTION_QUERY_OFFENSE, ACTION_QUERY_SEGMENT
+from .feature_schema import (
+    ACTION_QUERY_DEFENSE,
+    ACTION_QUERY_OFFENSE,
+    ACTION_QUERY_SEGMENT,
+)
 
 NUM_ACTIONS = 241
 TOKEN_WIDTH = 10

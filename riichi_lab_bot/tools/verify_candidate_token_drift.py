@@ -36,8 +36,8 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 import numpy as np
 import torch
-
 from riichi_lab_bot.bridge import OnlineStateBridge
+
 from riichi_ppo_v1.model.bridge import BatchedStateBridge, Decision
 from riichi_ppo_v1.sft.head_to_head import _bf16_supported, _load_model, _tensor
 from riichi_ppo_v1.training.rewards import (
@@ -58,8 +58,8 @@ def _play_one_hanchan(
     """Play one hanchan; for each model-seat decision, compute argmax under
     both the bot's OnlineStateBridge and the training BatchedStateBridge,
     using the same checkpoint."""
-    from riichienv import BatchedRiichiEnv
     import riichi
+    from riichienv import BatchedRiichiEnv
 
     envs = BatchedRiichiEnv(1, seed=seed, step_threads=1, game_mode="4p-red-half")
     train_bridge = BatchedStateBridge(riichi.MjaiKyokuStateMachineManager(1), 1)
@@ -81,10 +81,8 @@ def _play_one_hanchan(
     bot_token_lengths: list[int] = []
     train_token_lengths: list[int] = []
 
-    active_envs = {0}
     for _step in range(max_steps):
         actions_by_env: list[dict[int, Any]] = [{}]
-        decisions = []
         # Gather pending events into each seat's observation (bot path).
         for seat, obs in observations[0].items():
             pending_events[int(seat)].extend(obs.new_events())

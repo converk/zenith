@@ -12,7 +12,8 @@ try:
 except ImportError:  # imported lazily by the command line program
     ray = None
 
-from ..model.bridge import BatchedStateBridge, Decision, NUM_PLAYERS
+from ..model.bridge import NUM_PLAYERS, BatchedStateBridge, Decision
+from .metrics import SemanticMetrics
 from .profiling import StageProfiler
 from .rewards import (
     DecisionAnalysisBatch,
@@ -21,7 +22,6 @@ from .rewards import (
     terminal_kyoku_reward,
 )
 from .trajectory import Transition, finish_kyoku
-from .metrics import SemanticMetrics
 
 
 def active_decisions(
@@ -220,10 +220,7 @@ if ray is not None:
 
         def _advance_once(
             self,
-            greedy: bool = False,
-            record: bool = True,
             active_envs: set[int] | None = None,
-            reset_completed: bool = True,
         ) -> tuple[list[Transition], list[float], int, list[int], list[int]]:
             completed: list[Transition] = []
             rewards: list[float] = []
@@ -239,12 +236,12 @@ if ray is not None:
                             profiler=self.profiler,
                         )
                     request, prepared = self._submit_model_actions(
-                        policy_decisions, "eval" if greedy else "rollout", greedy,
+                        policy_decisions, "rollout", False,
                         analysis_batch,
                     )
                     with self.profiler.stage("inference/rpc_wait"):
                         result = ray.get(request)
-                    record_policy = bool(record)
+                    record_policy = True
                     actions, transitions = self._model_actions(
                         policy_decisions, prepared, result, record_policy, analysis_batch,
                     )
@@ -289,7 +286,7 @@ if ray is not None:
                             self.kyoku_reward_clip_points,
                         )
                         pending = self.pending[env_index][seat]
-                        if record and self.lineups[env_index][seat] == "current":
+                        if self.lineups[env_index][seat] == "current":
                             with self.profiler.stage("rollout/finish_kyoku_gae"):
                                 if pending:
                                     pending[-1].kyoku_reward = reward
@@ -306,8 +303,6 @@ if ray is not None:
                         self.semantic.record_match_length(self.match_kyoku_counts[env_index])
             if done_indices:
                 self._finish_games(done_indices)
-                if reset_completed:
-                    self._reset_games(done_indices)
             return completed, rewards, completed_kyokus, ended_kyoku_indices, done_indices
 
         def collect(
@@ -341,7 +336,7 @@ if ray is not None:
             started = time.perf_counter()
             while active_envs:
                 step, new_rewards, new_kyokus, ended_kyokus, done_indices = self._advance_once(
-                    greedy=False, record=True, active_envs=active_envs, reset_completed=False,
+                    active_envs=active_envs,
                 )
                 transitions.extend(step)
                 rewards.extend(new_rewards)

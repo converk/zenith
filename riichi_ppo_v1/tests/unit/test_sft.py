@@ -1,32 +1,42 @@
 import gzip
 import io
 import json
+import tarfile
+import zipfile
 from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import tarfile
-import zipfile
 
 import numpy as np
-import torch
 import pytest
+import torch
 from torch.nn import functional as F
 
 from riichi_ppo_v1.model import KyokuTransformerActorCritic, ModelConfig
-from riichi_ppo_v1.model.critic_features import FIELD_OPPONENT_HAND, SEGMENT_PUBLIC_SUMMARY
+from riichi_ppo_v1.model.critic_features import (
+    FIELD_OPPONENT_HAND,
+    SEGMENT_PUBLIC_SUMMARY,
+)
 from riichi_ppo_v1.model.feature_schema import (
     DECISION_ANALYSIS_VERSION,
     RUST_ANALYSIS_VERSION,
     feature_schema_sha256,
 )
 from riichi_ppo_v1.model.schema import TOKEN_SCHEMA_VERSION
-from riichi_ppo_v1.sft.data import encode_kyoku, iter_split_samples
 from riichi_ppo_v1.sft import precompute as sft_precompute
-from riichi_ppo_v1.sft.audit import audit_kyoku, select_coverage_kyokus, validate_encoded_chunk
+from riichi_ppo_v1.sft.audit import (
+    audit_kyoku,
+    select_coverage_kyokus,
+    validate_encoded_chunk,
+)
+from riichi_ppo_v1.sft.data import encode_kyoku, iter_split_samples
 from riichi_ppo_v1.sft.precompute import (
-    _empty_field_statistics, _require_complete_action_coverage,
-    _selection_bucket, _write_chunk, encoded_identity_digests, selected_any,
+    _empty_field_statistics,
+    _require_complete_action_coverage,
+    _selection_bucket,
+    _write_chunk,
+    selected_any,
 )
 from riichi_ppo_v1.sft.prepare import (
     _json_lines,
@@ -36,10 +46,11 @@ from riichi_ppo_v1.sft.prepare import (
     stable_split,
 )
 from riichi_ppo_v1.sft.train import (
-    collate_samples, length_bucketed_batches, load_config,
+    collate_samples,
+    length_bucketed_batches,
+    load_config,
 )
 from riichi_ppo_v1.training.learner import PPOLearner
-
 
 FIXTURE = Path(__file__).parents[3] / "RiichiEnv/tests/data/126_204_0_mjai.jsonl"
 

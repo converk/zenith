@@ -1,11 +1,16 @@
-import numpy as np
-import torch
 from dataclasses import asdict
-from riichi_ppo_v1.model.feature_schema import DECISION_ANALYSIS_VERSION, RUST_ANALYSIS_VERSION, feature_schema_sha256
-from riichi_ppo_v1.model.schema import TOKEN_SCHEMA_VERSION
-from riichi_ppo_v1.sft.contract import SFT_CONTRACT_VERSION
 from tempfile import TemporaryDirectory
 
+import numpy as np
+import torch
+
+from riichi_ppo_v1.model.feature_schema import (
+    DECISION_ANALYSIS_VERSION,
+    RUST_ANALYSIS_VERSION,
+    feature_schema_sha256,
+)
+from riichi_ppo_v1.model.schema import TOKEN_SCHEMA_VERSION
+from riichi_ppo_v1.sft.contract import SFT_CONTRACT_VERSION
 from riichi_ppo_v1.training.learner import (
     PPOLearner,
     approximate_kl_values,
@@ -347,7 +352,7 @@ def test_model_initialization_starts_joint_ppo() -> None:
             row.legal_mask[:2] = True
             row.reward = reward
             row.done = True
-        metrics = learner.update(rows, shuffle_seed=3)
+        learner.update(rows, shuffle_seed=3)
         after_warmup = learner.model.state_dict()
         assert any(
             not torch.equal(value, before[name])

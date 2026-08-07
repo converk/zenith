@@ -93,7 +93,7 @@ def load_policy_adapter(
         raise RuntimeError(f"invalid policy checkpoint: {checkpoint}")
     contract = payload.get("sft_contract_version")
     schema = payload.get("token_schema_version")
-    if contract == SFT_CONTRACT_VERSION or (contract is None and schema == 13):
+    if contract == SFT_CONTRACT_VERSION:
         return V13PolicyAdapter.from_checkpoint(checkpoint, device=device)
     if contract is None and schema == 11:
         from ..legacy.v11 import V11PolicyAdapter

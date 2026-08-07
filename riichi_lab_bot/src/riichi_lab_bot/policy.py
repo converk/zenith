@@ -2,25 +2,26 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
-import time
 from typing import Any
 
 import numpy as np
 import torch
+
+from riichi_ppo_v1.model.semantic_validation import assert_actor_token_semantics
+from riichi_ppo_v1.sft.checkpoint import load_v13_weights_only
+from riichi_ppo_v1.sft.contract import (
+    SFT_CONTRACT_VERSION,
+    assert_runtime_contract,
+)
 
 from .bridge import PreparedDecision
 from .model import (
     NUM_ACTIONS,
     NUMERIC_WIDTH,
     TOKEN_WIDTH,
-)
-from riichi_ppo_v1.model.semantic_validation import assert_actor_token_semantics
-from riichi_ppo_v1.sft.checkpoint import load_v13_weights_only
-from riichi_ppo_v1.sft.contract import (
-    SFT_CONTRACT_VERSION,
-    assert_runtime_contract,
 )
 
 
@@ -102,9 +103,7 @@ class PolicyEngine:
             raise ValueError("checkpoint payload must be a dictionary")
         contract = payload.get("sft_contract_version")
         schema = payload.get("token_schema_version")
-        if contract != SFT_CONTRACT_VERSION and not (
-            contract is None and schema == 13
-        ):
+        if contract != SFT_CONTRACT_VERSION:
             raise ValueError(
                 "incompatible token schema: "
                 f"checkpoint={schema!r}, runtime=13"

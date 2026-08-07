@@ -17,9 +17,12 @@ except ImportError:  # pragma: no cover
     BatchedRiichiEnv = None
     RiichiEnv = None
 
-from riichi_ppo_v1.model.bridge import BatchedStateBridge, Decision
 from riichi_ppo_v1.model.architecture import KyokuTransformerActorCritic, ModelConfig
-from riichi_ppo_v1.model.semantic_validation import assert_actor_token_semantics, assert_critic_token_semantics
+from riichi_ppo_v1.model.bridge import BatchedStateBridge, Decision
+from riichi_ppo_v1.model.semantic_validation import (
+    assert_actor_token_semantics,
+    assert_critic_token_semantics,
+)
 
 
 @unittest.skipUnless(riichi is not None and BatchedRiichiEnv is not None, "local extensions are not installed")
@@ -116,7 +119,7 @@ class BatchedPipelineTest(unittest.TestCase):
     def test_single_table_batch_matches_scalar_environment(self) -> None:
         scalar = RiichiEnv(game_mode="4p-red-half", seed=731)
         batch = BatchedRiichiEnv(1, seed=731, step_threads=1)
-        scalar_observations = scalar.reset()
+        scalar.reset()
         batch_observations = list(batch.reset())[0]
         rng = random.Random(731)
         for _ in range(80):
@@ -133,7 +136,7 @@ class BatchedPipelineTest(unittest.TestCase):
                     batch_actions[seat] = batch_legal[index]
             if not scalar_actions:
                 break
-            scalar_observations = scalar.step(scalar_actions)
+            scalar.step(scalar_actions)
             batch_observations = list(batch.step_batch([batch_actions]))[0]
             self.assertEqual(scalar.scores(), batch.scores()[0])
             self.assertEqual(scalar.done(), batch.done()[0])
