@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 import argparse
-from collections import Counter
 import gzip
 import json
-from pathlib import Path
 import re
 import tarfile
 import tempfile
 import time
+from collections import Counter
+from pathlib import Path
 from typing import Any, Iterator
 
 import numpy as np
 
-from ..model.bridge import Decision, _action_jsons_and_decision_flag, snapshot_json
+from ..model.bridge import action_jsons_and_decision_flag, snapshot_json
 from ..model.critic_features import (
     FIELD_PUBLIC_MELD_TILE,
     FIELD_PUBLIC_RIVER,
@@ -25,10 +25,8 @@ from ..model.critic_features import (
 )
 from ..model.semantic_validation import assert_actor_token_semantics
 from ..training.rewards.decision import action_id
-from ..training.rewards.efficiency import EfficiencyAnalyzer
 from .data import SftSample, _member_metadata, encode_kyoku
 from .precompute import _assert_public_history, _decode, _write_chunk, selected
-
 
 AUDITED_EVENTS = (
     "dahai", "chi", "pon", "daiminkan", "ankan", "kakan", "reach",
@@ -40,7 +38,6 @@ _HISTORY_FIELDS = {
     "reach": 11, "reach_accepted": 12,
 }
 _HISTORY_FIELD_NAMES = {field: name for name, field in _HISTORY_FIELDS.items()}
-_REPLAY_TYPES = frozenset((*_HISTORY_FIELDS, "tsumo"))
 _SEGMENT_CANDIDATE = 7
 
 
@@ -152,8 +149,8 @@ def _check_public_summary(observation: Any, seat: int) -> None:
 
 def audit_kyoku(content: str, *, identity: str) -> dict[str, Any]:
     """Audit replay, token history, public suffix and actor-only cache rows."""
-    from riichienv import MjaiReplay
     import riichi
+    from riichienv import MjaiReplay
 
     replay = MjaiReplay.from_jsonl_string(content, rule="tenhou")
     kyokus = list(replay.take_kyokus())
@@ -195,7 +192,7 @@ def audit_kyoku(content: str, *, identity: str) -> dict[str, Any]:
                 raise AssertionError(
                     f"{identity}: seat={seat} decision={decision_index} rejected replay events: {fresh}"
                 ) from exc
-            action_jsons, flag = _action_jsons_and_decision_flag(observation)
+            action_jsons, flag = action_jsons_and_decision_flag(observation)
             prepared = manager.prepare_decisions([seat], [action_jsons], [snapshot_json(observation, flag)])
             length = int(prepared[2][0])
             factors = np.asarray(prepared[0], dtype=np.uint8)[0, :length]

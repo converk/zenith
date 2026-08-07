@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import gzip
-from pathlib import Path
 import random
 import tarfile
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterator
 
 import numpy as np
 
 from ..model.bridge import (
     Decision,
-    _action_jsons_and_decision_flag,
+    action_jsons_and_decision_flag,
     snapshot_json,
 )
 from ..model.critic_features import (
@@ -21,7 +21,10 @@ from ..model.critic_features import (
     encode_critic_features,
     encode_public_summary,
 )
-from ..model.semantic_validation import assert_actor_token_semantics, assert_critic_token_semantics
+from ..model.semantic_validation import (
+    assert_actor_token_semantics,
+    assert_critic_token_semantics,
+)
 from ..training.rewards.decision import DecisionAnalysisBatch, action_id
 from ..training.rewards.efficiency import EfficiencyAnalyzer
 
@@ -79,8 +82,8 @@ def encode_kyoku(
     from .contract import assert_runtime_contract
 
     assert_runtime_contract()
-    from riichienv import MjaiReplay
     import riichi
+    from riichienv import MjaiReplay
 
     replay = MjaiReplay.from_jsonl_string(content, rule="tenhou")
     kyokus = list(replay.take_kyokus())
@@ -117,7 +120,7 @@ def encode_kyoku(
             events = [[], [], [], []]
             events[seat] = list(observation.new_events())
             events_by_env.append(events)
-            actions, decision_flag = _action_jsons_and_decision_flag(observation)
+            actions, decision_flag = action_jsons_and_decision_flag(observation)
             action_rows.append(actions)
             snapshots.append(snapshot_json(observation, decision_flag))
         manager.apply_events_batch(env_indices, events_by_env)

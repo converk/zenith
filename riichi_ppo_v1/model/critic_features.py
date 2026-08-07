@@ -14,7 +14,6 @@ import numpy as np
 
 from .architecture import TOKEN_WIDTH
 
-NUM_TILE_TYPES = 34
 NUM_PLAYERS = 4
 
 SEGMENT_CRITIC_PRIVATE = 4
@@ -72,14 +71,6 @@ def relative_seat(observer: int, seat: int) -> int:
 
 
 def _seat_tiles(values: Any, seat: int) -> tuple[int, ...]:
-    try:
-        row = values[seat]
-    except (IndexError, KeyError, TypeError):
-        return ()
-    return tuple(int(tile) for tile in row if tile_id_to_type(tile) is not None)
-
-
-def _public_seat_rows(values: Any, seat: int) -> tuple[int, ...]:
     """Read a public per-seat tile row, treating absent/malformed data as empty."""
     try:
         row = values[seat]
@@ -139,7 +130,7 @@ def collect_visible_table_state(observations: dict[int, Any], *, include_public_
     melds = getattr(public_observation, "melds", ())
     return TableState(
         tuple(hands),
-        tuple(_public_seat_rows(discards, seat) for seat in range(NUM_PLAYERS)),
+        tuple(_seat_tiles(discards, seat) for seat in range(NUM_PLAYERS)),
         tuple(_public_meld_rows(melds, seat) for seat in range(NUM_PLAYERS)),
     )
 
@@ -153,8 +144,23 @@ def collect_replay_table_state(observation: Any) -> TableState:
     melds = getattr(observation, "melds", ())
     return TableState(
         tuple(tuple(int(tile) for tile in row) for row in hands),
-        tuple(_public_seat_rows(discards, seat) for seat in range(NUM_PLAYERS)),
+        tuple(_seat_tiles(discards, seat) for seat in range(NUM_PLAYERS)),
         tuple(_public_meld_rows(melds, seat) for seat in range(NUM_PLAYERS)),
+    )
+
+
+def collect_actor_public_table_state(observation: Any) -> TableState:
+    """Build the actor-visible public river/meld table from one observation."""
+    discards = getattr(observation, "discards", ())
+    melds = getattr(observation, "melds", ())
+    return TableState(
+        hands=((), (), (), ()),
+        discards=tuple(
+            _seat_tiles(discards, seat) for seat in range(NUM_PLAYERS)
+        ),
+        melds=tuple(
+            _public_meld_rows(melds, seat) for seat in range(NUM_PLAYERS)
+        ),
     )
 
 

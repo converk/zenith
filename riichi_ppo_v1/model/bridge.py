@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from functools import lru_cache
-import json
 from typing import Any
 
 import numpy as np
 
+from ..training.profiling import StageProfiler
 from .critic_features import (
     collect_visible_table_state,
     empty_critic_features,
@@ -16,7 +17,6 @@ from .critic_features import (
     encode_public_summary,
     pad_critic_feature_rows,
 )
-from ..training.profiling import StageProfiler
 
 NUM_PLAYERS = 4
 NUM_ACTIONS = 241
@@ -78,7 +78,7 @@ def _normalized_action_json(raw_action: str, tsumogiri: bool) -> tuple[str, str]
     return json.dumps(value, separators=(",", ":"), sort_keys=True), action_type
 
 
-def _action_jsons_and_decision_flag(observation: Any) -> tuple[list[str], int]:
+def action_jsons_and_decision_flag(observation: Any) -> tuple[list[str], int]:
     """Create exact templates and the snapshot's action-window flag together."""
     drawn = getattr(observation, "drawn_tile", None)
     result: list[str] = []
@@ -93,7 +93,7 @@ def _action_jsons_and_decision_flag(observation: Any) -> tuple[list[str], int]:
 
 def action_jsons(observation: Any) -> list[str]:
     """Create exact action templates, including the physical tsumogiri distinction."""
-    return _action_jsons_and_decision_flag(observation)[0]
+    return action_jsons_and_decision_flag(observation)[0]
 
 
 def snapshot_json(observation: Any, decision_flags: int = 0) -> str:
@@ -161,7 +161,7 @@ class BatchedStateBridge:
             raise ValueError("cannot prepare an empty decision batch")
         batch_indices = [decision.batch_index for decision in decisions]
         with self.profiler.stage("state/legal_action_json"):
-            action_rows = [_action_jsons_and_decision_flag(decision.observation) for decision in decisions]
+            action_rows = [action_jsons_and_decision_flag(decision.observation) for decision in decisions]
             legal_actions = [actions for actions, _flag in action_rows]
         with self.profiler.stage("state/snapshot_json"):
             snapshots = [

@@ -5,12 +5,12 @@ import random
 
 import numpy as np
 import pytest
-
+from conftest import default_checkpoint
 from riichi_lab_bot.bridge import OnlineStateBridge
 from riichi_lab_bot.local_play import observation_with_events
 from riichi_lab_bot.policy import PolicyEngine
 from riichi_lab_bot.safety import choose_safe_response
-from conftest import default_checkpoint
+
 from riichi_ppo_v1.model.semantic_validation import assert_actor_token_semantics
 
 
@@ -56,6 +56,35 @@ def test_serialized_observation_model_action_roundtrip() -> None:
     else:
         pytest.fail("fixed-seed hanchan did not finish")
     assert decision_count > 100
+
+
+def test_bot_reuses_training_conversion_and_public_summary_helpers() -> None:
+    import riichi_lab_bot.bridge as bot_bridge
+    import riichi_lab_bot.features as bot_features
+    from riichienv import RiichiEnv
+
+    import riichi_ppo_v1.model.bridge as training_bridge
+    from riichi_ppo_v1.model.critic_features import (
+        collect_actor_public_table_state,
+    )
+    from riichi_ppo_v1.model.critic_features import (
+        encode_public_summary as training_encode_public_summary,
+    )
+
+    env = RiichiEnv(game_mode="4p-red-half", seed=20260732)
+    observation = env.reset()[0]
+    assert bot_bridge.snapshot_json(
+        observation, 1
+    ) == training_bridge.snapshot_json(observation, 1)
+    assert bot_bridge.action_jsons_and_decision_flag(
+        observation
+    ) == training_bridge.action_jsons_and_decision_flag(observation)
+    for seat in range(4):
+        bot_summary = bot_features.encode_public_summary(observation, seat)
+        training_summary = training_encode_public_summary(
+            collect_actor_public_table_state(observation), seat
+        ).factors
+        assert np.array_equal(bot_summary, training_summary)
 
 
 def test_single_seat_bridge_matches_training_bridge() -> None:

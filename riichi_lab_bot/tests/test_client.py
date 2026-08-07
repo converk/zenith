@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from riichi_lab_bot.bridge import action_jsons_and_flag
+from riichi_lab_bot.bridge import action_jsons_and_decision_flag
 from riichi_lab_bot.client import (
     AuthenticationError,
     SessionResult,
@@ -63,7 +63,7 @@ def _request_fixture(
     observation = RiichiEnv(
         game_mode="4p-red-half", seed=42
     ).reset()[seat]
-    legal, _flag = action_jsons_and_flag(observation)
+    legal, _flag = action_jsons_and_decision_flag(observation)
     message = {
         "type": "request_action",
         "request_id": request_id,

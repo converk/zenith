@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from ...model.bridge import Decision, _action_jsons_and_decision_flag, snapshot_json
+from ...model.bridge import Decision, action_jsons_and_decision_flag, snapshot_json
 from ...model.critic_features import collect_visible_table_state, encode_public_summary
 from ...training.rewards.decision import DecisionAnalysisBatch, _action_type_code
 from .contract import V11_REPLAY_RUNTIME_ID
@@ -76,7 +76,7 @@ def prepare_v11(
     assert_runtime()
     if not decisions:
         raise ValueError("cannot prepare an empty v11 decision batch")
-    rows = [_action_jsons_and_decision_flag(item.observation) for item in decisions]
+    rows = [action_jsons_and_decision_flag(item.observation) for item in decisions]
     prepared = bridge.state_machine.prepare_decisions(
         [item.batch_index for item in decisions],
         [actions for actions, _flag in rows],

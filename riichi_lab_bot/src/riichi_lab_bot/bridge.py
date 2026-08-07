@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from functools import lru_cache
 import json
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -17,7 +16,12 @@ import numpy as np
 # Without these tokens the model's input distribution shifts → argmax drifts on
 # ~43% of decisions in empirical tests (see
 # ``riichi_lab_bot/tools/verify_candidate_token_drift.py``).
-from riichi_ppo_v1.model.bridge import Decision
+from riichi_ppo_v1.model.bridge import (
+    NUM_PLAYERS,
+    Decision,
+    action_jsons_and_decision_flag,
+    snapshot_json,
+)
 from riichi_ppo_v1.model.semantic_validation import assert_actor_token_semantics
 from riichi_ppo_v1.training.rewards import (
     DecisionAnalysisBatch,
@@ -29,10 +33,6 @@ from .features import encode_public_summary
 from .model import NUM_ACTIONS, NUMERIC_WIDTH, TOKEN_WIDTH
 from .observation import ObservationView, ThreatSnapshotTracker
 
-NUM_PLAYERS = 4
-_DECISION_ACTION_TYPES = frozenset(
-    {"dahai", "reach", "ankan", "kakan", "ryukyoku"}
-)
 _MODEL_EVENT_TYPES = frozenset(
     {
         "start_game",
@@ -72,101 +72,6 @@ class PreparedDecision:
     legal_mask: np.ndarray
     legal_jsons: tuple[str, ...]
     event_context: EventContext
-
-
-def tile_id_to_mjai(tile_id: int | None) -> str | None:
-    if tile_id is None:
-        return None
-    tile = int(tile_id)
-    red = {16: "5mr", 52: "5pr", 88: "5sr"}
-    if tile in red:
-        return red[tile]
-    if not 0 <= tile < 136:
-        raise ValueError(f"invalid RiichiEnv tile id {tile}")
-    suit = tile // 36
-    if suit < 3:
-        return f"{tile % 36 // 4 + 1}{('m', 'p', 's')[suit]}"
-    honors = ("E", "S", "W", "N", "P", "F", "C")
-    return honors[(tile - 108) // 4]
-
-
-@lru_cache(maxsize=1024)
-def _normalized_action_json(
-    raw_action: str, tsumogiri: bool
-) -> tuple[str, str]:
-    value = json.loads(raw_action)
-    action_type = str(value.get("type", ""))
-    if action_type == "dahai":
-        value["tsumogiri"] = bool(tsumogiri)
-    expected_consumed = {
-        "chi": 2,
-        "pon": 2,
-        "daiminkan": 3,
-    }.get(action_type)
-    consumed = value.get("consumed")
-    if (
-        expected_consumed is not None
-        and isinstance(consumed, list)
-        and len(consumed) == expected_consumed + 1
-    ):
-        called = value.get("pai")
-        try:
-            consumed.remove(called)
-        except ValueError as exc:
-            raise ValueError(
-                f"{action_type} replay action lacks its called tile"
-            ) from exc
-        value["consumed"] = consumed
-    return (
-        json.dumps(value, separators=(",", ":"), sort_keys=True),
-        action_type,
-    )
-
-
-def action_jsons_and_flag(observation: Any) -> tuple[list[str], int]:
-    drawn = getattr(observation, "drawn_tile", None)
-    result: list[str] = []
-    has_decision_action = False
-    for action in observation.legal_actions():
-        tsumogiri = (
-            action.tile is not None
-            and drawn is not None
-            and int(action.tile) == int(drawn)
-        )
-        action_json, action_type = _normalized_action_json(
-            action.to_mjai(), tsumogiri
-        )
-        result.append(action_json)
-        has_decision_action |= action_type in _DECISION_ACTION_TYPES
-    return result, int(has_decision_action)
-
-
-def snapshot_json(observation: Any, decision_flags: int) -> str:
-    pid = int(observation.player_id)
-    hands = getattr(observation, "hands", None)
-    if hands is None:
-        raise RuntimeError("Observation must expose hands")
-    data = {
-        "player_id": pid,
-        "oya": int(observation.oya),
-        "round_wind": int(observation.round_wind),
-        "kyoku_index": int(observation.kyoku_index),
-        "honba": int(observation.honba),
-        "riichi_sticks": int(observation.riichi_sticks),
-        "scores": [int(x) for x in observation.scores],
-        "dora_indicators": [
-            tile_id_to_mjai(x) for x in observation.dora_indicators
-        ],
-        "hand": [tile_id_to_mjai(x) for x in hands[pid]],
-        "drawn_tile": tile_id_to_mjai(
-            getattr(observation, "drawn_tile", None)
-        ),
-        "riichi_declared": [
-            bool(x) for x in observation.riichi_declared
-        ],
-        "decision_flags": int(decision_flags),
-    }
-    return json.dumps(data, separators=(",", ":"))
 
 
 def _parse_event_context(events: list[str]) -> EventContext:
@@ -279,7 +184,7 @@ class OnlineStateBridge:
         # of every seat (rivers, melds, riichi, dora).
         self.public.update([events_by_player])
 
-        legal_jsons, decision_flag = action_jsons_and_flag(observation)
+        legal_jsons, decision_flag = action_jsons_and_decision_flag(observation)
         factors, numeric, lengths, mask, _generation = (
             self.manager.prepare_decisions(
                 [self.seat],
