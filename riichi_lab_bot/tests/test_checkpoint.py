@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import os
+import random
+
 import pytest
+import torch
 
 from conftest import default_checkpoint
 from riichi_lab_bot.model import TOKEN_SCHEMA_VERSION
+from riichi_lab_bot.bridge import OnlineStateBridge
 from riichi_lab_bot.policy import PolicyEngine
 
 
@@ -12,6 +17,9 @@ def test_real_checkpoint_loads_strictly_and_warms_up() -> None:
         default_checkpoint(), device="cpu", dtype="fp32"
     )
     assert engine.config.context_tokens == 4096
+    assert engine.metadata["sft_contract_version"] == "riichi-sft-v13-1"
+    assert engine.metadata["token_schema_version"] == 13
+    assert engine.metadata["policy_head_type"] == "isolated_action_query"
     assert engine.warmup() >= 0.0
 
 
@@ -29,3 +37,64 @@ def test_incompatible_schema_fails_before_model_load(
     with pytest.raises(ValueError, match="incompatible token schema"):
         PolicyEngine(path, device="cpu", dtype="fp32")
 
+
+def test_v13_contract_rejects_non_isolated_policy_head(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    path = tmp_path / "bad_head.pt"
+    path.touch()
+    monkeypatch.setattr(
+        "torch.load",
+        lambda *args, **kwargs: {
+            "sft_contract_version": "riichi-sft-v13-1",
+            "model_config": {"policy_head_type": "legacy_fixed"},
+            "model": {},
+        },
+    )
+    with pytest.raises(RuntimeError, match="isolated_action_query"):
+        PolicyEngine(path, device="cpu", dtype="fp32")
+
+
+def _first_legal_prepared(seed: int = 20260730):
+    from riichienv import RiichiEnv
+    from riichi_lab_bot.local_play import observation_with_events
+
+    env = RiichiEnv(game_mode="4p-red-half", seed=seed)
+    observations = env.reset()
+    pending = {seat: [] for seat in range(4)}
+    rng = random.Random(seed)
+    for _step in range(4000):
+        for seat, observation in observations.items():
+            pending[int(seat)].extend(observation.new_events())
+        for seat, observation in observations.items():
+            if not observation.legal_actions():
+                continue
+            server_observation = observation_with_events(
+                observation, pending[int(seat)]
+            )
+            return OnlineStateBridge(int(seat)).prepare(server_observation)
+        actions = {
+            seat: rng.choice(observation.legal_actions())
+            for seat, observation in observations.items()
+            if observation.legal_actions()
+        }
+        if not actions:
+            raise RuntimeError("local environment stalled before a decision")
+        observations = env.step(actions)
+    raise RuntimeError("no legal decision found in 4000 steps")
+
+
+def test_fp32_and_bf16_inference_agree_on_l20() -> None:
+    visible = os.environ.get("CUDA_DEVICE", "")
+    if (
+        not torch.cuda.is_available()
+        or not torch.cuda.is_bf16_supported()
+        or not any(device in visible.split(",") for device in ("2", "3"))
+    ):
+        pytest.skip("requires CUDA_DEVICE=2,3 on an L20")
+    prepared = _first_legal_prepared()
+    fp32 = PolicyEngine(default_checkpoint(), device="cpu", dtype="fp32")
+    bf16 = PolicyEngine(default_checkpoint(), device="cuda:0", dtype="bf16")
+    fp_result = fp32.infer(prepared)
+    bf_result = bf16.infer(prepared)
+    assert fp_result.action_id == bf_result.action_id

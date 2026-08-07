@@ -55,12 +55,14 @@ class FakeConnect:
         return Context()
 
 
-def _request_fixture(request_id: int = 42) -> tuple[str, list[dict]]:
+def _request_fixture(
+    request_id: int = 42, seat: int = 0
+) -> tuple[str, list[dict]]:
     from riichienv import RiichiEnv
 
     observation = RiichiEnv(
         game_mode="4p-red-half", seed=42
-    ).reset()[0]
+    ).reset()[seat]
     legal, _flag = action_jsons_and_flag(observation)
     message = {
         "type": "request_action",
@@ -159,6 +161,38 @@ def test_deadline_margin_withholds_response(
         play_connection(
             url="wss://example.invalid/ranked",
             mode="ranked",
+            token="secret",
+            policy=FirstLegalPolicy(),
+            recorder=EventRecorder(),
+        )
+    )
+    assert result.metrics["withheld_actions"] == 1
+    assert websocket.sent == []
+
+
+def test_observation_seat_mismatch_withholds_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, _possible = _request_fixture(seat=0)
+    websocket = FakeWebSocket(
+        [
+            json.dumps({"type": "start_game", "id": 1}),
+            request,
+            json.dumps(
+                {"type": "end_game", "scores": [25000] * 4}
+            ),
+            json.dumps(
+                {"type": "validation_result", "passed": True}
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        "websockets.asyncio.client.connect", FakeConnect(websocket)
+    )
+    result = asyncio.run(
+        play_connection(
+            url="wss://example.invalid/validate",
+            mode="validate",
             token="secret",
             policy=FirstLegalPolicy(),
             recorder=EventRecorder(),

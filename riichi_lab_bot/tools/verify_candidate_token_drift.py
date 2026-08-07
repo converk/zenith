@@ -1,20 +1,20 @@
-"""Empirically verify whether the bot's missing candidate tokens (segment=7)
-cause the model to pick a different action than the training path would.
+"""Empirically verify the bot and training paths emit identical V13 tokens.
 
-The training `BatchedStateBridge.prepare(decisions, analysis)` injects one
-``segment=7`` candidate token per legal action (see
-``riichi_ppo_v1/training/rewards/decision.py:DecisionAnalysisBatch.candidate_tokens``).
-The bot's ``OnlineStateBridge.prepare`` currently omits this segment entirely.
+The training `BatchedStateBridge.prepare(decisions, analysis)` injects six
+``segment=6`` state rows plus one ``segment=7`` offense/defense query pair
+per legal action (see
+``riichi_ppo_v1/training/rewards/decision.py:DecisionAnalysisBatch.state_tokens``
+and ``candidate_tokens``).  The bot's ``OnlineStateBridge.prepare`` must
+reproduce the exact same token sequence and therefore the same model argmax.
 
 This script runs one local RiichiEnv hanchan, encodes every decision with
-both paths using the *same* checkpoint, and reports the argmax disagreement
-count.  If disagreements exceed a small threshold, candidate tokens truly
-matter and the bot should be patched.
+both paths using the *same* checkpoint, and reports the token/argmax
+disagreement count.  The acceptance requirement is ``disagreements = 0``.
 
 Usage (from the workspace root):
-    CUDA_DEVICE=3 conda run -n Mahjong-AI python \\
+    CUDA_DEVICE=2,3 /mnt/disk1/hubowen/miniconda3/envs/Mahjong-AI/bin/python \\
         riichi_lab_bot/tools/verify_candidate_token_drift.py \\
-        --model checkpoints/train_riichi_v11_sft_40pct/best_heuristic.pt
+        --model checkpoints/train_riichi_v13_sft/best_heuristic.pt
 """
 
 from __future__ import annotations
@@ -56,8 +56,8 @@ def _play_one_hanchan(
     max_steps: int,
 ) -> dict[str, Any]:
     """Play one hanchan; for each model-seat decision, compute argmax under
-    both the bot's OnlineStateBridge (no candidate tokens) and the training
-    BatchedStateBridge (with candidate tokens), using the same checkpoint."""
+    both the bot's OnlineStateBridge and the training BatchedStateBridge,
+    using the same checkpoint."""
     from riichienv import BatchedRiichiEnv
     import riichi
 

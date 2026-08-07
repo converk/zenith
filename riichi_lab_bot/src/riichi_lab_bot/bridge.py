@@ -18,6 +18,7 @@ import numpy as np
 # ~43% of decisions in empirical tests (see
 # ``riichi_lab_bot/tools/verify_candidate_token_drift.py``).
 from riichi_ppo_v1.model.bridge import Decision
+from riichi_ppo_v1.model.semantic_validation import assert_actor_token_semantics
 from riichi_ppo_v1.training.rewards import (
     DecisionAnalysisBatch,
     EfficiencyAnalyzer,
@@ -26,6 +27,7 @@ from riichi_ppo_v1.training.rewards import (
 
 from .features import encode_public_summary
 from .model import NUM_ACTIONS, NUMERIC_WIDTH, TOKEN_WIDTH
+from .observation import ObservationView, ThreatSnapshotTracker
 
 NUM_PLAYERS = 4
 _DECISION_ACTION_TYPES = frozenset(
@@ -175,7 +177,9 @@ def _parse_event_context(events: list[str]) -> EventContext:
         except (TypeError, json.JSONDecodeError):
             continue
         event_type = value.get("type")
-        if event_type in {"tsumo", "dahai"}:
+        # Kakan and (in the kokushi variant) ankan expose a ron target for
+        # chankan/rob-a-kan just like a discard does.
+        if event_type in {"tsumo", "dahai", "kakan", "ankan"}:
             actor = value.get("actor")
             context = EventContext(
                 str(event_type),
@@ -205,6 +209,7 @@ class OnlineStateBridge:
         # fed model events on every ``prepare`` call.
         self.analyzer = EfficiencyAnalyzer(131_072)
         self.public = PublicStateTracker(1)
+        self.threats = ThreatSnapshotTracker()
 
     def prepare(self, observation: Any) -> PreparedDecision:
         if int(observation.player_id) != self.seat:
@@ -228,6 +233,7 @@ class OnlineStateBridge:
                 accepted_events.append(raw)
                 if event_type == "start_kyoku":
                     saw_start_kyoku = True
+        self.threats.apply_events(accepted_events)
         # Reset cross-kyoku event_context residue: when a new kyoku starts the
         # previous kyoku's last tsumo/dahai is no longer a valid ron target,
         # so ``safety.action_to_response`` must not reuse it as ``target``.
@@ -236,6 +242,37 @@ class OnlineStateBridge:
         new_context = _parse_event_context(accepted_events)
         if new_context.last_type is not None:
             self.event_context = new_context
+
+        derived_fields = self.threats.fields()
+        raw_declared = list(
+            getattr(observation, "riichi_declared", [False] * NUM_PLAYERS)
+        )
+        raw_sutehais = list(
+            getattr(observation, "riichi_sutehais", [None] * NUM_PLAYERS)
+        )
+        corrected_declared = [
+            bool(declared and sutehai is not None)
+            for declared, sutehai in zip(
+                raw_declared, raw_sutehais, strict=True
+            )
+        ]
+        if isinstance(observation, ObservationView):
+            observation.set_fields(
+                {
+                    name: value
+                    for name, value in derived_fields.items()
+                    if name in observation.missing_fields
+                }
+            )
+            if corrected_declared != raw_declared:
+                observation.set_fields(
+                    {"riichi_declared": corrected_declared}
+                )
+        else:
+            if corrected_declared != raw_declared:
+                observation = ObservationView(
+                    observation, {"riichi_declared": corrected_declared}
+                )
 
         events_by_player = [
             accepted_events if player == self.seat else []
@@ -274,15 +311,24 @@ class OnlineStateBridge:
 
         base_length = int(lengths_a[0])
 
-        # Inject segment=7 candidate tokens so the model sees the same input
-        # distribution as in SFT/PPO/head-to-head.  Mirrors the training path
-        # in ``riichi_ppo_v1/model/bridge.py:BatchedStateBridge.prepare``.
+        # Inject the v13 state rows and segment=7 candidate tokens in the same
+        # order as the training path
+        # (``riichi_ppo_v1/model/bridge.py:BatchedStateBridge.prepare``):
+        # base history/state -> public summary -> six state rows -> candidate
+        # query pairs.
         decision = Decision(0, self.seat, observation)
         analysis = DecisionAnalysisBatch.build(
             [decision], analyzer=self.analyzer, public=self.public,
         )
+        state_factors, state_numeric = analysis.state_tokens([decision])
         candidate_factors, candidate_numeric = analysis.candidate_tokens(
             [decision], mask_a,
+        )
+        state_factor_row = np.asarray(state_factors[0], dtype=np.uint8)
+        state_numeric_row = (
+            np.asarray(state_numeric[0], dtype=np.float32)
+            if state_numeric
+            else np.zeros((0, NUMERIC_WIDTH), dtype=np.float32)
         )
         candidate_factor_row = np.asarray(candidate_factors[0], dtype=np.uint8)
         candidate_numeric_row = (
@@ -293,10 +339,13 @@ class OnlineStateBridge:
         candidate_count = int(candidate_factor_row.shape[0])
 
         public = encode_public_summary(observation, self.seat)
-        total_length = base_length + candidate_count + len(public)
-        if total_length + 1 > 4096:
+        state_count = int(state_factor_row.shape[0])
+        total_length = (
+            base_length + len(public) + state_count + candidate_count
+        )
+        if total_length > 4096:
             raise RuntimeError(
-                f"token context overflow: {total_length + 1} > 4096"
+                f"token context overflow: {total_length} > 4096"
             )
         output_factors = np.zeros(
             (total_length, TOKEN_WIDTH), dtype=np.uint8
@@ -307,12 +356,27 @@ class OnlineStateBridge:
         output_factors[:base_length] = factors_a[0, :base_length]
         output_numeric[:base_length] = numeric_a[0, :base_length]
         cursor = base_length
+        if len(public):
+            output_factors[cursor : cursor + len(public)] = public
+            cursor += len(public)
+        if state_count:
+            output_factors[cursor : cursor + state_count] = state_factor_row
+            output_numeric[cursor : cursor + state_count] = state_numeric_row
+            cursor += state_count
         if candidate_count:
             output_factors[cursor : cursor + candidate_count] = candidate_factor_row
             output_numeric[cursor : cursor + candidate_count] = candidate_numeric_row
             cursor += candidate_count
-        if len(public):
-            output_factors[cursor:] = public
+        if cursor != total_length:
+            raise RuntimeError(
+                "token assembly length mismatch: "
+                f"{cursor} != {total_length}"
+            )
+        assert_actor_token_semantics(
+            output_factors[None],
+            output_numeric[None],
+            np.asarray([total_length], dtype=np.int64),
+        )
         return PreparedDecision(
             observation=observation,
             seat=self.seat,
@@ -336,4 +400,3 @@ class OnlineStateBridge:
                 f"RiichiEnv rejected decoded action id={action_id}: {mjai}"
             )
         return action
-

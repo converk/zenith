@@ -16,7 +16,7 @@ from riichi_ppo_v1.sft.train import (
 
 ROOT = Path(__file__).parents[3]
 DATASET = ROOT / "datasets/tenhou_sft_2024_2025_encoded_40pct_v13_v16"
-CHECKPOINT = ROOT / "checkpoints/train_riichi_v13_sft/best.pt"
+CHECKPOINT = ROOT / "checkpoints/train_riichi_v13_sft/best_heuristic.pt"
 
 
 @pytest.mark.skipif(
@@ -47,7 +47,7 @@ def test_formal_v13_loader_logits_actions_and_losses_are_golden() -> None:
     assert logits.argmax(-1).tolist() == [61, 19, 37, 65]
     torch.testing.assert_close(
         output["raw_policy_logits"][torch.arange(4), logits.argmax(-1)],
-        torch.tensor([2.0531247, 1.6121610, 0.95615685, -0.97931385]),
+        torch.tensor([3.4513016, 4.2165408, 3.8457525, 0.7265501]),
         rtol=1e-6, atol=1e-6,
     )
     losses = torch.stack((
@@ -57,6 +57,6 @@ def test_formal_v13_loader_logits_actions_and_losses_are_golden() -> None:
     ))
     torch.testing.assert_close(
         losses,
-        torch.tensor([0.27647552, 0.0, 4.3724680]),
+        torch.tensor([0.27561104, 0.0, 5.0784116]),
         rtol=1e-6, atol=1e-6,
     )

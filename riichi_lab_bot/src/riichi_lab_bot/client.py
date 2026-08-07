@@ -9,6 +9,11 @@ import time
 from typing import Any
 
 from .bridge import OnlineStateBridge
+from .observation import (
+    ObservationView,
+    missing_observation_fields,
+    normalize_observation_base64,
+)
 from .policy import PolicyEngine
 from .safety import choose_safe_response
 from .telemetry import EventRecorder, SessionMetrics
@@ -36,7 +41,13 @@ def _deserialize_observation(encoded: str) -> Any:
         raise RuntimeError(
             "the local riichienv extension is not installed"
         ) from exc
-    return Observation.deserialize_from_base64(encoded)
+    observation = Observation.deserialize_from_base64(
+        normalize_observation_base64(encoded)
+    )
+    return ObservationView(
+        observation,
+        missing_fields=missing_observation_fields(encoded),
+    )
 
 
 async def play_connection(
@@ -320,4 +331,3 @@ async def run_ranked(
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2.0, 120.0)
     return results
-

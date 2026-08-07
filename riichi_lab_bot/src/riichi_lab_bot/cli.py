@@ -29,8 +29,8 @@ def _default_checkpoint() -> str:
     return str(
         repository
         / "checkpoints"
-        / "train_riichi_v11_sft_40pct_2v2_selection"
-        / "best_heuristic.snapshot.pt"
+        / "train_riichi_v13_sft"
+        / "best_heuristic.pt"
     )
 
 
@@ -98,7 +98,9 @@ def _load_policy(args: argparse.Namespace, recorder: EventRecorder) -> PolicyEng
         checkpoint=str(policy.checkpoint),
         device=str(policy.device),
         dtype=policy.dtype_name,
-        token_schema_version=11,
+        token_schema_version=policy.metadata["token_schema_version"],
+        sft_contract_version=policy.metadata["sft_contract_version"],
+        policy_head_type=policy.metadata["policy_head_type"],
         warmup_ms=warmup_ms,
     )
     return policy

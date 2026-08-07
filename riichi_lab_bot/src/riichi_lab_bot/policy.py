@@ -12,12 +12,15 @@ import torch
 
 from .bridge import PreparedDecision
 from .model import (
-    KyokuTransformerActorCritic,
-    ModelConfig,
     NUM_ACTIONS,
     NUMERIC_WIDTH,
-    TOKEN_SCHEMA_VERSION,
     TOKEN_WIDTH,
+)
+from riichi_ppo_v1.model.semantic_validation import assert_actor_token_semantics
+from riichi_ppo_v1.sft.checkpoint import load_v13_weights_only
+from riichi_ppo_v1.sft.contract import (
+    SFT_CONTRACT_VERSION,
+    assert_runtime_contract,
 )
 
 
@@ -52,6 +55,33 @@ class InferenceResult:
     elapsed_ms: float
 
 
+def _warmup_inputs() -> tuple[
+    np.ndarray, np.ndarray, np.ndarray, np.ndarray
+]:
+    """Build a minimal valid isolated-action-query input.
+
+    The V13 policy head needs one state row followed by one adjacent
+    offense/defense pair for exactly one legal action.  The warmup never
+    touches a real observation, so its values are only shape/route smoke
+    inputs.
+    """
+    factors = np.zeros((1, 3, TOKEN_WIDTH), dtype=np.uint8)
+    factors[0, 0, 0] = 6  # state summary segment
+    factors[0, 1, 0] = 7  # action query segment
+    factors[0, 1, 1] = 1  # none action kind
+    factors[0, 1, 2] = 1  # action_id 0 + 1
+    factors[0, 1, 9] = 1  # offense role
+    factors[0, 2, 0] = 7
+    factors[0, 2, 1] = 1
+    factors[0, 2, 2] = 1
+    factors[0, 2, 9] = 2  # defense role
+    numeric = np.zeros((1, 3, NUMERIC_WIDTH), dtype=np.float32)
+    legal = np.zeros((1, NUM_ACTIONS), dtype=np.bool_)
+    legal[0, 0] = True
+    lengths = np.asarray([3], dtype=np.int64)
+    return factors, numeric, legal, lengths
+
+
 class PolicyEngine:
     def __init__(
         self,
@@ -70,22 +100,34 @@ class PolicyEngine:
         )
         if not isinstance(payload, dict):
             raise ValueError("checkpoint payload must be a dictionary")
+        contract = payload.get("sft_contract_version")
         schema = payload.get("token_schema_version")
-        if schema != TOKEN_SCHEMA_VERSION:
+        if contract != SFT_CONTRACT_VERSION and not (
+            contract is None and schema == 13
+        ):
             raise ValueError(
                 "incompatible token schema: "
-                f"checkpoint={schema!r}, runtime={TOKEN_SCHEMA_VERSION}"
+                f"checkpoint={schema!r}, runtime=13"
             )
         model_config = payload.get("model_config")
         if not isinstance(model_config, dict):
             raise ValueError("checkpoint is missing model_config")
-        state = payload.get("model")
-        if not isinstance(state, dict):
-            raise ValueError("checkpoint is missing model state")
-        self.config = ModelConfig(**model_config)
-        self.model = KyokuTransformerActorCritic(self.config)
-        self.model.load_state_dict(state, strict=True)
-        self.model.to(self.device).eval()
+        if model_config.get("policy_head_type") != "isolated_action_query":
+            raise RuntimeError(
+                "v13 checkpoint must explicitly use isolated_action_query"
+            )
+        assert_runtime_contract()
+        self.model = load_v13_weights_only(
+            self.checkpoint, device=self.device
+        )
+        self.config = self.model.config
+        self.metadata: dict[str, Any] = {
+            "checkpoint": str(self.checkpoint),
+            "sft_contract_version": contract,
+            "token_schema_version": 13,
+            "policy_head_type": model_config["policy_head_type"],
+            "model_config": dict(model_config),
+        }
 
     @property
     def dtype_name(self) -> str:
@@ -96,19 +138,18 @@ class PolicyEngine:
         )
 
     def warmup(self) -> float:
-        factors = torch.zeros(
-            (1, 1, TOKEN_WIDTH), device=self.device, dtype=torch.long
+        factors, numeric, legal, lengths = _warmup_inputs()
+        factors_t = torch.as_tensor(
+            factors, device=self.device, dtype=torch.long
         )
-        numeric = torch.zeros(
-            (1, 1, NUMERIC_WIDTH),
-            device=self.device,
-            dtype=torch.float32,
+        numeric_t = torch.as_tensor(
+            numeric, device=self.device, dtype=torch.float32
         )
-        legal = torch.ones(
-            (1, NUM_ACTIONS), device=self.device, dtype=torch.bool
+        legal_t = torch.as_tensor(
+            legal, device=self.device, dtype=torch.bool
         )
-        lengths = torch.zeros(
-            (1,), device=self.device, dtype=torch.long
+        lengths_t = torch.as_tensor(
+            lengths, device=self.device, dtype=torch.long
         )
         started = time.perf_counter()
         with torch.inference_mode(), torch.autocast(
@@ -116,12 +157,19 @@ class PolicyEngine:
             dtype=self.autocast_dtype,
             enabled=self.autocast_dtype == torch.bfloat16,
         ):
-            self.model.forward_policy(factors, numeric, legal, lengths)
+            self.model.forward_policy(
+                factors_t, numeric_t, legal_t, lengths_t
+            )
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
         return (time.perf_counter() - started) * 1000.0
 
     def infer(self, prepared: PreparedDecision) -> InferenceResult:
+        assert_actor_token_semantics(
+            prepared.token_factors[None],
+            prepared.token_numeric[None],
+            np.asarray([prepared.token_length], dtype=np.int64),
+        )
         factors = torch.as_tensor(
             prepared.token_factors[None],
             device=self.device,
@@ -155,4 +203,3 @@ class PolicyEngine:
         action_id = int(chosen.item())
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         return InferenceResult(action_id, elapsed_ms)
-

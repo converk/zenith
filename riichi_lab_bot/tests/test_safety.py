@@ -140,6 +140,24 @@ def test_action_response_enrichment_for_all_action_families() -> None:
     )
     assert "target" not in tsumo
 
+    chankan = action_to_response(
+        FakeAction({"type": "hora", "actor": 1}),
+        obs,
+        EventContext("kakan", 2, "5p"),
+        5,
+    )
+    assert chankan["target"] == 2
+    assert chankan["pai"] == "5p"
+
+    rob_ankan = action_to_response(
+        FakeAction({"type": "hora", "actor": 1}),
+        obs,
+        EventContext("ankan", 3, "E"),
+        6,
+    )
+    assert rob_ankan["target"] == 3
+    assert rob_ankan["pai"] == "E"
+
     for action_type in (
         "reach",
         "ankan",
@@ -151,10 +169,10 @@ def test_action_response_enrichment_for_all_action_families() -> None:
             FakeAction({"type": action_type, "actor": 1}),
             obs,
             EventContext(),
-            5,
+            7,
         )
         assert response["type"] == action_type
-        assert response["request_id"] == 5
+        assert response["request_id"] == 7
 
 
 def test_safe_fallback_prefers_pass_over_unmatched_model_action() -> None:

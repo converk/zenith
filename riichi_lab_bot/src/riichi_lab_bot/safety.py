@@ -89,10 +89,8 @@ def action_to_response(
             value["target"] = context.actor
     if action_type == "hora":
         seat = int(observation.player_id)
-        if (
-            context.last_type == "dahai"
-            and context.actor is not None
-            and context.actor != seat
+        if context.last_type in {"dahai", "kakan", "ankan"} and (
+            context.actor is not None and context.actor != seat
         ):
             value["target"] = context.actor
             if context.pai is not None:

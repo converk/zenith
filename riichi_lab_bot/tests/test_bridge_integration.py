@@ -11,6 +11,7 @@ from riichi_lab_bot.local_play import observation_with_events
 from riichi_lab_bot.policy import PolicyEngine
 from riichi_lab_bot.safety import choose_safe_response
 from conftest import default_checkpoint
+from riichi_ppo_v1.model.semantic_validation import assert_actor_token_semantics
 
 
 def test_serialized_observation_model_action_roundtrip() -> None:
@@ -104,6 +105,11 @@ def test_single_seat_bridge_matches_training_bridge() -> None:
                 expected_lengths,
                 expected_mask,
             ) = expected[:4]
+            assert_actor_token_semantics(
+                actual.token_factors[None],
+                actual.token_numeric[None],
+                np.asarray([actual.token_length], dtype=np.int64),
+            )
             assert actual.token_length == int(expected_lengths[0])
             assert np.array_equal(
                 actual.token_factors,
