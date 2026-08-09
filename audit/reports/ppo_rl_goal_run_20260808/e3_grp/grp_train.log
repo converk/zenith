@@ -1,0 +1,53 @@
+loaded train=2763418 val=307046 train_label_dist=[690991, 690813, 690400, 691214]
+epoch=1 batch=200/5398 loss=1.3087
+epoch=1 batch=400/5398 loss=1.2262
+epoch=1 batch=600/5398 loss=1.1907
+epoch=1 batch=800/5398 loss=1.1706
+epoch=1 batch=1000/5398 loss=1.1558
+epoch=1 batch=1200/5398 loss=1.1440
+epoch=1 batch=1400/5398 loss=1.1343
+epoch=1 batch=1600/5398 loss=1.1260
+epoch=1 batch=1800/5398 loss=1.1189
+epoch=1 batch=2000/5398 loss=1.1129
+epoch=1 batch=2200/5398 loss=1.1081
+epoch=1 batch=2400/5398 loss=1.1038
+epoch=1 batch=2600/5398 loss=1.1000
+epoch=1 batch=2800/5398 loss=1.0965
+epoch=1 batch=3000/5398 loss=1.0933
+epoch=1 batch=3200/5398 loss=1.0904
+epoch=1 batch=3400/5398 loss=1.0877
+epoch=1 batch=3600/5398 loss=1.0854
+epoch=1 batch=3800/5398 loss=1.0830
+epoch=1 batch=4000/5398 loss=1.0808
+epoch=1 batch=4200/5398 loss=1.0791
+epoch=1 batch=4400/5398 loss=1.0770
+epoch=1 batch=4600/5398 loss=1.0753
+epoch=1 batch=4800/5398 loss=1.0738
+epoch=1 batch=5000/5398 loss=1.0723
+epoch=1 batch=5200/5398 loss=1.0708
+{
+  "train_rows": 2763418,
+  "val_rows": 307046,
+  "val_rank_accuracy": 0.5341154094174814,
+  "val_rank_accuracy_baseline": 0.25,
+  "val_top2_accuracy": 0.7798212645662214,
+  "val_ece": 0.025397350460080806,
+  "grp_point_delta_spearman": 0.3770096279016365,
+  "pts_weight": [
+    10,
+    4,
+    -4,
+    -10
+  ],
+  "val_label_distribution": [
+    76625,
+    76803,
+    77216,
+    76402
+  ],
+  "subset_denominator": 5,
+  "subset_remainders": [
+    0
+  ],
+  "model": "mlp_20_128_64_4"
+}

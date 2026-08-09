@@ -1,0 +1,117 @@
+{
+  "elapsed_s": 575.9742331719899,
+  "game_mode": "4p-red-half",
+  "greedy": true,
+  "hanchan_count": 240,
+  "hanchan_per_s": 0.416685306699014,
+  "model_a": {
+    "action_type_rates": {
+      "chi": 0.01131720816092104,
+      "discard": 0.780691563654401,
+      "hora": 0.014410839457504992,
+      "kan": 0.00011747966949052983,
+      "pass": 0.15641765327833546,
+      "pon": 0.022464723465911315,
+      "reach": 0.014345572974454698,
+      "ryukyoku": 0.00023495933898105966
+    },
+    "checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_ppo_goal_e3_grp_mix/checkpoint_00200.pt",
+    "first_place_count": 131,
+    "first_place_rate": 0.5458333333333333,
+    "individual_mean_rank": 2.472916666666667,
+    "metadata": {
+      "checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_ppo_goal_e3_grp_mix/checkpoint_00200.pt",
+      "contract_id": "ppo_v2",
+      "model_config": {
+        "context_tokens": 4096,
+        "critic_layers": 2,
+        "d_model": 192,
+        "eps": 1e-06,
+        "ffn_dim": 576,
+        "head_dim": 24,
+        "kv_heads": 2,
+        "layers": 4,
+        "policy_head_type": "isolated_action_query",
+        "query_heads": 8,
+        "rope_base": 10000.0,
+        "shared_layers": 3
+      }
+    },
+    "team_point_diff_mean": 2537.5,
+    "team_point_diff_paired_bootstrap_ci95": [
+      -1976.6875,
+      7106.354166666663
+    ],
+    "team_ties": 0,
+    "team_win_rate": 0.5,
+    "team_wins": 120
+  },
+  "model_a_device": "cuda",
+  "model_b": {
+    "action_type_rates": {
+      "chi": 0.013113564505260975,
+      "discard": 0.774775825428912,
+      "hora": 0.013528222671435235,
+      "kan": 5.183227077178251e-05,
+      "pass": 0.16842896387290726,
+      "pon": 0.018828072357849997,
+      "reach": 0.011027315606696729,
+      "ryukyoku": 0.0002462032861659669
+    },
+    "checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_v13_sft/best_heuristic.pt",
+    "first_place_count": 109,
+    "first_place_rate": 0.45416666666666666,
+    "individual_mean_rank": 2.527083333333333,
+    "metadata": {
+      "checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_v13_sft/best_heuristic.pt",
+      "contract_id": "riichi-sft-v13-1",
+      "model_config": {
+        "context_tokens": 4096,
+        "critic_layers": 2,
+        "d_model": 192,
+        "eps": 1e-06,
+        "ffn_dim": 576,
+        "head_dim": 24,
+        "kv_heads": 2,
+        "layers": 4,
+        "policy_head_type": "isolated_action_query",
+        "query_heads": 8,
+        "rope_base": 10000.0,
+        "shared_layers": 3
+      }
+    },
+    "team_point_diff_mean": -2537.5,
+    "team_point_diff_paired_bootstrap_ci95": [
+      -7106.354166666663,
+      1976.6875
+    ],
+    "team_ties": 0,
+    "team_win_rate": 0.5,
+    "team_wins": 120
+  },
+  "model_b_device": "cuda",
+  "paired_point_diff_95ci": [
+    -1984.9739029585544,
+    7059.973902958554
+  ],
+  "paired_point_diff_bootstrap_ci95": [
+    -1976.6875,
+    7106.354166666663
+  ],
+  "paired_point_diff_mean": 2537.5,
+  "paired_point_diff_standard_error": 2307.3846443666093,
+  "paired_walls": true,
+  "parallel_hanchans": 24,
+  "protocol_version": 2,
+  "seat_swap_within_pair": true,
+  "seed_base": 20260730,
+  "selected_checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_ppo_goal_e3_grp_mix/checkpoint_00200.pt",
+  "selection_order": [
+    "team_win_rate",
+    "team_point_diff",
+    "first_place_count",
+    "stable_model_a_fallback"
+  ],
+  "selection_reason": "team_point_diff",
+  "team_win_definition": "higher sum of the two teammates' final scores; tie counts 0.5"
+}

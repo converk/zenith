@@ -186,11 +186,12 @@ class SemanticMetrics:
         self.reward_weighted_kyoku.append(kyoku)
 
     def record_lineup(self, policies: Iterable[str], learner_seats: Iterable[int]) -> None:
-        learner = set(int(seat) for seat in learner_seats)
-        for seat, policy in enumerate(policies):
+        del learner_seats
+        for _seat, policy in enumerate(policies):
             self.policy_seats[str(policy)] += 1
-            if seat in learner:
-                self.policy_decisions["current"] += 1
+            # Approximate per-seat decision share by lineup occupancy so mixed
+            # opponent lineups (E2) report a meaningful current fraction.
+            self.policy_decisions[str(policy)] += 1
 
     def record_rule_quality(
         self,

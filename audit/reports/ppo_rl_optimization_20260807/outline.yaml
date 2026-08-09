@@ -1,0 +1,27 @@
+topic: "Riichi PPO 强化学习阶段优化"
+items:
+  - name: failure_diagnosis
+    category: "诊断"
+    description: "基于现有训练曲线、2v2 对战与评测数据，对 PPO 约 100 update 后平台期、后期对启发式对手退化的原因做证据排序诊断。必须区分：稀疏/高方差 reward、critic/value learning 不足、self-play 非平稳性、KL/entropy 约束、超参问题、自博弈对手分布问题，并给出排序与证据。"
+  - name: grp_reward_model
+    category: "奖励设计"
+    description: "重点评估 smly/RiichiEnv 的 riichienv-ml GRP（Global Reward Predictor，Suphx 2020 思路的小局级 MLP 实现）：理论上能解决/不能解决什么、能否改善「对 SFT 只打平、后期退化」、直接照搬的可行性与必要改动（数据读取、模型结构、PPO worker/GAE/value head 集成、是否需要 GRU、pts_weight 选择）、与 dense 奖励/SFT KL/自博弈对手池的实验顺序。"
+  - name: reward_design
+    category: "奖励设计"
+    description: "比较当前 sparse terminal reward、GRP、dense 效率奖励（shanten/ukeire）、动作级奖励模型及其组合。给出奖励模型输入、训练标签（专家动作/小局结果/半庄排名/点差）、架构（复用 backbone 还是独立小模型）、reward hacking 防护，以及具体实验建议。"
+  - name: tree_search
+    category: "算法"
+    description: "评估 top3 受限 MCTS、AlphaZero 风格搜索、SPG（Search with Policy Gradients）、搜索蒸馏、在线搜索 rollout 在本场景的可行性：如何与 PPO 训练结合、推理成本、能否超过纯策略学习、麻将作为不完全信息/多玩家/随机牌山游戏的注意事项。"
+  - name: alternative_algorithms
+    category: "算法"
+    description: "从当前 PPO 出发评估替代/改进算法：Gumbel/AlphaZero、IMPALA、regret/CFR 混合、opponent shaping、population/league self-play、best-of-n/rejection sampling、DPO/SPIN 等。结合小模型、2 GPU、12 workers 的规模给出可落地性排序，并说明与现有代码的兼容性。"
+  - name: self_play_opponents
+    category: "自博弈"
+    description: "评估四席 current-policy 自博弈是否是问题本身。是否应混入固定 SFT 对手、历史 checkpoint 池、启发式对手或 population 训练；给出具体比例、实现方式（当前 worker 的 lineups 只支持 all-current）、对训练稳定性和最终对 SFT 胜率的影响。"
+  - name: next_experiments
+    category: "实验计划"
+    description: "综合其他研究项的结论，给出 3–5 个按性价比排序的 next experiments。每个实验写明：假设、改动点、期望观察指标、最少实验时长、成功判定标准（例如对 SFT 的 2v2 320 半庄胜率 >55% 且 95% CI 不跨 50%）。"
+execution:
+  batch_size: 3
+  items_per_agent: 2
+  output_dir: results

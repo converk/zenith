@@ -1,0 +1,23 @@
+{
+  "conclusion": "可落地性排序：1) EV 门控/组内基线（EVPO/RLOO/GRPO，4 席天然成组）2) 对手混合 3) GRP+dense 奖励 4) critic 预训练/多 critic 5) IMPALA 6) best-of-n/expert iteration 7) DPO/SPIN 8) league/population 9) CFR/regret（ACH）10) Gumbel AlphaZero/MuZero。",
+  "evidence_type": "论文实证、开源项目实证、推测",
+  "confidence": "中",
+  "mechanism": "EVPO 在 EV<0 时用批次均值基线避免 critic 噪声；RLOO/GRPO 用组内相对基线；DouZero 的 DMC 用 MC 收益直接拟合避免 bootstrap；ACH 用 regret 替代折扣回报目标。",
+  "addresses": "critic 失效、优势噪声、自博弈不稳定、稀疏 reward。",
+  "limitations": "组内基线方差仍高；DPO/SPIN 需要偏好对且麻将偏好噪声大；league/CFR/MuZero 基础设施成本过高。",
+  "risks": "EV 门控切换不连续；critic-free 丢弃价值信息；IMPALA 解决的是 off-policy 而非根因。",
+  "data_requirements": "现有 rollout 数据即可；critic 预训练需人类日志 MC target。",
+  "architecture": "不改 backbone；EV 门控在 learner 优势计算；mini-critic 为可选。",
+  "integration": "learner.py 改动为主；IMPALA 需改 V-trace 计算。",
+  "hyperparameters": "EV 阈值 0；组大小 4（同小局四席）；RLOO leave-one-out。",
+  "compute_cost": "E1 1–2 天；IMPALA 3–5 天；其余按需。",
+  "experiment_hypothesis": "四席同小局轨迹构成零和组，组内基线比坏 critic 更稳。",
+  "experiment_changes": "E1：EV 门控 + 组内基线；E5：critic 预热或搜索蒸馏。",
+  "experiment_metrics": "EV、policy_loss、2v2 胜率与 CI、KL。",
+  "experiment_duration": "300–500 update，1–2 天。",
+  "success_criteria": "u300 2v2 >55% 且 CI 不跨 50%。",
+  "papers": "EVPO arXiv:2604.19485；GRPO arXiv:2402.03300；RLOO arXiv:2402.14740；DouZero arXiv:2106.06135；ACH ICLR 2022；IMPALA arXiv:1802.01561；BoNBoN NeurIPS 2024。",
+  "projects": "https://arxiv.org/abs/2604.19485；https://mlanthology.org/iclr/2022/fu2022iclr-actorcritic/",
+  "implementation_notes": "组内基线按 kyoku 分组；记录 EV 门控切换频率；DPO/SPIN 暂缓。",
+  "uncertain": []
+}

@@ -1,0 +1,20 @@
+# 补充A：E3-b（纯 GRP）+ 20% 随机对手混合。
+# 依据：E3-b u200 2v2 唯一显著为正；E2 的 SFT 混合让启发式更稳但弱化 u200；
+# Territory Paint Wars 显示 20% 随机对手可恢复泛化且不引入 SFT 风格偏差。
+grp_model_path: checkpoints/train_riichi_ppo_goal_grp/grp_rank_predictor.pt
+grp_pts_weight: [10, 4, -4, -10]
+grp_mix_lambda: 1.0
+opponent_mix:
+  enabled: true
+  current_frac: 0.8
+  sft_frac: 0.0
+  random_frac: 0.2
+
+kyokus_per_worker: 16
+iterations: 200
+checkpoint_interval_updates: 50
+checkpoint_dir: checkpoints/train_riichi_ppo_goal_e3b_random_mix
+init_model: checkpoints/train_riichi_v13_sft/best_heuristic.pt
+evaluation_enabled: true
+evaluation_interval_updates: 15
+evaluation_hanchan_count: 96

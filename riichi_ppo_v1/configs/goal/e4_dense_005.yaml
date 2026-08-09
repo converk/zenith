@@ -1,0 +1,16 @@
+# 收尾任务C（CUDA=0）：GRP + dense 权重 0.05（200 update）。
+# 依据：E4（dense=0.03）启发式后期最稳（u120-u195 未跌破 39%），但 u200 2v2=48.1%
+# 弱于纯 GRP；将 dense 提到 0.05，检验更强的效率信号能否修复 u200 2v2 同时保留稳定性。
+grp_model_path: checkpoints/train_riichi_ppo_goal_grp/grp_rank_predictor.pt
+grp_pts_weight: [10, 4, -4, -10]
+grp_mix_lambda: 1.0
+dense_efficiency_weight: 0.05
+
+kyokus_per_worker: 16
+iterations: 200
+checkpoint_interval_updates: 50
+checkpoint_dir: checkpoints/train_riichi_ppo_goal_e4_dense_005
+init_model: checkpoints/train_riichi_v13_sft/best_heuristic.pt
+evaluation_enabled: true
+evaluation_interval_updates: 15
+evaluation_hanchan_count: 96

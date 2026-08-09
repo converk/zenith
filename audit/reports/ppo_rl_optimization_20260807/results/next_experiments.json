@@ -1,0 +1,23 @@
+{
+  "conclusion": "按性价比推荐 5 个实验：E1 EV 门控/四席组内基线 → E2 80/20 对手混合（可与 E1 并行）→ E3 离线 GRP 验证 + PPO A/B → E4 密集效率奖励（小权重）→ E5 critic 预热/pMCPA/搜索蒸馏（后续）。统一判据：2v2 320 半庄 >55% 且 95% CI 不跨 50%。",
+  "evidence_type": "论文实证、本地数据实证、推测",
+  "confidence": "中",
+  "mechanism": "每个实验对应一个失败原因：E1→critic 噪声，E2→自博弈 overfitting，E3→reward 错配，E4→信号稀疏，E5→critic/搜索。",
+  "addresses": "平台期、对 SFT 只打平、后期退化、立直过度激进、EV 转负。",
+  "limitations": "实验间存在交互，需一次只动一个变量；E5 依赖前四步结果。",
+  "risks": "多变量并行改无法归因；训练 reward 涨但 2v2 不涨（hacking）。",
+  "data_requirements": "现有 SFT 日志（GRP 训练）、自博弈环境、评测脚本。",
+  "architecture": "不改 backbone；仅 learner/worker/rewards 层改动。",
+  "integration": "E1 learner.py；E2 worker.py lineups；E3 worker.py reward 替换；E4 worker.py discard reward；E5 推理侧。",
+  "hyperparameters": "E1 EV 阈值 0；E2 混合 20%；E3 λ=0.5；E4 dense 权重 0.01–0.05。",
+  "compute_cost": "E1/E2/E4 各 1–2 天；E3 每组 1–3 天；E5 2–4 周。",
+  "experiment_hypothesis": "依次修复 critic、对手分布、奖励目标与信号密度后，PPO 能稳定超过 SFT。",
+  "experiment_changes": "按 E1→E2（并行）→E3→E4→E5 顺序实施，每步保留基线对照。",
+  "experiment_metrics": "EV、policy_loss、sft_kl、2v2 320 半庄胜率与 95% CI、启发式一位率、立直/放铳率。",
+  "experiment_duration": "总计约 1–3 周（2 GPU 持续）。",
+  "success_criteria": "对 v13 SFT 2v2 320 半庄胜率 >55% 且 95% CI 不跨 50%；EV 转正；启发式一位率不退化。",
+  "papers": "EVPO arXiv:2604.19485；Territory Paint Wars arXiv:2604.04983；Suphx arXiv:2003.13590；DouZero arXiv:2106.06135；RUDDER arXiv:1806.07857；arXiv:2305.04145。",
+  "projects": "本仓库 riichi_ppo_v1/training/{learner.py,worker.py,rewards/}",
+  "implementation_notes": "固定 seed 1 与 best_heuristic.pt 初始化；E3 离线 GRP 训练不占 GPU 可提前启动；先做基线对照。",
+  "uncertain": []
+}

@@ -19,6 +19,12 @@ class Transition:
     value: float
     reward: float = 0.0
     kyoku_reward: float = 0.0
+    # E1: identity of the kyoku this decision belongs to. ``kyoku_group`` is
+    # the 0-based kyoku ordinal within the worker's env; ``step_in_kyoku`` is
+    # the seat-local decision ordinal inside that kyoku. They form the natural
+    # RLOO/GRPO-style group for the four self-play seats.
+    kyoku_group: int = -1
+    step_in_kyoku: int = 0
     done: bool = False
     advantage: float = 0.0
     return_: float = 0.0

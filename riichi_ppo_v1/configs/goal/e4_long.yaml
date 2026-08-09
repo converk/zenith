@@ -1,0 +1,16 @@
+# 收尾任务D（CUDA=2）：E4 长训延伸（精确 resume u200 → u400）。
+# 依据：E4 是启发式后期最稳的臂（u120-u195 一位率未跌破 39%）；续训到 u400
+# 检验其稳定性是否长期持续，以及 u200 2v2 的走弱是波动还是趋势。
+grp_model_path: checkpoints/train_riichi_ppo_goal_grp/grp_rank_predictor.pt
+grp_pts_weight: [10, 4, -4, -10]
+grp_mix_lambda: 1.0
+dense_efficiency_weight: 0.03
+
+kyokus_per_worker: 16
+iterations: 400
+checkpoint_interval_updates: 50
+checkpoint_dir: checkpoints/train_riichi_ppo_goal_e4_long
+resume: checkpoints/train_riichi_ppo_goal_e4_dense_on_grp/checkpoint_00200.pt
+evaluation_enabled: true
+evaluation_interval_updates: 15
+evaluation_hanchan_count: 96

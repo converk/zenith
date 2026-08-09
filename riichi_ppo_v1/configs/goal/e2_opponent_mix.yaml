@@ -1,0 +1,17 @@
+# E2：对手混合 80/20（Territory Paint Wars / OpenAI Five 式）。
+# 20% env 的随机 1 席换成冻结 v13 SFT（greedy）；只对 current 席记录
+# transition 与 reward。其余超参与 E0 完全一致，一次只改对手分布这一变量。
+opponent_mix:
+  enabled: true
+  current_frac: 0.8
+  sft_frac: 0.2
+  random_frac: 0.0
+
+kyokus_per_worker: 16
+iterations: 200
+checkpoint_interval_updates: 50
+checkpoint_dir: checkpoints/train_riichi_ppo_goal_e2_opponent_mix
+init_model: checkpoints/train_riichi_v13_sft/best_heuristic.pt
+evaluation_enabled: true
+evaluation_interval_updates: 15
+evaluation_hanchan_count: 96

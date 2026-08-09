@@ -1,0 +1,23 @@
+{
+  "conclusion": "搜索不是当前瓶颈：Suphx 在更强算力下选 pMCPA rollout 适应而非 MCTS；DeltaDou（搜索）被无搜索的 DouZero 10 天反超。训练期不做在线 MCTS；如要探索，先 pMCPA 式局首 rollout 适应或离线搜索蒸馏。",
+  "evidence_type": "论文实证、开源项目实证",
+  "confidence": "高",
+  "mechanism": "搜索通过采样对手手牌/牌山做 PIMC 或 rollout 改善策略；SPG/expert iteration 把搜索改进蒸馏回策略；麻将不规则博弈树使标准 MCTS/CFR 难以直接应用。",
+  "addresses": "top3 覆盖 98% 专家动作后的策略天花板、终盘决策质量。",
+  "limitations": "隐藏信息与随机牌山使搜索收益不稳定；在线推理成本与 12×32 envs 不兼容；4 人非零和使 ReBeL 类框架无直接支撑。",
+  "risks": "搜索收益被随机性吃掉；推理成本拖慢训练；隐藏信息估计偏差导致错误剪枝。",
+  "data_requirements": "自博弈环境、SFT/PPO 策略做 rollout 评估；无需新数据集。",
+  "architecture": "不改 backbone；pMCPA 在局首采样对手手牌/牌山 rollout 后微调策略；搜索蒸馏用离线目标训练。",
+  "integration": "推理侧新增 rollout 评估器；训练循环外做离线蒸馏。",
+  "hyperparameters": "top3 动作面；PIMC 采样数（先 100–1000 条）；rollout K（pMCPA 论文式）。",
+  "compute_cost": "pMCPA 试点 1–2 周；搜索蒸馏 2–4 周。",
+  "experiment_hypothesis": "局首 rollout 适应能针对当前手牌优化策略 → 离线评测胜率提升。",
+  "experiment_changes": "E5：先实现 pMCPA 局首适应并离线评测；明显提升再蒸馏进策略。",
+  "experiment_metrics": "2v2 320 半庄胜率与 CI、每决策推理耗时。",
+  "experiment_duration": "2–4 周。",
+  "success_criteria": "2v2 >55% 且 CI 不跨 50%，且推理耗时可接受。",
+  "papers": "Suphx arXiv:2003.13590（pMCPA）；DouZero arXiv:2106.06135；ReBeL arXiv:2007.13544；Sampled MuZero ICML 2021；Gumbel AlphaZero ICLR 2022；Expert Iteration NeurIPS 2017。",
+ "projects": "https://arxiv.org/abs/2003.13590",
+  "implementation_notes": "若做 PIMC：采样对手手牌+牌山，top3 动作面，浅层 rollout；每次决策预算 <1–5ms。",
+  "uncertain": []
+}

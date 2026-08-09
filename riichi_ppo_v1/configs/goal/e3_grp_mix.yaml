@@ -1,0 +1,13 @@
+# E3-c：λ=0.5 混合：r = 0.5·r_grp + 0.5·clip(delta/1000, ±24)。
+grp_model_path: checkpoints/train_riichi_ppo_goal_grp/grp_rank_predictor.pt
+grp_pts_weight: [10, 4, -4, -10]
+grp_mix_lambda: 0.5
+
+kyokus_per_worker: 16
+iterations: 200
+checkpoint_interval_updates: 50
+checkpoint_dir: checkpoints/train_riichi_ppo_goal_e3_grp_mix
+init_model: checkpoints/train_riichi_v13_sft/best_heuristic.pt
+evaluation_enabled: true
+evaluation_interval_updates: 15
+evaluation_hanchan_count: 96

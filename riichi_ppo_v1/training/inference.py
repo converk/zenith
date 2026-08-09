@@ -127,6 +127,15 @@ if ray is not None:
             if self.world_size > 1:
                 self.learner.enable_distributed()
             self.model = self.learner.model.eval()
+            self.sft_model = self.learner.reference_model
+            opponent_mix = config.get("opponent_mix") or {}
+            if bool(opponent_mix.get("enabled", False)) and self.sft_model is None:
+                raise RuntimeError(
+                    "opponent_mix.enabled requires a frozen SFT reference model "
+                    "(init_model must be provided)"
+                )
+            if self.sft_model is not None:
+                self.sft_model.eval()
             self.profiler = StageProfiler(enabled=bool(config.get("profile_enabled", True)))
             self.profile_cuda_sync = bool(config.get("profile_cuda_sync", False))
             self.cuda_event_interval = max(0, int(config.get("profile_cuda_event_interval", 100)))
@@ -371,17 +380,18 @@ if ray is not None:
                 {"action_ids": [0] * len(request["batch_indices"]), "logprobs": [0.0] * len(request["batch_indices"]), "values": [0.0] * len(request["batch_indices"])}
                 for request in requests
             ]
-            rows_by_mode: dict[bool, list[tuple[int, int]]] = {}
+            rows_by_mode: dict[tuple[bool, bool], list[tuple[int, int]]] = {}
             for request_index, request in enumerate(requests):
-                key = bool(request["greedy"])
+                key = (str(request["namespace"]) == "sft", bool(request["greedy"]))
                 rows_by_mode.setdefault(key, []).extend(
                     (request_index, row) for row in range(len(request["batch_indices"]))
                 )
             max_batch = max(1, int(self.config.get("inference_max_batch_size", 512)))
-            for greedy, rows in rows_by_mode.items():
+            for (is_sft, greedy), rows in rows_by_mode.items():
+                model = self.sft_model if is_sft else self.model
                 for offset in range(0, len(rows), max_batch):
                     group = rows[offset:offset + max_batch]
-                    self._run_full_forward(requests, responses, group, greedy, self.model)
+                    self._run_full_forward(requests, responses, group, greedy, model)
             self.profiler.add("inference/rpc_total", time.perf_counter() - started)
             return responses
 

@@ -1,0 +1,18 @@
+# E4：小权重密集效率奖励（只作用于 discard/riichi 等带牌的效率决策）。
+# 终局 terminal reward 仍保留并累加在该小局最后 transition。
+# 基座选择：E3-b（纯 GRP reward）是 E0–E3 中 u200 2v2 唯一显著为正的臂
+# （55.8%，CI [1152,9579] 不跨 0），因此在此基座上叠加 dense（权重 0.03）；
+# “无 dense”消融臂即 E3-b 本身。
+dense_efficiency_weight: 0.03
+grp_model_path: checkpoints/train_riichi_ppo_goal_grp/grp_rank_predictor.pt
+grp_pts_weight: [10, 4, -4, -10]
+grp_mix_lambda: 1.0
+
+kyokus_per_worker: 16
+iterations: 200
+checkpoint_interval_updates: 50
+checkpoint_dir: checkpoints/train_riichi_ppo_goal_e4_dense_on_grp
+init_model: checkpoints/train_riichi_v13_sft/best_heuristic.pt
+evaluation_enabled: true
+evaluation_interval_updates: 15
+evaluation_hanchan_count: 96

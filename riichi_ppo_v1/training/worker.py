@@ -13,6 +13,11 @@ except ImportError:  # imported lazily by the command line program
     ray = None
 
 from ..model.bridge import NUM_PLAYERS, BatchedStateBridge, Decision
+from ..grp.model import (
+    RankPredictor,
+    grp_features_from_scores,
+    reward_from_rank_probs,
+)
 from .metrics import SemanticMetrics
 from .profiling import StageProfiler
 from .rewards import (
@@ -22,6 +27,16 @@ from .rewards import (
     terminal_kyoku_reward,
 )
 from .trajectory import Transition, finish_kyoku
+
+
+def _field_from_observation(observation: Any) -> tuple[int, int, int, int]:
+    """Return ``(chang, ju, ben, liqibang)`` for the current kyoku state."""
+    return (
+        int(getattr(observation, "round_wind", 0)),
+        int(getattr(observation, "kyoku_index", 0)),
+        int(getattr(observation, "honba", 0)),
+        int(getattr(observation, "riichi_sticks", 0)),
+    )
 
 
 def active_decisions(
@@ -81,6 +96,10 @@ if ray is not None:
             self.pending: list[list[list[Transition]]] = [
                 [[] for _ in range(NUM_PLAYERS)] for _ in range(self.num_envs)
             ]
+            # Per-(env, seat) decision ordinal inside the current kyoku (E1).
+            self.kyoku_steps: list[list[int]] = [
+                [0] * NUM_PLAYERS for _ in range(self.num_envs)
+            ]
             self.model_decisions = 0
             self.recorded_decisions = 0
             self.kyoku_reward_clip_points = int(
@@ -88,17 +107,76 @@ if ray is not None:
             )
             if self.kyoku_reward_clip_points <= 0:
                 raise ValueError("kyoku_reward_clip_points must be positive")
+            self.dense_efficiency_weight = float(
+                config.get("dense_efficiency_weight", 0.0)
+            )
+            self.grp_model: RankPredictor | None = None
+            self.grp_pts_weight = tuple(
+                float(x) for x in config.get("grp_pts_weight", [10, 4, -4, -10])
+            )
+            self.grp_mix_lambda = float(config.get("grp_mix_lambda", 0.5))
+            if config.get("grp_model_path"):
+                self.grp_model = RankPredictor.from_checkpoint(
+                    str(config["grp_model_path"])
+                )
+                self.grp_model.eval()
+            self.kyoku_fields: list[tuple[int, int, int, int]] = [
+                _field_from_observation(self.observations[env_index][0])
+                for env_index in range(self.num_envs)
+            ]
             self.deferred_reset_indices: set[int] = set()
             self.semantic = SemanticMetrics()
             self.lineups: list[tuple[str, str, str, str]] = [("current",) * NUM_PLAYERS for _ in range(self.num_envs)]
+            self._opponent_rng = np.random.default_rng(
+                int(config["seed"]) * 1_000_003 + self.worker_id * 131
+            )
 
         def set_rollout_context(
             self,
             update: int,
         ) -> None:
-            """Install the standard all-current self-play lineup."""
-            del update
-            self.lineups = [("current",) * NUM_PLAYERS for _ in range(self.num_envs)]
+            """Install the config-driven rollout lineup.
+
+            Default remains all-current self-play. With ``opponent_mix.enabled``
+            (E2), a fraction of envs replace exactly one seat with a frozen SFT
+            policy (``sft``, greedy) and/or a uniform-random policy (``random``).
+            Rewards/transitions are only recorded for ``current`` seats.
+            """
+            mix = self.config.get("opponent_mix") or {}
+            if not bool(mix.get("enabled", False)):
+                self.lineups = [("current",) * NUM_PLAYERS for _ in range(self.num_envs)]
+                return
+            current_frac = float(mix.get("current_frac", 0.8))
+            sft_frac = float(mix.get("sft_frac", 0.2))
+            random_frac = float(mix.get("random_frac", 0.0))
+            total = current_frac + sft_frac + random_frac
+            if total <= 0.0:
+                raise ValueError("opponent_mix fractions must sum to a positive value")
+            current_frac /= total
+            sft_frac /= total
+            random_frac /= total
+            rng = np.random.default_rng(
+                int(self.config["seed"]) * 1_000_003
+                + int(update) * 131
+                + self.worker_id * 7
+            )
+            lineups: list[tuple[str, str, str, str]] = []
+            for _env_index in range(self.num_envs):
+                roll = float(rng.random())
+                if roll < current_frac:
+                    lineups.append(("current",) * NUM_PLAYERS)
+                    continue
+                opponent = (
+                    "sft"
+                    if rng.random() < sft_frac / (sft_frac + random_frac)
+                    else "random"
+                )
+                seat = int(rng.integers(0, NUM_PLAYERS))
+                lineups.append(tuple(
+                    opponent if index == seat else "current"
+                    for index in range(NUM_PLAYERS)
+                ))
+            self.lineups = lineups
 
         def _submit_model_actions(
             self,
@@ -156,9 +234,15 @@ if ray is not None:
                             token_factors[row, : token_lengths[row]].copy(),
                             token_numeric[row, : token_lengths[row]].copy(), int(token_lengths[row]),
                             legal[row].copy(), action_id, logprobs[row], values[row],
+                            kyoku_group=(
+                                int(decision.env_index) * 1_000_000
+                                + int(self.match_kyoku_counts[decision.env_index])
+                            ),
+                            step_in_kyoku=self.kyoku_steps[decision.env_index][decision.seat_id],
                             critic_factors=critic_factors[row, : critic_lengths[row]].copy(),
                             critic_length=int(critic_lengths[row]),
                         )
+                        self.kyoku_steps[decision.env_index][decision.seat_id] += 1
                         transitions[row] = transition
                         threat = self.public.has_riichi_threat(decision.env_index, decision.seat_id)
                         tile = getattr(actions[row], "tile", None)
@@ -183,10 +267,18 @@ if ray is not None:
                                     if shanten_gap == 0 else 1.0
                                 )
                                 self.semantic.record_efficiency(
-                                reward=0.0,
+                                    reward=0.0,
                                     shanten_gap=shanten_gap,
                                     ukeire_loss=ukeire_loss,
                                 )
+                                if (
+                                    self.dense_efficiency_weight > 0.0
+                                    and transition is not None
+                                ):
+                                    transition.reward = float(
+                                        analysis_row.selected_efficiency_reward(chosen)
+                                        * self.dense_efficiency_weight
+                                    )
                                 self.semantic.record_rule_quality(
                                     candidate,
                                     accepted_call=76 <= action_id <= 170,
@@ -217,6 +309,38 @@ if ray is not None:
             for env_index in done_indices:
                 self.start_scores[env_index] = [int(x) for x in scores_by_env[env_index]]
                 self.match_kyoku_counts[env_index] = 0
+                self.kyoku_steps[env_index] = [0] * NUM_PLAYERS
+                self.kyoku_fields[env_index] = _field_from_observation(
+                    self.observations[env_index][0]
+                )
+
+        def _grp_terminal_rewards(
+            self,
+            env_index: int,
+            end_scores: list[int],
+        ) -> list[float] | None:
+            """Return per-seat GRP rewards for the kyoku that just ended."""
+            if self.grp_model is None:
+                return None
+            start = self.start_scores[env_index]
+            chang, ju, ben, liqibang = self.kyoku_fields[env_index]
+            rows = np.stack([
+                grp_features_from_scores(
+                    start,
+                    end_scores,
+                    chang=chang,
+                    ju=ju,
+                    ben=ben,
+                    liqibang=liqibang,
+                    player=player,
+                )
+                for player in range(NUM_PLAYERS)
+            ])
+            probs = self.grp_model.predict_rank_probs(rows)
+            return [
+                reward_from_rank_probs(probs[player], self.grp_pts_weight)
+                for player in range(NUM_PLAYERS)
+            ]
 
         def _advance_once(
             self,
@@ -229,19 +353,41 @@ if ray is not None:
             with self.profiler.stage("rollout/scan_observations_and_legal_actions"):
                 decisions = active_decisions(self.observations, active)
             if decisions:
-                for policy_decisions in (decisions,):
+                by_policy: dict[str, list[Any]] = {}
+                for decision in decisions:
+                    policy = self.lineups[decision.env_index][decision.seat_id]
+                    by_policy.setdefault(policy, []).append(decision)
+                for policy, policy_decisions in by_policy.items():
+                    if policy == "random":
+                        actions = []
+                        transitions = [None] * len(policy_decisions)
+                        for decision in policy_decisions:
+                            legal_actions = list(decision.observation.legal_actions())
+                            if not legal_actions:
+                                raise RuntimeError("random opponent seat has no legal action")
+                            actions.append(legal_actions[
+                                int(self._opponent_rng.integers(0, len(legal_actions)))
+                            ])
+                        for decision, action, transition in zip(
+                            policy_decisions, actions, transitions, strict=True,
+                        ):
+                            actions_by_env[decision.env_index][decision.seat_id] = action
+                            if transition is not None:
+                                self.pending[decision.env_index][decision.seat_id].append(transition)
+                        continue
                     with self.profiler.stage("rollout/reward_analysis"):
                         analysis_batch = DecisionAnalysisBatch.build(
                             policy_decisions, analyzer=self.efficiency, public=self.public,
                             profiler=self.profiler,
                         )
+                    namespace = "rollout" if policy == "current" else "sft"
+                    greedy = policy != "current"
                     request, prepared = self._submit_model_actions(
-                        policy_decisions, "rollout", False,
-                        analysis_batch,
+                        policy_decisions, namespace, greedy, analysis_batch,
                     )
                     with self.profiler.stage("inference/rpc_wait"):
                         result = ray.get(request)
-                    record_policy = True
+                    record_policy = policy == "current"
                     actions, transitions = self._model_actions(
                         policy_decisions, prepared, result, record_policy, analysis_batch,
                     )
@@ -280,23 +426,37 @@ if ray is not None:
                         discard_count=int(self.public.completed_discard_counts[env_index]),
                         open_meld_count=int(self.public.completed_open_meld_counts[env_index]),
                     )
+                    grp_rewards = self._grp_terminal_rewards(env_index, scores)
                     for seat in range(NUM_PLAYERS):
-                        reward = terminal_kyoku_reward(
+                        base_reward = terminal_kyoku_reward(
                             scores[seat] - self.start_scores[env_index][seat],
                             self.kyoku_reward_clip_points,
                         )
+                        if grp_rewards is not None:
+                            reward = float(
+                                self.grp_mix_lambda * grp_rewards[seat]
+                                + (1.0 - self.grp_mix_lambda) * base_reward
+                            )
+                        else:
+                            reward = base_reward
                         pending = self.pending[env_index][seat]
                         if self.lineups[env_index][seat] == "current":
                             with self.profiler.stage("rollout/finish_kyoku_gae"):
                                 if pending:
                                     pending[-1].kyoku_reward = reward
-                                    pending[-1].reward = reward
+                                    # Terminal reward accumulates on top of any
+                                    # per-decision dense reward (E4).
+                                    pending[-1].reward += reward
                                 completed.extend(finish_kyoku(
                                     pending, float(self.config["gamma"]), float(self.config["gae_lambda"]),
                                 ))
                         rewards.append(reward)
                         self.pending[env_index][seat] = []
                     self.start_scores[env_index] = scores
+                    self.kyoku_steps[env_index] = [0] * NUM_PLAYERS
+                    self.kyoku_fields[env_index] = _field_from_observation(
+                        self.observations[env_index][0]
+                    )
                     if done[env_index]:
                         # Self-play is symmetric: record the physical hanchan
                         # once, rather than duplicating its length for four seats.
@@ -367,6 +527,9 @@ if ray is not None:
                     / max(self.num_envs, 1)
                 ),
                 "reward_schedule/kyoku_weight": 1.0,
+                "reward_schedule/grp_mix_lambda": (
+                    self.grp_mix_lambda if self.grp_model is not None else 0.0
+                ),
                 "drain_kyokus": float(drain_kyokus),
                 "drain_steps": float(drain_steps),
             }

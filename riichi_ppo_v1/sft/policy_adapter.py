@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 from ..model.bridge import BatchedStateBridge, Decision
+from ..model import KyokuTransformerActorCritic, ModelConfig
 from .checkpoint import load_v13_weights_only
 from .contract import SFT_CONTRACT_VERSION, assert_runtime_contract
 
@@ -83,6 +84,51 @@ class V13PolicyAdapter(TorchPolicyAdapter):
         return PreparedPolicyBatch(factors, numeric, lengths, legal)
 
 
+class PPOPolicyAdapter(V13PolicyAdapter):
+    """Load a fresh PPO v2 checkpoint for deterministic greedy evaluation.
+
+    PPO checkpoints share the v13 token/feature contract and policy head, so
+    the evaluation preparation path is identical to the SFT adapter; only the
+    checkpoint payload layout (``model`` + ``model_config`` + PPO metadata)
+    differs.
+    """
+
+    contract_id = "ppo_v2"
+
+    @classmethod
+    def from_checkpoint(
+        cls, path: str | Path, *, device: torch.device | str,
+    ) -> "PPOPolicyAdapter":
+        checkpoint = Path(path)
+        payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"invalid PPO checkpoint: {checkpoint}")
+        if int(payload.get("ppo_format_version", 0)) != 2:
+            raise RuntimeError(
+                f"unsupported PPO checkpoint format: {payload.get('ppo_format_version')!r}"
+            )
+        raw_config = payload.get("model_config")
+        if not isinstance(raw_config, dict):
+            raise RuntimeError("PPO checkpoint is missing model_config")
+        if raw_config.get("policy_head_type") != "isolated_action_query":
+            raise RuntimeError("PPO checkpoint must use isolated_action_query")
+        try:
+            config = ModelConfig(**dict(raw_config))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("PPO checkpoint has an invalid model_config") from exc
+        state = payload.get("model")
+        if not isinstance(state, dict):
+            raise RuntimeError("PPO checkpoint is missing model weights")
+        model = KyokuTransformerActorCritic(config)
+        try:
+            model.load_state_dict(state, strict=True)
+        except RuntimeError as exc:
+            raise RuntimeError("PPO checkpoint tensor shapes do not match model_config") from exc
+        model.to(torch.device(device))
+        model.eval()
+        return cls(model, torch.device(device), checkpoint)
+
+
 def load_policy_adapter(
     path: str | Path, *, device: torch.device | str,
 ) -> PolicyAdapter:
@@ -99,4 +145,6 @@ def load_policy_adapter(
         from ..legacy.v11 import V11PolicyAdapter
 
         return V11PolicyAdapter.from_checkpoint(checkpoint, device=device)
+    if int(payload.get("ppo_format_version", 0)) == 2:
+        return PPOPolicyAdapter.from_checkpoint(checkpoint, device=device)
     raise RuntimeError("checkpoint has no supported v11/v13 evaluation contract")

@@ -583,6 +583,35 @@ class DecisionAnalysis:
         key = action_key(action)
         return next((candidate for candidate in self.candidates if action_key(candidate.action) == key), None)
 
+    def selected_efficiency_reward(self, action: object) -> float:
+        """Small dense discard-efficiency reward (E4); 0 for non-discards.
+
+        Mirrors ``efficiency.efficiency_reward``: shanten regression is -1.0,
+        otherwise -0.25 * relative ukeire loss versus the best same-shanten
+        candidate. Only tile-carrying discard decisions (dahai/riichi/reach)
+        receive the signal.
+        """
+        if action_kind(action) not in {"dahai", "riichi", "reach"}:
+            return 0.0
+        candidate = self.candidate_for(action)
+        if candidate is None or self.best_rank is None:
+            return 0.0
+        shanten_gap = int(candidate.structural_shanten) - int(self.best_rank[0])
+        if shanten_gap > 0:
+            return -1.0
+        if shanten_gap < 0:
+            return 0.0
+        best_ukeire = max(
+            (
+                int(item.ukeire)
+                for item in self.candidates
+                if int(item.structural_shanten) == int(self.best_rank[0])
+            ),
+            default=0,
+        )
+        loss = max(0, int(best_ukeire) - int(candidate.ukeire)) / max(int(best_ukeire), 1)
+        return -0.25 * float(loss)
+
     def selected_regrets(self, action: object) -> tuple[float, float]:
         kind = action_kind(action)
         candidate = self.candidate_for(action)

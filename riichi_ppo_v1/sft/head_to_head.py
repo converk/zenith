@@ -281,6 +281,15 @@ def evaluate_2v2(
         dtype=np.float64,
     )
     paired_se = float(paired.std(ddof=1) / np.sqrt(len(paired))) if len(paired) > 1 else 0.0
+    bootstrap_rng = np.random.default_rng(int(seed_base))
+    bootstrap_means = np.asarray([
+        float(np.mean(bootstrap_rng.choice(paired, size=len(paired), replace=True)))
+        for _ in range(2000)
+    ], dtype=np.float64)
+    paired_bootstrap_ci95 = [
+        float(np.percentile(bootstrap_means, 2.5)),
+        float(np.percentile(bootstrap_means, 97.5)),
+    ]
 
     def action_rates(policy: str) -> dict[str, float]:
         grouped = Counter()
@@ -306,6 +315,7 @@ def evaluate_2v2(
             float(paired.mean() - 1.96 * paired_se),
             float(paired.mean() + 1.96 * paired_se),
         ],
+        "paired_point_diff_bootstrap_ci95": paired_bootstrap_ci95,
         "model_a_device": str(device_a),
         "model_b_device": str(device_b),
         "team_win_definition": "higher sum of the two teammates' final scores; tie counts 0.5",
@@ -321,6 +331,7 @@ def evaluate_2v2(
             "team_ties": ties,
             "team_win_rate": scored_wins_a / hanchan_count,
             "team_point_diff_mean": team_point_diff_sum / hanchan_count,
+            "team_point_diff_paired_bootstrap_ci95": paired_bootstrap_ci95,
             "first_place_count": first_places_a,
             "first_place_rate": first_places_a / hanchan_count,
             "individual_mean_rank": individual_rank_sum_a / (2 * hanchan_count),
@@ -333,6 +344,10 @@ def evaluate_2v2(
             "team_ties": ties,
             "team_win_rate": scored_wins_b / hanchan_count,
             "team_point_diff_mean": -team_point_diff_sum / hanchan_count,
+            "team_point_diff_paired_bootstrap_ci95": [
+                -paired_bootstrap_ci95[1],
+                -paired_bootstrap_ci95[0],
+            ],
             "first_place_count": first_places_b,
             "first_place_rate": first_places_b / hanchan_count,
             "individual_mean_rank": individual_rank_sum_b / (2 * hanchan_count),
