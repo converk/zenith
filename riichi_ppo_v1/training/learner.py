@@ -439,6 +439,12 @@ class PPOLearner:
             fused=self.use_bf16,
         )
         self.reference_model: KyokuTransformerActorCritic | None = None
+        self.search_distill_dataset = None
+        search_distill_path = str(hyperparameters.get("search_distill_path") or "")
+        if search_distill_path:
+            from .search_distill import SearchDistillDataset
+
+            self.search_distill_dataset = SearchDistillDataset(search_distill_path)
         self.iteration = 0
         self.profiler = StageProfiler(enabled=bool(hyperparameters.get("profile_enabled", True)))
         self.profile_cuda_sync = bool(hyperparameters.get("profile_cuda_sync", False))
@@ -743,6 +749,18 @@ class PPOLearner:
                 "SFT KL anchor is enabled but no frozen reference model was loaded; "
                 "start PPO with --init-model or resume an anchored PPO checkpoint"
             )
+        search_distill_coef = scheduled_entropy_coefficient(
+            float(self.hp.get("search_distill_coef_start", 0.0)),
+            float(self.hp.get("search_distill_coef_end", 0.0)),
+            policy_update_number,
+            max(1, int(self.hp.get("search_distill_anneal_updates", total_policy_updates))),
+        )
+        if critic_bootstrap or self.search_distill_dataset is None:
+            search_distill_coef = 0.0
+        search_distill_batch_size = int(self.hp.get("search_distill_batch_size", 256))
+        search_distill_rng = np.random.default_rng(
+            int(shuffle_seed) * 1_000_003 if shuffle_seed is not None else 0
+        )
         epochs_started = 0
         epochs_completed = 0
         executed_samples = 0
@@ -861,6 +879,30 @@ class PPOLearner:
                                     legal_mask,
                                     token_lengths,
                                 )
+                        search_distill_output = None
+                        if search_distill_coef > 0.0:
+                            search_batch = self.search_distill_dataset.sample_batch(
+                                search_distill_rng, search_distill_batch_size,
+                            )
+                            search_distill_output = self.model.forward_policy(
+                                torch.from_numpy(search_batch["factors"]).to(
+                                    self.device, non_blocking=self.device.type == "cuda"
+                                ),
+                                torch.from_numpy(search_batch["numeric"]).to(
+                                    self.device, non_blocking=self.device.type == "cuda"
+                                ),
+                                torch.from_numpy(search_batch["legal"]).to(
+                                    self.device, non_blocking=self.device.type == "cuda"
+                                ),
+                                torch.from_numpy(search_batch["lengths"]).to(
+                                    self.device, non_blocking=self.device.type == "cuda"
+                                ),
+                            )
+                            search_distill_targets = torch.from_numpy(
+                                search_batch["target_probs"]
+                            ).to(
+                                self.device, non_blocking=self.device.type == "cuda"
+                            )
                 with self._gpu_stage("update/distribution_and_loss"):
                     # The model promotes its policy/value outputs to FP32.  Keep
                     # the PPO ratio, loss and their gradients in FP32 as well.
@@ -912,6 +954,15 @@ class PPOLearner:
                             + sft_kl_coef * sft_reference_kl_values
                         )
                     loss = (loss_values * sample_weights).sum() * plan.loss_scale
+                    search_distill_kl_values: torch.Tensor | None = None
+                    if search_distill_output is not None:
+                        from .search_distill import search_distill_cross_entropy
+
+                        search_distill_kl_values = search_distill_cross_entropy(
+                            search_distill_output["policy_logits"],
+                            search_distill_targets,
+                        )
+                        loss = loss + search_distill_coef * search_distill_kl_values.mean()
                 with self._gpu_stage("update/zero_grad"):
                     self.optimizer.zero_grad(set_to_none=True)
                 with self._gpu_stage("update/backward"):
@@ -961,6 +1012,12 @@ class PPOLearner:
                     step_metric_totals["grad_norm"].add_(detached_grad_norm)
                 else:
                     step_metric_totals["grad_norm"] = detached_grad_norm.clone()
+                if search_distill_kl_values is not None:
+                    detached_search_kl = search_distill_kl_values.detach().mean()
+                    if "search_distill_kl" in step_metric_totals:
+                        step_metric_totals["search_distill_kl"].add_(detached_search_kl)
+                    else:
+                        step_metric_totals["search_distill_kl"] = detached_search_kl.clone()
                 detached_post_clip_grad_norm = grad_norm_post_clip.detach()
                 if "grad_norm_post_clip" in step_metric_totals:
                     step_metric_totals["grad_norm_post_clip"].add_(detached_post_clip_grad_norm)
@@ -1025,6 +1082,7 @@ class PPOLearner:
             ),
             "system/entropy_coef": float(entropy_coef),
             "system/sft_kl_coef": float(sft_kl_coef),
+            "system/search_distill_coef": float(search_distill_coef),
             "training/critic_bootstrap": float(critic_bootstrap),
             "training/policy_update": float(policy_update_number),
         })

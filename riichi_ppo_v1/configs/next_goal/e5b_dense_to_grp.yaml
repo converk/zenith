@@ -1,0 +1,16 @@
+# E5-b 臂2：两阶段奖励课程「dense→GRP」。
+# resume E4 u200（GRP+dense=0.03，启发式中期最稳），后续 200 update 移除 dense（权重 0.0），
+# 检验“先稳定中期、再强化 GRP 终局目标”是否比纯 GRP 更全面。
+grp_model_path: checkpoints/train_riichi_ppo_goal_grp/grp_rank_predictor.pt
+grp_pts_weight: [10, 4, -4, -10]
+grp_mix_lambda: 1.0
+dense_efficiency_weight: 0.0
+
+kyokus_per_worker: 16
+iterations: 400
+checkpoint_interval_updates: 50
+checkpoint_dir: checkpoints/train_riichi_ppo_next_e5b_dense_to_grp
+resume: checkpoints/train_riichi_ppo_goal_e4_dense_on_grp/checkpoint_00200.pt
+evaluation_enabled: true
+evaluation_interval_updates: 30
+evaluation_hanchan_count: 96
