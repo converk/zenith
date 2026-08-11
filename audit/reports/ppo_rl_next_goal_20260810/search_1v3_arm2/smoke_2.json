@@ -1,0 +1,122 @@
+{
+  "candidate_seat_rotation": "i % 4",
+  "elapsed_s": 23.93460801699257,
+  "format": "1v3_search",
+  "hanchan_count": 2,
+  "hanchan_per_s": 0.08356100917049002,
+  "hanchans": [
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 0,
+      "overrides": 10,
+      "point_diff_vs_mean_opponent": 22400.0,
+      "rank": 1,
+      "searches": 108,
+      "seed": 20337048
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 1,
+      "overrides": 15,
+      "point_diff_vs_mean_opponent": 28400.0,
+      "rank": 1,
+      "searches": 106,
+      "seed": 20417738
+    }
+  ],
+  "model": {
+    "action_type_rates": {
+      "chi": 0.0149812734082397,
+      "discard": 0.7790262172284644,
+      "hora": 0.018726591760299626,
+      "kan": 0.0,
+      "pass": 0.16104868913857678,
+      "pon": 0.0149812734082397,
+      "reach": 0.011235955056179775,
+      "ryukyoku": 0.0
+    },
+    "checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_ppo_next_e5a_kl010/checkpoint_00100.pt",
+    "first_place_rate": 1.0,
+    "fourth_place_rate": 0.0,
+    "mean_rank": 1.0,
+    "per_seat_first_place_rate": {
+      "0": 1.0,
+      "1": 1.0,
+      "2": NaN,
+      "3": NaN
+    },
+    "point_diff_vs_mean_opponent_bootstrap_ci95": [
+      22400.0,
+      28400.0
+    ],
+    "point_diff_vs_mean_opponent_mean": 25400.0,
+    "second_place_rate": 0.0,
+    "third_place_rate": 0.0,
+    "top2_rate": 1.0
+  },
+  "opponent": {
+    "action_type_rates": {
+      "chi": 0.010101010101010102,
+      "discard": 0.7853535353535354,
+      "hora": 0.015151515151515152,
+      "kan": 0.0,
+      "pass": 0.15656565656565657,
+      "pon": 0.022727272727272728,
+      "reach": 0.010101010101010102,
+      "ryukyoku": 0.0
+    },
+    "checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_ppo_next_e5a_kl010/checkpoint_00100.pt",
+    "metadata": {
+      "checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_ppo_next_e5a_kl010/checkpoint_00100.pt",
+      "contract_id": "ppo_v2",
+      "model_config": {
+        "context_tokens": 4096,
+        "critic_layers": 2,
+        "d_model": 192,
+        "eps": 1e-06,
+        "ffn_dim": 576,
+        "head_dim": 24,
+        "kv_heads": 2,
+        "layers": 4,
+        "policy_head_type": "isolated_action_query",
+        "query_heads": 8,
+        "rope_base": 10000.0,
+        "shared_layers": 3
+      }
+    },
+    "opponent_seats": 3
+  },
+  "protocol_version": 1,
+  "search_config": {
+    "depth": 3,
+    "grp_model": "checkpoints/train_riichi_ppo_goal_grp/grp_rank_predictor.pt",
+    "rollouts": 2,
+    "temperature": 1.0,
+    "value_mode": "seat",
+    "width": 3
+  },
+  "search_per_decision_ms": 67.98159796703786,
+  "search_stats": {
+    "leaf_scored": 1127,
+    "mean_chosen_minus_greedy": 0.04937208702609038,
+    "mean_chosen_value": 4.5570501826102,
+    "mean_greedy_value": 4.50767809558411,
+    "override_by_action_group": {
+      "discard": 23,
+      "reach": 2
+    },
+    "override_count": 25,
+    "override_rate": 0.11682242990654206,
+    "rollout_clones": 1248,
+    "rollout_steps": 3619,
+    "search_wall_s": 14.548,
+    "searchable_decisions": 214,
+    "searched_decisions": 214,
+    "terminal_scored": 121,
+    "total_decisions": 267
+  },
+  "seeds": [
+    20337048,
+    20417738
+  ]
+}

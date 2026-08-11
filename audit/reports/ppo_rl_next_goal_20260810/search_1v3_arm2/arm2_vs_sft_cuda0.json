@@ -1,0 +1,2103 @@
+{
+  "candidate_seat_rotation": "i % 4",
+  "elapsed_s": 3865.31369506201,
+  "format": "1v3_search",
+  "hanchan_count": 200,
+  "hanchan_per_s": 0.0517422428755272,
+  "hanchans": [
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 0,
+      "overrides": 4,
+      "point_diff_vs_mean_opponent": 27733.333333333332,
+      "rank": 1,
+      "searches": 103,
+      "seed": 20337048
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 1,
+      "overrides": 26,
+      "point_diff_vs_mean_opponent": 3733.333333333332,
+      "rank": 2,
+      "searches": 132,
+      "seed": 20417738
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 2,
+      "overrides": 33,
+      "point_diff_vs_mean_opponent": -13600.0,
+      "rank": 2,
+      "searches": 185,
+      "seed": 20644154
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 3,
+      "overrides": 11,
+      "point_diff_vs_mean_opponent": 27733.333333333332,
+      "rank": 1,
+      "searches": 123,
+      "seed": 20464185
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 4,
+      "overrides": 3,
+      "point_diff_vs_mean_opponent": 11600.0,
+      "rank": 2,
+      "searches": 38,
+      "seed": 20622238
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 5,
+      "overrides": 25,
+      "point_diff_vs_mean_opponent": 26800.0,
+      "rank": 1,
+      "searches": 175,
+      "seed": 20589395
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 6,
+      "overrides": 12,
+      "point_diff_vs_mean_opponent": -9066.666666666668,
+      "rank": 3,
+      "searches": 100,
+      "seed": 20387836
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 7,
+      "overrides": 26,
+      "point_diff_vs_mean_opponent": 19866.666666666668,
+      "rank": 2,
+      "searches": 154,
+      "seed": 20761919
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 8,
+      "overrides": 27,
+      "point_diff_vs_mean_opponent": -12933.333333333332,
+      "rank": 4,
+      "searches": 180,
+      "seed": 20663387
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 9,
+      "overrides": 16,
+      "point_diff_vs_mean_opponent": 2000.0,
+      "rank": 2,
+      "searches": 137,
+      "seed": 20417447
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 10,
+      "overrides": 23,
+      "point_diff_vs_mean_opponent": -12133.333333333332,
+      "rank": 3,
+      "searches": 140,
+      "seed": 20630236
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 11,
+      "overrides": 23,
+      "point_diff_vs_mean_opponent": -9200.0,
+      "rank": 3,
+      "searches": 159,
+      "seed": 20898092
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 12,
+      "overrides": 27,
+      "point_diff_vs_mean_opponent": 9200.0,
+      "rank": 3,
+      "searches": 131,
+      "seed": 20564310
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 13,
+      "overrides": 20,
+      "point_diff_vs_mean_opponent": 23066.666666666668,
+      "rank": 1,
+      "searches": 121,
+      "seed": 20363382
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 14,
+      "overrides": 30,
+      "point_diff_vs_mean_opponent": 3333.333333333332,
+      "rank": 3,
+      "searches": 140,
+      "seed": 20526332
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 15,
+      "overrides": 23,
+      "point_diff_vs_mean_opponent": -19066.666666666668,
+      "rank": 4,
+      "searches": 151,
+      "seed": 20404631
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 16,
+      "overrides": 16,
+      "point_diff_vs_mean_opponent": -24266.666666666668,
+      "rank": 4,
+      "searches": 118,
+      "seed": 20758220
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 17,
+      "overrides": 33,
+      "point_diff_vs_mean_opponent": -16400.0,
+      "rank": 3,
+      "searches": 179,
+      "seed": 20634582
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 18,
+      "overrides": 15,
+      "point_diff_vs_mean_opponent": 6400.0,
+      "rank": 2,
+      "searches": 113,
+      "seed": 20422384
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 19,
+      "overrides": 18,
+      "point_diff_vs_mean_opponent": -2133.333333333332,
+      "rank": 3,
+      "searches": 126,
+      "seed": 20753001
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 20,
+      "overrides": 18,
+      "point_diff_vs_mean_opponent": -1866.6666666666679,
+      "rank": 2,
+      "searches": 140,
+      "seed": 20879228
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 21,
+      "overrides": 7,
+      "point_diff_vs_mean_opponent": 18533.333333333332,
+      "rank": 1,
+      "searches": 53,
+      "seed": 20583328
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 22,
+      "overrides": 17,
+      "point_diff_vs_mean_opponent": -12666.666666666668,
+      "rank": 3,
+      "searches": 155,
+      "seed": 20326645
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 23,
+      "overrides": 9,
+      "point_diff_vs_mean_opponent": 17066.666666666668,
+      "rank": 1,
+      "searches": 148,
+      "seed": 20360563
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 24,
+      "overrides": 24,
+      "point_diff_vs_mean_opponent": -11333.333333333332,
+      "rank": 4,
+      "searches": 105,
+      "seed": 20774750
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 25,
+      "overrides": 16,
+      "point_diff_vs_mean_opponent": 1600.0,
+      "rank": 3,
+      "searches": 122,
+      "seed": 20733685
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 26,
+      "overrides": 18,
+      "point_diff_vs_mean_opponent": 38533.333333333336,
+      "rank": 1,
+      "searches": 100,
+      "seed": 20585712
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 27,
+      "overrides": 14,
+      "point_diff_vs_mean_opponent": 18266.666666666668,
+      "rank": 1,
+      "searches": 120,
+      "seed": 20345355
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 28,
+      "overrides": 31,
+      "point_diff_vs_mean_opponent": -11933.333333333332,
+      "rank": 4,
+      "searches": 186,
+      "seed": 20568946
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 29,
+      "overrides": 21,
+      "point_diff_vs_mean_opponent": -933.3333333333321,
+      "rank": 3,
+      "searches": 151,
+      "seed": 20757509
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 30,
+      "overrides": 24,
+      "point_diff_vs_mean_opponent": -9466.666666666668,
+      "rank": 3,
+      "searches": 108,
+      "seed": 20660774
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 31,
+      "overrides": 16,
+      "point_diff_vs_mean_opponent": 5600.0,
+      "rank": 2,
+      "searches": 156,
+      "seed": 20597984
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 32,
+      "overrides": 18,
+      "point_diff_vs_mean_opponent": -2133.333333333332,
+      "rank": 3,
+      "searches": 119,
+      "seed": 20637537
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 33,
+      "overrides": 23,
+      "point_diff_vs_mean_opponent": 3466.666666666668,
+      "rank": 2,
+      "searches": 173,
+      "seed": 20389211
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 34,
+      "overrides": 24,
+      "point_diff_vs_mean_opponent": -8400.0,
+      "rank": 2,
+      "searches": 157,
+      "seed": 20719455
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 35,
+      "overrides": 30,
+      "point_diff_vs_mean_opponent": 3200.0,
+      "rank": 2,
+      "searches": 141,
+      "seed": 20469649
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 36,
+      "overrides": 12,
+      "point_diff_vs_mean_opponent": 10266.666666666668,
+      "rank": 2,
+      "searches": 192,
+      "seed": 20820003
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 37,
+      "overrides": 18,
+      "point_diff_vs_mean_opponent": 9600.0,
+      "rank": 1,
+      "searches": 119,
+      "seed": 20317508
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 38,
+      "overrides": 23,
+      "point_diff_vs_mean_opponent": -14933.333333333332,
+      "rank": 3,
+      "searches": 139,
+      "seed": 20788221
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 39,
+      "overrides": 7,
+      "point_diff_vs_mean_opponent": 3200.0,
+      "rank": 2,
+      "searches": 124,
+      "seed": 20786351
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 40,
+      "overrides": 26,
+      "point_diff_vs_mean_opponent": -7200.0,
+      "rank": 3,
+      "searches": 125,
+      "seed": 20870100
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 41,
+      "overrides": 34,
+      "point_diff_vs_mean_opponent": -18533.333333333332,
+      "rank": 4,
+      "searches": 142,
+      "seed": 20568014
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 42,
+      "overrides": 11,
+      "point_diff_vs_mean_opponent": 3466.666666666668,
+      "rank": 2,
+      "searches": 123,
+      "seed": 20621074
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 43,
+      "overrides": 34,
+      "point_diff_vs_mean_opponent": -666.6666666666679,
+      "rank": 2,
+      "searches": 149,
+      "seed": 20390897
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 44,
+      "overrides": 23,
+      "point_diff_vs_mean_opponent": 2933.333333333332,
+      "rank": 2,
+      "searches": 175,
+      "seed": 20513419
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 45,
+      "overrides": 42,
+      "point_diff_vs_mean_opponent": -1866.6666666666679,
+      "rank": 3,
+      "searches": 256,
+      "seed": 20361506
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 46,
+      "overrides": 28,
+      "point_diff_vs_mean_opponent": 7333.333333333332,
+      "rank": 2,
+      "searches": 175,
+      "seed": 20692059
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 47,
+      "overrides": 28,
+      "point_diff_vs_mean_opponent": -13066.666666666668,
+      "rank": 4,
+      "searches": 141,
+      "seed": 20555294
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 48,
+      "overrides": 23,
+      "point_diff_vs_mean_opponent": 5866.666666666668,
+      "rank": 2,
+      "searches": 173,
+      "seed": 20373578
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 49,
+      "overrides": 32,
+      "point_diff_vs_mean_opponent": 41733.333333333336,
+      "rank": 1,
+      "searches": 171,
+      "seed": 20426459
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 50,
+      "overrides": 20,
+      "point_diff_vs_mean_opponent": 266.6666666666679,
+      "rank": 3,
+      "searches": 105,
+      "seed": 20314858
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 51,
+      "overrides": 20,
+      "point_diff_vs_mean_opponent": 1066.6666666666679,
+      "rank": 3,
+      "searches": 138,
+      "seed": 20864314
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 52,
+      "overrides": 16,
+      "point_diff_vs_mean_opponent": -8133.333333333332,
+      "rank": 4,
+      "searches": 141,
+      "seed": 20897603
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 53,
+      "overrides": 25,
+      "point_diff_vs_mean_opponent": -10133.333333333332,
+      "rank": 4,
+      "searches": 189,
+      "seed": 20350906
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 54,
+      "overrides": 20,
+      "point_diff_vs_mean_opponent": -18933.333333333332,
+      "rank": 4,
+      "searches": 111,
+      "seed": 20369676
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 55,
+      "overrides": 20,
+      "point_diff_vs_mean_opponent": 2266.666666666668,
+      "rank": 2,
+      "searches": 118,
+      "seed": 20870909
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 56,
+      "overrides": 9,
+      "point_diff_vs_mean_opponent": 15600.0,
+      "rank": 2,
+      "searches": 113,
+      "seed": 20822967
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 57,
+      "overrides": 21,
+      "point_diff_vs_mean_opponent": -3466.666666666668,
+      "rank": 3,
+      "searches": 138,
+      "seed": 20483902
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 58,
+      "overrides": 23,
+      "point_diff_vs_mean_opponent": 1200.0,
+      "rank": 2,
+      "searches": 164,
+      "seed": 20743006
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 59,
+      "overrides": 22,
+      "point_diff_vs_mean_opponent": 266.6666666666679,
+      "rank": 2,
+      "searches": 184,
+      "seed": 20489458
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 60,
+      "overrides": 26,
+      "point_diff_vs_mean_opponent": -1066.6666666666679,
+      "rank": 2,
+      "searches": 189,
+      "seed": 20443674
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 61,
+      "overrides": 17,
+      "point_diff_vs_mean_opponent": -2733.333333333332,
+      "rank": 3,
+      "searches": 156,
+      "seed": 20440013
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 62,
+      "overrides": 23,
+      "point_diff_vs_mean_opponent": 1066.6666666666679,
+      "rank": 2,
+      "searches": 143,
+      "seed": 20580915
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 63,
+      "overrides": 13,
+      "point_diff_vs_mean_opponent": -2400.0,
+      "rank": 3,
+      "searches": 94,
+      "seed": 20367422
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 64,
+      "overrides": 21,
+      "point_diff_vs_mean_opponent": 24133.333333333332,
+      "rank": 1,
+      "searches": 152,
+      "seed": 20482987
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 65,
+      "overrides": 29,
+      "point_diff_vs_mean_opponent": -12933.333333333332,
+      "rank": 4,
+      "searches": 159,
+      "seed": 20768984
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 66,
+      "overrides": 29,
+      "point_diff_vs_mean_opponent": 21866.666666666668,
+      "rank": 1,
+      "searches": 171,
+      "seed": 20602183
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 67,
+      "overrides": 12,
+      "point_diff_vs_mean_opponent": 29733.333333333332,
+      "rank": 1,
+      "searches": 102,
+      "seed": 20374079
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 68,
+      "overrides": 13,
+      "point_diff_vs_mean_opponent": -10666.666666666668,
+      "rank": 4,
+      "searches": 108,
+      "seed": 20363336
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 69,
+      "overrides": 3,
+      "point_diff_vs_mean_opponent": 3600.0,
+      "rank": 3,
+      "searches": 36,
+      "seed": 20484078
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 70,
+      "overrides": 16,
+      "point_diff_vs_mean_opponent": 19066.666666666668,
+      "rank": 1,
+      "searches": 155,
+      "seed": 20383842
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 71,
+      "overrides": 39,
+      "point_diff_vs_mean_opponent": -4266.666666666668,
+      "rank": 3,
+      "searches": 191,
+      "seed": 20524564
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 72,
+      "overrides": 17,
+      "point_diff_vs_mean_opponent": -5200.0,
+      "rank": 3,
+      "searches": 154,
+      "seed": 20831055
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 73,
+      "overrides": 6,
+      "point_diff_vs_mean_opponent": -5866.666666666668,
+      "rank": 2,
+      "searches": 74,
+      "seed": 20659850
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 74,
+      "overrides": 19,
+      "point_diff_vs_mean_opponent": -1466.6666666666679,
+      "rank": 3,
+      "searches": 121,
+      "seed": 20335582
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 75,
+      "overrides": 24,
+      "point_diff_vs_mean_opponent": 1733.3333333333321,
+      "rank": 3,
+      "searches": 197,
+      "seed": 20663017
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 76,
+      "overrides": 19,
+      "point_diff_vs_mean_opponent": 10933.333333333332,
+      "rank": 2,
+      "searches": 161,
+      "seed": 20560415
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 77,
+      "overrides": 14,
+      "point_diff_vs_mean_opponent": -3200.0,
+      "rank": 2,
+      "searches": 118,
+      "seed": 20648263
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 78,
+      "overrides": 24,
+      "point_diff_vs_mean_opponent": -14000.0,
+      "rank": 3,
+      "searches": 97,
+      "seed": 20557554
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 79,
+      "overrides": 19,
+      "point_diff_vs_mean_opponent": 26800.0,
+      "rank": 1,
+      "searches": 164,
+      "seed": 20605931
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 80,
+      "overrides": 26,
+      "point_diff_vs_mean_opponent": -6933.333333333332,
+      "rank": 3,
+      "searches": 171,
+      "seed": 20510149
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 81,
+      "overrides": 23,
+      "point_diff_vs_mean_opponent": 44400.0,
+      "rank": 1,
+      "searches": 135,
+      "seed": 20836465
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 82,
+      "overrides": 23,
+      "point_diff_vs_mean_opponent": -14933.333333333332,
+      "rank": 4,
+      "searches": 147,
+      "seed": 20379547
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 83,
+      "overrides": 16,
+      "point_diff_vs_mean_opponent": 12666.666666666668,
+      "rank": 2,
+      "searches": 109,
+      "seed": 20417077
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 84,
+      "overrides": 9,
+      "point_diff_vs_mean_opponent": 7200.0,
+      "rank": 1,
+      "searches": 83,
+      "seed": 20473578
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 85,
+      "overrides": 15,
+      "point_diff_vs_mean_opponent": 19466.666666666668,
+      "rank": 1,
+      "searches": 136,
+      "seed": 20755610
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 86,
+      "overrides": 28,
+      "point_diff_vs_mean_opponent": -4533.333333333332,
+      "rank": 3,
+      "searches": 134,
+      "seed": 20350641
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 87,
+      "overrides": 20,
+      "point_diff_vs_mean_opponent": -9200.0,
+      "rank": 3,
+      "searches": 133,
+      "seed": 20660803
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 88,
+      "overrides": 47,
+      "point_diff_vs_mean_opponent": -14000.0,
+      "rank": 3,
+      "searches": 199,
+      "seed": 20584983
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 89,
+      "overrides": 15,
+      "point_diff_vs_mean_opponent": 5666.666666666668,
+      "rank": 2,
+      "searches": 120,
+      "seed": 20598899
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 90,
+      "overrides": 24,
+      "point_diff_vs_mean_opponent": 25333.333333333332,
+      "rank": 1,
+      "searches": 144,
+      "seed": 20372820
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 91,
+      "overrides": 24,
+      "point_diff_vs_mean_opponent": 26666.666666666668,
+      "rank": 1,
+      "searches": 132,
+      "seed": 20700757
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 92,
+      "overrides": 21,
+      "point_diff_vs_mean_opponent": 5466.666666666668,
+      "rank": 3,
+      "searches": 127,
+      "seed": 20592139
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 93,
+      "overrides": 27,
+      "point_diff_vs_mean_opponent": 27200.0,
+      "rank": 1,
+      "searches": 186,
+      "seed": 20613313
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 94,
+      "overrides": 27,
+      "point_diff_vs_mean_opponent": -4933.333333333332,
+      "rank": 2,
+      "searches": 146,
+      "seed": 20723058
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 95,
+      "overrides": 10,
+      "point_diff_vs_mean_opponent": 22666.666666666668,
+      "rank": 1,
+      "searches": 82,
+      "seed": 20877111
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 96,
+      "overrides": 6,
+      "point_diff_vs_mean_opponent": 8800.0,
+      "rank": 2,
+      "searches": 55,
+      "seed": 20851333
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 97,
+      "overrides": 16,
+      "point_diff_vs_mean_opponent": 7600.0,
+      "rank": 2,
+      "searches": 125,
+      "seed": 20874432
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 98,
+      "overrides": 31,
+      "point_diff_vs_mean_opponent": -4800.0,
+      "rank": 3,
+      "searches": 143,
+      "seed": 20669803
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 99,
+      "overrides": 10,
+      "point_diff_vs_mean_opponent": 27866.666666666668,
+      "rank": 1,
+      "searches": 103,
+      "seed": 20301133
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 100,
+      "overrides": 28,
+      "point_diff_vs_mean_opponent": -6933.333333333332,
+      "rank": 3,
+      "searches": 154,
+      "seed": 20605387
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 101,
+      "overrides": 21,
+      "point_diff_vs_mean_opponent": -1333.3333333333321,
+      "rank": 3,
+      "searches": 134,
+      "seed": 20395626
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 102,
+      "overrides": 28,
+      "point_diff_vs_mean_opponent": -4266.666666666668,
+      "rank": 3,
+      "searches": 139,
+      "seed": 20661962
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 103,
+      "overrides": 24,
+      "point_diff_vs_mean_opponent": 5733.333333333332,
+      "rank": 2,
+      "searches": 172,
+      "seed": 20893657
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 104,
+      "overrides": 24,
+      "point_diff_vs_mean_opponent": -3333.333333333332,
+      "rank": 3,
+      "searches": 155,
+      "seed": 20411131
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 105,
+      "overrides": 20,
+      "point_diff_vs_mean_opponent": 3600.0,
+      "rank": 2,
+      "searches": 148,
+      "seed": 20458616
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 106,
+      "overrides": 28,
+      "point_diff_vs_mean_opponent": 10400.0,
+      "rank": 2,
+      "searches": 168,
+      "seed": 20585531
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 107,
+      "overrides": 28,
+      "point_diff_vs_mean_opponent": 53866.666666666664,
+      "rank": 1,
+      "searches": 189,
+      "seed": 20897889
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 108,
+      "overrides": 15,
+      "point_diff_vs_mean_opponent": 6000.0,
+      "rank": 2,
+      "searches": 148,
+      "seed": 20648312
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 109,
+      "overrides": 22,
+      "point_diff_vs_mean_opponent": -8800.0,
+      "rank": 3,
+      "searches": 165,
+      "seed": 20543471
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 110,
+      "overrides": 17,
+      "point_diff_vs_mean_opponent": 6933.333333333332,
+      "rank": 2,
+      "searches": 148,
+      "seed": 20392176
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 111,
+      "overrides": 20,
+      "point_diff_vs_mean_opponent": 22000.0,
+      "rank": 1,
+      "searches": 140,
+      "seed": 20480171
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 112,
+      "overrides": 26,
+      "point_diff_vs_mean_opponent": -3866.666666666668,
+      "rank": 3,
+      "searches": 140,
+      "seed": 20797104
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 113,
+      "overrides": 39,
+      "point_diff_vs_mean_opponent": -20800.0,
+      "rank": 4,
+      "searches": 162,
+      "seed": 20714963
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 114,
+      "overrides": 19,
+      "point_diff_vs_mean_opponent": -10000.0,
+      "rank": 3,
+      "searches": 138,
+      "seed": 20798326
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 115,
+      "overrides": 31,
+      "point_diff_vs_mean_opponent": -5733.333333333332,
+      "rank": 4,
+      "searches": 207,
+      "seed": 20680230
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 116,
+      "overrides": 31,
+      "point_diff_vs_mean_opponent": -19333.333333333332,
+      "rank": 4,
+      "searches": 187,
+      "seed": 20675910
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 117,
+      "overrides": 22,
+      "point_diff_vs_mean_opponent": -933.3333333333321,
+      "rank": 3,
+      "searches": 144,
+      "seed": 20534989
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 118,
+      "overrides": 26,
+      "point_diff_vs_mean_opponent": -11600.0,
+      "rank": 4,
+      "searches": 109,
+      "seed": 20861056
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 119,
+      "overrides": 18,
+      "point_diff_vs_mean_opponent": -5466.666666666668,
+      "rank": 4,
+      "searches": 158,
+      "seed": 20442776
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 120,
+      "overrides": 19,
+      "point_diff_vs_mean_opponent": 1733.3333333333321,
+      "rank": 3,
+      "searches": 142,
+      "seed": 20682720
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 121,
+      "overrides": 17,
+      "point_diff_vs_mean_opponent": 18266.666666666668,
+      "rank": 2,
+      "searches": 139,
+      "seed": 20429178
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 122,
+      "overrides": 16,
+      "point_diff_vs_mean_opponent": -15466.666666666668,
+      "rank": 4,
+      "searches": 136,
+      "seed": 20519335
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 123,
+      "overrides": 18,
+      "point_diff_vs_mean_opponent": -3600.0,
+      "rank": 3,
+      "searches": 142,
+      "seed": 20466398
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 124,
+      "overrides": 29,
+      "point_diff_vs_mean_opponent": 13333.333333333332,
+      "rank": 1,
+      "searches": 162,
+      "seed": 20580117
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 125,
+      "overrides": 19,
+      "point_diff_vs_mean_opponent": -14400.0,
+      "rank": 4,
+      "searches": 148,
+      "seed": 20720666
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 126,
+      "overrides": 18,
+      "point_diff_vs_mean_opponent": 17733.333333333332,
+      "rank": 1,
+      "searches": 141,
+      "seed": 20740131
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 127,
+      "overrides": 27,
+      "point_diff_vs_mean_opponent": 16133.333333333332,
+      "rank": 1,
+      "searches": 150,
+      "seed": 20524427
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 128,
+      "overrides": 10,
+      "point_diff_vs_mean_opponent": -9066.666666666668,
+      "rank": 2,
+      "searches": 107,
+      "seed": 20765391
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 129,
+      "overrides": 17,
+      "point_diff_vs_mean_opponent": 25333.333333333332,
+      "rank": 1,
+      "searches": 84,
+      "seed": 20336844
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 130,
+      "overrides": 21,
+      "point_diff_vs_mean_opponent": -4266.666666666668,
+      "rank": 3,
+      "searches": 143,
+      "seed": 20652636
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 131,
+      "overrides": 16,
+      "point_diff_vs_mean_opponent": 22266.666666666668,
+      "rank": 1,
+      "searches": 114,
+      "seed": 20833277
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 132,
+      "overrides": 24,
+      "point_diff_vs_mean_opponent": 4133.333333333332,
+      "rank": 2,
+      "searches": 165,
+      "seed": 20815433
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 133,
+      "overrides": 20,
+      "point_diff_vs_mean_opponent": 14133.333333333332,
+      "rank": 1,
+      "searches": 125,
+      "seed": 20526058
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 134,
+      "overrides": 21,
+      "point_diff_vs_mean_opponent": 16133.333333333332,
+      "rank": 2,
+      "searches": 155,
+      "seed": 20722059
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 135,
+      "overrides": 21,
+      "point_diff_vs_mean_opponent": -466.6666666666679,
+      "rank": 3,
+      "searches": 214,
+      "seed": 20537164
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 136,
+      "overrides": 50,
+      "point_diff_vs_mean_opponent": -5200.0,
+      "rank": 2,
+      "searches": 266,
+      "seed": 20394267
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 137,
+      "overrides": 20,
+      "point_diff_vs_mean_opponent": 63200.0,
+      "rank": 1,
+      "searches": 167,
+      "seed": 20561041
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 138,
+      "overrides": 16,
+      "point_diff_vs_mean_opponent": -2266.666666666668,
+      "rank": 3,
+      "searches": 112,
+      "seed": 20780417
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 139,
+      "overrides": 31,
+      "point_diff_vs_mean_opponent": 10533.333333333332,
+      "rank": 1,
+      "searches": 173,
+      "seed": 20748881
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 140,
+      "overrides": 26,
+      "point_diff_vs_mean_opponent": 14400.0,
+      "rank": 2,
+      "searches": 144,
+      "seed": 20587370
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 141,
+      "overrides": 19,
+      "point_diff_vs_mean_opponent": -4400.0,
+      "rank": 3,
+      "searches": 122,
+      "seed": 20601557
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 142,
+      "overrides": 18,
+      "point_diff_vs_mean_opponent": -14400.0,
+      "rank": 3,
+      "searches": 133,
+      "seed": 20838119
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 143,
+      "overrides": 1,
+      "point_diff_vs_mean_opponent": -5333.333333333332,
+      "rank": 3,
+      "searches": 12,
+      "seed": 20692404
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 144,
+      "overrides": 4,
+      "point_diff_vs_mean_opponent": 0.0,
+      "rank": 3,
+      "searches": 55,
+      "seed": 20862990
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 145,
+      "overrides": 17,
+      "point_diff_vs_mean_opponent": -8400.0,
+      "rank": 4,
+      "searches": 135,
+      "seed": 20697019
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 146,
+      "overrides": 23,
+      "point_diff_vs_mean_opponent": -9600.0,
+      "rank": 4,
+      "searches": 112,
+      "seed": 20447392
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 147,
+      "overrides": 25,
+      "point_diff_vs_mean_opponent": 17600.0,
+      "rank": 2,
+      "searches": 131,
+      "seed": 20406973
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 148,
+      "overrides": 13,
+      "point_diff_vs_mean_opponent": -2800.0,
+      "rank": 3,
+      "searches": 133,
+      "seed": 20645325
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 149,
+      "overrides": 19,
+      "point_diff_vs_mean_opponent": -8133.333333333332,
+      "rank": 3,
+      "searches": 145,
+      "seed": 20304915
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 150,
+      "overrides": 28,
+      "point_diff_vs_mean_opponent": 3333.333333333332,
+      "rank": 2,
+      "searches": 123,
+      "seed": 20355401
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 151,
+      "overrides": 12,
+      "point_diff_vs_mean_opponent": 7333.333333333332,
+      "rank": 2,
+      "searches": 98,
+      "seed": 20877206
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 152,
+      "overrides": 31,
+      "point_diff_vs_mean_opponent": -18800.0,
+      "rank": 4,
+      "searches": 150,
+      "seed": 20748128
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 153,
+      "overrides": 23,
+      "point_diff_vs_mean_opponent": -6133.333333333332,
+      "rank": 3,
+      "searches": 145,
+      "seed": 20591378
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 154,
+      "overrides": 9,
+      "point_diff_vs_mean_opponent": 33333.33333333333,
+      "rank": 1,
+      "searches": 77,
+      "seed": 20668421
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 155,
+      "overrides": 16,
+      "point_diff_vs_mean_opponent": -5066.666666666668,
+      "rank": 3,
+      "searches": 170,
+      "seed": 20405282
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 156,
+      "overrides": 28,
+      "point_diff_vs_mean_opponent": -18666.666666666668,
+      "rank": 4,
+      "searches": 138,
+      "seed": 20413973
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 157,
+      "overrides": 15,
+      "point_diff_vs_mean_opponent": 1200.0,
+      "rank": 2,
+      "searches": 115,
+      "seed": 20579730
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 158,
+      "overrides": 14,
+      "point_diff_vs_mean_opponent": -4266.666666666668,
+      "rank": 3,
+      "searches": 151,
+      "seed": 20691075
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 159,
+      "overrides": 14,
+      "point_diff_vs_mean_opponent": 21733.333333333332,
+      "rank": 1,
+      "searches": 94,
+      "seed": 20729404
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 160,
+      "overrides": 14,
+      "point_diff_vs_mean_opponent": -18533.333333333332,
+      "rank": 4,
+      "searches": 109,
+      "seed": 20414834
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 161,
+      "overrides": 35,
+      "point_diff_vs_mean_opponent": -16400.0,
+      "rank": 3,
+      "searches": 130,
+      "seed": 20831627
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 162,
+      "overrides": 28,
+      "point_diff_vs_mean_opponent": -8933.333333333332,
+      "rank": 3,
+      "searches": 166,
+      "seed": 20615348
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 163,
+      "overrides": 7,
+      "point_diff_vs_mean_opponent": 17333.333333333332,
+      "rank": 1,
+      "searches": 45,
+      "seed": 20656801
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 164,
+      "overrides": 27,
+      "point_diff_vs_mean_opponent": 24800.0,
+      "rank": 1,
+      "searches": 180,
+      "seed": 20717513
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 165,
+      "overrides": 24,
+      "point_diff_vs_mean_opponent": -21066.666666666668,
+      "rank": 4,
+      "searches": 114,
+      "seed": 20807308
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 166,
+      "overrides": 25,
+      "point_diff_vs_mean_opponent": 7600.0,
+      "rank": 2,
+      "searches": 142,
+      "seed": 20535016
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 167,
+      "overrides": 20,
+      "point_diff_vs_mean_opponent": 11666.666666666668,
+      "rank": 2,
+      "searches": 160,
+      "seed": 20846814
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 168,
+      "overrides": 11,
+      "point_diff_vs_mean_opponent": 23733.333333333332,
+      "rank": 1,
+      "searches": 75,
+      "seed": 20896297
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 169,
+      "overrides": 27,
+      "point_diff_vs_mean_opponent": -3333.333333333332,
+      "rank": 2,
+      "searches": 92,
+      "seed": 20521152
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 170,
+      "overrides": 21,
+      "point_diff_vs_mean_opponent": -14133.333333333332,
+      "rank": 3,
+      "searches": 136,
+      "seed": 20848614
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 171,
+      "overrides": 12,
+      "point_diff_vs_mean_opponent": -5200.0,
+      "rank": 3,
+      "searches": 113,
+      "seed": 20369632
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 172,
+      "overrides": 24,
+      "point_diff_vs_mean_opponent": 9600.0,
+      "rank": 2,
+      "searches": 134,
+      "seed": 20521665
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 173,
+      "overrides": 14,
+      "point_diff_vs_mean_opponent": -16133.333333333332,
+      "rank": 3,
+      "searches": 104,
+      "seed": 20328083
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 174,
+      "overrides": 20,
+      "point_diff_vs_mean_opponent": -1866.6666666666679,
+      "rank": 3,
+      "searches": 157,
+      "seed": 20577367
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 175,
+      "overrides": 30,
+      "point_diff_vs_mean_opponent": -3600.0,
+      "rank": 2,
+      "searches": 141,
+      "seed": 20488871
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 176,
+      "overrides": 24,
+      "point_diff_vs_mean_opponent": 4666.666666666668,
+      "rank": 3,
+      "searches": 147,
+      "seed": 20369271
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 177,
+      "overrides": 10,
+      "point_diff_vs_mean_opponent": -1466.6666666666679,
+      "rank": 2,
+      "searches": 136,
+      "seed": 20426676
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 178,
+      "overrides": 11,
+      "point_diff_vs_mean_opponent": -13200.0,
+      "rank": 3,
+      "searches": 147,
+      "seed": 20415895
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 179,
+      "overrides": 16,
+      "point_diff_vs_mean_opponent": 6933.333333333332,
+      "rank": 2,
+      "searches": 154,
+      "seed": 20502103
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 180,
+      "overrides": 40,
+      "point_diff_vs_mean_opponent": 25600.0,
+      "rank": 1,
+      "searches": 184,
+      "seed": 20721963
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 181,
+      "overrides": 15,
+      "point_diff_vs_mean_opponent": 13733.333333333332,
+      "rank": 1,
+      "searches": 103,
+      "seed": 20612347
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 182,
+      "overrides": 19,
+      "point_diff_vs_mean_opponent": -8400.0,
+      "rank": 3,
+      "searches": 115,
+      "seed": 20347366
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 183,
+      "overrides": 32,
+      "point_diff_vs_mean_opponent": 8666.666666666668,
+      "rank": 2,
+      "searches": 170,
+      "seed": 20569591
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 184,
+      "overrides": 41,
+      "point_diff_vs_mean_opponent": -11066.666666666668,
+      "rank": 4,
+      "searches": 183,
+      "seed": 20649050
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 185,
+      "overrides": 25,
+      "point_diff_vs_mean_opponent": 61600.0,
+      "rank": 1,
+      "searches": 145,
+      "seed": 20754045
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 186,
+      "overrides": 22,
+      "point_diff_vs_mean_opponent": 2266.666666666668,
+      "rank": 3,
+      "searches": 173,
+      "seed": 20750565
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 187,
+      "overrides": 25,
+      "point_diff_vs_mean_opponent": -5066.666666666668,
+      "rank": 3,
+      "searches": 182,
+      "seed": 20311061
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 188,
+      "overrides": 21,
+      "point_diff_vs_mean_opponent": 33333.33333333333,
+      "rank": 1,
+      "searches": 171,
+      "seed": 20598420
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 189,
+      "overrides": 18,
+      "point_diff_vs_mean_opponent": 3600.0,
+      "rank": 2,
+      "searches": 115,
+      "seed": 20405693
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 190,
+      "overrides": 20,
+      "point_diff_vs_mean_opponent": -1733.3333333333321,
+      "rank": 3,
+      "searches": 118,
+      "seed": 20342229
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 191,
+      "overrides": 28,
+      "point_diff_vs_mean_opponent": 5733.333333333332,
+      "rank": 3,
+      "searches": 137,
+      "seed": 20841203
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 192,
+      "overrides": 22,
+      "point_diff_vs_mean_opponent": -21866.666666666668,
+      "rank": 3,
+      "searches": 145,
+      "seed": 20478514
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 193,
+      "overrides": 27,
+      "point_diff_vs_mean_opponent": -8266.666666666668,
+      "rank": 2,
+      "searches": 114,
+      "seed": 20311813
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 194,
+      "overrides": 11,
+      "point_diff_vs_mean_opponent": -1733.3333333333321,
+      "rank": 3,
+      "searches": 118,
+      "seed": 20557525
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 195,
+      "overrides": 26,
+      "point_diff_vs_mean_opponent": 1333.3333333333321,
+      "rank": 2,
+      "searches": 224,
+      "seed": 20825740
+    },
+    {
+      "candidate_seat": 0,
+      "hanchan_index": 196,
+      "overrides": 5,
+      "point_diff_vs_mean_opponent": 23600.0,
+      "rank": 2,
+      "searches": 52,
+      "seed": 20668096
+    },
+    {
+      "candidate_seat": 1,
+      "hanchan_index": 197,
+      "overrides": 21,
+      "point_diff_vs_mean_opponent": -10266.666666666668,
+      "rank": 3,
+      "searches": 144,
+      "seed": 20345927
+    },
+    {
+      "candidate_seat": 2,
+      "hanchan_index": 198,
+      "overrides": 19,
+      "point_diff_vs_mean_opponent": 14933.333333333332,
+      "rank": 1,
+      "searches": 131,
+      "seed": 20714513
+    },
+    {
+      "candidate_seat": 3,
+      "hanchan_index": 199,
+      "overrides": 13,
+      "point_diff_vs_mean_opponent": -9066.666666666668,
+      "rank": 4,
+      "searches": 126,
+      "seed": 20779875
+    }
+  ],
+  "model": {
+    "action_type_rates": {
+      "chi": 0.013479766161530167,
+      "discard": 0.7757818264373687,
+      "hora": 0.011436517395992963,
+      "kan": 0.0008229751972302628,
+      "pass": 0.16975991827004938,
+      "pon": 0.02270276406152449,
+      "reach": 0.005845961745842556,
+      "ryukyoku": 0.00017027073046143367
+    },
+    "checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_ppo_next_e5a_kl010/checkpoint_00100.pt",
+    "first_place_rate": 0.215,
+    "fourth_place_rate": 0.14,
+    "mean_rank": 2.415,
+    "per_seat_first_place_rate": {
+      "0": 0.16,
+      "1": 0.26,
+      "2": 0.14,
+      "3": 0.3
+    },
+    "point_diff_vs_mean_opponent_bootstrap_ci95": [
+      950.9833333333332,
+      5351.458333333331
+    ],
+    "point_diff_vs_mean_opponent_mean": 3109.0,
+    "second_place_rate": 0.295,
+    "third_place_rate": 0.35,
+    "top2_rate": 0.51
+  },
+  "opponent": {
+    "action_type_rates": {
+      "chi": 0.0132528638861824,
+      "discard": 0.7774729692658424,
+      "hora": 0.01291231920388221,
+      "kan": 0.00010405531959172477,
+      "pass": 0.16572228581158419,
+      "pon": 0.01919347667741905,
+      "reach": 0.011181217068856242,
+      "ryukyoku": 0.00016081276664175646
+    },
+    "checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_v13_sft/best_heuristic.pt",
+    "metadata": {
+      "checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_v13_sft/best_heuristic.pt",
+      "contract_id": "riichi-sft-v13-1",
+      "model_config": {
+        "context_tokens": 4096,
+        "critic_layers": 2,
+        "d_model": 192,
+        "eps": 1e-06,
+        "ffn_dim": 576,
+        "head_dim": 24,
+        "kv_heads": 2,
+        "layers": 4,
+        "policy_head_type": "isolated_action_query",
+        "query_heads": 8,
+        "rope_base": 10000.0,
+        "shared_layers": 3
+      }
+    },
+    "opponent_seats": 3
+  },
+  "protocol_version": 1,
+  "search_config": {
+    "depth": 3,
+    "grp_model": "checkpoints/train_riichi_ppo_goal_grp/grp_rank_predictor.pt",
+    "rollouts": 2,
+    "temperature": 1.0,
+    "value_mode": "seat",
+    "width": 3
+  },
+  "search_per_decision_ms": 93.31114989078173,
+  "search_stats": {
+    "leaf_scored": 144482,
+    "mean_chosen_minus_greedy": 0.16519268541218304,
+    "mean_chosen_value": 0.10100815251290826,
+    "mean_greedy_value": -0.0641845328992748,
+    "override_by_action_group": {
+      "discard": 4073,
+      "kan": 21,
+      "reach": 87
+    },
+    "override_count": 4181,
+    "override_rate": 0.15093317930760622,
+    "rollout_clones": 163200,
+    "rollout_steps": 467879,
+    "search_wall_s": 2584.812,
+    "searchable_decisions": 27701,
+    "searched_decisions": 27701,
+    "terminal_scored": 18718,
+    "total_decisions": 35238
+  },
+  "seeds": [
+    20337048,
+    20417738,
+    20644154,
+    20464185,
+    20622238,
+    20589395,
+    20387836,
+    20761919,
+    20663387,
+    20417447,
+    20630236,
+    20898092,
+    20564310,
+    20363382,
+    20526332,
+    20404631,
+    20758220,
+    20634582,
+    20422384,
+    20753001,
+    20879228,
+    20583328,
+    20326645,
+    20360563,
+    20774750,
+    20733685,
+    20585712,
+    20345355,
+    20568946,
+    20757509,
+    20660774,
+    20597984,
+    20637537,
+    20389211,
+    20719455,
+    20469649,
+    20820003,
+    20317508,
+    20788221,
+    20786351,
+    20870100,
+    20568014,
+    20621074,
+    20390897,
+    20513419,
+    20361506,
+    20692059,
+    20555294,
+    20373578,
+    20426459,
+    20314858,
+    20864314,
+    20897603,
+    20350906,
+    20369676,
+    20870909,
+    20822967,
+    20483902,
+    20743006,
+    20489458,
+    20443674,
+    20440013,
+    20580915,
+    20367422,
+    20482987,
+    20768984,
+    20602183,
+    20374079,
+    20363336,
+    20484078,
+    20383842,
+    20524564,
+    20831055,
+    20659850,
+    20335582,
+    20663017,
+    20560415,
+    20648263,
+    20557554,
+    20605931,
+    20510149,
+    20836465,
+    20379547,
+    20417077,
+    20473578,
+    20755610,
+    20350641,
+    20660803,
+    20584983,
+    20598899,
+    20372820,
+    20700757,
+    20592139,
+    20613313,
+    20723058,
+    20877111,
+    20851333,
+    20874432,
+    20669803,
+    20301133,
+    20605387,
+    20395626,
+    20661962,
+    20893657,
+    20411131,
+    20458616,
+    20585531,
+    20897889,
+    20648312,
+    20543471,
+    20392176,
+    20480171,
+    20797104,
+    20714963,
+    20798326,
+    20680230,
+    20675910,
+    20534989,
+    20861056,
+    20442776,
+    20682720,
+    20429178,
+    20519335,
+    20466398,
+    20580117,
+    20720666,
+    20740131,
+    20524427,
+    20765391,
+    20336844,
+    20652636,
+    20833277,
+    20815433,
+    20526058,
+    20722059,
+    20537164,
+    20394267,
+    20561041,
+    20780417,
+    20748881,
+    20587370,
+    20601557,
+    20838119,
+    20692404,
+    20862990,
+    20697019,
+    20447392,
+    20406973,
+    20645325,
+    20304915,
+    20355401,
+    20877206,
+    20748128,
+    20591378,
+    20668421,
+    20405282,
+    20413973,
+    20579730,
+    20691075,
+    20729404,
+    20414834,
+    20831627,
+    20615348,
+    20656801,
+    20717513,
+    20807308,
+    20535016,
+    20846814,
+    20896297,
+    20521152,
+    20848614,
+    20369632,
+    20521665,
+    20328083,
+    20577367,
+    20488871,
+    20369271,
+    20426676,
+    20415895,
+    20502103,
+    20721963,
+    20612347,
+    20347366,
+    20569591,
+    20649050,
+    20754045,
+    20750565,
+    20311061,
+    20598420,
+    20405693,
+    20342229,
+    20841203,
+    20478514,
+    20311813,
+    20557525,
+    20825740,
+    20668096,
+    20345927,
+    20714513,
+    20779875
+  ]
+}
