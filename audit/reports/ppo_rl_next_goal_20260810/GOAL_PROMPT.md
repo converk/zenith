@@ -1,4 +1,4 @@
-# 新 goal 提示词：PPO 优化下一阶段（树搜索 / 信号组合）
+# 新 goal 提示词：PPO 优化下一阶段（信号组合）
 
 > 本文件即新 goal 的提示词。复制全文作为新 goal 的输入；新 goal 的实验结果、日志与提示词
 > 统一放在 `audit/reports/ppo_rl_next_goal_20260810/`。
@@ -15,16 +15,14 @@
 - EV/value：GRP 系列 value_loss ~0.02–0.03，EV 未见长期为负。
 
 详细证据见 `audit/reports/ppo_rl_goal_run_20260808/EXPERIMENT_RESULTS.md` 与 `PROGRESS.md`。
-本 goal 按其中 §6 的设计执行下一步实验，并放宽成功/停止条件。
+本 goal 按其中 §6 的信号组合设计执行下一步实验，并放宽成功/停止条件。
 
 ## 1. 本 goal 的目标与停止条件（放宽版）
 
 **目标**：找到比当前最优臂（E3-b u200）更全面、更稳的策略。实验优先级：
 
-1. **树搜索离线可行性验证**（pMCPA/MCTS 增强 vs E3-b u200，不占训练 GPU，约 2–4h）；
-2. 若验证通过：**搜索蒸馏**（200 update 左右）；
-3. **E5-a：GRP + SFT-KL 锚定**（纯配置）；
-4. **E5-b：两阶段奖励课程**（GRP→dense 或 dense→GRP，resume 式，纯配置）。
+1. **E5-a：GRP + SFT-KL 锚定**（纯配置）；
+2. **E5-b：两阶段奖励课程**（GRP→dense 或 dense→GRP，resume 式，纯配置）。
 
 **停止/合格条件**（满足其一即视为本 goal 达成；判定以 2v2 240 半庄 + 启发式 96 半庄为准，
 训练 reward 不算成功依据）：
@@ -33,7 +31,7 @@
   且启发式 u100–u200 未出现连续两次评测一位率 <40%；
 - **合格线 B（次）**：任一臂相对 E3-b u200 在 2v2 上显著更好（CI 不跨 0），或启发式明显更稳
   （u100–u200 无 <40% 的低点）且 u200 2v2 不低于 50%；
-- **默认收尾**：预设计划内的实验全部完成（树搜索验证 + 至多 2–3 个训练臂），即使未达合格线，
+- **默认收尾**：预设计划内的实验全部完成（至多 2–3 个训练臂），即使未达合格线，
   也要输出结论报告（说明尝试了什么、证据、为什么不达标、下一步还能做什么）。
 
 EV 不再长期为负作为全程监控项（GRP 系列已满足，不作为单独停止条件）。
@@ -60,17 +58,12 @@ EV 不再长期为负作为全程监控项（GRP 系列已满足，不作为单�
 
 0. 先完整阅读 `audit/reports/ppo_rl_goal_run_20260808/EXPERIMENT_RESULTS.md`（尤其 §6）与 `PROGRESS.md`；
    `nvidia-smi` 确认可用 GPU 后再动手。
-1. **树搜索离线验证**（CPU 为主，不占训练 GPU）：用轻量 pMCPA/MCTS（深度 2–4、宽度 8–16，
-   以当前 PPO policy + GRP 终局奖励做 rollout）在关键决策上替换 E3-b u200 的动作，96–240 半庄
-   A/B 对比；显著优于基线（CI 不跨 0）才进入搜索蒸馏，否则记录结果并跳到信号组合实验。
-2. **E5-a：GRP + SFT-KL 锚定**（纯配置，从 `best_heuristic.pt` 初始化）：`grp_mix_lambda=1.0`，
+1. **E5-a：GRP + SFT-KL 锚定**（纯配置，从 `best_heuristic.pt` 初始化）：`grp_mix_lambda=1.0`，
    `sft_kl_coef_start=0.0`、`sft_kl_coef_end` 取 0.05/0.1 两档消融；200 update；评测 u50/u100/u200。
-3. **E5-b：两阶段奖励课程**（resume，纯配置）：
+2. **E5-b：两阶段奖励课程**（resume，纯配置）：
    - 臂1「GRP→dense」：resume E3-b u200，`dense_efficiency_weight=0.05`，再训 150–200 update；
    - 臂2「dense→GRP」：resume E4 u200（或收尾C u200），`dense_efficiency_weight=0.0`，再训 150–200 update；
    - 评测 u200 与续训终点（u300/u350/u400 视可用 checkpoint）。
-4. **搜索蒸馏**（仅当第 1 步通过且时间允许）：从 E3-b u200 初始化，用搜索策略分布做 KL/监督目标，
-   200 update；评测 u50/u100/u200/u400。
 
 并行规则：GPU 有空闲时最多两个独立实验并行（分别占 CUDA=0 与 CUDA=2）；每臂总耗时尽量 ≤5h
 （含评测），以先前实测性能估算（单卡约 80–100s/update + 每 15 update 一次启发式评测约 145s）。

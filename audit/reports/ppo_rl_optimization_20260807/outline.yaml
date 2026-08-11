@@ -9,12 +9,9 @@ items:
   - name: reward_design
     category: "奖励设计"
     description: "比较当前 sparse terminal reward、GRP、dense 效率奖励（shanten/ukeire）、动作级奖励模型及其组合。给出奖励模型输入、训练标签（专家动作/小局结果/半庄排名/点差）、架构（复用 backbone 还是独立小模型）、reward hacking 防护，以及具体实验建议。"
-  - name: tree_search
-    category: "算法"
-    description: "评估 top3 受限 MCTS、AlphaZero 风格搜索、SPG（Search with Policy Gradients）、搜索蒸馏、在线搜索 rollout 在本场景的可行性：如何与 PPO 训练结合、推理成本、能否超过纯策略学习、麻将作为不完全信息/多玩家/随机牌山游戏的注意事项。"
   - name: alternative_algorithms
     category: "算法"
-    description: "从当前 PPO 出发评估替代/改进算法：Gumbel/AlphaZero、IMPALA、regret/CFR 混合、opponent shaping、population/league self-play、best-of-n/rejection sampling、DPO/SPIN 等。结合小模型、2 GPU、12 workers 的规模给出可落地性排序，并说明与现有代码的兼容性。"
+    description: "从当前 PPO 出发评估替代/改进算法：IMPALA、regret/CFR 混合、opponent shaping、population/league self-play、best-of-n/rejection sampling、DPO/SPIN 等。结合小模型、2 GPU、12 workers 的规模给出可落地性排序，并说明与现有代码的兼容性。"
   - name: self_play_opponents
     category: "自博弈"
     description: "评估四席 current-policy 自博弈是否是问题本身。是否应混入固定 SFT 对手、历史 checkpoint 池、启发式对手或 population 训练；给出具体比例、实现方式（当前 worker 的 lineups 只支持 all-current）、对训练稳定性和最终对 SFT 胜率的影响。"

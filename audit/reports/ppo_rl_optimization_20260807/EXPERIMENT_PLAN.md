@@ -15,7 +15,7 @@
 
 **停止条件**：
 1. 达到总成功判据；
-2. E0–E4 全部完成且未达标（此时输出结论报告，说明 E5 是否值得投入）；
+2. E0–E4 全部完成且未达标（此时输出结论报告）；
 3. 被阻塞（见 §12）。
 
 ## 1. 硬约束与项目约定
@@ -55,10 +55,9 @@
 1. **E0** 基线复现（必须先做，约 0.5–1 天，含冒烟测试）；
 2. **E1**（learner 侧）与 **E2**（worker 侧）代码路径独立，可在 GPU 有空闲时并行，但建议 E1 先出结果；
 3. **E3** 必须在 E1/E2 之后做（避免多变量同时改无法归因）；其离线 GRP 训练不占 GPU，可提前启动；
-4. **E4** 在「E1/E2/E3 中表现最好的组合」之上叠加并做消融；
-5. **E5**（可选）仅在 E1–E4 均未达标时启动。
+4. **E4** 在「E1/E2/E3 中表现最好的组合」之上叠加并做消融。
 
-每个实验结束后必须按 §10 的评测纪律出指标表，并按该实验的判定标准写结论（成功 / 部分成功 / 失败），更新 `PROGRESS.md`。
+每个实验结束后必须按 §9 的评测纪律出指标表，并按该实验的判定标准写结论（成功 / 部分成功 / 失败），更新 `PROGRESS.md`。
 
 **时长口径说明**：各实验标注的「单卡约 0.5–1 天」是**单个 200-update 实验（单臂）**的估算，不是全部实验的总时长。全部实验串行大致为：E0(1 臂) + E1(1 臂) + E2(1 臂) + E3(3 臂) + E4(1 臂) ≈ 7 臂 × 0.5–1 天 ≈ **3.5–7 天**（单卡，以实测为准），另加 GRP 离线训练数小时与各次 2v2/启发式评测开销；E1∥E2 并行、提前达标提前停止、或某实验判定失败直接跳过时，总时长会缩短。
 
@@ -97,7 +96,7 @@
 - 部分成功：EV 转正且 2v2 显著优于 E0（分差 CI 不跨 0）；
 - 失败：无明显改善。
 
-**失败处理**：保留开关继续 E2；若 E1+E2 组合仍差，E5 考虑 critic 预热。
+**失败处理**：保留开关继续 E2。
 
 **时长**：200 update（单卡约 0.5–1 天，以实测为准）。
 
@@ -168,19 +167,7 @@
 
 **时长**：200 update（单卡约 0.5–1 天，以实测为准）。
 
-## 9. E5（可选，仅 E1–E4 未达标时启动）
-
-按优先级：
-
-1. **critic 预热**（1–2 周）：用人类日志离线构造 MC 收益 target，预热现有 2 层 value head，再从头跑 PPO；
-2. **pMCPA 式局首 rollout 适应**（1–2 周试点）：局首采样对手手牌/牌山，K 条 rollout 后微调策略再打；先离线评测，推理预算每决策 <1–5ms；
-3. **搜索蒸馏**（2–4 周）：离线用弱搜索生成改进动作，蒸馏回策略。
-
-不做在线 MCTS/AlphaZero/CFR/league/DPO-SPIN（调研结论：本规模下性价比低、证据不足）。
-
-**判定**：与总成功判据一致；E5 失败则输出结论报告说明边界。
-
-## 10. 监控指标与评测纪律
+## 9. 监控指标与评测纪律
 
 **训练监控（每 update）**：`ppo/value_explained_variance`（EV<0 报警）、`value_prediction_std / return_std`、`sft_reference_kl`、`entropy`、`clipfrac`、立直接受率、放铳/和牌/副露率（semantic metrics）。
 
@@ -204,14 +191,14 @@ CUDA_DEVICE=2 conda run -n Mahjong-AI python -m riichi_ppo_v1.sft.head_to_head \
 - 每次实验固定 seed 1、同一评测脚本；config diff 与结果 JSON 存入 `audit/reports/ppo_rl_goal_run_20260808/<实验名>/` 子目录；
 - 冒烟/性能测试按 §1 约定执行（3 次、第 1 次热身、报告后两次）。
 
-## 11. 进度与最终交付
+## 10. 进度与最终交付
 
 - `audit/reports/ppo_rl_goal_run_20260808/PROGRESS.md`：每次实验前后更新（checkpoint、改动、指标表、结论、阻塞）。
 - 最终 `audit/reports/ppo_rl_goal_run_20260808/EXPERIMENT_RESULTS.md`：逐实验结论（假设/改动/指标/判定/证据等级）、最优 checkpoint 路径、2v2 结果对比表、剩余风险与下一步。
-- 每个实验的评测 JSON、config diff、指标汇总放入 `audit/reports/ppo_rl_goal_run_20260808/<实验名>/` 子目录（e0_baseline/、e1_ev_gate/、e2_opponent_mix/、e3_grp/、e4_dense_reward/、e5_stretch/）。
+- 每个实验的评测 JSON、config diff、指标汇总放入 `audit/reports/ppo_rl_goal_run_20260808/<实验名>/` 子目录（e0_baseline/、e1_ev_gate/、e2_opponent_mix/、e3_grp/、e4_dense_reward/）。
 - 报告结构：总览 → 每个实验（假设、改动、指标表、判定、结论）→ 组合最优结果 → 风险与建议。
 
-## 12. 受阻停止条件
+## 11. 受阻停止条件
 
 遇到以下情况停止并报告（不要硬编）：
 - GPU/环境不可用（单卡 `CUDA_DEVICE=2` 不可见、双卡 `CUDA_DEVICE=1,2` 不可用、Ray 起不来、Conda 环境缺失）；
@@ -222,12 +209,12 @@ CUDA_DEVICE=2 conda run -n Mahjong-AI python -m riichi_ppo_v1.sft.head_to_head \
 
 报告内容：已尝试路径、证据、阻塞原因、下一步需要的输入。
 
-## 13. 关键参考资料
+## 12. 关键参考资料
 
-- Suphx（GRP/oracle/pMCPA）：arXiv:2003.13590
+- Suphx（GRP）：arXiv:2003.13590
 - EVPO：arXiv:2604.19485；AsyPPO：arXiv:2510.01656
 - Territory Paint Wars：arXiv:2604.04983；OpenAI Five（80/20 对手池）
-- DouZero：arXiv:2106.06135；ReBeL：arXiv:2007.13544；ACH：ICLR 2022
+- DouZero：arXiv:2106.06135；ACH：ICLR 2022
 - RUDDER：arXiv:1806.07857；Catastrophic Goodhart：arXiv:2407.14503
 - 单机麻将 reward shaping：arXiv:2305.04145
 - riichienv-ml GRP：https://github.com/smly/RiichiEnv/tree/main/riichienv-ml（issue #75）

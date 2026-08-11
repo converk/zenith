@@ -1,5 +1,5 @@
 {
-  "conclusion": "可落地性排序：1) EV 门控/组内基线（EVPO/RLOO/GRPO，4 席天然成组）2) 对手混合 3) GRP+dense 奖励 4) critic 预训练/多 critic 5) IMPALA 6) best-of-n/expert iteration 7) DPO/SPIN 8) league/population 9) CFR/regret（ACH）10) Gumbel AlphaZero/MuZero。",
+  "conclusion": "可落地性排序：1) EV 门控/组内基线（EVPO/RLOO/GRPO，4 席天然成组）2) 对手混合 3) GRP+dense 奖励 4) critic 预训练/多 critic 5) IMPALA 6) best-of-n/rejection sampling 7) DPO/SPIN 8) league/population 9) CFR/regret（ACH）。",
   "evidence_type": "论文实证、开源项目实证、推测",
   "confidence": "中",
   "mechanism": "EVPO 在 EV<0 时用批次均值基线避免 critic 噪声；RLOO/GRPO 用组内相对基线；DouZero 的 DMC 用 MC 收益直接拟合避免 bootstrap；ACH 用 regret 替代折扣回报目标。",
@@ -12,7 +12,7 @@
   "hyperparameters": "EV 阈值 0；组大小 4（同小局四席）；RLOO leave-one-out。",
   "compute_cost": "E1 1–2 天；IMPALA 3–5 天；其余按需。",
   "experiment_hypothesis": "四席同小局轨迹构成零和组，组内基线比坏 critic 更稳。",
-  "experiment_changes": "E1：EV 门控 + 组内基线；E5：critic 预热或搜索蒸馏。",
+  "experiment_changes": "E1：EV 门控 + 组内基线。",
   "experiment_metrics": "EV、policy_loss、2v2 胜率与 CI、KL。",
   "experiment_duration": "300–500 update，1–2 天。",
   "success_criteria": "u300 2v2 >55% 且 CI 不跨 50%。",

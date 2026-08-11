@@ -1,6 +1,6 @@
 # PPO 优化下一阶段（新 goal）结果目录
 
-本目录是**新 goal** 的实验结果与提示词文件夹，对应「树搜索 / 信号组合」阶段的实验。
+本目录是**新 goal** 的实验结果与提示词文件夹，对应「信号组合」阶段的实验。
 
 ## 内容
 
@@ -13,4 +13,4 @@
 
 - 旧 goal 结果：`audit/reports/ppo_rl_goal_run_20260808/`
 - 旧 goal 计划：`audit/reports/ppo_rl_optimization_20260807/EXPERIMENT_PLAN.md`
-- 推荐实验设计：旧 goal 报告 §6（树搜索优先，E5-a/E5-b 次之）
+- 推荐实验设计：旧 goal 报告 §6（E5-a/E5-b 信号组合）

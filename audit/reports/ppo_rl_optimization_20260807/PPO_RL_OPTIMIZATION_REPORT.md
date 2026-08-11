@@ -4,7 +4,7 @@
 
 范围：基于 `DEEP_RESEARCH_PROMPT.md` 与本地证据包（`REFERENCES.md`、`RIICHIENV_ML_GRP_REVIEW.md`、PPO/SFT 训练与评测数据）对「SFT 之后如何继续优化 PPO」做深度调研。所有结论尽量区分 **[实证]**（论文/开源项目/本地数据支持）与 **[推测]**（机制推断、尚未验证）。
 
-方法：本报告由 3 个并行深度调研代理基于同一提示词与本地证据分别研究「失败诊断」「GRP/奖励设计」「搜索/算法/对手/实验计划」，再由根代理统一审校合并；关键本地数字（EV 曲线、2v2 胜率与 CI、立直率等）已逐一与 `metrics.jsonl`/`evaluation.jsonl` 核对，文献与开源实现（Suphx、riichienv-ml GRP、Mortal、Territory Paint Wars、EVPO、AsyPPO 等）均经联网核实。
+方法：本报告由 3 个并行深度调研代理基于同一提示词与本地证据分别研究「失败诊断」「GRP/奖励设计」「算法/对手/实验计划」，再由根代理统一审校合并；关键本地数字（EV 曲线、2v2 胜率与 CI、立直率等）已逐一与 `metrics.jsonl`/`evaluation.jsonl` 核对，文献与开源实现（Suphx、riichienv-ml GRP、Mortal、Territory Paint Wars、EVPO、AsyPPO 等）均经联网核实。
 
 ---
 
@@ -12,8 +12,7 @@
 
 1. **最可能的失败原因（按证据强度排序）**：critic/value 学习失效（本地强证据：value explained variance 从 +0.23 一路掉到负值，意味着 critic 比“用批次均值做基线”更差）→ reward 目标错配且稀疏（用小局点差代替最终排名收益，Suphx 论文明确反对；本地表现为立直过度激进 72.6% vs SFT 31%–33%）→ 自博弈 competitive overfitting（文献强证据：自博弈胜率恒为 50% 时对固定对手泛化能力可能崩溃；本地正是“对启发式先升后降、对 SFT 只打平”）。
 2. **GRP 值得作为低成本第一候选**，但它只解决“点差 ≠ 最终排名收益”的错配，不解决小局内信用分配，也不能单独修复 critic 失效与自博弈退化；应先离线验证，再与对手混合、EV 门控等改造组合。
-3. **推荐实验顺序**：E1 EV 门控优势/四席组内基线（RLOO/GRPO 式，天然适配 4 席自博弈）→ E2 对手混合（80% current + 20% 固定 SFT/随机）→ E3 离线 GRP 验证 + PPO A/B → E4 密集效率奖励 → E5（若仍无效）搜索蒸馏/pMCPA 式 rollout 适应。
-4. **不建议**：直接上 MCTS/AlphaZero 风格在线搜索、CFR/league 级 population、DPO/SPIN——在本项目规模下性价比低，证据也不足。
+3. **推荐实验顺序**：E1 EV 门控优势/四席组内基线（RLOO/GRPO 式，天然适配 4 席自博弈）→ E2 对手混合（80% current + 20% 固定 SFT/随机）→ E3 离线 GRP 验证 + PPO A/B → E4 密集效率奖励。
 
 ---
 
@@ -125,25 +124,7 @@
 
 ---
 
-## 4. 树搜索评估
-
-### 4.1 各方案结论
-
-| 方案 | 可行性 | 与 PPO 结合 | 主要证据/注意点 |
-|---|---|---|---|
-| top3 受限 MCTS | 中低 | 需 PIMC（采样对手手牌+牌山），且麻将回合顺序不规则 | Suphx 明确说麻将不规则博弈树使 MCTS/CFR 难以直接应用，改用 pMCPA（rollout + 策略微调）（[Suphx, arXiv:2003.13590](https://arxiv.org/abs/2003.13590)）；top3≈98% 专家动作只缩小了动作面，没解决隐藏信息与随机牌山 |
-| AlphaZero 风格搜索（含 Gumbel） | 低 | 需要环境模型/重规划；DeltaDou 在斗地主做贝叶斯推断+搜索，训练 2 个月，仍被无搜索的 DouZero 10 天反超（[arXiv:2106.06135](https://arxiv.org/abs/2106.06135)） | 本项目 2 GPU、12 workers，推理预算不允许在线搜索 |
-| SPG / 搜索蒸馏 / expert iteration | 中（离线） | 先离线用弱搜索生成“改进动作”，再蒸馏回策略（AlphaGo Zero 的 SPG 思路；expert iteration，Anthony et al. NeurIPS 2017） | 搜索教师本身要先可靠；在本场景只能作为后续实验 |
-| 在线搜索 rollout（pMCPA 式） | 中 | 每局开始按当前手牌采样对手手牌/牌山 rollout，微调策略后再打（Suphx 3.4） | 有 Suphx 实证；推理成本可控（只在小局开始时做一次，K 条 rollout） |
-| ReBeL 式 RL+搜索 | 低 | 框架在 2 人零和可证明收敛（[arXiv:2007.13544](http://xxx.itp.ac.cn/abs/2007.13544v2)）；4 人非零和麻将无直接支撑 | 不适合当前阶段 |
-
-### 4.2 结论
-
-**[实证]** 搜索不是当前瓶颈：Suphx 在更强算力下都选择 rollout 适应而不是 MCTS；DeltaDou vs DouZero 说明搜索收益会被成本和随机性吃掉。**建议**：训练期不做在线 MCTS；若一定要探索搜索，先做 pMCPA 式“局首 rollout 适应”或离线搜索蒸馏，且用 2v2 胜率判定是否值得。
-
----
-
-## 5. 替代 RL 算法与机制（可落地性排序）
+## 4. 替代 RL 算法与机制（可落地性排序）
 
 | 排序 | 方案 | 证据 | 本项目落地性 |
 |---|---:|---|---|
@@ -152,15 +133,13 @@
 | 3 | **GRP + 密集效率奖励** | Suphx；arXiv:2305.04145 | 中高。见 §2/§3 |
 | 4 | **critic 预训练/多 critic** | AsyPPO mini-critics（[arXiv:2510.01656](https://arxiv.org/abs/2510.01656)）；用人类日志离线 MC target 预热 value head | 中。能直接打 EV<0 的痛点；工程量大一点 |
 | 5 | **IMPALA/V-trace** | [arXiv:1802.01561](https://arxiv.org/abs/1802.01561) | 中低。主要解决异步 off-policy，不是当前根因 |
-| 6 | **best-of-n / rejection sampling / expert iteration** | BoN 与 RLHF 等价性（NeurIPS 2024 BoNBoN）；DouZero 的 MC 采样思路 | 中低。可做“rollout 里按终局收益筛选轨迹再 imitate”，作为离线补充而非主循环 |
+| 6 | **best-of-n / rejection sampling** | BoN 与 RLHF 等价性（NeurIPS 2024 BoNBoN）；DouZero 的 MC 采样思路 | 中低。可做“rollout 里按终局收益筛选轨迹再 imitate”，作为离线补充而非主循环 |
 | 7 | **DPO/SPIN** | SPIN 把自博弈做成两玩家游戏（Chen et al. 2024），等价于迭代 DPO | 低。需要构造偏好对；4 人随机麻将里“胜者轨迹优于败者轨迹”的偏好噪声极大，直接应用风险高 |
 | 8 | **league / population 训练** | AlphaStar（Vinyals et al. 2019） | 低。基础设施太重；轻量对手池已覆盖大部分收益 |
 | 9 | **CFR/regret 混合（ACH）** | ACH（ICLR 2022）在 1v1 麻将击败人类冠军，理论针对 2 人零和 | 低。本项目是 4 人非零和排名博弈，NE 理论支撑弱 |
-| 10 | **Gumbel AlphaZero / Sampled MuZero** | ICLR 2022 / ICML 2021 | 低。需环境模型与搜索，见 §4 |
-
 ---
 
-## 6. 自博弈与对手设计
+## 5. 自博弈与对手设计
 
 ### 6.1 问题证据
 
@@ -181,7 +160,7 @@
 
 ---
 
-## 7. 推荐实验计划（按性价比排序）
+## 6. 推荐实验计划（按性价比排序）
 
 统一成功判据：对 v13 SFT 的 2v2 240 半庄胜率 >55% 且 95% CI 不跨 50%（执行标准，原提示词为 320 半庄；历史证据仍为 320 半庄）；次要指标：启发式评测一位率不再随 update 退化、sft_reference_kl 增速放缓、EV 转正。
 
@@ -191,13 +170,11 @@
 | E2 | **对手混合 80/20** | 自博弈 overfitting → 对固定对手退化 | config 驱动 lineup：20% 对局混入冻结 SFT/随机席 | 对启发式不再先升后降；sft_kl 更稳 | 1–2 天 | u200–u400 启发式一位率不显著低于 u100 峰值；2v2 不差于基线 |
 | E3 | **离线 GRP 验证 + PPO A/B** | GRP 修复“点差≠排名”错配 | 先用 10%–20% 日志训 MLP GRP，报告 rank acc/ECE/与 point-delta 相关性；再跑 (a) point-delta、(b) GRP、(c) 0.5 混合 三组各 300–500 update | GRP acc 明显 >25%；相关性不高；GRP 组 EV 更好 | GRP 训练数小时；PPO 每组 1–3 天 | 混合组 2v2 >55% 且优于 point-delta 基线 |
 | E4 | **密集效率奖励（小权重）** | discard 效率信号降低探索方差 | 在 E1/E2 之上给 discard 决策加 `efficiency_reward`×0.01–0.05 | 训练 EV 回升；立直率回落到合理区间（<60%）；放铳率不升 | 1–2 天 | 2v2 胜率不下降且行为指标改善；若胜率下降则回滚 |
-| E5 | **（后续）critic 预热 / pMCPA / 搜索蒸馏** | E1–E4 不够时再打 critic 或搜索 | 用人类日志 MC target 预热 value head，或局首 rollout 适应，或离线蒸馏搜索策略 | 视 E1–E4 结果再定 | — | 同上 |
-
 **并行建议**：E1 与 E2 是独立代码路径（learner vs worker），GPU 有空闲时可并行；E3 的离线 GRP 训练不占 GPU 也可提前启动。E3 必须放在 E1/E2 之后对照，否则三处同时改无法归因。
 
 ---
 
-## 8. 监控与风险清单
+## 7. 监控与风险清单
 
 - 每 update 记录：`value_explained_variance`（EV<0 即报警）、`value_prediction_std / return_std`、`sft_reference_kl`、`entropy`、`clipfrac`、行为指标（立直/放铳/和牌/副露率）。
 - 每 15 update：对固定启发式评测；每 50 update：对 SFT 2v2 240 半庄评测（paired bootstrap CI）。**以外部评测为唯一真相**。
@@ -206,24 +183,21 @@
 
 ---
 
-## 9. 参考资料
+## 8. 参考资料
 
 ### 论文
-- Suphx: Mastering Mahjong with Deep Reinforcement Learning，arXiv:2003.13590（GRP、oracle guiding、pMCPA、熵敏感性；RL-1>RL-basic）
+- Suphx: Mastering Mahjong with Deep Reinforcement Learning，arXiv:2003.13590（GRP、熵敏感性；RL-1>RL-basic）
 - Territory Paint Wars: PPO Failure Modes，arXiv:2604.04983（自博弈 competitive overfitting、20% 随机对手混合）
 - EVPO: Explained Variance Policy Optimization，arXiv:2604.19485（稀疏奖励下 critic 噪声、EV=0 门控）
 - Asymmetric PPO（mini-critics），arXiv:2510.01656
-- DouZero: Mastering DouDizhu with Self-Play Deep RL，ICML 2021 / arXiv:2106.06135（Deep Monte-Carlo、无搜索击败 DeltaDou）
+- DouZero: Mastering DouDizhu with Self-Play Deep RL，ICML 2021 / arXiv:2106.06135（Deep Monte-Carlo）
 - Actor-Critic Policy Optimization in a Large-Scale Imperfect-Information Game（ACH），ICLR 2022（1v1 麻将，regret 混合）
-- Combining Deep RL and Search for Imperfect-Information Games（ReBeL），arXiv:2007.13544
 - RUDDER: Return Decomposition for Delayed Rewards，NeurIPS 2019 / arXiv:1806.07857
 - A Novel Reward Shaping Function for Single-Player Mahjong，arXiv:2305.04145
 - Variational Oracle Guiding for RL（VLOG），ICLR 2022
 - Catastrophic Goodhart，arXiv:2407.14503
 - DeepSeekMath（GRPO），arXiv:2402.03300；Back to Basics（RLOO），arXiv:2402.14740
 - BoNBoN（Best-of-N 与 RLHF 等价），NeurIPS 2024
-- Policy Improvement by Planning with Gumbel（Gumbel AlphaZero），ICLR 2022；Sampled MuZero，ICML 2021
-- AlphaGo Zero（SPG 思路），Nature 2017；Expert Iteration，Anthony et al. NeurIPS 2017
 - AlphaStar，Vinyals et al. Nature 2019；OpenAI Five，Berner et al. 2019
 - Ng, Harada, Russell 1999：potential-based reward shaping（理论）
 
@@ -231,7 +205,6 @@
 - riichienv-ml GRP：<https://github.com/smly/RiichiEnv/tree/main/riichienv-ml>；issue #75
 - Mortal：<https://github.com/Equim-chan/Mortal>；online 不稳定讨论 #82；Mortal-Policy（offline→online）<https://github.com/Nitasurin/Mortal-Policy>
 - Unity ml-agents self-play 文档
-- Suphx 论文（“无法直接用 MCTS/CFR” 的出处）：<https://arxiv.org/abs/2003.13590>
 
 ### 本地证据
 - `checkpoints/train_riichi_v13_sft/metrics.json`、`v11_vs_v13_2v2_detailed/sft_v11_vs_v13.json`

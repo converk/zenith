@@ -185,8 +185,4 @@
 
 EV 指标：GRP 系列（E3-b/E4/C/D）value_loss 从 point-delta 的 ~0.27 降至 ~0.02–0.03，EV 未见长期为负，但这一项达标无法弥补前两项。
 
-按用户指示：本轮 goal 不再跑新实验；后续可做实验已设计并写入 `EXPERIMENT_RESULTS.md` 的「下一步建议」（含树搜索相关实验）。
-
-### E5（可选）：critic 预热 / pMCPA / 搜索蒸馏
-
-- 状态：仅 E1–E4 未达标时启动
+按用户指示：本轮 goal 不再跑新实验；后续可做实验已设计并写入 `EXPERIMENT_RESULTS.md` 的「下一步建议」。

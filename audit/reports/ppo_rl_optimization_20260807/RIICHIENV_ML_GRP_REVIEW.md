@@ -106,7 +106,7 @@
 1. **离线 GRP 验证**：用现有 mjson 日志训练 MLP GRP，验证集上报告 rank 分类准确率和校准；顺便对比「GRP reward」与「point-delta reward」在相同小局上的相关性。
 2. **PPO 替换实验**：从 v13 SFT 出发，分别跑 (a) 当前 point-delta reward、(b) GRP reward、(c) GRP + 小权重 point-delta，各训练到至少 300–500 update，用同一套 2v2 SFT 320 半庄评测。
 3. **与 dense 效率奖励组合**：如果 GRP 有效，再尝试在 discard/副露决策上加入 `efficiency_reward`（代码已存在，目前只统计不训练），对比消融。
-4. **如果平台期仍在**：再考虑 GRU 版 GRP、自博弈对手池、或树搜索/搜索蒸馏，而不是继续堆 reward。
+4. **如果平台期仍在**：再考虑 GRU 版 GRP、自博弈对手池，而不是继续堆 reward。
 
 ## 7. 结论
 

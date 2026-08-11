@@ -54,10 +54,9 @@
 
 1. 基于以上现象，最可能的失败原因是什么？请区分：稀疏/高方差 reward、critic/value learning 不足、self-play 非平稳性、KL/entropy 约束过强或过弱、超参问题、自博弈对手分布问题，并用证据排序。
 2. 奖励设计：是否应该引入 GRP、动作级奖励模型、密集规则奖励，或三者结合？如果做奖励模型，输入是什么、训练标签用什么（专家动作、小局结果、半庄排名、点差？）、架构怎么设计（复用现有 backbone 还是独立小模型？）、如何防止 reward hacking？请与当前 sparse terminal reward 做对比，并给出具体实验建议。
-3. 树搜索：SFT top3 已覆盖 98% 专家动作，搜索空间很小。请评估 top3 受限 MCTS、AlphaZero 风格搜索、SPG（Search with Policy Gradients）、搜索蒸馏、在线搜索 rollout 等方案在本场景的可行性。重点说明：a) 如何与 PPO 训练结合；b) 推理成本影响；c) 是否真能超过纯策略学习；d) 麻将作为不完全信息、多玩家、随机牌山游戏，搜索要注意什么。
-4. 其他 RL 算法/机制：从当前 PPO 出发，哪些替代或改进最有希望？例如 Gumbel/AlphaZero、IMPALA、regret/CFR 混合、opponent shaping、population/league self-play、best-of-n / rejection sampling、DPO/SPIN 等。请结合我的规模（小模型、2 GPU、12 workers）给出可落地性排序。
-5. 自博弈与对手设计：current self-play 是否本身就是问题？是否应该混入固定 SFT 对手、历史 checkpoint 池、启发式对手或 population 训练？给出具体比例和实现方式。
-6. 实验计划：请给出 3–5 个按性价比排序的 next experiments。每个写明：假设、改动点、期望观察指标、最少实验时长、判定成功标准（例如对 SFT 的 2v2 320 半庄胜率 >55%，且 95% CI 不跨 50%）。
+3. 其他 RL 算法/机制：从当前 PPO 出发，哪些替代或改进最有希望？例如 IMPALA、regret/CFR 混合、opponent shaping、population/league self-play、best-of-n / rejection sampling、DPO/SPIN 等。请结合我的规模（小模型、2 GPU、12 workers）给出可落地性排序。
+4. 自博弈与对手设计：current self-play 是否本身就是问题？是否应该混入固定 SFT 对手、历史 checkpoint 池、启发式对手或 population 训练？给出具体比例和实现方式。
+5. 实验计划：请给出 3–5 个按性价比排序的 next experiments。每个写明：假设、改动点、期望观察指标、最少实验时长、判定成功标准（例如对 SFT 的 2v2 320 半庄胜率 >55%，且 95% CI 不跨 50%）。
 
 ### 硬约束
 

@@ -31,24 +31,13 @@ RUNS = [
     # --- 本 goal（current）候选 vs SFT，300 半庄 ---
     ("current_e5a_kl005", "checkpoints/train_riichi_ppo_next_e5a_kl005/checkpoint_00200.pt", SFT, 300),
     ("current_e5a_kl010", "checkpoints/train_riichi_ppo_next_e5a_kl010/checkpoint_00200.pt", SFT, 300),
-    ("current_distill_a", "checkpoints/train_riichi_ppo_next_search_distill_v2/checkpoint_00200.pt", SFT, 300),
-    ("current_distill_b", "checkpoints/train_riichi_ppo_next_search_distill_sft_v2/checkpoint_00200.pt", SFT, 300),
     # --- 上一 goal（ppo_rl_goal_run_20260808）代表臂 vs SFT，300 半庄 ---
     ("prev_e3b_grp", "checkpoints/train_riichi_ppo_goal_e3_grp_reward/checkpoint_00200.pt", SFT, 300),
     ("prev_e2_opponent_mix", "checkpoints/train_riichi_ppo_goal_e2_opponent_mix/checkpoint_00200.pt", SFT, 300),
     ("prev_e4_dense", "checkpoints/train_riichi_ppo_goal_e4_dense_on_grp/checkpoint_00200.pt", SFT, 300),
-    # --- 蒸馏 vs 其基座（方法归因），300 半庄 ---
-    ("current_distill_a_vs_e3b", "checkpoints/train_riichi_ppo_next_search_distill_v2/checkpoint_00200.pt",
-     "checkpoints/train_riichi_ppo_goal_e3_grp_reward/checkpoint_00200.pt", 300),
-    ("current_distill_b_vs_e3b", "checkpoints/train_riichi_ppo_next_search_distill_sft_v2/checkpoint_00200.pt",
-     "checkpoints/train_riichi_ppo_goal_e3_grp_reward/checkpoint_00200.pt", 300),
     # --- 本 goal 其余 checkpoint 的 u50/u100 口径（240 半庄） ---
     ("current_e5a_kl010_u050", "checkpoints/train_riichi_ppo_next_e5a_kl010/checkpoint_00050.pt", SFT, 240),
     ("current_e5a_kl010_u100", "checkpoints/train_riichi_ppo_next_e5a_kl010/checkpoint_00100.pt", SFT, 240),
-    ("current_distill_a_u050", "checkpoints/train_riichi_ppo_next_search_distill_v2/checkpoint_00050.pt", SFT, 240),
-    ("current_distill_a_u100", "checkpoints/train_riichi_ppo_next_search_distill_v2/checkpoint_00100.pt", SFT, 240),
-    ("current_distill_b_u050", "checkpoints/train_riichi_ppo_next_search_distill_sft_v2/checkpoint_00050.pt", SFT, 240),
-    ("current_distill_b_u100", "checkpoints/train_riichi_ppo_next_search_distill_sft_v2/checkpoint_00100.pt", SFT, 240),
 ]
 
 

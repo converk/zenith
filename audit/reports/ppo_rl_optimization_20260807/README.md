@@ -9,7 +9,7 @@
 - `DEEP_RESEARCH_PROMPT.md`：可直接作为提示词交给 Deep Research 的主文档。
 - `REFERENCES.md`：本地证据汇总（SFT/PPO 指标、对战结果、reward 实现、数据清单）。
 - `RIICHIENV_ML_GRP_REVIEW.md`：对 `smly/RiichiEnv/riichienv-ml` 中 GRP 奖励模型实现的调研与可行性判断。
-- `PPO_RL_OPTIMIZATION_REPORT.md`：最终中文深度研究报告（失败原因诊断、GRP 重点评估、奖励设计、树搜索、替代算法、自博弈与对手设计、5 个 next experiments）。
+- `PPO_RL_OPTIMIZATION_REPORT.md`：最终中文深度研究报告（失败原因诊断、GRP 重点评估、奖励设计、替代算法、自博弈与对手设计、5 个 next experiments）。
 - `EXPERIMENT_PLAN.md`：可执行的实验计划（E0 基线 → E1 EV 门控 → E2 对手混合 → E3 GRP A/B → E4 密集奖励 → 可选 E5），含每个实验的改动点、判定标准与评测命令。
 - `GOAL_PROMPT.md`：可直接复制给 Codex `/goal` 模式的提示词（推荐版 + 一句话版）。
 - `outline.yaml` / `fields.yaml`：研究项与字段定义。
