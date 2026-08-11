@@ -1,0 +1,40 @@
+{
+  "component_a": {
+    "ci95": [
+      -3490.44,
+      2264.9399999999996
+    ],
+    "diff": -653.2,
+    "win_rate": 0.49
+  },
+  "component_b": {
+    "ci95": [
+      -969.57,
+      5083.2699999999995
+    ],
+    "diff": 2057.6,
+    "win_rate": 0.512
+  },
+  "components": [
+    "vs_sft_u100_500_fresh_a.json",
+    "vs_sft_u100_500_fresh_b.json"
+  ],
+  "fresh_seeds": true,
+  "hanchan_count": 1000,
+  "model_a_checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_ppo_next_e5a_kl010/checkpoint_00100.pt",
+  "model_b_checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_v13_sft/best_heuristic.pt",
+  "name": "arm2_u100_vs_sft_fresh",
+  "paired_bootstrap_ci95_approx": [
+    -2250.8,
+    3655.2
+  ],
+  "seed_bases": [
+    20270000,
+    20271000
+  ],
+  "team_losses": 497,
+  "team_point_diff_mean": 702.2,
+  "team_ties": 4,
+  "team_win_rate": 0.501,
+  "team_wins": 499
+}

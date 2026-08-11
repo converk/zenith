@@ -1,0 +1,130 @@
+{
+  "components": [
+    "vs_sft_u100_500_a.json",
+    "vs_sft_u100_500_b_v2.json",
+    "vs_sft_u100_500_fresh_a.json",
+    "vs_sft_u100_500_fresh_b.json",
+    "vs_sft_u100_500_ind_a.json",
+    "vs_sft_u100_500_ind_b.json",
+    "vs_sft_u100_500_ind_c.json",
+    "vs_sft_u100_500_more_a.json",
+    "vs_sft_u100_500_more_b.json",
+    "vs_sft_u100_500_more_c.json"
+  ],
+  "hanchan_count": 5000,
+  "model_a_checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_ppo_next_e5a_kl010/checkpoint_00100.pt",
+  "model_b_checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_v13_sft/best_heuristic.pt",
+  "name": "arm2_u100_vs_sft_all",
+  "paired_bootstrap_ci95_approx": [
+    1000.6,
+    2829.9
+  ],
+  "segments": 10,
+  "segments_detail": [
+    {
+      "ci95": [
+        547.38,
+        6134.199999999999
+      ],
+      "diff": 3341.2,
+      "file": "vs_sft_u100_500_a.json",
+      "hanchans": 500,
+      "win_rate": 0.552
+    },
+    {
+      "ci95": [
+        -301.4,
+        5060.6399999999985
+      ],
+      "diff": 2292.4,
+      "file": "vs_sft_u100_500_b_v2.json",
+      "hanchans": 500,
+      "win_rate": 0.524
+    },
+    {
+      "ci95": [
+        -3490.44,
+        2264.9399999999996
+      ],
+      "diff": -653.2,
+      "file": "vs_sft_u100_500_fresh_a.json",
+      "hanchans": 500,
+      "win_rate": 0.49
+    },
+    {
+      "ci95": [
+        -969.57,
+        5083.2699999999995
+      ],
+      "diff": 2057.6,
+      "file": "vs_sft_u100_500_fresh_b.json",
+      "hanchans": 500,
+      "win_rate": 0.512
+    },
+    {
+      "ci95": [
+        -2186.12,
+        4135.369999999999
+      ],
+      "diff": 1005.2,
+      "file": "vs_sft_u100_500_ind_a.json",
+      "hanchans": 500,
+      "win_rate": 0.52
+    },
+    {
+      "ci95": [
+        880.1899999999999,
+        6606.649999999998
+      ],
+      "diff": 3668.4,
+      "file": "vs_sft_u100_500_ind_b.json",
+      "hanchans": 500,
+      "win_rate": 0.541
+    },
+    {
+      "ci95": [
+        60.86000000000002,
+        5223.649999999998
+      ],
+      "diff": 2660.0,
+      "file": "vs_sft_u100_500_ind_c.json",
+      "hanchans": 500,
+      "win_rate": 0.534
+    },
+    {
+      "ci95": [
+        -1945.5,
+        3955.6
+      ],
+      "diff": 994.0,
+      "file": "vs_sft_u100_500_more_a.json",
+      "hanchans": 500,
+      "win_rate": 0.51
+    },
+    {
+      "ci95": [
+        -676.61,
+        4325.109999999999
+      ],
+      "diff": 1851.2,
+      "file": "vs_sft_u100_500_more_b.json",
+      "hanchans": 500,
+      "win_rate": 0.504
+    },
+    {
+      "ci95": [
+        -1435.76,
+        5320.98
+      ],
+      "diff": 1935.6,
+      "file": "vs_sft_u100_500_more_c.json",
+      "hanchans": 500,
+      "win_rate": 0.503
+    }
+  ],
+  "team_losses": 2397,
+  "team_point_diff_mean": 1915.2,
+  "team_ties": 16,
+  "team_win_rate": 0.519,
+  "team_wins": 2587
+}

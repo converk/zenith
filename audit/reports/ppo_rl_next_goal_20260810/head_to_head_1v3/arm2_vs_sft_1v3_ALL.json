@@ -1,0 +1,55 @@
+{
+  "first_place_rate": 0.282,
+  "format": "1v3",
+  "fourth_place_rate": 0.241333,
+  "hanchan_count": 1500,
+  "mean_rank": 2.4233,
+  "model_a_checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_ppo_next_e5a_kl010/checkpoint_00100.pt",
+  "model_b_checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_v13_sft/best_heuristic.pt",
+  "name": "arm2_u100_vs_sft_1v3_1500",
+  "point_diff_bootstrap_ci95_approx": [
+    691.7,
+    2772.4
+  ],
+  "point_diff_vs_mean_opponent_mean": 1732.0,
+  "segments": 3,
+  "segments_detail": [
+    {
+      "ci95": [
+        -926.3266666666663,
+        2454.6099999999983
+      ],
+      "diff": 760.3999999999997,
+      "file": "arm2_vs_sft_1v3_500_a.json",
+      "first": 0.258,
+      "four": 0.25,
+      "rank": 2.472,
+      "top2": 0.52
+    },
+    {
+      "ci95": [
+        -15.24333333333321,
+        3655.0666666666657
+      ],
+      "diff": 1895.2,
+      "file": "arm2_vs_sft_1v3_500_b.json",
+      "first": 0.298,
+      "four": 0.244,
+      "rank": 2.394,
+      "top2": 0.552
+    },
+    {
+      "ci95": [
+        598.8833333333334,
+        4348.906666666664
+      ],
+      "diff": 2540.533333333333,
+      "file": "arm2_vs_sft_1v3_500_c.json",
+      "first": 0.29,
+      "four": 0.23,
+      "rank": 2.404,
+      "top2": 0.536
+    }
+  ],
+  "top2_rate": 0.536
+}

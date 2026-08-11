@@ -1,0 +1,92 @@
+{
+  "candidate_seat_counts": {
+    "0": 125,
+    "1": 125,
+    "2": 125,
+    "3": 125
+  },
+  "candidate_seat_rotation": "i % 4",
+  "elapsed_s": 1179.7972134309966,
+  "format": "1v3",
+  "game_mode": "4p-red-half",
+  "hanchan_count": 500,
+  "hanchan_per_s": 0.4238016451538633,
+  "model_a": {
+    "action_type_rates": {
+      "chi": 0.012492357123161213,
+      "discard": 0.7791897951109565,
+      "hora": 0.01395499394564266,
+      "kan": 8.392178489647648e-05,
+      "pass": 0.1581086427449617,
+      "pon": 0.022071429427773317,
+      "reach": 0.013727206243780796,
+      "ryukyoku": 0.000371653618827253
+    },
+    "checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_ppo_next_e5a_kl010/checkpoint_00100.pt",
+    "first_place_count": 129,
+    "first_place_rate": 0.258,
+    "fourth_place_count": 125,
+    "fourth_place_rate": 0.25,
+    "mean_rank": 2.472,
+    "metadata": {
+      "checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_ppo_next_e5a_kl010/checkpoint_00100.pt",
+      "contract_id": "ppo_v2",
+      "model_config": {
+        "context_tokens": 4096,
+        "critic_layers": 2,
+        "d_model": 192,
+        "eps": 1e-06,
+        "ffn_dim": 576,
+        "head_dim": 24,
+        "kv_heads": 2,
+        "layers": 4,
+        "policy_head_type": "isolated_action_query",
+        "query_heads": 8,
+        "rope_base": 10000.0,
+        "shared_layers": 3
+      }
+    },
+    "point_diff_vs_mean_opponent_bootstrap_ci95": [
+      -926.3266666666663,
+      2454.6099999999983
+    ],
+    "point_diff_vs_mean_opponent_mean": 760.3999999999997,
+    "top2_count": 260,
+    "top2_rate": 0.52
+  },
+  "model_b": {
+    "action_type_rates": {
+      "chi": 0.013184442358017539,
+      "discard": 0.7779699954054216,
+      "hora": 0.01380371162028806,
+      "kan": 3.196228450428494e-05,
+      "pass": 0.1645897840548153,
+      "pon": 0.018969615853293115,
+      "reach": 0.011110889150802054,
+      "ryukyoku": 0.0003395992728580275
+    },
+    "checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_v13_sft/best_heuristic.pt",
+    "metadata": {
+      "checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_v13_sft/best_heuristic.pt",
+      "contract_id": "riichi-sft-v13-1",
+      "model_config": {
+        "context_tokens": 4096,
+        "critic_layers": 2,
+        "d_model": 192,
+        "eps": 1e-06,
+        "ffn_dim": 576,
+        "head_dim": 24,
+        "kv_heads": 2,
+        "layers": 4,
+        "policy_head_type": "isolated_action_query",
+        "query_heads": 8,
+        "rope_base": 10000.0,
+        "shared_layers": 3
+      }
+    },
+    "opponent_seats": 3
+  },
+  "parallel_hanchans": 24,
+  "protocol_version": 1,
+  "seed_base": 20290000
+}

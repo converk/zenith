@@ -1,0 +1,39 @@
+{
+  "component_a": {
+    "ci95": [
+      -3992.0299999999997,
+      1643.7699999999927
+    ],
+    "diff": -1221.2,
+    "win_rate": 0.468
+  },
+  "component_b": {
+    "ci95": [
+      -2571.66,
+      2927.419999999997
+    ],
+    "diff": 123.6,
+    "win_rate": 0.515
+  },
+  "components": [
+    "vs_e3b_u200_500_a.json",
+    "vs_e3b_u200_500_b_v2.json"
+  ],
+  "hanchan_count": 1000,
+  "model_a_checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_ppo_next_e5a_kl010/checkpoint_00100.pt",
+  "model_b_checkpoint": "/mnt/disk1/hubowen/zenith/checkpoints/train_riichi_ppo_goal_e3_grp_reward/checkpoint_00200.pt",
+  "name": "arm2_u100_vs_e3b",
+  "paired_bootstrap_ci95_approx": [
+    -3332.7,
+    2235.1
+  ],
+  "seed_bases": [
+    20260730,
+    20261730
+  ],
+  "team_losses": 506,
+  "team_point_diff_mean": -548.8,
+  "team_ties": 5,
+  "team_win_rate": 0.4915,
+  "team_wins": 489
+}
