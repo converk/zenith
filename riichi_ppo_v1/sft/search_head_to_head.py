@@ -9,7 +9,9 @@ actions selected by a light root-branch Monte-Carlo search (pMCPA-style):
   SFT-initialized model the top-3 already covers the favorable decisions);
 * each candidate is applied to a deep clone of the current table, followed by
   ``search_depth`` rollout steps in which all seats sample from the base
-  policy;
+  policy.  ``depth_mode="round"`` counts full-table decision rounds (default,
+  backwards compatible); ``depth_mode="own"`` counts the searching player's own
+  decisions (the root candidate action is the first one);
 * a rollout is scored with the GRP terminal reward when its kyoku ends, and
   otherwise with the base policy's critic value for the searching seat;
 * the candidate with the best mean rollout value replaces the greedy action.
@@ -307,6 +309,7 @@ def run_root_search(
     value_mode: str,
     search_width: int,
     search_depth: int,
+    depth_mode: str = "round",
     rollouts: int,
     temperature: float,
     search_rng: torch.Generator,
@@ -380,8 +383,22 @@ def run_root_search(
     active_clones = set(range(num_clones))
     terminal_values: list[float | None] = [None] * num_clones
     last_values: list[dict[int, float]] = [{} for _ in range(num_clones)]
+    # The root candidate action is the searching player's first own decision.
+    own_decision_counts = [1] * num_clones
 
-    for _wave in range(max(1, int(search_depth))):
+    wave = 0
+    while True:
+        if depth_mode == "own":
+            if not active_clones:
+                break
+            pending = [
+                clone_index for clone_index in sorted(active_clones)
+                if own_decision_counts[clone_index] < max(1, int(search_depth))
+            ]
+            if not pending:
+                break
+        elif wave >= max(1, int(search_depth)):
+            break
         if not active_clones:
             break
         observations_all = [clone.get_observations() for clone in clones]
@@ -416,6 +433,10 @@ def run_root_search(
             (decision.env_index, decision.seat_id): row
             for row, decision in enumerate(decisions_all)
         }
+        if depth_mode == "own":
+            for clone_index in active_clones:
+                if (clone_index, search_seat_by_clone[clone_index]) in row_by_clone_seat:
+                    own_decision_counts[clone_index] += 1
         for decision, action in zip(decisions_all, actions, strict=True):
             actions_by_env[decision.env_index][decision.seat_id] = action
         for (clone_index, seat), row in row_by_clone_seat.items():
@@ -462,6 +483,7 @@ def run_root_search(
                 )
             stats.terminal_scored += 1
             active_clones.discard(clone_index)
+        wave += 1
 
     # Score every clone (terminal value, else last search-seat critic value,
     # else the root critic value as fallback).
@@ -560,6 +582,7 @@ def evaluate_2v2_search(
     max_steps: int = 4000,
     search_depth: int = 3,
     search_width: int = 3,
+    depth_mode: str = "round",
     rollouts: int = 2,
     temperature: float = 1.0,
     include_responses: bool = False,
@@ -756,6 +779,7 @@ def evaluate_2v2_search(
                             value_mode=value_mode,
                             search_width=search_width,
                             search_depth=search_depth,
+                            depth_mode=depth_mode,
                             rollouts=rollouts,
                             temperature=temperature,
                             search_rng=search_rng,
@@ -884,6 +908,7 @@ def evaluate_2v2_search(
         "search_team": search_team,
         "search_config": {
             "search_depth": int(search_depth),
+            "depth_mode": depth_mode,
             "search_width": int(search_width),
             "rollouts": int(rollouts),
             "temperature": float(temperature),
@@ -961,6 +986,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-a-device")
     parser.add_argument("--model-b-device")
     parser.add_argument("--search-depth", type=int, default=3)
+    parser.add_argument("--depth-mode", default="round", choices=("round", "own"))
     parser.add_argument("--search-width", type=int, default=3)
     parser.add_argument("--rollouts", type=int, default=2)
     parser.add_argument("--temperature", type=float, default=1.0)
@@ -989,6 +1015,7 @@ def main() -> None:
         game_mode=args.game_mode,
         max_steps=args.max_steps,
         search_depth=args.search_depth,
+        depth_mode=args.depth_mode,
         search_width=args.search_width,
         rollouts=args.rollouts,
         temperature=args.temperature,
