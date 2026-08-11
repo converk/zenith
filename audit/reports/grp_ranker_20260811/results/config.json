@@ -1,0 +1,30 @@
+{
+  "seed_base": 20260811,
+  "policy_checkpoint": "checkpoints/train_riichi_ppo_next_e5a_kl010/checkpoint_00100.pt",
+  "grp_checkpoint": "checkpoints/train_riichi_ppo_goal_grp_v2/grp_rank_predictor.pt",
+  "grp_pts_weight": [
+    10.0,
+    4.0,
+    -4.0,
+    -10.0
+  ],
+  "game_mode": "4p-red-half",
+  "generator_games": 36,
+  "states_per_ordinal": 6,
+  "max_states": 48,
+  "mc_min_samples": 64,
+  "mc_increment": 64,
+  "mc_max_samples": 192,
+  "mc_se_threshold": 0.65,
+  "mc_batch_size": 96,
+  "mc_analysis_cache_capacity": 262144,
+  "hard_score_gap": 10000,
+  "easy_score_gap": 15000,
+  "hard_pairs_per_group_seat": 8,
+  "easy_pairs_per_group_seat": 2,
+  "z_determined": 1.96,
+  "z_determined_secondary": 1.28,
+  "tie_delta_threshold": 0.5,
+  "bootstrap_replicates": 2000,
+  "bootstrap_seed": 20260812
+}
