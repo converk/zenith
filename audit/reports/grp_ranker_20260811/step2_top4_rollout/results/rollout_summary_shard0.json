@@ -1,0 +1,9 @@
+{
+  "decisions": 210,
+  "policy_decisions": 2910836,
+  "rollouts": 65152,
+  "elapsed_s": 8120.24,
+  "decisions_per_s": 358.47,
+  "rollouts_per_s": 8.02,
+  "shard_id": "0"
+}
