@@ -1,8 +1,0 @@
-Audit-start repository state:
-branch: sft
-HEAD: 2ac9fd51e0cb4ec39aa0d4f628ab0781f3e4f3ec
-git status --short: empty (clean)
-git diff --check: passed
-
-The only audit-end additions are audit/reports/v13_sft_20260802 artifacts.
-No training source, dataset, formal cache, or checkpoint was modified.
