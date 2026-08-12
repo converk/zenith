@@ -1,0 +1,19 @@
+{
+  "shard_id": 1,
+  "decisions": 14,
+  "worlds": 3840,
+  "policy_decisions": 3106131,
+  "rollouts": 7168,
+  "waves": 56,
+  "wave_steps": 43193,
+  "reconstruction_failures": 0,
+  "world_sampling_failures": 0,
+  "elapsed_s": 9638.067,
+  "policy_decisions_per_s": 322.28,
+  "rollouts_per_s": 0.74,
+  "avg_policy_batch_size": 71.91,
+  "cpu_seconds": 9740.357,
+  "cpu_core_util_pct": 101.1,
+  "gpu_util_pct": 2.6,
+  "gpu_mem_used_mb": 16420.2
+}

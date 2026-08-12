@@ -1,0 +1,17 @@
+{
+  "seed_base": 20260813,
+  "continuation_policy": "checkpoints/train_riichi_ppo_next_e5a_kl010/checkpoint_00100.pt",
+  "game_mode": "4p-red-half",
+  "raw_index": "datasets/tenhou_sft_2024_2025/index.jsonl.gz",
+  "raw_validation_dir": "datasets/tenhou_sft_2024_2025/validation",
+  "min_worlds": 64,
+  "world_increment": 64,
+  "max_worlds_override": 256,
+  "max_worlds_keep": 256,
+  "stability_waves": 2,
+  "z_determined": 1.96,
+  "max_wave_steps": 4000,
+  "max_world_failure_rate": 0.25,
+  "near_tie_effect": 0.5,
+  "analysis_cache_capacity": 262144
+}

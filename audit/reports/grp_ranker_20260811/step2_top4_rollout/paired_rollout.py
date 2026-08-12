@@ -309,15 +309,23 @@ def _find_decision_event_index(
     )
 
 
-def _build_env(prefix_events: list[dict[str, Any]]) -> RiichiEnv:
+def _build_env(
+    prefix_events: list[dict[str, Any]], *, seed: int | None = None
+) -> RiichiEnv:
     """Replay a prefix of MJAI events without consuming event cursors.
 
     MJAI logging stays enabled: the batched policy state machine reconstructs
     its view from per-player event streams, and kyoku/game boundaries are only
     surfaced to the bridge through end_kyoku/end_game events.  No observation
     is taken here so the first ``bridge.sync`` receives the full history.
+
+    ``seed`` optionally seeds the wall RNG (and therefore every future
+    ``shuffle`` used by subsequent kyoku of the same hanchan).  Branch clones
+    of one world keep the same seed, giving branch-matched future walls.
     """
-    env = RiichiEnv(game_mode="4p-red-half", skip_mjai_logging=False)
+    env = RiichiEnv(
+        game_mode="4p-red-half", skip_mjai_logging=False, seed=seed
+    )
     for event in prefix_events:
         env.apply_event(event)
     return env
@@ -617,6 +625,7 @@ def sample_world(
     *,
     decision_index: int,
     decision_event_index: int | None = None,
+    world_seed: int | None = None,
 ) -> tuple[RiichiEnv, list[dict[str, Any]]]:
     """Sample a full hidden world and replay a consistent MJAI history.
 
@@ -698,7 +707,9 @@ def sample_world(
         ):
             row["pai"] = draws[int(event["actor"])][index]
         rewritten.append(row)
-    world = _build_env(rewritten[: decision_event_index + 1])
+    world = _build_env(
+        rewritten[: decision_event_index + 1], seed=world_seed
+    )
     world.wall = new_wall
     for i in range(4):
         if i == seat:
