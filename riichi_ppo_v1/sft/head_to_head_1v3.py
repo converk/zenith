@@ -26,6 +26,7 @@ import numpy as np
 import torch
 
 from ..model.bridge import BatchedStateBridge, NUM_PLAYERS
+from ..training.metrics import SemanticMetrics
 from ..training.rewards import (
     DecisionAnalysisBatch,
     EfficiencyAnalyzer,
@@ -46,10 +47,24 @@ def _greedy_actions(
     bridge: BatchedStateBridge,
     decisions: list[Any],
     analysis: Any,
+    *,
+    metrics: SemanticMetrics | None = None,
+    public: PublicStateTracker | None = None,
 ) -> tuple[list[int], list[Any]]:
     prepared = adapter.prepare(bridge, decisions, analysis)
     logits = adapter.masked_logits(prepared)
     action_ids = logits.argmax(-1).tolist()
+    if metrics is not None and public is not None:
+        for decision, action_id, legal_row in zip(
+            decisions, action_ids, prepared.legal, strict=True,
+        ):
+            metrics.record_decision(
+                int(action_id),
+                legal_row,
+                threat=public.has_riichi_threat(decision.env_index, decision.seat_id),
+                prior_riichi_count=int(public.riichi[decision.env_index].sum()),
+                seat=decision.seat_id,
+            )
     actions = bridge.decode(decisions, action_ids)
     return action_ids, actions
 
@@ -69,11 +84,35 @@ def evaluate_1v3(
 ) -> dict[str, Any]:
     try:
         import riichi
-        from riichienv import BatchedRiichiEnv
+        from riichienv import BatchedRiichiEnv, HandEvaluator
     except ImportError as exc:  # pragma: no cover - deployment dependency
         raise RuntimeError(
             "install the local riichi and RiichiEnv extensions before evaluation"
         ) from exc
+
+    def final_tenpai(env_index: int, actions_by_env: list[dict[int, Any]]) -> list[bool | None]:
+        """Compute each seat's final tenpai before a pending exhaustive draw."""
+        flags: list[bool | None] = [None] * NUM_PLAYERS
+        observations_by_env = observations[env_index]
+        for seat in range(NUM_PLAYERS):
+            obs = observations_by_env[seat]
+            hands = getattr(obs, "hands", None)
+            melds = getattr(obs, "melds", None)
+            if hands is None or melds is None:
+                continue
+            hand = list(hands[seat])
+            meld_list = list(melds[seat])
+            tile_count = len(hand) + 3 * len(meld_list)
+            if tile_count == 13:
+                flags[seat] = HandEvaluator(hand, meld_list).is_tenpai()
+            elif tile_count == 14:
+                action = actions_by_env[env_index].get(seat)
+                tile = getattr(action, "tile", None)
+                if tile is not None and int(tile) in hand:
+                    remaining = list(hand)
+                    remaining.remove(int(tile))
+                    flags[seat] = HandEvaluator(remaining, meld_list).is_tenpai()
+        return flags
 
     default_device = torch.device(device)
     device_a = torch.device(model_a_device or default_device)
@@ -84,6 +123,8 @@ def evaluate_1v3(
     model_b_path = str(Path(model_b_path).resolve())
     adapter_a = load_policy_adapter(model_a_path, device=device_a)
     adapter_b = load_policy_adapter(model_b_path, device=device_b)
+    metric_a = SemanticMetrics()
+    metric_b = SemanticMetrics()
 
     batch_size = max(1, min(int(parallel_hanchans), int(hanchan_count)))
     started = time.perf_counter()
@@ -114,6 +155,7 @@ def evaluate_1v3(
         public = PublicStateTracker(batch_size_now)
         public.update(bridge.last_events)
         analyzer = EfficiencyAnalyzer(131_072)
+        start_scores = [[int(value) for value in row] for row in envs.scores()]
         candidate_seats = [
             (batch_start + env_index) % NUM_PLAYERS
             for env_index in range(batch_size_now)
@@ -139,10 +181,25 @@ def evaluate_1v3(
                 ]
                 if not policy_decisions:
                     continue
-                action_ids, actions = _greedy_actions(adapter, bridge, policy_decisions, analysis)
+                metrics = metric_a if policy_name == "a" else metric_b
+                action_ids, actions = _greedy_actions(
+                    adapter, bridge, policy_decisions, analysis,
+                    metrics=metrics, public=public,
+                )
                 action_counts[policy_name].update(int(value) for value in action_ids)
                 for decision, action in zip(policy_decisions, actions, strict=True):
                     actions_by_env[decision.env_index][decision.seat_id] = action
+
+            final_tenpai_by_env: dict[int, list[bool | None]] = {}
+            for env_index in active_envs:
+                tiles_left = min(
+                    int(getattr(observations[env_index][seat], "tiles_left", 1))
+                    for seat in range(NUM_PLAYERS)
+                )
+                if tiles_left <= 0:
+                    final_tenpai_by_env[env_index] = final_tenpai(
+                        env_index, actions_by_env,
+                    )
 
             observations = list(envs.step_batch(actions_by_env))
             bridge.sync(observations)
@@ -154,6 +211,38 @@ def evaluate_1v3(
                     continue
                 scores = [int(value) for value in scores_by_env[env_index]]
                 seat = candidate_seats[env_index]
+                ryukyoku_reason = None
+                for rows in bridge.last_events[env_index]:
+                    for raw in rows:
+                        try:
+                            event = json.loads(raw)
+                        except (TypeError, ValueError):
+                            continue
+                        if event.get("type") == "ryukyoku":
+                            ryukyoku_reason = event.get("reason")
+                tenpai_flags = final_tenpai_by_env.get(env_index)
+                exhaustive_draw = ryukyoku_reason == "exhaustive_draw"
+                score_deltas = [
+                    scores[player_seat] - start_scores[env_index][player_seat]
+                    for player_seat in range(NUM_PLAYERS)
+                ]
+                metric_a.record_kyoku(
+                    [seat],
+                    score_deltas,
+                    bridge.last_events[env_index],
+                    draw_tenpai=(
+                        tenpai_flags[seat] if exhaustive_draw and tenpai_flags else None
+                    ),
+                    exhaustive_draw=exhaustive_draw,
+                )
+                metric_b.record_kyoku(
+                    [player_seat for player_seat in range(NUM_PLAYERS) if player_seat != seat],
+                    score_deltas,
+                    bridge.last_events[env_index],
+                    draw_tenpai=tenpai_flags if exhaustive_draw else None,
+                    exhaustive_draw=exhaustive_draw,
+                )
+                start_scores[env_index] = scores
                 ranking = sorted(range(NUM_PLAYERS), key=lambda s: (-scores[s], s))
                 rank = ranking.index(seat) + 1
                 if rank == 1:
@@ -214,6 +303,29 @@ def evaluate_1v3(
             "pass", "discard", "reach", "chi", "pon", "kan", "hora", "ryukyoku",
         )}
 
+    def kyoku_metrics(prefix: str, summary: dict[str, float]) -> dict[str, float]:
+        return {
+            "riichi_rate": summary[f"{prefix}/action/riichi_rate"],
+            "riichi_opportunity_accept_rate": summary[
+                f"{prefix}/action/riichi_opportunity_accept_rate"
+            ],
+            "win_rate": summary[f"{prefix}/kyoku/win_rate"],
+            "deal_in_rate": summary[f"{prefix}/kyoku/deal_in_rate"],
+            "tsumo_loss_rate": summary[f"{prefix}/kyoku/tsumo_loss_rate"],
+            "win_points_mean": summary[f"{prefix}/kyoku/win_points_mean"],
+            "deal_in_points_mean": summary[f"{prefix}/kyoku/deal_in_points_mean"],
+            "draw_tenpai_rate": summary[f"{prefix}/kyoku/draw_tenpai_rate"],
+            "kyoku_point_delta_mean": summary[f"{prefix}/kyoku/point_delta_mean"],
+            "kyoku_count": summary[f"{prefix}/kyoku/count"],
+            "draw_count": summary[f"{prefix}/kyoku/draw_rate"]
+            * summary[f"{prefix}/kyoku/count"],
+            "exhaustive_draw_count": summary[f"{prefix}/kyoku/exhaustive_draw_count"],
+            "draw_tenpai_count": summary[f"{prefix}/kyoku/draw_tenpai_count"],
+        }
+
+    summary_a = metric_a.summary("model_a")
+    summary_b = metric_b.summary("model_b")
+
     return {
         "protocol_version": 1,
         "game_mode": game_mode,
@@ -235,12 +347,16 @@ def evaluate_1v3(
             "point_diff_vs_mean_opponent_mean": float(deltas.mean()),
             "point_diff_vs_mean_opponent_bootstrap_ci95": ci95,
             "action_type_rates": action_rates("a"),
+            "kyoku_metrics": kyoku_metrics("model_a", summary_a),
+            "semantic_metrics": summary_a,
             "metadata": adapter_a.metadata(),
         },
         "model_b": {
             "checkpoint": model_b_path,
             "opponent_seats": NUM_PLAYERS - 1,
             "action_type_rates": action_rates("b"),
+            "kyoku_metrics": kyoku_metrics("model_b", summary_b),
+            "semantic_metrics": summary_b,
             "metadata": adapter_b.metadata(),
         },
         "elapsed_s": elapsed,

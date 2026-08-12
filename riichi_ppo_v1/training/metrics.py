@@ -86,6 +86,8 @@ class SemanticMetrics:
     deal_ins: int = 0
     tsumo_losses: int = 0
     draws: int = 0
+    exhaustive_draws: int = 0
+    draw_tenpai: int = 0
     selected_shanten: list[float] = field(default_factory=list)
     selected_effective_shanten: list[float] = field(default_factory=list)
     first_riichis: int = 0
@@ -223,9 +225,19 @@ class SemanticMetrics:
         self.accepted_calls += int(accepted_call)
         self.bad_calls += int(accepted_call and bad_call)
 
-    def record_kyoku(self, learner_seats: Iterable[int], score_deltas: Iterable[float], events: Iterable[Iterable[str]],
-                     *, discard_count: int | None = None, open_meld_count: int | None = None,
-                     dealer_seat: int | None = None, phase: str | None = None) -> None:
+    def record_kyoku(
+        self,
+        learner_seats: Iterable[int],
+        score_deltas: Iterable[float],
+        events: Iterable[Iterable[str]],
+        *,
+        discard_count: int | None = None,
+        open_meld_count: int | None = None,
+        dealer_seat: int | None = None,
+        phase: str | None = None,
+        draw_tenpai: bool | Iterable[bool | None] | None = None,
+        exhaustive_draw: bool = False,
+    ) -> None:
         seats = set(int(seat) for seat in learner_seats)
         deltas = [float(value) / 1000.0 for value in score_deltas]
         rows: list[dict[str, object]] = []
@@ -241,6 +253,14 @@ class SemanticMetrics:
                     continue
         horas = [row for row in rows if row.get("type") == "hora"]
         is_draw = any(row.get("type") == "ryukyoku" for row in rows)
+        tenpai_by_seat: dict[int, bool] = {}
+        if draw_tenpai is not None:
+            if isinstance(draw_tenpai, (list, tuple, np.ndarray)):
+                for seat_index, flag in enumerate(draw_tenpai):
+                    if flag is not None:
+                        tenpai_by_seat[seat_index] = bool(flag)
+            else:
+                tenpai_by_seat = {seat: bool(draw_tenpai) for seat in seats}
         if open_meld_count is not None:
             self.kyoku_open_melds.append(float(open_meld_count))
         for seat in seats:
@@ -267,7 +287,10 @@ class SemanticMetrics:
                 self.tsumo_losses += 1
             if is_draw:
                 self.draws += 1
+                self.exhaustive_draws += int(exhaustive_draw)
                 self.draw_points.append(point)
+                if seat in tenpai_by_seat:
+                    self.draw_tenpai += int(tenpai_by_seat[seat])
             groups = [f"seat_{seat}"]
             if dealer_seat is not None:
                 groups.append("dealer" if seat == int(dealer_seat) else "nondealer")
@@ -328,6 +351,9 @@ class SemanticMetrics:
             f"{prefix}/kyoku/deal_in_points_mean": _mean(self.deal_in_points),
             f"{prefix}/kyoku/draw_rate": _rate(self.draws, kyokus),
             f"{prefix}/kyoku/draw_point_delta_mean": _mean(self.draw_points),
+            f"{prefix}/kyoku/draw_tenpai_count": float(self.draw_tenpai),
+            f"{prefix}/kyoku/exhaustive_draw_count": float(self.exhaustive_draws),
+            f"{prefix}/kyoku/draw_tenpai_rate": _rate(self.draw_tenpai, self.exhaustive_draws),
             f"{prefix}/kyoku/discard_count_mean": _mean(self.kyoku_discard_counts),
             f"{prefix}/kyoku/open_melds_mean": _mean(self.kyoku_open_melds),
             f"{prefix}/action/decision_count": float(self.decisions),
