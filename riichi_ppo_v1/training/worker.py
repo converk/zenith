@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections import Counter
+from pathlib import Path
+import re
 import time
 from typing import Any
 
@@ -52,6 +55,138 @@ def active_decisions(
     ]
 
 
+def history_namespace(update: int) -> str:
+    """Inference namespace label for one frozen historical-policy checkpoint."""
+    return f"history:u{int(update):03d}"
+
+
+def parse_checkpoint_updates(checkpoint_dir: str | Path) -> list[int]:
+    """Return sorted update numbers from atomic ``checkpoint_<5digit>.pt`` files."""
+    directory = Path(checkpoint_dir)
+    if not directory.is_dir():
+        return []
+    updates: list[int] = []
+    pattern = re.compile(r"checkpoint_(\d{5})\.pt")
+    for path in directory.glob("checkpoint_*.pt"):
+        match = pattern.fullmatch(path.name)
+        if match is not None:
+            updates.append(int(match.group(1)))
+    return sorted(updates)
+
+
+def eligible_history_updates(
+    updates: list[int],
+    *,
+    current_update: int,
+    min_update: int,
+    lag_updates: int,
+) -> list[int]:
+    """Keep checkpoints that are mature enough for the historical pool."""
+    minimum = max(0, int(min_update))
+    lag = max(0, int(lag_updates))
+    return [
+        update
+        for update in sorted(int(value) for value in updates)
+        if update >= minimum and int(current_update) - update >= lag
+    ]
+
+
+def normalize_opponent_fractions(
+    current_frac: float,
+    sft_frac: float,
+    historical_frac: float,
+    random_frac: float,
+) -> tuple[float, float, float, float]:
+    """Normalize opponent-mix fractions to sum to one."""
+    total = (
+        float(current_frac)
+        + float(sft_frac)
+        + float(historical_frac)
+        + float(random_frac)
+    )
+    if total <= 0.0:
+        raise ValueError("opponent_mix fractions must sum to a positive value")
+    return (
+        float(current_frac) / total,
+        float(sft_frac) / total,
+        float(historical_frac) / total,
+        float(random_frac) / total,
+    )
+
+
+def resolve_opponent_fractions(
+    *,
+    current_frac: float,
+    sft_frac: float,
+    historical_frac: float,
+    random_frac: float,
+    history_pool: list[int],
+) -> tuple[float, float, float, float]:
+    """Drop the historical share and renormalize 70/30 when the pool is empty."""
+    if float(historical_frac) > 0.0 and not history_pool:
+        sft_frac = max(0.0, 1.0 - float(current_frac))
+        historical_frac = 0.0
+    return normalize_opponent_fractions(
+        current_frac, sft_frac, historical_frac, random_frac,
+    )
+
+
+def should_record_transition(policy: str) -> bool:
+    """Only the current self-play policy contributes learner transitions."""
+    return policy == "current"
+
+
+def rollout_lineup(
+    rng: np.random.Generator,
+    *,
+    current_frac: float,
+    sft_frac: float,
+    historical_frac: float,
+    random_frac: float,
+    history_pool: list[int],
+) -> tuple[str, str, str, str]:
+    """Roll one table: all-current or one seat replaced by an opponent."""
+    roll = float(rng.random())
+    if roll < current_frac:
+        return ("current",) * NUM_PLAYERS
+    if roll < current_frac + sft_frac:
+        opponent = "sft"
+    elif roll < current_frac + sft_frac + historical_frac:
+        if not history_pool:
+            raise RuntimeError("historical opponent selected with an empty history pool")
+        opponent = history_namespace(int(rng.choice(history_pool)))
+    else:
+        opponent = "random"
+    seat = int(rng.integers(0, NUM_PLAYERS))
+    return tuple(
+        opponent if index == seat else "current"
+        for index in range(NUM_PLAYERS)
+    )
+
+
+def build_rollout_lineups(
+    *,
+    num_envs: int,
+    rng: np.random.Generator,
+    current_frac: float,
+    sft_frac: float,
+    historical_frac: float,
+    random_frac: float,
+    history_pool: list[int],
+) -> list[tuple[str, str, str, str]]:
+    return [
+        rollout_lineup(
+            rng,
+            current_frac=current_frac,
+            sft_frac=sft_frac,
+            historical_frac=historical_frac,
+            random_frac=random_frac,
+            history_pool=history_pool,
+        )
+        for _env_index in range(int(num_envs))
+    ]
+
+
 if ray is not None:
     @ray.remote
     class RolloutWorker:
@@ -87,6 +222,7 @@ if ray is not None:
                 critic_include_public_state=bool(config.get("critic_include_public_state", False)),
             )
             self.observations = list(self.envs.reset())
+            self.walls = list(self.envs.walls())
             self.bridge.sync(self.observations)
             self.public = PublicStateTracker(self.num_envs)
             self.public.update(self.bridge.last_events)
@@ -127,6 +263,7 @@ if ray is not None:
             self.deferred_reset_indices: set[int] = set()
             self.semantic = SemanticMetrics()
             self.lineups: list[tuple[str, str, str, str]] = [("current",) * NUM_PLAYERS for _ in range(self.num_envs)]
+            self.history_pool: list[int] = []
             self._opponent_rng = np.random.default_rng(
                 int(config["seed"]) * 1_000_003 + self.worker_id * 131
             )
@@ -138,9 +275,12 @@ if ray is not None:
             """Install the config-driven rollout lineup.
 
             Default remains all-current self-play. With ``opponent_mix.enabled``
-            (E2), a fraction of envs replace exactly one seat with a frozen SFT
-            policy (``sft``, greedy) and/or a uniform-random policy (``random``).
-            Rewards/transitions are only recorded for ``current`` seats.
+            (V14/E2), a fraction of envs replace exactly one seat with a frozen
+            SFT policy (``sft``, greedy), a frozen historical PPO checkpoint
+            (``history:uNNN``, greedy) and/or a uniform-random policy
+            (``random``). Rewards/transitions are only recorded for ``current``
+            seats.  When the historical pool is empty the historical share is
+            renormalized onto current/SFT (70/30 relative).
             """
             mix = self.config.get("opponent_mix") or {}
             if not bool(mix.get("enabled", False)):
@@ -148,35 +288,40 @@ if ray is not None:
                 return
             current_frac = float(mix.get("current_frac", 0.8))
             sft_frac = float(mix.get("sft_frac", 0.2))
+            historical_frac = float(mix.get("historical_frac", 0.0))
             random_frac = float(mix.get("random_frac", 0.0))
-            total = current_frac + sft_frac + random_frac
-            if total <= 0.0:
-                raise ValueError("opponent_mix fractions must sum to a positive value")
-            current_frac /= total
-            sft_frac /= total
-            random_frac /= total
+            min_update = int(mix.get("historical_min_update", 0))
+            lag_updates = int(mix.get("historical_lag_updates", 0))
+            pool = eligible_history_updates(
+                parse_checkpoint_updates(str(self.config["checkpoint_dir"])),
+                current_update=int(update),
+                min_update=min_update,
+                lag_updates=lag_updates,
+            )
+            current_frac, sft_frac, historical_frac, random_frac = (
+                resolve_opponent_fractions(
+                    current_frac=current_frac,
+                    sft_frac=sft_frac,
+                    historical_frac=historical_frac,
+                    random_frac=random_frac,
+                    history_pool=pool,
+                )
+            )
             rng = np.random.default_rng(
                 int(self.config["seed"]) * 1_000_003
                 + int(update) * 131
                 + self.worker_id * 7
             )
-            lineups: list[tuple[str, str, str, str]] = []
-            for _env_index in range(self.num_envs):
-                roll = float(rng.random())
-                if roll < current_frac:
-                    lineups.append(("current",) * NUM_PLAYERS)
-                    continue
-                opponent = (
-                    "sft"
-                    if rng.random() < sft_frac / (sft_frac + random_frac)
-                    else "random"
-                )
-                seat = int(rng.integers(0, NUM_PLAYERS))
-                lineups.append(tuple(
-                    opponent if index == seat else "current"
-                    for index in range(NUM_PLAYERS)
-                ))
-            self.lineups = lineups
+            self.lineups = build_rollout_lineups(
+                num_envs=self.num_envs,
+                rng=rng,
+                current_frac=current_frac,
+                sft_frac=sft_frac,
+                historical_frac=historical_frac,
+                random_frac=random_frac,
+                history_pool=pool,
+            )
+            self.history_pool = pool
 
         def _submit_model_actions(
             self,
@@ -194,7 +339,7 @@ if ray is not None:
                     _history_generations,
                     critic_factors,
                     critic_lengths,
-                ) = self.bridge.prepare(decisions, analysis_batch)
+            ) = self.bridge.prepare(decisions, analysis_batch, walls=self.walls)
             request = self.inference.infer.remote(
                 worker_id=self.worker_id,
                 namespace=namespace,
@@ -301,6 +446,8 @@ if ray is not None:
                 return
             with self.profiler.stage("env/reset_completed_native"):
                 self.observations = list(self.envs.reset_indices(done_indices))
+            with self.profiler.stage("env/walls_refresh_after_reset"):
+                self.walls = list(self.envs.walls())
             with self.profiler.stage("rollout/event_sync_after_reset"):
                 self.bridge.sync(self.observations)
             with self.profiler.stage("rollout/public_state_update"):
@@ -380,14 +527,17 @@ if ray is not None:
                             policy_decisions, analyzer=self.efficiency, public=self.public,
                             profiler=self.profiler,
                         )
-                    namespace = "rollout" if policy == "current" else "sft"
+                    # ``policy`` is "rollout"/"sft" for the built-in models and
+                    # "history:uNNN" for frozen historical checkpoints; the
+                    # inference actor dispatches on the namespace itself.
+                    namespace = "rollout" if policy == "current" else str(policy)
                     greedy = policy != "current"
                     request, prepared = self._submit_model_actions(
                         policy_decisions, namespace, greedy, analysis_batch,
                     )
                     with self.profiler.stage("inference/rpc_wait"):
                         result = ray.get(request)
-                    record_policy = policy == "current"
+                    record_policy = should_record_transition(policy)
                     actions, transitions = self._model_actions(
                         policy_decisions, prepared, result, record_policy, analysis_batch,
                     )
@@ -400,6 +550,8 @@ if ray is not None:
 
             with self.profiler.stage("env/step_batch_native"):
                 self.observations = list(self.envs.step_batch(actions_by_env))
+            with self.profiler.stage("env/walls_refresh_after_step"):
+                self.walls = list(self.envs.walls())
             with self.profiler.stage("rollout/event_sync_after_step"):
                 end_kyoku, _end_game = self.bridge.sync(self.observations)
             with self.profiler.stage("rollout/public_state_update"):
@@ -493,6 +645,9 @@ if ray is not None:
             if self.deferred_reset_indices:
                 self._reset_games(sorted(self.deferred_reset_indices))
                 self.deferred_reset_indices.clear()
+            lineup_counts: Counter[str] = Counter()
+            for lineup in self.lineups:
+                lineup_counts.update(lineup)
             started = time.perf_counter()
             while active_envs:
                 step, new_rewards, new_kyokus, ended_kyokus, done_indices = self._advance_once(
@@ -526,6 +681,17 @@ if ray is not None:
                     sum(policy == "current" for lineup in self.lineups for policy in lineup)
                     / max(self.num_envs, 1)
                 ),
+                "opponent_mix/current_seats": float(lineup_counts["current"]),
+                "opponent_mix/sft_seats": float(lineup_counts["sft"]),
+                "opponent_mix/history_seats": float(
+                    sum(
+                        policy.startswith("history:")
+                        for lineup in self.lineups
+                        for policy in lineup
+                    )
+                ),
+                "opponent_mix/random_seats": float(lineup_counts["random"]),
+                "opponent_mix/history_pool_size": float(len(self.history_pool)),
                 "reward_schedule/kyoku_weight": 1.0,
                 "reward_schedule/grp_mix_lambda": (
                     self.grp_mix_lambda if self.grp_model is not None else 0.0

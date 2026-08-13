@@ -1,8 +1,11 @@
 from dataclasses import asdict
+import os
+from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import numpy as np
 import torch
+import pytest
 
 from riichi_ppo_v1.model.feature_schema import (
     DECISION_ANALYSIS_VERSION,
@@ -320,6 +323,52 @@ def test_checkpoint_records_schema_metadata_and_restores_state() -> None:
         assert restored.iteration == 7
         for name, value in learner.model.state_dict().items():
             torch.testing.assert_close(restored.model.state_dict()[name], value)
+
+
+def test_checkpoint_save_is_atomic_without_tmp_leftovers() -> None:
+    learner = PPOLearner("mid", "cpu", **learner_kwargs())
+    learner.iteration = 3
+    with TemporaryDirectory() as directory:
+        path = f"{directory}/checkpoint_00030.pt"
+        learner.save(path, {"seed": 1})
+        assert os.path.exists(path)
+        assert not os.path.exists(path + ".tmp")
+        payload = torch.load(path, weights_only=False)
+        assert payload["iteration"] == 3
+
+
+def test_best_heuristic_sft_checkpoint_strict_loads_with_zeroed_value_head() -> None:
+    checkpoint = (
+        Path(__file__).resolve().parents[3]
+        / "checkpoints/train_riichi_v13_sft/best_heuristic.pt"
+    )
+    if not checkpoint.is_file():
+        pytest.skip("V13 SFT checkpoint is not present in this workspace")
+    learner = PPOLearner(
+        "mid",
+        "cpu",
+        **learner_kwargs(
+            policy_head_type="isolated_action_query",
+            zero_value_head_on_sft_init=True,
+        ),
+    )
+    learner.load_model_weights(checkpoint)
+
+    # strict load_state_dict succeeded with the full critic branch present.
+    state = learner.model.state_dict()
+    assert any(name.startswith("critic_embedding") for name in state)
+    assert any(name.startswith("critic_backbone") for name in state)
+    assert "value_head.weight" in state
+    torch.testing.assert_close(
+        learner.model.value_head.weight,
+        torch.zeros_like(learner.model.value_head.weight),
+    )
+    if learner.model.value_head.bias is not None:
+        torch.testing.assert_close(
+            learner.model.value_head.bias,
+            torch.zeros_like(learner.model.value_head.bias),
+        )
+    assert learner.reference_model is not None
 
 
 def test_model_initialization_starts_joint_ppo() -> None:

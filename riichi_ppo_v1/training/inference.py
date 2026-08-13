@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
+from pathlib import Path
 import time
 from typing import Any
 
@@ -17,9 +18,18 @@ try:
 except ImportError:
     ray = None
 
+from ..model import KyokuTransformerActorCritic, ModelConfig
 from .learner import PPOLearner
 from .profiling import StageProfiler
 from .trajectory import Transition
+
+
+def parse_history_namespace(namespace: str) -> int:
+    """Parse ``history:uNNN`` into the frozen checkpoint update number."""
+    label = str(namespace).removeprefix("history:").removeprefix("u")
+    if not label.isdigit():
+        raise RuntimeError(f"malformed history namespace {namespace!r}")
+    return int(label)
 
 
 def dispatch_reason(
@@ -136,6 +146,7 @@ if ray is not None:
                 )
             if self.sft_model is not None:
                 self.sft_model.eval()
+            self.history_models: dict[str, torch.nn.Module] = {}
             self.profiler = StageProfiler(enabled=bool(config.get("profile_enabled", True)))
             self.profile_cuda_sync = bool(config.get("profile_cuda_sync", False))
             self.cuda_event_interval = max(0, int(config.get("profile_cuda_event_interval", 100)))
@@ -238,6 +249,62 @@ if ray is not None:
             )
             self.model.eval()
             return ppo_evaluation_metrics(metrics)
+
+        def _model_for_namespace(self, namespace: str) -> torch.nn.Module:
+            if namespace == "rollout":
+                return self.model
+            if namespace == "sft":
+                if self.sft_model is None:
+                    raise RuntimeError(
+                        "SFT opponent requested but no frozen SFT model is loaded"
+                    )
+                return self.sft_model
+            if namespace.startswith("history:"):
+                return self._history_model(namespace)
+            raise RuntimeError(f"unknown inference namespace {namespace!r}")
+
+        def _history_model(self, namespace: str) -> torch.nn.Module:
+            """Lazily load one frozen historical PPO checkpoint, then cache it."""
+            if namespace in self.history_models:
+                return self.history_models[namespace]
+            update = parse_history_namespace(namespace)
+            path = Path(self.config["checkpoint_dir"]) / f"checkpoint_{update:05d}.pt"
+            if not path.is_file():
+                raise RuntimeError(
+                    f"historical checkpoint missing: {path} (requested {namespace})"
+                )
+            payload = torch.load(path, map_location="cpu", weights_only=False)
+            if not isinstance(payload, dict):
+                raise RuntimeError(f"invalid historical checkpoint: {path}")
+            raw_config = payload.get("model_config")
+            if (
+                not isinstance(raw_config, dict)
+                or raw_config.get("policy_head_type") != "isolated_action_query"
+            ):
+                raise RuntimeError(
+                    f"historical checkpoint is not an isolated_action_query PPO: {path}"
+                )
+            try:
+                config = ModelConfig(**dict(raw_config))
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"historical checkpoint has an invalid model_config: {path}"
+                ) from exc
+            state = payload.get("model")
+            if not isinstance(state, dict):
+                raise RuntimeError(f"historical checkpoint is missing model weights: {path}")
+            model = KyokuTransformerActorCritic(config)
+            try:
+                model.load_state_dict(state, strict=True)
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    "historical checkpoint tensor shapes do not match model_config"
+                ) from exc
+            model.to(self.device)
+            model.eval()
+            model.requires_grad_(False)
+            self.history_models[namespace] = model
+            return model
 
         def save(
             self,
@@ -380,15 +447,15 @@ if ray is not None:
                 {"action_ids": [0] * len(request["batch_indices"]), "logprobs": [0.0] * len(request["batch_indices"]), "values": [0.0] * len(request["batch_indices"])}
                 for request in requests
             ]
-            rows_by_mode: dict[tuple[bool, bool], list[tuple[int, int]]] = {}
+            rows_by_mode: dict[tuple[str, bool], list[tuple[int, int]]] = {}
             for request_index, request in enumerate(requests):
-                key = (str(request["namespace"]) == "sft", bool(request["greedy"]))
+                key = (str(request["namespace"]), bool(request["greedy"]))
                 rows_by_mode.setdefault(key, []).extend(
                     (request_index, row) for row in range(len(request["batch_indices"]))
                 )
             max_batch = max(1, int(self.config.get("inference_max_batch_size", 512)))
-            for (is_sft, greedy), rows in rows_by_mode.items():
-                model = self.sft_model if is_sft else self.model
+            for (namespace, greedy), rows in rows_by_mode.items():
+                model = self._model_for_namespace(namespace)
                 for offset in range(0, len(rows), max_batch):
                     group = rows[offset:offset + max_batch]
                     self._run_full_forward(requests, responses, group, greedy, model)

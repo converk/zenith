@@ -1,6 +1,12 @@
 import numpy as np
+import pytest
 
-from riichi_ppo_v1.training.inference import assign_batch_outputs, collate_request_rows, dispatch_reason
+from riichi_ppo_v1.training.inference import (
+    assign_batch_outputs,
+    collate_request_rows,
+    dispatch_reason,
+    parse_history_namespace,
+)
 
 
 def request(worker_id: int, lengths: list[int], marker: int) -> dict[str, object]:
@@ -45,3 +51,13 @@ def test_dispatch_reason_prefers_full_worker_batch_then_timeout() -> None:
     assert dispatch_reason([0, 1, 2, 3], 4, deadline=10.0, now=1.0) == "target"
     assert dispatch_reason([0, 1], 4, deadline=10.0, now=9.9) is None
     assert dispatch_reason([0, 1], 4, deadline=10.0, now=10.0) == "timeout"
+
+
+def test_history_namespace_parses_update_with_u_prefix() -> None:
+    assert parse_history_namespace("history:u060") == 60
+    assert parse_history_namespace("history:u780") == 780
+    assert parse_history_namespace("history:0060") == 60
+    with pytest.raises(RuntimeError, match="malformed history namespace"):
+        parse_history_namespace("history:")
+    with pytest.raises(RuntimeError, match="malformed history namespace"):
+        parse_history_namespace("sft")

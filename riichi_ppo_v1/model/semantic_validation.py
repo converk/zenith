@@ -14,11 +14,14 @@ import numpy as np
 
 from .architecture import TOKEN_CARDINALITIES, TOKEN_WIDTH
 from .critic_features import (
+    FIELD_FUTURE_WALL,
     FIELD_OPPONENT_HAND,
     FIELD_PUBLIC_MELD_TILE,
     FIELD_PUBLIC_RIVER,
+    SEGMENT_CRITIC_FUTURE_WALL,
     SEGMENT_CRITIC_PRIVATE,
     SEGMENT_PUBLIC_SUMMARY,
+    TOKEN_KIND_FUTURE_WALL,
     TOKEN_KIND_MELD,
     TOKEN_KIND_TILE_COUNT,
 )
@@ -101,7 +104,8 @@ def assert_actor_token_semantics(factors: np.ndarray, numeric: np.ndarray, lengt
 
 
 def assert_critic_token_semantics(factors: np.ndarray, lengths: np.ndarray, *, include_public_state: bool = False) -> None:
-    """Validate that centralized critic tokens contain opponent hands only."""
+    """Validate that centralized critic tokens contain opponent hands and the
+    critic-only ordered future live-wall snapshot (V14)."""
     factors = np.asarray(factors)
     lengths = np.asarray(lengths)
     if factors.ndim != 3 or factors.shape[-1] != TOKEN_WIDTH or lengths.shape != (factors.shape[0],):
@@ -109,16 +113,57 @@ def assert_critic_token_semantics(factors: np.ndarray, lengths: np.ndarray, *, i
     for index, length in enumerate(lengths):
         rows = used_rows(factors[index], int(length))
         _assert_factor_ranges(rows, label=f"critic[{index}]")
-        if np.any(rows[:, 0] != SEGMENT_CRITIC_PRIVATE) or np.any(rows[:, 9] != 1):
-            raise AssertionError(f"critic[{index}] contains non-private or non-visible tokens")
-        if np.any(rows[:, 1] != TOKEN_KIND_TILE_COUNT):
-            raise AssertionError(f"critic[{index}] contains an unknown token kind")
-        count_rows = rows[rows[:, 1] == TOKEN_KIND_TILE_COUNT]
-        if np.any(count_rows[:, 2] != FIELD_OPPONENT_HAND):
-            raise AssertionError(f"critic[{index}] contains an unknown tile-count field")
-        hands = count_rows[count_rows[:, 2] == FIELD_OPPONENT_HAND]
-        if np.any(hands[:, 1] != TOKEN_KIND_TILE_COUNT) or np.any(~np.isin(hands[:, 3], (2, 3, 4))):
-            raise AssertionError(f"critic[{index}] has malformed opponent hands")
+        if np.any(rows[:, 9] != 1):
+            raise AssertionError(f"critic[{index}] contains non-visible tokens")
+        if np.any(~np.isin(rows[:, 0], (SEGMENT_CRITIC_PRIVATE, SEGMENT_CRITIC_FUTURE_WALL))):
+            raise AssertionError(f"critic[{index}] contains an unknown segment")
+        private = rows[rows[:, 0] == SEGMENT_CRITIC_PRIVATE]
+        if private.size:
+            if np.any(private[:, 1] != TOKEN_KIND_TILE_COUNT):
+                raise AssertionError(f"critic[{index}] contains an unknown token kind")
+            if np.any(private[:, 2] != FIELD_OPPONENT_HAND):
+                raise AssertionError(f"critic[{index}] contains an unknown tile-count field")
+            if np.any(~np.isin(private[:, 3], (2, 3, 4))):
+                raise AssertionError(f"critic[{index}] has malformed opponent hands")
+        future = rows[rows[:, 0] == SEGMENT_CRITIC_FUTURE_WALL]
+        if future.size:
+            if np.any(future[:, 1] != TOKEN_KIND_FUTURE_WALL):
+                raise AssertionError(
+                    f"critic[{index}] has an unknown future-wall token kind"
+                )
+            if np.any(future[:, 2] != FIELD_FUTURE_WALL):
+                raise AssertionError(
+                    f"critic[{index}] has an unknown future-wall field"
+                )
+            positions = future[:, 3]
+            if np.any(~np.isin(positions, (1, 2, 3, 4, 5))):
+                raise AssertionError(
+                    f"critic[{index}] has an out-of-range future-wall position"
+                )
+            if len(set(positions.tolist())) != len(positions):
+                raise AssertionError(
+                    f"critic[{index}] repeats a future-wall position"
+                )
+            if np.any(future[:, 7] != 1) or np.any(future[:, 8] != 0):
+                raise AssertionError(
+                    f"critic[{index}] has malformed future-wall count/flag slots"
+                )
+            if np.any(~np.isin(future[:, 4], (1, 2, 3, 4))) or np.any(
+                ~np.isin(future[:, 5], (1, 2, 3, 4, 5, 6, 7, 8, 9))
+            ):
+                raise AssertionError(
+                    f"critic[{index}] has an invalid future-wall suit/rank"
+                )
+            honors = future[future[:, 4] == 4]
+            if honors.size and np.any(honors[:, 5] > 7):
+                raise AssertionError(
+                    f"critic[{index}] has an invalid honor rank"
+                )
+            red = future[future[:, 6] == 1]
+            if red.size and np.any((red[:, 5] != 5) | ~np.isin(red[:, 4], (1, 2, 3))):
+                raise AssertionError(
+                    f"critic[{index}] marks a non-red-five future-wall tile"
+                )
 
 
 def summarize_tokens(factors: np.ndarray, length: int) -> dict[str, Any]:

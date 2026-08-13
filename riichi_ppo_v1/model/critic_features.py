@@ -1,8 +1,9 @@
 """Centralized-value and shared public-summary features.
 
 The actor consumes the public event history plus a compact four-seat summary
-of rivers and melds.  The critic additionally receives only the other
-players' concealed hands.
+of rivers and melds.  The critic additionally receives the other players'
+concealed hands and, in V14, the next five live-wall tiles (critic-only
+privileged information).
 """
 
 from __future__ import annotations
@@ -18,11 +19,15 @@ NUM_PLAYERS = 4
 
 SEGMENT_CRITIC_PRIVATE = 4
 SEGMENT_PUBLIC_SUMMARY = 3
+SEGMENT_CRITIC_FUTURE_WALL = 5
 TOKEN_KIND_TILE_COUNT = 4
 TOKEN_KIND_MELD = 5
+TOKEN_KIND_FUTURE_WALL = 6
 FIELD_OPPONENT_HAND = 2
+FIELD_FUTURE_WALL = 3
 FIELD_PUBLIC_RIVER = 6
 FIELD_PUBLIC_MELD_TILE = 7
+FUTURE_WALL_TILE_COUNT = 5
 
 _MELD_FIELDS = {
     "chi": 1,
@@ -212,6 +217,41 @@ def encode_opponent_hand_tokens(table_state: TableState, observer: int) -> list[
     return rows
 
 
+def encode_future_wall_tokens(wall: Iterable[int]) -> list[tuple[int, ...]]:
+    """Encode the next five live-wall tiles as ordered critic-only tokens.
+
+    ``wall`` is the full remaining wall returned by ``BatchedRiichiEnv.walls()``
+    (live wall first, 14 dead-wall tiles last); only the first five live tiles
+    are used.  Tiles are encoded in draw order as position 1..5 so the value
+    branch can rely on ``next_wall_1`` preceding ``next_wall_5``.  Missing tiles
+    simply produce fewer tokens; an invalid tile id is a hard error.
+    """
+    rows: list[tuple[int, ...]] = []
+    for position, tile in enumerate(wall[:FUTURE_WALL_TILE_COUNT], start=1):
+        if tile is None:
+            raise ValueError("future wall contains a missing tile id")
+        value = int(tile)
+        if not 0 <= value < 136:
+            raise ValueError(f"invalid RiichiEnv tile id {value} in future wall")
+        tile_type = tile_id_to_type(value)
+        if tile_type is None:
+            raise ValueError(f"invalid RiichiEnv tile id {value} in future wall")
+        suit, rank = _tile_factors(tile_type)
+        rows.append((
+            SEGMENT_CRITIC_FUTURE_WALL,
+            TOKEN_KIND_FUTURE_WALL,
+            FIELD_FUTURE_WALL,
+            position,
+            suit,
+            rank,
+            int(_is_red(value)),
+            1,
+            0,
+            1,
+        ))
+    return rows
+
+
 def encode_public_summary_tokens(table_state: TableState, observer: int) -> list[tuple[int, ...]]:
     """Compact actor-visible public river/meld rows for all four players.
 
@@ -251,8 +291,16 @@ def encode_public_summary_tokens(table_state: TableState, observer: int) -> list
     return rows
 
 
-def encode_critic_features(table_state: TableState, observer: int, *, include_public_state: bool = False) -> CriticFeatures:
+def encode_critic_features(
+    table_state: TableState,
+    observer: int,
+    *,
+    include_public_state: bool = False,
+    future_wall_tiles: Iterable[int] = (),
+) -> CriticFeatures:
     rows = encode_opponent_hand_tokens(table_state, observer)
+    if future_wall_tiles:
+        rows.extend(encode_future_wall_tokens(future_wall_tiles))
     if not rows:
         return empty_critic_features()
     factors = np.asarray(rows, dtype=np.uint8).reshape(-1, TOKEN_WIDTH)

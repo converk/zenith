@@ -346,6 +346,7 @@ def evaluate_1v3(
             "mean_rank": rank_sum / int(hanchan_count),
             "point_diff_vs_mean_opponent_mean": float(deltas.mean()),
             "point_diff_vs_mean_opponent_bootstrap_ci95": ci95,
+            "point_diff_samples": [float(value) for value in point_diffs],
             "action_type_rates": action_rates("a"),
             "kyoku_metrics": kyoku_metrics("model_a", summary_a),
             "semantic_metrics": summary_a,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import random
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
@@ -1087,7 +1088,12 @@ class PPOLearner:
                 name: value.detach().cpu()
                 for name, value in self.reference_model.state_dict().items()
             }
-        torch.save(payload, path)
+        # Atomic write: the history pool and sharded evaluation only ever see
+        # a fully serialized checkpoint file.
+        destination = Path(path)
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        torch.save(payload, temporary)
+        os.replace(temporary, destination)
 
     def load(self, path: str | Path) -> None:
         payload = torch.load(path, map_location=self.device, weights_only=False)

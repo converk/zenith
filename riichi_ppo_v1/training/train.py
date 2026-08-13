@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 from importlib import resources
+import json
 import os
 from pathlib import Path
 import random
@@ -33,9 +35,71 @@ from .metrics import RollingKyokuMetrics, append_metric_jsonl, metric_counters
 from .tensorboard import learner_peak_allocated_mb, write_curated_scalars
 from ..model.schema import TOKEN_SCHEMA_VERSION
 from .learner import validate_fresh_model_checkpoint_contract
+from ..sft.head_to_head_1v3_shards import run_sharded_1v3
 
 
 _CONFIG_GROUPS = ("training", "monitoring")
+
+
+def _progress_md_path(config: dict[str, Any]) -> Path:
+    return (
+        Path(config.get("eval1v3_output_dir", "audit/reports/v14_ppo_20260812/eval"))
+        .parent
+        / "PROGRESS.md"
+    )
+
+
+def _update_progress_md(
+    config: dict[str, Any],
+    update: int,
+    rollout_metrics: dict[str, float],
+    ppo_metrics: dict[str, float],
+    eval_summary: dict[str, Any] | None,
+) -> None:
+    """Append the required per-60-update progress entry to PROGRESS.md."""
+    progress = _progress_md_path(config)
+    if not progress.is_file():
+        return
+    interval = max(1, int(config.get("progress_update_interval_updates", 60)))
+    if int(update) <= 0 or int(update) % interval != 0:
+        return
+    combined = {
+        **rollout_metrics,
+        **{f"ppo/{name}": float(value) for name, value in ppo_metrics.items()},
+    }
+
+    def value(name: str) -> str:
+        if name in combined:
+            return f"{float(combined[name]):.5g}"
+        return "n/a"
+
+    lines = [
+        "",
+        f"## {datetime.date.today().isoformat()} update={update}",
+        "",
+        f"- reward_mean={value('rollout/reward_mean')} "
+        f"value_loss={value('ppo/value_loss')} "
+        f"sft_reference_kl={value('ppo/sft_reference_kl')} "
+        f"actor_grad_norm={value('ppo/grad_norm_actor')} "
+        f"critic_grad_norm={value('ppo/grad_norm_critic')} "
+        f"shared_grad_norm={value('ppo/grad_norm_shared')}",
+        f"- rollout_wall_s={value('rollout/wall_s')} "
+        f"update_wall_s={value('update/wall_s')} "
+        f"sps={value('iteration/sps')} "
+        f"history_seats={value('rollout/opponent_mix/history_seats')} "
+        f"history_pool_size={value('rollout/opponent_mix/history_pool_size')}",
+    ]
+    if eval_summary is not None:
+        model_a = eval_summary["model_a"]
+        lines.append(
+            f"- 1v3 vs SFT: first_place_rate={model_a['first_place_rate']:.4f} "
+            f"top2_rate={model_a['top2_rate']:.4f} "
+            f"mean_rank={model_a['mean_rank']:.3f} "
+            f"point_diff_mean={model_a['point_diff_mean']:+.1f} "
+            f"ci95={model_a['point_diff_bootstrap_ci95']}"
+        )
+    with progress.open("a", encoding="utf-8") as file:
+        file.write("\n".join(lines) + "\n")
 
 
 def _load_config_file(path: str | Path) -> dict[str, Any]:
@@ -324,8 +388,64 @@ def run(config: dict[str, Any]) -> None:
             flush=True,
         )
 
+    def run_1v3_evaluation(update: int) -> dict[str, Any] | None:
+        """Block on the fixed 1600-hanchan 1v3 vs V13 SFT evaluation."""
+        if not bool(config.get("eval1v3_enabled", False)):
+            return None
+        interval = max(1, int(config.get("eval1v3_interval_updates", 30)))
+        if update <= 0 or int(update) % interval != 0:
+            return None
+        checkpoint_path = (
+            Path(config["checkpoint_dir"]) / f"checkpoint_{int(update):05d}.pt"
+        )
+        if not checkpoint_path.is_file():
+            raise RuntimeError(
+                "checkpoint required by the 1v3 evaluation does not exist: "
+                f"{checkpoint_path}"
+            )
+        output_dir = Path(config["eval1v3_output_dir"])
+        summary_path = output_dir / f"vs_sft_u{int(update):03d}.json"
+        if summary_path.is_file():
+            with open(summary_path, encoding="utf-8") as file:
+                summary = json.load(file)
+        else:
+            summary = run_sharded_1v3(
+                checkpoint_path,
+                config["eval1v3_model_b"],
+                update=int(update),
+                processes=int(config.get("eval1v3_processes", 10)),
+                hanchans_per_process=int(
+                    config.get("eval1v3_hanchans_per_process", 160)
+                ),
+                parallel_hanchans=int(
+                    config.get("eval1v3_parallel_hanchans", 160)
+                ),
+                devices=tuple(
+                    str(device)
+                    for device in config.get("eval1v3_devices", ("0", "2"))
+                ),
+                seed_base=int(config.get("eval1v3_seed_base", 20260812)),
+                output_dir=output_dir,
+            )
+        model_a = summary["model_a"]
+        print(
+            f"1v3_eval update={update} "
+            f"first_place_rate={model_a['first_place_rate']:.4f} "
+            f"top2_rate={model_a['top2_rate']:.4f} "
+            f"mean_rank={model_a['mean_rank']:.3f} "
+            f"point_diff_mean={model_a['point_diff_mean']:.2f} "
+            f"ci95={model_a['point_diff_bootstrap_ci95']}",
+            flush=True,
+        )
+        append_jsonl(
+            Path(config["checkpoint_dir"]) / "eval1v3.jsonl",
+            {"update": int(update), "timestamp": time.time(), **summary},
+        )
+        return summary
+
     try:
         start_iteration = ray.get(inference.iteration.remote())
+        eval1v3_summary: dict[str, Any] | None = None
         for iteration in range(start_iteration, int(config["iterations"])):
             update_number = iteration + 1
             gpu_cursor = gpu_sampler.checkpoint()
@@ -438,6 +558,10 @@ def run(config: dict[str, Any]) -> None:
                 ray.get(inference.save.remote(
                     str(checkpoint_path), config, checkpoint_extra_state(),
                 ))
+                eval1v3_summary = run_1v3_evaluation(update_number)
+            _update_progress_md(
+                config, update_number, rollout_metrics, metrics, eval1v3_summary,
+            )
         final_update = ray.get(inference.iteration.remote())
         ray.get(inference.save.remote(
             str(Path(config["checkpoint_dir"]) / "latest.pt"), config, checkpoint_extra_state(),

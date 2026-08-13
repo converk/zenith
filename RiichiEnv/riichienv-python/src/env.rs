@@ -228,6 +228,30 @@ impl BatchedRiichiEnv {
         self.envs.iter().map(|env| with_variant!(env, |state| state.players.iter().map(|p| p.score).collect())).collect()
     }
 
+    /// Return every table's remaining wall tiles, one row per env.
+    ///
+    /// The native wall stores tiles in reverse draw order and pops the next
+    /// normal draw from the back, so the public getter returns the vector in
+    /// draw order: the live wall first (``tiles[0]`` = next draw, 69 tiles)
+    /// followed by the 14 dead-wall tiles.  ``tiles[:5]`` are therefore the
+    /// next five live-wall tiles in order.
+    fn walls(&self) -> Vec<Vec<u32>> {
+        self.envs
+            .iter()
+            .map(|env| {
+                with_variant!(env, |state| {
+                    state
+                        .wall
+                        .tiles
+                        .iter()
+                        .rev()
+                        .map(|&tile| tile as u32)
+                        .collect()
+                })
+            })
+            .collect()
+    }
+
     fn ranks(&self) -> Vec<Vec<usize>> { self.envs.iter().map(RiichiEnv::ranks).collect() }
 }
 

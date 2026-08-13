@@ -153,7 +153,10 @@ class BatchedStateBridge:
             return np.asarray(end_kyoku, dtype=np.bool_), np.asarray(end_game, dtype=np.bool_)
 
     def prepare(
-        self, decisions: list[Decision], analysis: Any | None = None,
+        self,
+        decisions: list[Decision],
+        analysis: Any | None = None,
+        walls: list[list[int]] | None = None,
     ) -> tuple[
         np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray
     ]:
@@ -186,6 +189,11 @@ class BatchedStateBridge:
                     encode_critic_features(
                         table_cache[decision.env_index],
                         decision.seat_id,
+                        future_wall_tiles=(
+                            walls[decision.env_index][:5]
+                            if walls is not None
+                            else ()
+                        ),
                     )
                     for decision in decisions
                 ]

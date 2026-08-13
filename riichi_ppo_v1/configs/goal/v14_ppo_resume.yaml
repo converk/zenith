@@ -1,0 +1,5 @@
+# 从已保存的 V14 checkpoint 精确恢复长训（不重新初始化模型/优化器/RNG）。
+# 用途：u120 历史池 bug 修复后从 u90 恢复；后因插入 SFT 全席基准，
+# 暂停训练并从最近完整 checkpoint（u600）恢复。
+resume: checkpoints/train_riichi_ppo_v14/checkpoint_00600.pt
+init_model: null
