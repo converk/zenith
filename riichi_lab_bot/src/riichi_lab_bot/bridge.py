@@ -156,6 +156,7 @@ class OnlineStateBridge:
                 "riichi_declaration_indices"
             ],
             "riichi_sutehais": derived_fields["riichi_sutehais"],
+            "tsumogiri_flags": derived_fields["tsumogiri_flags"],
         }
         if isinstance(observation, ObservationView):
             observation.set_fields(

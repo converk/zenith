@@ -241,6 +241,51 @@ def test_server_observation_with_missing_snapshot_fields_prepares() -> None:
     assert np.array_equal(prepared.legal_mask, full.legal_mask)
 
 
+def test_present_empty_server_tsumogiri_flags_are_overridden() -> None:
+    from riichienv import Observation, RiichiEnv
+
+    observation = RiichiEnv(game_mode="4p-red-half", seed=42).reset()[0]
+    data = json.loads(
+        base64.b64decode(observation.serialize_to_base64()).decode("utf-8")
+    )
+    data["tsumogiri_flags"] = [[], [], [], []]
+    data["events"].extend([
+        json.dumps({
+            "type": "dahai", "actor": 1, "pai": "1p",
+            "tsumogiri": False,
+        }),
+        json.dumps({
+            "type": "dahai", "actor": 1, "pai": "2p",
+            "tsumogiri": True,
+        }),
+        json.dumps({
+            "type": "dahai", "actor": 1, "pai": "3p",
+            "tsumogiri": True,
+        }),
+    ])
+    encoded = base64.b64encode(
+        json.dumps(data, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
+    server_observation = ObservationView(
+        Observation.deserialize_from_base64(encoded),
+        missing_fields=missing_observation_fields(encoded),
+    )
+
+    prepared = OnlineStateBridge(0).prepare(server_observation)
+
+    assert prepared.observation.tsumogiri_flags[1] == [False, True, True]
+    threat_mask = (
+        (prepared.token_factors[:, 0] == 6)
+        & (prepared.token_factors[:, 1] == 4)
+        & (prepared.token_factors[:, 2] == 1)
+    )
+    threat = prepared.token_factors[threat_mask]
+    threat_numeric = prepared.token_numeric[threat_mask]
+    assert len(threat) == 1
+    assert int(threat[0, 6]) == 2
+    assert float(threat_numeric[0, 3]) == pytest.approx(2 / 12)
+
+
 def test_reach_declared_without_declaration_tile_is_normalized() -> None:
     from riichienv import Observation, RiichiEnv
 
