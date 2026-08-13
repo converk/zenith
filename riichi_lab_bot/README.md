@@ -1,7 +1,7 @@
 # RiichiLab 独立对局客户端
 
 这个目录包含一个可独立运行的四人麻将客户端，用
-`checkpoints/train_riichi_v13_sft/best_heuristic.pt` 中的语义 token 模型连接
+`checkpoints/train_riichi_ppo_v14/checkpoint_00510.pt` 中的语义 token 模型连接
 [RiichiLab](https://riichi.dev/)。
 
 它直接复用 `riichi_ppo_v1` 的 V13 模型结构、checkpoint 加载、语义 token
@@ -25,7 +25,7 @@ python -m pip install -e ./riichi_lab_bot
 
 ```bash
 python -c "import riichi, riichienv, riichi_lab_bot; print('runtime ok')"
-test -f checkpoints/train_riichi_v13_sft/best_heuristic.pt
+test -f checkpoints/train_riichi_ppo_v14/checkpoint_00510.pt
 riichi-lab-bot --help
 ```
 
@@ -40,7 +40,7 @@ CUDA_DEVICE=2,3 riichi-lab-bot local \
   --seed 20260730 \
   --device cuda:0 \
   --dtype fp32 \
-  --checkpoint checkpoints/train_riichi_v13_sft/best_heuristic.pt
+  --checkpoint checkpoints/train_riichi_ppo_v14/checkpoint_00510.pt
 ```
 
 本地测试会对每份 Observation 先执行 base64 序列化和反序列化，以模拟
@@ -74,7 +74,7 @@ export RIICHI_BOT_TOKEN
 CUDA_DEVICE=2,3 riichi-lab-bot validate \
   --device cuda:0 \
   --dtype fp32 \
-  --checkpoint checkpoints/train_riichi_v13_sft/best_heuristic.pt
+  --checkpoint checkpoints/train_riichi_ppo_v14/checkpoint_00510.pt
 ```
 
 默认连接 `wss://game.riichi.dev/ws/validate`。客户端会等待
@@ -93,7 +93,7 @@ CUDA_DEVICE=2,3 riichi-lab-bot validate \
 
 | 参数或环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `--checkpoint` | `checkpoints/train_riichi_v13_sft/best_heuristic.pt` | checkpoint 文件 |
+| `--checkpoint` | `checkpoints/train_riichi_ppo_v14/checkpoint_00510.pt` | checkpoint 文件 |
 | `RIICHI_CHECKPOINT` | 未设置 | `--checkpoint` 未指定时覆盖默认模型 |
 | `--device` | `auto` | `auto`、`cpu`、`cuda` 或 `cuda:index` |
 | `--dtype` | `auto` | `auto`、`fp32` 或 `bf16` |

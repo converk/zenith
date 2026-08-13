@@ -11,11 +11,17 @@ import numpy as np
 import torch
 
 from riichi_ppo_v1.model.semantic_validation import assert_actor_token_semantics
+from riichi_ppo_v1.model.feature_schema import (
+    DECISION_ANALYSIS_VERSION,
+    RUST_ANALYSIS_VERSION,
+    feature_schema_sha256,
+)
 from riichi_ppo_v1.sft.checkpoint import load_v13_weights_only
 from riichi_ppo_v1.sft.contract import (
     SFT_CONTRACT_VERSION,
     assert_runtime_contract,
 )
+from riichi_ppo_v1.sft.policy_adapter import PPOPolicyAdapter
 
 from .bridge import PreparedDecision
 from .model import (
@@ -103,11 +109,29 @@ class PolicyEngine:
             raise ValueError("checkpoint payload must be a dictionary")
         contract = payload.get("sft_contract_version")
         schema = payload.get("token_schema_version")
-        if contract != SFT_CONTRACT_VERSION:
+        ppo_format = int(payload.get("ppo_format_version", 0))
+        is_sft = contract == SFT_CONTRACT_VERSION
+        is_ppo = ppo_format == 2
+        if not is_sft and not is_ppo:
             raise ValueError(
                 "incompatible token schema: "
                 f"checkpoint={schema!r}, runtime=13"
             )
+        if is_ppo:
+            if int(schema or 0) != 13:
+                raise ValueError(
+                    "incompatible token schema: "
+                    f"checkpoint={schema!r}, runtime=13"
+                )
+            if payload.get("feature_schema_sha256") != feature_schema_sha256():
+                raise ValueError("incompatible feature schema hash")
+            if int(payload.get("rust_analysis_version", -1)) != RUST_ANALYSIS_VERSION:
+                raise ValueError("incompatible Rust analysis version")
+            if (
+                int(payload.get("decision_analysis_version", -1))
+                != DECISION_ANALYSIS_VERSION
+            ):
+                raise ValueError("incompatible decision-analysis version")
         model_config = payload.get("model_config")
         if not isinstance(model_config, dict):
             raise ValueError("checkpoint is missing model_config")
@@ -116,13 +140,22 @@ class PolicyEngine:
                 "v13 checkpoint must explicitly use isolated_action_query"
             )
         assert_runtime_contract()
-        self.model = load_v13_weights_only(
-            self.checkpoint, device=self.device
-        )
+        if is_ppo:
+            self.model = PPOPolicyAdapter.from_checkpoint(
+                self.checkpoint, device=self.device
+            ).model
+            checkpoint_format = "ppo_v2"
+        else:
+            self.model = load_v13_weights_only(
+                self.checkpoint, device=self.device
+            )
+            checkpoint_format = "sft_v13"
         self.config = self.model.config
         self.metadata: dict[str, Any] = {
             "checkpoint": str(self.checkpoint),
+            "checkpoint_format": checkpoint_format,
             "sft_contract_version": contract,
+            "ppo_format_version": ppo_format if is_ppo else None,
             "token_schema_version": 13,
             "policy_head_type": model_config["policy_head_type"],
             "model_config": dict(model_config),

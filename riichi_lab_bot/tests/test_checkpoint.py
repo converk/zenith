@@ -17,7 +17,9 @@ def test_real_checkpoint_loads_strictly_and_warms_up() -> None:
         default_checkpoint(), device="cpu", dtype="fp32"
     )
     assert engine.config.context_tokens == 4096
-    assert engine.metadata["sft_contract_version"] == "riichi-sft-v13-1"
+    assert engine.metadata["checkpoint_format"] == "ppo_v2"
+    assert engine.metadata["ppo_format_version"] == 2
+    assert engine.metadata["sft_contract_version"] is None
     assert engine.metadata["token_schema_version"] == 13
     assert engine.metadata["policy_head_type"] == "isolated_action_query"
     assert engine.warmup() >= 0.0

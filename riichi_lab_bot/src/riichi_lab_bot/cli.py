@@ -28,8 +28,8 @@ def _default_checkpoint() -> str:
     return str(
         repository
         / "checkpoints"
-        / "train_riichi_v13_sft"
-        / "best_heuristic.pt"
+        / "train_riichi_ppo_v14"
+        / "checkpoint_00510.pt"
     )
 
 
@@ -95,6 +95,7 @@ def _load_policy(args: argparse.Namespace, recorder: EventRecorder) -> PolicyEng
     recorder.emit(
         "model_loaded",
         checkpoint=str(policy.checkpoint),
+        checkpoint_format=policy.metadata["checkpoint_format"],
         device=str(policy.device),
         dtype=policy.dtype_name,
         token_schema_version=policy.metadata["token_schema_version"],
