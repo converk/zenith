@@ -221,43 +221,6 @@ def discounted_empirical_returns(
     return returns
 
 
-def ev_gate_advantages(
-    transitions: list[Transition],
-    mc_returns: np.ndarray,
-    *,
-    min_group: int = 2,
-) -> tuple[np.ndarray, float, float]:
-    """RLOO/GRPO-style leave-one-out group baselines for EV-gated updates.
-
-    The group key is ``(kyoku_group, step_in_kyoku)``: the same seat-local
-    decision ordinal inside the same kyoku across the four self-play seats.
-    Groups smaller than ``min_group`` fall back to the batch mean. Returns
-    ``(advantages, fallback_fraction, group_count)``.
-    """
-    groups: dict[tuple[int, int], list[int]] = {}
-    for index, item in enumerate(transitions):
-        key = (int(item.kyoku_group), int(item.step_in_kyoku))
-        groups.setdefault(key, []).append(index)
-    advantages = np.zeros(len(transitions), dtype=np.float64)
-    batch_mean = float(np.mean(mc_returns))
-    fallback = 0
-    minimum = max(2, int(min_group))
-    for indices in groups.values():
-        values = mc_returns[indices]
-        if len(indices) >= minimum:
-            group_sum = float(values.sum())
-            baseline = (group_sum - values) / (len(indices) - 1)
-            advantages[indices] = values - baseline
-        else:
-            fallback += len(indices)
-            advantages[indices] = values - batch_mean
-    return (
-        advantages.astype(np.float32),
-        float(fallback / max(len(transitions), 1)),
-        float(len(groups)),
-    )
-
-
 def approximate_kl_values(new_logprob: torch.Tensor, old_logprob: torch.Tensor) -> torch.Tensor:
     """Return exp/training's per-sample PPO approximate KL estimate."""
     log_ratio = new_logprob - old_logprob
@@ -634,34 +597,10 @@ class PPOLearner:
         })
         if self.device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(self.device)
-        adv_estimator = str(self.hp.get("adv_estimator", "gae")).lower()
-        ev_gate_active = False
         source_advantages = np.asarray(
             [transition.advantage for transition in transitions],
             dtype=np.float32,
         )
-        if adv_estimator == "ev_gate":
-            ev = float(length_metrics["explained_variance"])
-            ev_gate_threshold = float(self.hp.get("ev_gate_threshold", 0.0))
-            ev_gate_active = ev < ev_gate_threshold
-            if ev_gate_active:
-                mc_returns = discounted_empirical_returns(
-                    transitions, float(self.hp["gamma"]),
-                )
-                source_advantages, fallback_fraction, group_count = ev_gate_advantages(
-                    transitions, mc_returns,
-                    min_group=int(self.hp.get("ev_gate_min_group", 2)),
-                )
-                length_metrics["ev_gate_fallback_fraction"] = float(fallback_fraction)
-                length_metrics["ev_gate_group_count"] = float(group_count)
-                length_metrics["ev_gate_advantage_mean"] = float(source_advantages.mean())
-                length_metrics["ev_gate_advantage_std"] = float(source_advantages.std())
-        length_metrics["ev_gate_active"] = float(ev_gate_active)
-        length_metrics["ev_gate_fraction"] = float(ev_gate_active)
-        length_metrics.setdefault("ev_gate_fallback_fraction", 0.0)
-        length_metrics.setdefault("ev_gate_group_count", 0.0)
-        length_metrics.setdefault("ev_gate_advantage_mean", 0.0)
-        length_metrics.setdefault("ev_gate_advantage_std", 0.0)
         with self.profiler.stage("update/advantage_normalize"):
             advantages = (
                 (source_advantages - source_advantages.mean(dtype=np.float64))
