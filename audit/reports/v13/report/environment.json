@@ -1,0 +1,51 @@
+{
+  "audit_date": "2026-08-02",
+  "timezone": "Asia/Shanghai",
+  "repository": "/mnt/disk1/hubowen/zenith",
+  "git": {
+    "branch": "sft",
+    "head": "2ac9fd51e0cb4ec39aa0d4f628ab0781f3e4f3ec",
+    "initial_status": "clean"
+  },
+  "python": {
+    "environment": "Mahjong-AI",
+    "executable": "/mnt/disk1/hubowen/miniconda3/envs/Mahjong-AI/bin/python",
+    "version": "3.12.0",
+    "torch": "2.7.1+cu126",
+    "cuda": "12.6",
+    "numpy": "1.26.4"
+  },
+  "runtime_extensions": [
+    {
+      "package": "riichienv",
+      "cargo_version": "0.4.8",
+      "python_package": "/mnt/disk1/hubowen/zenith/RiichiEnv/src/riichienv/__init__.py",
+      "extension": "/mnt/disk1/hubowen/zenith/RiichiEnv/src/riichienv/_riichienv.cpython-312-x86_64-linux-gnu.so",
+      "sha256": "dd9e135fae7edb37daeb3ada96944acdfb079295a32e45080d7a68bfb954b2a6",
+      "size": 4357832,
+      "mtime": "2026-08-02T11:17:38.730208935+08:00",
+      "release_artifact_hash_equal": true,
+      "replay_semantics_version": 1,
+      "supports": ["4p", "3p"]
+    },
+    {
+      "package": "riichi",
+      "cargo_version": "0.1.0",
+      "python_package": "/mnt/disk1/hubowen/miniconda3/envs/Mahjong-AI/lib/python3.12/site-packages/riichi/__init__.py",
+      "extension": "/mnt/disk1/hubowen/miniconda3/envs/Mahjong-AI/lib/python3.12/site-packages/riichi/riichi.cpython-312-x86_64-linux-gnu.so",
+      "sha256": "e443f1ea78969e37c3d627e923b49e00a1db4b49c5f1ba5f27885175c961b738",
+      "size": 1316256,
+      "mtime": "2026-08-01T22:27:40.819900485+08:00",
+      "release_artifact_hash_equal": true,
+      "analysis_version": 4,
+      "supports": ["4p policy bridge"]
+    }
+  ],
+  "artifact_sha256": {
+    "raw_manifest": "5360323e1d76b0c1e99e694b41aed27329e3d4d444240699f84836c30428e2e7",
+    "encoded_manifest": "01529575cc7371a7ae6507c22ea3b64f90a2f25215bee1c8e712543712b2e347",
+    "sft_yaml": "ac1f16ead1457f41a0f73c732e73ca946b77829f10a3df9db25bef25716fcb0e",
+    "checkpoint_latest": "dd779f57a437144ca9914b79d203e6dd7a84861be5471d6c549d18cf6c661481",
+    "checkpoint_best": "2544f90ed40fc375ef337555023a6a4949d029e1bf13fd934183cb68f40a22cb"
+  }
+}

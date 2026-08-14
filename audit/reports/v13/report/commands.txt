@@ -1,0 +1,35 @@
+# All Python commands were executed with conda run -n Mahjong-AI (normally with
+# --no-capture-output). Audit helpers are preserved under ./scripts.
+
+git branch --show-current
+git rev-parse HEAD
+git status --short
+git diff --check
+sha256sum <runtime extensions, manifests, config, checkpoints, source archives>
+
+conda run -n Mahjong-AI cargo test --workspace --manifest-path riichi/Cargo.toml
+LD_LIBRARY_PATH=/mnt/disk1/hubowen/miniconda3/envs/Mahjong-AI/lib conda run -n Mahjong-AI cargo test --workspace --manifest-path riichi/Cargo.toml
+conda run -n Mahjong-AI cargo test --workspace --manifest-path RiichiEnv/Cargo.toml
+conda run -n Mahjong-AI pytest -q riichi_ppo_v1/tests
+conda run -n Mahjong-AI pytest -q RiichiEnv/tests
+
+conda run -n Mahjong-AI python audit/reports/v13_sft_20260802/scripts/full_scan_parallel.py
+conda run -n Mahjong-AI python audit/reports/v13_sft_20260802/scripts/raw_selection_audit.py
+conda run -n Mahjong-AI python audit/reports/v13_sft_20260802/scripts/replay_compare.py
+conda run -n Mahjong-AI python audit/reports/v13_sft_20260802/scripts/replay_full_kyoku_compare.py
+conda run -n Mahjong-AI python audit/reports/v13_sft_20260802/scripts/rare_event_search.py
+conda run -n Mahjong-AI python audit/reports/v13_sft_20260802/scripts/houtei_search.py
+conda run -n Mahjong-AI python audit/reports/v13_sft_20260802/scripts/rare_replay_compare.py
+conda run -n Mahjong-AI python audit/reports/v13_sft_20260802/scripts/special_event_coverage.py
+conda run -n Mahjong-AI python audit/reports/v13_sft_20260802/scripts/action_roundtrip_random.py
+conda run -n Mahjong-AI python audit/reports/v13_sft_20260802/scripts/ddp_plan_audit.py
+conda run -n Mahjong-AI python audit/reports/v13_sft_20260802/scripts/model_checkpoint_audit.py
+CUDA_DEVICE=0,3 conda run -n Mahjong-AI python audit/reports/v13_sft_20260802/scripts/actor_only_runtime.py
+conda run -n Mahjong-AI python audit/reports/v13_sft_20260802/scripts/ddp_loss_weight_audit.py
+CUDA_DEVICE=0,3 conda run -n Mahjong-AI python audit/reports/v13_sft_20260802/scripts/resume_audit_fixed_horizon.py
+CUDA_DEVICE=0 conda run -n Mahjong-AI python audit/reports/v13_sft_20260802/scripts/validation_audit.py
+CUDA_DEVICE=0,3 conda run -n Mahjong-AI python audit/reports/v13_sft_20260802/scripts/heuristic_audit.py
+CUDA_DEVICE=0,3 conda run -n Mahjong-AI python audit/reports/v13_sft_20260802/scripts/benchmark_sft_timed.py --steps 3
+
+# The scripts contain fixed seeds and exact dataset/config paths. The heuristic
+# helper uses seed/cycle/seat/recipe settings from the formal configuration.

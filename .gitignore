@@ -2,8 +2,18 @@ checkpoints/
 datasets/
 runs/
 __pycache__/
+*.pyc
 /*.log
 evaluations/match_logs
 exp/
 logs/
-audit/
+# audit 方案 A:整体忽略,仅放行 design/report/scripts 固定类型子目录进版本控制;
+# eval/ 等大体积评测输出继续忽略。
+audit/*
+!audit/reports/
+audit/reports/*
+!audit/reports/*/
+audit/reports/*/*
+!audit/reports/*/design/
+!audit/reports/*/report/
+!audit/reports/*/scripts/

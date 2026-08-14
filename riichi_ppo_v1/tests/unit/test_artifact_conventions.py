@@ -13,8 +13,9 @@ import subprocess
 import yaml
 
 
-ROOT = Path(__file__).resolve().parents[2]
-CONFIG_DIR = ROOT / "configs"
+ROOT = Path(__file__).resolve().parents[3]
+PPO_DIR = ROOT / "riichi_ppo_v1"
+CONFIG_DIR = PPO_DIR / "configs"
 
 
 def _git_check_ignored(path: str) -> bool:
@@ -52,3 +53,32 @@ def test_ray_logging_redirects_to_stderr(monkeypatch) -> None:
     monkeypatch.delenv("RAY_LOG_TO_STDERR", raising=False)
     configure_ray_stderr_logging()
     assert os.environ["RAY_LOG_TO_STDERR"] == "1"
+
+
+def test_gitignore_allows_audit_type_dirs() -> None:
+    """audit 方案 A:design/report/scripts 入库,eval 与版本目录根散落文件忽略。"""
+    allowed = (
+        "audit/reports/v15/design/x.md",
+        "audit/reports/v15/report/x.md",
+        "audit/reports/v15/scripts/x.py",
+    )
+    ignored = (
+        "audit/reports/v15/eval/x.json",
+        "audit/reports/v15/x.txt",
+    )
+    for path in allowed:
+        assert not _git_check_ignored(path), f"{path} 应被 git 跟踪"
+    for path in ignored:
+        assert _git_check_ignored(path), f"{path} 应保持忽略"
+
+
+def test_audit_version_dirs_have_fixed_types() -> None:
+    """`audit/reports/<版本号>/` 只允许 design/report/eval/scripts 四类子目录。"""
+    reports = ROOT / "audit" / "reports"
+    for version in ("v13", "v14", "v15"):
+        version_dir = reports / version
+        assert version_dir.is_dir(), f"{version_dir} 不存在"
+        entries = {path.name for path in version_dir.iterdir()}
+        assert entries == {"design", "report", "eval", "scripts"}, (
+            f"{version_dir} 应只含四个固定类型子目录,实际: {sorted(entries)}"
+        )
