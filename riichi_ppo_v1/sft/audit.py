@@ -372,21 +372,48 @@ def audit_dataset(source: Path, *, denominator: int = 10, remainder: int = 0, sa
     }
 
 
-def write_audit_report(report: dict[str, Any], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+def print_audit_summary(report: dict[str, Any]) -> None:
+    """打印审计报告摘要,不产生任何文件。"""
     print(json.dumps({key: report[key] for key in ("passed", "sample_size", "event_counts", "uncovered_events", "cache_rows", "elapsed_seconds")}, ensure_ascii=False), flush=True)
 
 
-def main() -> None:
+def write_audit_report(report: dict[str, Any], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print_audit_summary(report)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """构建 sft-audit 命令行解析器。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=Path("datasets/tenhou_sft_2024_2025"))
     parser.add_argument("--subset-denominator", type=int, default=10)
     parser.add_argument("--subset-remainder", type=int, default=0)
     parser.add_argument("--sample-size", type=int, default=10)
-    parser.add_argument("--report", type=Path, default=Path("logs/sft-audit-10kyokus.json"))
-    args = parser.parse_args()
-    write_audit_report(audit_dataset(args.source, denominator=args.subset_denominator, remainder=args.subset_remainder, sample_size=args.sample_size), args.report)
+    parser.add_argument(
+        "--report",
+        type=Path,
+        default=None,
+        help=(
+            "审计报告输出路径(按规范写入 logs/<版本号>/ 或 "
+            "audit/reports/<版本号>/eval/);省略时仅打印摘要、不落盘"
+        ),
+    )
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    report = audit_dataset(
+        args.source,
+        denominator=args.subset_denominator,
+        remainder=args.subset_remainder,
+        sample_size=args.sample_size,
+    )
+    if args.report is not None:
+        write_audit_report(report, args.report)
+    else:
+        print_audit_summary(report)
 
 
 if __name__ == "__main__":

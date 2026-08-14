@@ -134,6 +134,15 @@ def load_config(
     return config
 
 
+def configure_ray_stderr_logging() -> None:
+    """让 Ray 与子进程日志流向标准错误。
+
+    运行脚本以 `exec > >(tee logs/<版本号>/...) 2>&1` 捕获 stdout/stderr,由此
+    把 Ray/子进程运行时日志统一收敛到 `logs/<版本号>/`,避免散落他处。
+    """
+    os.environ.setdefault("RAY_LOG_TO_STDERR", "1")
+
+
 def seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -281,6 +290,7 @@ def run(config: dict[str, Any]) -> None:
         raise ValueError("learner_gpus > 1 requires --device cuda")
     partitions = partition_worker_indices(int(config["num_workers"]), learner_gpus)
     init_method = local_distributed_init_method() if learner_gpus > 1 else None
+    configure_ray_stderr_logging()
     ray.init(ignore_reinit_error=True)
     inference_actors = []
     for rank, worker_ids in enumerate(partitions):
