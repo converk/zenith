@@ -126,7 +126,7 @@ def _weighted_kyoku_metrics(shards: list[dict[str, Any]]) -> dict[str, float]:
 def merge_1v3_shards(
     shards: list[dict[str, Any]],
     *,
-    seed_base: int = 20260812,
+    seed_base: int,
     update: int | None = None,
 ) -> dict[str, Any]:
     """Merge 10x160 synthetic or real shards into one 1600-hanchan summary."""
@@ -220,11 +220,11 @@ def run_sharded_1v3(
     model_b: str | Path,
     *,
     update: int,
-    processes: int = 10,
-    hanchans_per_process: int = 160,
-    parallel_hanchans: int = 160,
-    devices: tuple[str, ...] = ("0", "2"),
-    seed_base: int = 20260812,
+    processes: int = REQUIRED_1V3_PROCESSES,
+    hanchans_per_process: int = DEFAULT_1V3_HANCHANS_PER_PROCESS,
+    parallel_hanchans: int = DEFAULT_1V3_HANCHANS_PER_PROCESS,
+    devices: tuple[str, ...] = ("0", "1"),
+    seed_base: int,
     output_dir: str | Path,
 ) -> dict[str, Any]:
     """Run every shard as one subprocess, block until all finish, then merge."""
