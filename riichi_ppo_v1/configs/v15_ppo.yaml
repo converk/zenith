@@ -1,0 +1,61 @@
+# V15: V15 SFT -> Q bootstrap -> joint Q-Boosted PPO.
+seed: 1
+kyokus_per_worker: 16
+iterations: 1200
+total_updates: 1200
+checkpoint_interval_updates: 30
+checkpoint_dir: checkpoints/train_riichi_v15/ppo
+init_model: checkpoints/train_riichi_v15/sft/final.pt
+
+policy_head_type: isolated_action_query
+offense_fusion: true
+critic_head_type: action_value
+critic_bootstrap_updates: 40
+critic_bootstrap_learning_rate: 0.00002
+critic_public_grad_scale: 0.25
+zero_q_head_on_sft_init: true
+
+kyoku_reward_clip_points: 24000
+qboost_lambda: 0.95
+
+opponent_mix:
+  enabled: true
+  current_frac: 0.7
+  sft_frac: 0.2
+  historical_frac: 0.1
+  random_frac: 0.0
+  historical_min_update: 60
+  historical_lag_updates: 60
+
+ppo_clip: 0.2
+target_kl: 0.02
+update_epochs: 4
+gamma: 0.99
+value_coef: 0.5
+value_loss: huber
+value_target_normalization: batch_std
+max_grad_norm: 0.5
+entropy_start: 0.01
+entropy_end: 0.001
+sft_kl_coef_start: 0.005
+sft_kl_coef_middle: 0.0005
+sft_kl_coef_end: 0.002
+sft_kl_middle_fraction: 0.5
+learning_rate: 0.00002
+actor_learning_rate: 0.00002
+shared_learning_rate: 0.000005
+critic_learning_rate: 0.00004
+warmup_fraction: 0.02
+
+evaluation_enabled: false
+eval1v3_enabled: true
+eval1v3_interval_updates: 30
+eval1v3_processes: 10
+eval1v3_hanchans_per_process: 160
+eval1v3_parallel_hanchans: 160
+eval1v3_model_b: checkpoints/train_riichi_v13_sft/best_heuristic.pt
+eval1v3_seed_base: 20260814
+eval1v3_devices: ["0", "1"]
+eval1v3_output_dir: audit/reports/v15_ppo_20260814/eval
+
+progress_update_interval_updates: 60

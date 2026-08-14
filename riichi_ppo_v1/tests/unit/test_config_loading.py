@@ -25,7 +25,8 @@ class ConfigLoadingTest(unittest.TestCase):
         self.assertEqual(config["checkpoint_dir"], "checkpoints/train_riichi_ppo")
         self.assertIsNone(config["resume"])
         self.assertEqual(config["update_batch_mode"], "streaming")
-        self.assertEqual(config["gae_lambda"], 0.95)
+        self.assertEqual(config["qboost_lambda"], 0.95)
+        self.assertEqual(config["critic_head_type"], "action_value")
         self.assertEqual(config["target_kl"], 0.02)
         self.assertEqual(config["learning_rate"], 0.00002)
         self.assertEqual(config["actor_learning_rate"], 2e-5)
@@ -40,7 +41,7 @@ class ConfigLoadingTest(unittest.TestCase):
         self.assertEqual(config["value_loss"], "huber")
         self.assertEqual(config["value_target_normalization"], "batch_std")
         self.assertEqual(config["value_target_std_floor"], 0.01)
-        self.assertTrue(config["zero_value_head_on_sft_init"])
+        self.assertTrue(config["zero_q_head_on_sft_init"])
         self.assertEqual(config["critic_bootstrap_updates"], 40)
         self.assertEqual(config["critic_bootstrap_learning_rate"], 2e-5)
         self.assertEqual(config["critic_public_grad_scale"], 0.25)
@@ -76,6 +77,40 @@ class ConfigLoadingTest(unittest.TestCase):
         self.assertEqual(config["minibatch_size"], 512)
         self.assertEqual(config["update_batch_mode"], "auto")
         self.assertEqual(config["game_mode"], "4p-red-half")
+
+    def test_v15_overlay_resolves_to_the_formal_training_configuration(self) -> None:
+        config_path = (
+            Path(__file__).resolve().parents[2] / "configs" / "v15_ppo.yaml"
+        )
+        config = load_config(str(config_path))
+
+        # Inherited production topology.
+        self.assertEqual(config["learner_gpus"], 2)
+        self.assertEqual(config["num_workers"], 12)
+        self.assertEqual(config["envs_per_worker"], 32)
+        self.assertEqual(config["env_step_threads"], 4)
+        self.assertEqual(config["inference_max_batch_size"], 512)
+        self.assertEqual(config["inference_batch_wait_ms"], 5.0)
+        self.assertEqual(config["minibatch_size"], 512)
+        self.assertEqual(config["update_batch_mode"], "streaming")
+        self.assertEqual(config["model_size"], "mid")
+        self.assertEqual(config["context_tokens"], 4096)
+        self.assertEqual(config["critic_layers"], 2)
+        self.assertEqual(config["inference_dtype"], "bf16")
+
+        # V15 formal-run overrides.
+        self.assertEqual(config["kyokus_per_worker"], 16)
+        self.assertEqual(config["iterations"], 1200)
+        self.assertEqual(config["total_updates"], 1200)
+        self.assertTrue(config["offense_fusion"])
+        self.assertEqual(config["critic_head_type"], "action_value")
+        self.assertEqual(config["critic_bootstrap_updates"], 40)
+        self.assertEqual(config["sft_kl_coef_start"], 0.005)
+        self.assertEqual(config["sft_kl_coef_middle"], 0.0005)
+        self.assertEqual(config["sft_kl_coef_end"], 0.002)
+        self.assertEqual(config["eval1v3_processes"], 10)
+        self.assertEqual(config["eval1v3_hanchans_per_process"], 160)
+        self.assertEqual(config["eval1v3_devices"], ["0", "1"])
 
     def test_worker_partitioning_balances_workers_across_learners(self) -> None:
         self.assertEqual(partition_worker_indices(6, 2), [[0, 2, 4], [1, 3, 5]])

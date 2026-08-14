@@ -434,7 +434,7 @@ def test_ppo_model_only_initialization_resets_iteration_and_optimizer() -> None:
         assert not hasattr(target, "critic_warmup_enabled")
         assert not target.optimizer.state
         for name, value in source.model.state_dict().items():
-            if name.startswith("value_head."):
+            if name.startswith("q_head."):
                 torch.testing.assert_close(
                     target.model.state_dict()[name],
                     torch.zeros_like(target.model.state_dict()[name]),

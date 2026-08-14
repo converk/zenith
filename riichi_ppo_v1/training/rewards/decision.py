@@ -58,13 +58,21 @@ def _action_type_code(aid: int) -> int:
     return 10
 
 
+def _action_kind_and_row(action: object) -> tuple[str, dict[str, object]]:
+    """Parse one native action once for both kind and fixed-id mapping."""
+    try:
+        row = json.loads(action.to_mjai())
+        if isinstance(row, dict):
+            return str(row.get("type", "")).lower(), row
+    except (AttributeError, TypeError, ValueError):
+        pass
+    value = getattr(action, "action_type", getattr(action, "type", ""))
+    return str(getattr(value, "name", value)).lower().rsplit(".", 1)[-1], {}
+
+
 def action_kind(action: object) -> str:
     """Return the canonical MJAI action kind."""
-    try:
-        return str(json.loads(action.to_mjai()).get("type", "")).lower()
-    except (AttributeError, TypeError, ValueError):
-        value = getattr(action, "action_type", getattr(action, "type", ""))
-        return str(getattr(value, "name", value)).lower().rsplit(".", 1)[-1]
+    return _action_kind_and_row(action)[0]
 
 
 def consumed_tiles(action: object) -> tuple[int, ...]:
@@ -92,13 +100,12 @@ def action_key(action: object) -> tuple[str, int, tuple[int, ...]]:
     return kind, tile_type, tuple(sorted(value // 4 for value in consumed_tiles(action)))
 
 
-def action_id(action: object, observation: object) -> int | None:
-    """Map a RiichiEnv action to the fixed 241-way policy id."""
-    kind = action_kind(action)
-    try:
-        row = json.loads(action.to_mjai())
-    except (AttributeError, TypeError, ValueError):
-        row = {}
+def _action_id_from_normalized(
+    action: object,
+    observation: object,
+    kind: str,
+    row: dict[str, object],
+) -> int | None:
     expected_consumed = {"chi": 2, "pon": 2, "daiminkan": 3}.get(kind)
     consumed_row = row.get("consumed")
     if (
@@ -149,6 +156,18 @@ def action_id(action: object, observation: object) -> int | None:
     if kind in {"ryukyoku", "kyushukyuhai", "kyushu_kyuhai"}:
         return 240
     return None
+
+
+def _normalized_action(
+    action: object, observation: object,
+) -> tuple[str, int | None]:
+    kind, row = _action_kind_and_row(action)
+    return kind, _action_id_from_normalized(action, observation, kind, row)
+
+
+def action_id(action: object, observation: object) -> int | None:
+    """Map a RiichiEnv action to the fixed 241-way policy id."""
+    return _normalized_action(action, observation)[1]
 
 
 def _own_melds(observation: object) -> list[object]:
@@ -621,10 +640,12 @@ def _candidate(
     remaining: np.ndarray,
     public: object | None,
     *,
+    kind: str | None = None,
     legacy: bool = False,
 ) -> Candidate:
     observation = decision.observation
-    discarded = getattr(action, "tile", None) if action_kind(action) == "dahai" else None
+    normalized_kind = action_kind(action) if kind is None else kind
+    discarded = getattr(action, "tile", None) if normalized_kind == "dahai" else None
     rules = _rule_state(
         observation, hand, melds, int(analysis.shanten), remaining, legacy=legacy,
     )
@@ -770,10 +791,20 @@ def _kuikae_forbidden_types(action: object) -> set[int]:
 class DecisionAnalysisBatch:
     """One step-local source of truth for reward, tokens, metrics and teachers."""
 
-    def __init__(self, rows: dict[int, DecisionAnalysis], analyzer: EfficiencyAnalyzer | None = None, public: object | None = None) -> None:
+    def __init__(
+        self,
+        rows: dict[int, DecisionAnalysis],
+        analyzer: EfficiencyAnalyzer | None = None,
+        public: object | None = None,
+        *,
+        action_maps: dict[int, dict[int, object]] | None = None,
+        remaining_by_decision: dict[int, np.ndarray] | None = None,
+    ) -> None:
         self._rows = rows
         self._analyzer = analyzer or EfficiencyAnalyzer()
         self._public = public
+        self._action_maps = action_maps or {}
+        self._remaining_by_decision = remaining_by_decision or {}
 
     @classmethod
     def build(
@@ -789,14 +820,20 @@ class DecisionAnalysisBatch:
         remaining_by_row = [
             public_remaining(decision.observation) for decision in decisions
         ]
-        jobs: list[tuple[int, object, int, list[int], list[object]]] = []
+        jobs: list[tuple[int, object, str, int, list[int], list[object]]] = []
         hands: list[np.ndarray] = []
         opened: list[int] = []
         actions_by_row: list[tuple[object, ...]] = []
+        normalized_by_row: list[tuple[tuple[object, str, int | None], ...]] = []
         for row, decision in enumerate(decisions):
             observation = decision.observation
             actions = tuple(observation.legal_actions())
             actions_by_row.append(actions)
+            normalized = tuple(
+                (action, *_normalized_action(action, observation))
+                for action in actions
+            )
+            normalized_by_row.append(normalized)
             hand = _physical_hand(observation)
             melds = _own_melds(observation)
             response_kinds = (
@@ -805,12 +842,9 @@ class DecisionAnalysisBatch:
                 else {"chi", "pon", "daiminkan", "hora", "ron"}
             )
             response_window = any(
-                action_kind(action) in response_kinds
-                for action in actions
+                kind in response_kinds for _action, kind, _aid in normalized
             )
-            for action in actions:
-                kind = action_kind(action)
-                aid = action_id(action, observation)
+            for action, kind, aid in normalized:
                 if aid is None:
                     continue
                 if kind == "dahai":
@@ -819,11 +853,11 @@ class DecisionAnalysisBatch:
                         post.remove(int(getattr(action, "tile")))
                     except ValueError:
                         continue
-                    jobs.append((row, action, aid, post, melds))
+                    jobs.append((row, action, kind, aid, post, melds))
                     hands.append(_counts(post))
                     opened.append(len(melds))
                 elif response_window and kind in {"none", "pass"}:
-                    jobs.append((row, action, aid, hand, melds))
+                    jobs.append((row, action, kind, aid, hand, melds))
                     hands.append(_counts(hand))
                     opened.append(len(melds))
                 elif kind in {"chi", "pon"}:
@@ -845,7 +879,7 @@ class DecisionAnalysisBatch:
                             continue
                         post = post_call.copy()
                         post.remove(discard)
-                        jobs.append((row, action, aid, post, call_melds))
+                        jobs.append((row, action, kind, aid, post, call_melds))
                         hands.append(_counts(post))
                         opened.append(len(call_melds))
                 elif kind == "daiminkan":
@@ -859,7 +893,7 @@ class DecisionAnalysisBatch:
                     if new_meld is None:
                         continue
                     call_melds = [*melds, new_meld]
-                    jobs.append((row, action, aid, post, call_melds))
+                    jobs.append((row, action, kind, aid, post, call_melds))
                     hands.append(_counts(post))
                     opened.append(len(call_melds))
                 elif not _legacy_v11 and kind == "ankan":
@@ -884,7 +918,7 @@ class DecisionAnalysisBatch:
                     if new_meld is None:
                         raise RuntimeError("legal ankan could not be normalized to one tile type")
                     call_melds = [*melds, new_meld]
-                    jobs.append((row, action, aid, post, call_melds))
+                    jobs.append((row, action, kind, aid, post, call_melds))
                     hands.append(_counts(post))
                     opened.append(len(call_melds))
                 elif not _legacy_v11 and kind == "kakan":
@@ -907,14 +941,14 @@ class DecisionAnalysisBatch:
                     call_melds = _upgrade_kakan_melds(melds, action, added_tile=matching)
                     if call_melds is None:
                         raise RuntimeError("legal kakan could not be matched to an existing pon")
-                    jobs.append((row, action, aid, post, call_melds))
+                    jobs.append((row, action, kind, aid, post, call_melds))
                     hands.append(_counts(post))
                     opened.append(len(call_melds))
 
         values = analyzer.analyze(hands, opened) if hands else []
         grouped: list[dict[int, list[Candidate]]] = [dict() for _ in decisions]
         scoring_started = time.perf_counter()
-        for (row, action, aid, hand, melds), structural in zip(jobs, values, strict=True):
+        for (row, action, kind, aid, hand, melds), structural in zip(jobs, values, strict=True):
             # Moving a tile from the concealed hand into a discard or meld
             # does not change how many copies are available.  Always derive
             # remaining counts from the original observation hand so simulated
@@ -922,7 +956,7 @@ class DecisionAnalysisBatch:
             remaining = remaining_by_row[row]
             candidate = _candidate(
                 decisions[row], action, aid, hand, melds, structural, remaining, public,
-                legacy=_legacy_v11,
+                kind=kind, legacy=_legacy_v11,
             )
             grouped[row].setdefault(aid, []).append(candidate)
         if profiler is not None:
@@ -934,11 +968,11 @@ class DecisionAnalysisBatch:
             for variants in grouped[row].values():
                 selected = min(variants, key=lambda item: item.rank)
                 collapsed.append(replace(selected, legal_discard_count=len(variants)))
-            kinds = {action_kind(action) for action in actions_by_row[row]}
+            kinds = {kind for _action, kind, _aid in normalized_by_row[row]}
             foregone_win = bool(
                 not _legacy_v11 and kinds & {"hora", "ron", "tsumo"}
             )
-            non_pass = [item for item in collapsed if action_kind(item.action) not in {"none", "pass"}]
+            non_pass = [item for item in collapsed if item.action_id != 0]
             if non_pass:
                 best_non_pass = min(non_pass, key=lambda item: item.rank)
                 collapsed = [
@@ -947,13 +981,13 @@ class DecisionAnalysisBatch:
                         foregone_shanten_improvement=max(0, item.structural_shanten - best_non_pass.structural_shanten),
                         foregone_ukeire_improvement=max(0, best_non_pass.ukeire - item.ukeire),
                         foregone_win=foregone_win or best_non_pass.structural_shanten < 0,
-                    ) if action_kind(item.action) in {"none", "pass"} else item
+                    ) if item.action_id == 0 else item
                     for item in collapsed
                 ]
             elif foregone_win:
                 collapsed = [
                     replace(item, foregone_win=True)
-                    if action_kind(item.action) in {"none", "pass"} else item
+                    if item.action_id == 0 else item
                     for item in collapsed
                 ]
             candidates = tuple(collapsed)
@@ -983,7 +1017,23 @@ class DecisionAnalysisBatch:
             rows[id(decision)] = DecisionAnalysis(
                 decision, actions_by_row[row], candidates, best, teacher, supervised,
             )
-        return cls(rows, analyzer, public)
+        return cls(
+            rows,
+            analyzer,
+            public,
+            action_maps={
+                id(decision): {
+                    int(aid): action
+                    for action, _kind, aid in normalized_by_row[row]
+                    if aid is not None
+                }
+                for row, decision in enumerate(decisions)
+            },
+            remaining_by_decision={
+                id(decision): remaining_by_row[row]
+                for row, decision in enumerate(decisions)
+            },
+        )
 
     @classmethod
     def build_legacy_v11(
@@ -1048,12 +1098,17 @@ class DecisionAnalysisBatch:
             seat = int(getattr(observation, "player_id", 0))
             riichi = tuple(getattr(observation, "riichi_declared", ()) or (False,) * 4)
             threat_count = sum(bool(riichi[player]) for player in range(min(4, len(riichi))) if player != seat)
-            action_by_id = {
-                action_id(action, observation): action for action in analysis.actions
-                if action_id(action, observation) is not None
-            }
+            action_by_id = self._action_maps.get(id(decision))
+            if action_by_id is None:
+                action_by_id = {}
+                for action in analysis.actions:
+                    mapped = action_id(action, observation)
+                    if mapped is not None:
+                        action_by_id[mapped] = action
             dora_types = _dora_types(observation)
-            remaining = public_remaining(observation)
+            remaining = self._remaining_by_decision.get(id(decision))
+            if remaining is None:
+                remaining = public_remaining(observation)
             offline_pass_masks = [0] * 4
             history_available = hasattr(observation, "events")
             if history_available:

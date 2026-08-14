@@ -25,13 +25,14 @@ from ..model.feature_schema import (
 )
 from ..model.schema import TOKEN_SCHEMA_VERSION
 from ..sft.contract import SFT_CONTRACT_VERSION
+from ..sft.checkpoint import load_actor_weights_for_config
 from .metrics import ppo_buffer_metrics
 from .profiling import StageProfiler
 from .trajectory import Transition
 
 BATCH_MODE_IDS = {"streaming": 0.0, "prefetch": 1.0, "gpu_cache": 2.0}
-ACTOR_ROOTS = {"actor_backbone", "policy_head", "query"}
-CRITIC_ROOTS = {"critic_embedding", "critic_backbone", "value_head", "value_query"}
+ACTOR_ROOTS = {"actor_backbone", "policy_head", "offense_projection", "query"}
+CRITIC_ROOTS = {"critic_embedding", "critic_backbone", "value_head", "q_head", "value_query"}
 SHARED_ROOTS = {"token_embedding", "public_backbone"}
 _SCHEMA_METADATA_KEYS = {
     "token_schema_version",
@@ -146,6 +147,27 @@ def scheduled_entropy_coefficient(start: float, end: float, update: int, total_u
     total = max(1, int(total_updates))
     progress = min(max(float(update) / float(total), 0.0), 1.0)
     return float(start) + (float(end) - float(start)) * progress
+
+
+def scheduled_u_coefficient(
+    start: float,
+    middle: float,
+    end: float,
+    update: int,
+    total_updates: int,
+    middle_fraction: float = 0.5,
+) -> float:
+    """Piecewise-linear U schedule with exact start/middle/end anchors."""
+    if not 0.0 < float(middle_fraction) < 1.0:
+        raise ValueError("middle_fraction must be in (0, 1)")
+    total = max(1, int(total_updates))
+    step = min(max(int(update), 1), total)
+    middle_update = min(total, max(1, round(total * float(middle_fraction))))
+    if step <= middle_update:
+        local = (step - 1) / max(middle_update - 1, 1)
+        return float(start) + (float(middle) - float(start)) * local
+    local = (step - middle_update) / max(total - middle_update, 1)
+    return float(middle) + (float(end) - float(middle)) * local
 
 
 def value_loss_values(predicted: torch.Tensor, returns: torch.Tensor, loss_name: str) -> torch.Tensor:
@@ -271,7 +293,7 @@ def materialize_host_batch(
         critic_lengths = _empty_host_tensor((batch,), torch.long, pin_memory)
         actions = _empty_host_tensor((batch,), torch.long, pin_memory)
         old_logprobs = _empty_host_tensor((batch,), torch.float32, pin_memory)
-        returns = _empty_host_tensor((batch,), torch.float32, pin_memory)
+        q_targets = _empty_host_tensor((batch,), torch.float32, pin_memory)
         advantage_values = _empty_host_tensor((batch,), torch.float32, pin_memory)
     with profile.stage("update/collate_host_padding_copy"):
         factors_np = factors.numpy()
@@ -282,7 +304,7 @@ def materialize_host_batch(
         critic_lengths_np = critic_lengths.numpy()
         actions_np = actions.numpy()
         old_logprobs_np = old_logprobs.numpy()
-        returns_np = returns.numpy()
+        q_targets_np = q_targets.numpy()
         advantage_values_np = advantage_values.numpy()
         source_advantages = (
             np.asarray([t.advantage for t in transitions], dtype=np.float32)
@@ -303,7 +325,7 @@ def materialize_host_batch(
             critic_lengths_np[row] = critic_length
             actions_np[row] = int(transition.action)
             old_logprobs_np[row] = float(transition.logprob)
-            returns_np[row] = float(transition.return_)
+            q_targets_np[row] = float(transition.q_target)
             advantage_values_np[row] = source_advantages[row]
     return {
         "token_factors": factors,
@@ -315,7 +337,7 @@ def materialize_host_batch(
         "actions": actions,
         "old_logprobs": old_logprobs,
         "advantages": advantage_values,
-        "returns": returns,
+        "q_targets": q_targets,
     }
 
 
@@ -355,6 +377,12 @@ class PPOLearner:
             ),
             policy_head_type=str(
                 hyperparameters.get("policy_head_type", preset.policy_head_type)
+            ),
+            offense_fusion=bool(
+                hyperparameters.get("offense_fusion", preset.offense_fusion)
+            ),
+            critic_head_type=str(
+                hyperparameters.get("critic_head_type", "action_value")
             ),
         )
         self.model = KyokuTransformerActorCritic(self.config).to(self.device)
@@ -583,17 +611,22 @@ class PPOLearner:
         self.profiler.reset()
         length_metrics = transition_length_metrics(transitions)
         length_metrics.update(ppo_buffer_metrics(transitions))
-        raw_returns = np.asarray([transition.return_ for transition in transitions], dtype=np.float64)
-        raw_values = np.asarray([transition.value for transition in transitions], dtype=np.float64)
-        value_target_mean = float(raw_returns.mean())
-        value_target_std = float(raw_returns.std())
+        raw_q_targets = np.asarray([transition.q_target for transition in transitions], dtype=np.float64)
+        raw_q_taken = np.asarray([transition.q_taken for transition in transitions], dtype=np.float64)
+        raw_expected_q = np.asarray([transition.expected_q for transition in transitions], dtype=np.float64)
+        raw_advantages = np.asarray([transition.advantage for transition in transitions], dtype=np.float64)
+        q_target_mean = float(raw_q_targets.mean())
+        q_target_std = float(raw_q_targets.std())
         length_metrics.update({
-            # Keep these raw-space diagnostics independent from the selected
-            # loss normalization mode so experiments remain comparable.
-            "value_target_mean": value_target_mean,
-            "value_target_std": value_target_std,
-            "value_prediction_std": float(raw_values.std()),
-            "value_explained_variance": float(length_metrics["explained_variance"]),
+            "q_target_mean": q_target_mean,
+            "q_target_std": q_target_std,
+            "q_taken_mean": float(raw_q_taken.mean()),
+            "q_taken_std": float(raw_q_taken.std()),
+            "expected_q_mean": float(raw_expected_q.mean()),
+            "expected_q_std": float(raw_expected_q.std()),
+            "qboost_advantage_mean": float(raw_advantages.mean()),
+            "qboost_advantage_std": float(raw_advantages.std()),
+            "q_explained_variance": float(length_metrics["q_explained_variance"]),
         })
         if self.device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(self.device)
@@ -670,12 +703,22 @@ class PPOLearner:
             entropy_coef = float(self.hp["entropy_coef"])
         if critic_bootstrap:
             entropy_coef = 0.0
-        sft_kl_coef = scheduled_entropy_coefficient(
-            float(self.hp.get("sft_kl_coef_start", 0.0)),
-            float(self.hp.get("sft_kl_coef_end", 0.0)),
-            policy_update_number,
-            max(1, int(self.hp.get("sft_kl_anneal_updates", total_policy_updates))),
-        )
+        if "sft_kl_coef_middle" in self.hp:
+            sft_kl_coef = scheduled_u_coefficient(
+                float(self.hp.get("sft_kl_coef_start", 0.0)),
+                float(self.hp["sft_kl_coef_middle"]),
+                float(self.hp.get("sft_kl_coef_end", 0.0)),
+                policy_update_number,
+                total_policy_updates,
+                float(self.hp.get("sft_kl_middle_fraction", 0.5)),
+            )
+        else:
+            sft_kl_coef = scheduled_entropy_coefficient(
+                float(self.hp.get("sft_kl_coef_start", 0.0)),
+                float(self.hp.get("sft_kl_coef_end", 0.0)),
+                policy_update_number,
+                max(1, int(self.hp.get("sft_kl_anneal_updates", total_policy_updates))),
+            )
         if critic_bootstrap:
             sft_kl_coef = 0.0
         if sft_kl_coef > 0.0 and self.reference_model is None:
@@ -773,7 +816,7 @@ class PPOLearner:
                 critic_factors, critic_lengths = batch["critic_factors"], batch["critic_lengths"]
                 legal_mask, token_lengths = batch["legal_mask"], batch["token_lengths"]
                 actions, old_logprobs = batch["actions"], batch["old_logprobs"]
-                adv, returns = batch["advantages"], batch["returns"]
+                adv, q_targets = batch["advantages"], batch["q_targets"]
                 executed_samples += plan.global_batch_size
                 executed_tokens += plan.minibatch_tokens
                 executed_padded_input_tokens += plan.padded_input_tokens
@@ -806,24 +849,25 @@ class PPOLearner:
                     # the PPO ratio, loss and their gradients in FP32 as well.
                     logprobabilities = F.log_softmax(output["policy_logits"].float(), dim=-1)
                     logprob = logprobabilities.gather(1, actions[:, None]).squeeze(1)
-                    old_logprobs, adv, returns = old_logprobs.float(), adv.float(), returns.float()
+                    old_logprobs, adv, q_targets = old_logprobs.float(), adv.float(), q_targets.float()
                     ratio = (logprob - old_logprobs).exp()
                     clipped = ratio.clamp(1 - float(self.hp["ppo_clip"]), 1 + float(self.hp["ppo_clip"])) * adv
                     policy_loss_values = -torch.minimum(ratio * adv, clipped)
-                    predicted_value = output["value"].float()
-                    normalized_value, normalized_returns = normalize_value_targets(
-                        predicted_value,
-                        returns,
+                    q_values = output["q_values"].float()
+                    predicted_q = q_values.gather(1, actions[:, None]).squeeze(1)
+                    normalized_q, normalized_q_targets = normalize_value_targets(
+                        predicted_q,
+                        q_targets,
                         mode=self.value_target_normalization,
-                        mean=value_target_mean,
-                        std=value_target_std,
+                        mean=q_target_mean,
+                        std=q_target_std,
                         std_floor=self.value_target_std_floor,
                     )
-                    value_loss = value_loss_values(
-                        normalized_value, normalized_returns, str(self.hp.get("value_loss", "huber")),
+                    q_loss = value_loss_values(
+                        normalized_q, normalized_q_targets, str(self.hp.get("value_loss", "huber")),
                     )
-                    raw_value_loss = value_loss_values(
-                        predicted_value, returns, str(self.hp.get("value_loss", "huber")),
+                    raw_q_loss = value_loss_values(
+                        predicted_q, q_targets, str(self.hp.get("value_loss", "huber")),
                     )
                     valid_logprobabilities = torch.isfinite(logprobabilities)
                     probabilities = torch.where(
@@ -835,6 +879,10 @@ class PPOLearner:
                     entropy_values = -(probabilities * safe_logprobabilities).sum(-1)
                     legal_action_counts = legal_mask.sum(-1).float().clamp_min(2.0)
                     normalized_entropy_values = entropy_values / legal_action_counts.log()
+                    policy_expected_q = (probabilities * q_values).sum(-1)
+                    legal_q_variance = (
+                        probabilities * (q_values - policy_expected_q[:, None]).square()
+                    ).sum(-1)
                     if reference_output is None:
                         sft_reference_kl_values = torch.zeros_like(policy_loss_values)
                     else:
@@ -843,11 +891,11 @@ class PPOLearner:
                             reference_output["policy_logits"],
                         )
                     if critic_bootstrap:
-                        loss_values = value_loss
+                        loss_values = q_loss
                     else:
                         loss_values = (
                             policy_loss_values
-                            + float(self.hp["value_coef"]) * value_loss
+                            + float(self.hp["value_coef"]) * q_loss
                             - entropy_coef * entropy_values
                             + sft_kl_coef * sft_reference_kl_values
                         )
@@ -876,8 +924,11 @@ class PPOLearner:
                 for name, values in (
                     ("loss", loss_values),
                     ("policy_loss", policy_loss_values),
-                    ("value_loss", value_loss),
-                    ("value_loss_raw", raw_value_loss),
+                    ("q_loss", q_loss),
+                    ("q_loss_raw", raw_q_loss),
+                    ("q_prediction", predicted_q),
+                    ("q_policy_expectation", policy_expected_q),
+                    ("policy_weighted_legal_q_variance", legal_q_variance),
                     ("entropy", entropy_values),
                     ("entropy_normalized", normalized_entropy_values),
                     ("approx_kl", kl_values),
@@ -913,6 +964,17 @@ class PPOLearner:
                         step_metric_totals[name].add_(detached_value)
                     else:
                         step_metric_totals[name] = detached_value.clone()
+                projection = getattr(self.model, "offense_projection", None)
+                if projection is not None:
+                    projection_grad_sq = torch.zeros((), device=self.device)
+                    for parameter in projection.parameters():
+                        if parameter.grad is not None:
+                            projection_grad_sq.add_(parameter.grad.detach().float().square().sum())
+                    projection_grad = projection_grad_sq.sqrt()
+                    if "offense_projection_grad_norm" in step_metric_totals:
+                        step_metric_totals["offense_projection_grad_norm"].add_(projection_grad)
+                    else:
+                        step_metric_totals["offense_projection_grad_norm"] = projection_grad
                 updates += 1
             batch_mode_id_sum += BATCH_MODE_IDS[batch_mode]
             batch_mode_epochs += 1
@@ -985,6 +1047,15 @@ class PPOLearner:
             | {"transitions": float(count)}
             | length_metrics
         )
+        projection = getattr(self.model, "offense_projection", None)
+        if projection is not None:
+            with torch.no_grad():
+                result["offense_projection_weight_norm"] = float(
+                    torch.stack([
+                        parameter.detach().float().square().sum()
+                        for parameter in projection.parameters()
+                    ]).sum().sqrt().item()
+                )
         if ratio_samples:
             result["ratio_p95"] = float(torch.quantile(torch.cat(ratio_samples), 0.95).item())
         result.update(self.profiler.delta({}, prefix="timing"))
@@ -1061,6 +1132,17 @@ class PPOLearner:
             raise RuntimeError("checkpoint Rust analysis version is incompatible with this build")
         if int(payload.get("decision_analysis_version", -1)) != DECISION_ANALYSIS_VERSION:
             raise RuntimeError("checkpoint decision-analysis version is incompatible with this build")
+        try:
+            checkpoint_config = ModelConfig(**dict(payload["model_config"]))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("PPO checkpoint has an invalid model_config") from exc
+        if checkpoint_config != self.config:
+            raise RuntimeError(
+                "PPO exact resume model_config differs from the active V15 topology; "
+                "use --init-model only for an explicitly supported migration"
+            )
+        if payload["policy_head_type"] != self.config.policy_head_type:
+            raise RuntimeError("PPO checkpoint policy_head_type metadata is inconsistent")
         self.model.load_state_dict(payload["model"])
         reference_state = payload.get("sft_reference_model")
         if reference_state is not None:
@@ -1093,17 +1175,26 @@ class PPOLearner:
         checkpoint_head = model_config["policy_head_type"]
         if str(checkpoint_head) != self.config.policy_head_type:
             raise RuntimeError("checkpoint policy head type is incompatible with PPO configuration")
-        self.model.load_state_dict(payload["model"])
+        checkpoint_config = ModelConfig(**dict(model_config))
+        if checkpoint_config == self.config:
+            self.model.load_state_dict(payload["model"], strict=True)
+        else:
+            initialized = load_actor_weights_for_config(
+                path, target_config=self.config, device=self.device,
+            )
+            self.model.load_state_dict(initialized.state_dict(), strict=True)
         self.reference_model = KyokuTransformerActorCritic(self.config).to(self.device)
-        self.reference_model.load_state_dict(payload["model"])
+        self.reference_model.load_state_dict(self.model.state_dict(), strict=True)
         self.reference_model.requires_grad_(False)
         self.reference_model.eval()
         if (
             payload.get("training_stage") == "sft"
             and payload.get("training_mode") == "actor_only"
-            and bool(self.hp.get("zero_value_head_on_sft_init", True))
+            and bool(self.hp.get("zero_q_head_on_sft_init", True))
         ):
-            nn.init.zeros_(self.model.value_head.weight)
-            if self.model.value_head.bias is not None:
-                nn.init.zeros_(self.model.value_head.bias)
+            if self.model.q_head is None:
+                raise RuntimeError("V15 PPO initialization requires an action-value head")
+            nn.init.zeros_(self.model.q_head.weight)
+            if self.model.q_head.bias is not None:
+                nn.init.zeros_(self.model.q_head.bias)
         self.iteration = 0

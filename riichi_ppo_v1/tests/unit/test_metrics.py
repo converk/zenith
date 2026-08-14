@@ -100,10 +100,13 @@ def test_match_length_metrics_support_physical_self_play_hanchans() -> None:
 def test_ppo_buffer_and_evaluation_matrix_metrics() -> None:
     transition = Transition(np.zeros((1, 10), np.uint8), np.zeros((1, 8), np.float32), 1,
                             np.ones(241, np.bool_), 0, 0.0, 1.0)
-    transition.return_, transition.advantage = 2.0, 1.0
+    transition.q_target, transition.expected_q, transition.advantage = 2.0, 0.5, 1.0
     result = ppo_buffer_metrics([transition])
-    assert result["buffer/return_mean"] == 2.0
-    assert "explained_variance" in result
+    assert result["buffer/q_target_mean"] == 2.0
+    assert result["buffer/q_taken_mean"] == 1.0
+    assert result["buffer/expected_q_mean"] == 0.5
+    assert result["buffer/qboost_advantage_mean"] == 1.0
+    assert "q_explained_variance" in result
     first = evaluation_cases(10, 100, cycle=0)
     second = evaluation_cases(10, 100, cycle=1)
     assert len(first) == len(second) == 100

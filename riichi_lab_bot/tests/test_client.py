@@ -42,8 +42,10 @@ class FakeWebSocket:
 class FakeConnect:
     def __init__(self, websocket: FakeWebSocket) -> None:
         self.websocket = websocket
+        self.kwargs: dict[str, Any] | None = None
 
     def __call__(self, *args, **kwargs):
+        self.kwargs = kwargs
         websocket = self.websocket
 
         class Context:
@@ -118,9 +120,8 @@ def test_ranked_flow_echoes_request_id_and_ignores_unknown(
             ),
         ]
     )
-    monkeypatch.setattr(
-        "websockets.asyncio.client.connect", FakeConnect(websocket)
-    )
+    connect = FakeConnect(websocket)
+    monkeypatch.setattr("websockets.asyncio.client.connect", connect)
     result = asyncio.run(
         play_connection(
             url="wss://example.invalid/ranked",
@@ -138,6 +139,9 @@ def test_ranked_flow_echoes_request_id_and_ignores_unknown(
     assert result.metrics["defaulted"] == 1
     assert result.metrics["bank_consumed_ms"] == 15000
     assert websocket.sent[0]["request_id"] == 42
+    assert connect.kwargs is not None
+    assert connect.kwargs["ping_interval"] == 20
+    assert connect.kwargs["ping_timeout"] == 40
 
 
 def test_action_sent_logs_model_action_id(

@@ -35,7 +35,11 @@ from .metrics import RollingKyokuMetrics, append_metric_jsonl, metric_counters
 from .tensorboard import learner_peak_allocated_mb, write_curated_scalars
 from ..model.schema import TOKEN_SCHEMA_VERSION
 from .learner import validate_fresh_model_checkpoint_contract
-from ..sft.head_to_head_1v3_shards import run_sharded_1v3
+from ..sft.head_to_head_1v3_shards import (
+    REQUIRED_1V3_PROCESSES,
+    run_sharded_1v3,
+    validate_1v3_shard_plan,
+)
 
 
 _CONFIG_GROUPS = ("training", "monitoring")
@@ -78,7 +82,7 @@ def _update_progress_md(
         f"## {datetime.date.today().isoformat()} update={update}",
         "",
         f"- reward_mean={value('rollout/reward_mean')} "
-        f"value_loss={value('ppo/value_loss')} "
+        f"q_loss={value('ppo/q_loss')} "
         f"sft_reference_kl={value('ppo/sft_reference_kl')} "
         f"actor_grad_norm={value('ppo/grad_norm_actor')} "
         f"critic_grad_norm={value('ppo/grad_norm_critic')} "
@@ -241,6 +245,16 @@ def aggregate_actor_profiles(profiles: list[dict[str, float]]) -> dict[str, floa
 
 
 def run(config: dict[str, Any]) -> None:
+    if bool(config.get("eval1v3_enabled", False)):
+        configured_processes = int(
+            config.get("eval1v3_processes", REQUIRED_1V3_PROCESSES)
+        )
+        if configured_processes != REQUIRED_1V3_PROCESSES:
+            raise ValueError(
+                f"all 1v3 evaluations require exactly {REQUIRED_1V3_PROCESSES} processes"
+            )
+        if int(config.get("eval1v3_hanchans_per_process", 160)) <= 0:
+            raise ValueError("eval1v3_hanchans_per_process must be positive")
     try:
         import ray
     except ImportError as exc:
@@ -404,19 +418,31 @@ def run(config: dict[str, Any]) -> None:
                 f"{checkpoint_path}"
             )
         output_dir = Path(config["eval1v3_output_dir"])
+        processes = int(config.get("eval1v3_processes", REQUIRED_1V3_PROCESSES))
+        if processes != REQUIRED_1V3_PROCESSES:
+            raise RuntimeError(
+                f"all 1v3 evaluations require exactly {REQUIRED_1V3_PROCESSES} processes"
+            )
+        hanchans_per_process = int(
+            config.get("eval1v3_hanchans_per_process", 160)
+        )
+        seed_base = int(config.get("eval1v3_seed_base", 20260812))
         summary_path = output_dir / f"vs_sft_u{int(update):03d}.json"
         if summary_path.is_file():
             with open(summary_path, encoding="utf-8") as file:
                 summary = json.load(file)
+            validate_1v3_shard_plan(
+                list(summary.get("shards", [])),
+                seed_base=seed_base,
+                hanchans_per_process=hanchans_per_process,
+            )
         else:
             summary = run_sharded_1v3(
                 checkpoint_path,
                 config["eval1v3_model_b"],
                 update=int(update),
-                processes=int(config.get("eval1v3_processes", 10)),
-                hanchans_per_process=int(
-                    config.get("eval1v3_hanchans_per_process", 160)
-                ),
+                processes=processes,
+                hanchans_per_process=hanchans_per_process,
                 parallel_hanchans=int(
                     config.get("eval1v3_parallel_hanchans", 160)
                 ),
@@ -424,7 +450,7 @@ def run(config: dict[str, Any]) -> None:
                     str(device)
                     for device in config.get("eval1v3_devices", ("0", "2"))
                 ),
-                seed_base=int(config.get("eval1v3_seed_base", 20260812)),
+                seed_base=seed_base,
                 output_dir=output_dir,
             )
         model_a = summary["model_a"]
@@ -516,7 +542,7 @@ def run(config: dict[str, Any]) -> None:
             update_forward_s = float(metrics.get("timing/update/model_forward/total_s", 0.0))
             inference_rows = float(actor_profile.get("inference/full_forward_rows_mean", 0.0))
             inference_dispatch_rows = float(actor_profile.get("inference/dispatch_rows_mean", 0.0))
-            print(f"iteration={iteration + 1} transitions={len(transitions)} model_decisions={model_decisions:.0f} recorded_decisions={recorded_decisions:.0f} kyokus={rollout_kyokus:.0f} reward={rollout_reward:.4f} worker_transitions_per_s={rollout_tps:.2f} algorithm_wall_s={algorithm_wall_s:.3f} sps={recorded_decisions / max(algorithm_wall_s, 1e-9):.2f} model_forward_sps={model_decisions / max(algorithm_wall_s, 1e-9):.2f} rollout_wall_s={rollout_wall_s:.3f} begin_rollout_s={begin_rollout_s:.3f} profile_summary_s={profile_summary_s:.3f} transition_assembly_s={transition_assembly_s:.3f} env_step_s={env_step_s:.3f} inference_rows_per_forward={inference_rows:.2f} inference_rows_per_dispatch={inference_dispatch_rows:.2f} update_wall_s={update_wall_s:.3f} update_forward_s={update_forward_s:.3f} epochs={metrics['update/epochs_completed']:.0f}/{metrics['update/configured_epochs']:.0f} minibatches={metrics['update/executed_minibatches']:.0f}/{metrics['update/planned_minibatches']:.0f} early_stop={bool(metrics['update/early_stop'])} executed_samples={metrics['update/executed_transition_samples']:.0f} tokens_mean={metrics['update/executed_transition_tokens_mean']:.2f} input_tokens_mean={metrics['update/executed_transition_input_tokens_mean']:.2f} " + " ".join(f"{key}={value:.5f}" for key, value in metrics.items() if key in {"loss", "policy_loss", "value_loss", "entropy", "approx_kl", "clipfrac", "grad_norm"}), flush=True)
+            print(f"iteration={iteration + 1} transitions={len(transitions)} model_decisions={model_decisions:.0f} recorded_decisions={recorded_decisions:.0f} kyokus={rollout_kyokus:.0f} reward={rollout_reward:.4f} worker_transitions_per_s={rollout_tps:.2f} algorithm_wall_s={algorithm_wall_s:.3f} sps={recorded_decisions / max(algorithm_wall_s, 1e-9):.2f} model_forward_sps={model_decisions / max(algorithm_wall_s, 1e-9):.2f} rollout_wall_s={rollout_wall_s:.3f} begin_rollout_s={begin_rollout_s:.3f} profile_summary_s={profile_summary_s:.3f} transition_assembly_s={transition_assembly_s:.3f} env_step_s={env_step_s:.3f} inference_rows_per_forward={inference_rows:.2f} inference_rows_per_dispatch={inference_dispatch_rows:.2f} update_wall_s={update_wall_s:.3f} update_forward_s={update_forward_s:.3f} epochs={metrics['update/epochs_completed']:.0f}/{metrics['update/configured_epochs']:.0f} minibatches={metrics['update/executed_minibatches']:.0f}/{metrics['update/planned_minibatches']:.0f} early_stop={bool(metrics['update/early_stop'])} executed_samples={metrics['update/executed_transition_samples']:.0f} tokens_mean={metrics['update/executed_transition_tokens_mean']:.2f} input_tokens_mean={metrics['update/executed_transition_input_tokens_mean']:.2f} " + " ".join(f"{key}={value:.5f}" for key, value in metrics.items() if key in {"loss", "policy_loss", "q_loss", "entropy", "approx_kl", "clipfrac", "grad_norm"}), flush=True)
             tensorboard_metrics = {
                 **rollout_metrics,
                 **{f"ppo/{name}": float(value) for name, value in metrics.items()},
@@ -527,9 +553,10 @@ def run(config: dict[str, Any]) -> None:
             write_curated_scalars(writer, tensorboard_metrics, iteration + 1)
             histogram_interval = int(config.get("metrics_histogram_interval", 25))
             if histogram_interval > 0 and (iteration + 1) % histogram_interval == 0 and transitions:
-                writer.add_histogram("diagnostics/return", np.asarray([item.return_ for item in transitions], dtype=np.float32), iteration + 1)
-                writer.add_histogram("diagnostics/advantage", np.asarray([item.advantage for item in transitions], dtype=np.float32), iteration + 1)
-                writer.add_histogram("diagnostics/value_prediction", np.asarray([item.value for item in transitions], dtype=np.float32), iteration + 1)
+                writer.add_histogram("diagnostics/q_target", np.asarray([item.q_target for item in transitions], dtype=np.float32), iteration + 1)
+                writer.add_histogram("diagnostics/qboost_advantage", np.asarray([item.advantage for item in transitions], dtype=np.float32), iteration + 1)
+                writer.add_histogram("diagnostics/q_taken", np.asarray([item.q_taken for item in transitions], dtype=np.float32), iteration + 1)
+                writer.add_histogram("diagnostics/expected_q", np.asarray([item.expected_q for item in transitions], dtype=np.float32), iteration + 1)
                 writer.add_histogram("diagnostics/legal_action_count", np.asarray([item.legal_mask.sum() for item in transitions], dtype=np.int16), iteration + 1)
                 writer.add_histogram("diagnostics/token_length", np.asarray([item.token_length for item in transitions], dtype=np.int16), iteration + 1)
             append_jsonl(Path(config["checkpoint_dir"]) / "performance.jsonl", {

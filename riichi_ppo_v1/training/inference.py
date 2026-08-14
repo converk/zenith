@@ -82,15 +82,17 @@ def collate_request_rows(
 
 
 def assign_batch_outputs(
-    responses: list[dict[str, Any]], group: list[tuple[int, int]], actions: list[int], logprobs: list[float], values: list[float],
+    responses: list[dict[str, Any]], group: list[tuple[int, int]], actions: list[int],
+    logprobs: list[float], q_taken: list[float], expected_q: list[float],
 ) -> None:
     """Route batched model outputs back to their original RPC and row."""
-    if not (len(group) == len(actions) == len(logprobs) == len(values)):
+    if not (len(group) == len(actions) == len(logprobs) == len(q_taken) == len(expected_q)):
         raise ValueError("inference output dimensions differ")
     for index, (request_index, row) in enumerate(group):
         responses[request_index]["action_ids"][row] = int(actions[index])
         responses[request_index]["logprobs"][row] = float(logprobs[index])
-        responses[request_index]["values"][row] = float(values[index])
+        responses[request_index]["q_taken"][row] = float(q_taken[index])
+        responses[request_index]["expected_q"][row] = float(expected_q[index])
 
 
 if ray is not None:
@@ -280,9 +282,11 @@ if ray is not None:
             if (
                 not isinstance(raw_config, dict)
                 or raw_config.get("policy_head_type") != "isolated_action_query"
+                or raw_config.get("critic_head_type") != "action_value"
+                or raw_config.get("offense_fusion") is not True
             ):
                 raise RuntimeError(
-                    f"historical checkpoint is not an isolated_action_query PPO: {path}"
+                    f"historical checkpoint is not a V15 action-value PPO: {path}"
                 )
             try:
                 config = ModelConfig(**dict(raw_config))
@@ -444,7 +448,12 @@ if ray is not None:
         def _infer_many(self, requests: list[dict[str, Any]]) -> list[dict[str, Any]]:
             started = time.perf_counter()
             responses = [
-                {"action_ids": [0] * len(request["batch_indices"]), "logprobs": [0.0] * len(request["batch_indices"]), "values": [0.0] * len(request["batch_indices"])}
+                {
+                    "action_ids": [0] * len(request["batch_indices"]),
+                    "logprobs": [0.0] * len(request["batch_indices"]),
+                    "q_taken": [0.0] * len(request["batch_indices"]),
+                    "expected_q": [0.0] * len(request["batch_indices"]),
+                }
                 for request in requests
             ]
             rows_by_mode: dict[tuple[str, bool], list[tuple[int, int]]] = {}
@@ -520,12 +529,21 @@ if ray is not None:
                 chosen = (output["policy_logits"].argmax(-1) if greedy
                           else torch.multinomial(logprobabilities.exp(), 1).squeeze(1))
                 chosen_logprobs = logprobabilities.gather(1, chosen[:, None]).squeeze(1)
-                # One packed device-to-host transfer replaces three scalar-list
-                # transfers for action, log-probability and value.
-                packed = torch.stack((chosen.float(), chosen_logprobs, output["value"].float()), dim=1).cpu().numpy()
+                probabilities = logprobabilities.exp()
+                q_values = output["q_values"].float()
+                chosen_q = q_values.gather(1, chosen[:, None]).squeeze(1)
+                expected_q = (probabilities * q_values).sum(-1)
+                # Keep the 241-wide Q tensor on-device; only four scalars per
+                # decision cross the rollout RPC boundary.
+                packed = torch.stack(
+                    (chosen.float(), chosen_logprobs, chosen_q, expected_q), dim=1,
+                ).cpu().numpy()
                 chosen_cpu = packed[:, 0].astype(np.int64).tolist()
                 logprob_cpu = packed[:, 1].tolist()
-                value_cpu = packed[:, 2].tolist()
-            assign_batch_outputs(responses, group, chosen_cpu, logprob_cpu, value_cpu)
+                q_taken_cpu = packed[:, 2].tolist()
+                expected_q_cpu = packed[:, 3].tolist()
+            assign_batch_outputs(
+                responses, group, chosen_cpu, logprob_cpu, q_taken_cpu, expected_q_cpu,
+            )
 else:
     RolloutInferenceActor = None

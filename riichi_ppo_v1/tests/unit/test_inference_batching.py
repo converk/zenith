@@ -39,11 +39,18 @@ def test_cross_request_collation_and_response_routing_preserve_row_order() -> No
     assert critic_factors.shape == (3, 2, 10)
     assert factors[1, 2].sum() == 0 and factors[2, 1].sum() == 0
     assert legal[0, 2] and legal[1, 3] and legal[2, 1]
-    responses = [{"action_ids": [0, 0], "logprobs": [0.0, 0.0], "values": [0.0, 0.0]},
-                 {"action_ids": [0], "logprobs": [0.0], "values": [0.0]}]
-    assign_batch_outputs(responses, group, [101, 202, 203], [-1.0, -2.0, -3.0], [1.0, 2.0, 3.0])
+    responses = [
+        {"action_ids": [0, 0], "logprobs": [0.0, 0.0], "q_taken": [0.0, 0.0], "expected_q": [0.0, 0.0]},
+        {"action_ids": [0], "logprobs": [0.0], "q_taken": [0.0], "expected_q": [0.0]},
+    ]
+    assign_batch_outputs(
+        responses, group, [101, 202, 203], [-1.0, -2.0, -3.0],
+        [1.0, 2.0, 3.0], [4.0, 5.0, 6.0],
+    )
     assert responses[0]["action_ids"] == [203, 101]
     assert responses[1]["action_ids"] == [202]
+    assert responses[0]["q_taken"] == [3.0, 1.0]
+    assert responses[0]["expected_q"] == [6.0, 4.0]
 
 
 def test_dispatch_reason_prefers_full_worker_batch_then_timeout() -> None:

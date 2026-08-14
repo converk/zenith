@@ -33,7 +33,7 @@ from ..training.rewards import (
     PublicStateTracker,
 )
 from ..training.worker import active_decisions
-from .head_to_head import _action_group
+from .action_groups import action_group as _action_group
 from .policy_adapter import load_policy_adapter
 
 

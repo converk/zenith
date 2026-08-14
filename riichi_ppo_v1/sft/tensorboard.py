@@ -38,6 +38,10 @@ SCALAR_TAGS = {
     "optimizer/learning_rate": "SFT/优化器/学习率 (learning_rate)",
     "optimizer/grad_norm_pre_clip": "SFT/优化器/裁剪前梯度范数 (grad_norm_pre_clip)",
     "optimizer/grad_norm_post_clip": "SFT/优化器/裁剪后梯度范数 (grad_norm_post_clip)",
+    "model/offense_projection_weight_norm": "SFT/模型/Offense Projection 权重范数",
+    "model/offense_projection_grad_norm": "SFT/模型/Offense Projection 梯度范数",
+    "model/v13_logit_drift_rms": "SFT/模型/相对 V13 Logit Drift RMS",
+    "model/v13_logit_drift_max": "SFT/模型/相对 V13 Logit Drift Max",
     "data/legal_actions_mean": "SFT/数据/平均合法动作数 (legal_actions_mean)",
     "data/token_length_mean": "SFT/数据/平均序列长度 (token_length_mean)",
     "data/token_length_max": "SFT/数据/最大序列长度 (token_length_max)",
@@ -165,6 +169,8 @@ class SftMetricWindow:
 def _display_tag(name: str) -> str | None:
     if name in SCALAR_TAGS:
         return SCALAR_TAGS[name]
+    if name.startswith("optimizer/grad_norm_branch/"):
+        return f"SFT/优化器/分支梯度范数/{name.rsplit('/', 1)[-1]}"
     parts = name.split("/")
     if len(parts) == 4 and parts[:2] == ["train", "action"]:
         group, metric = parts[2], parts[3]

@@ -28,9 +28,16 @@ from torch.utils.tensorboard import SummaryWriter
 import yaml
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
+from .action_groups import action_group as _action_group
 from .data import SftSample, iter_split_samples
-from .checkpoint import checkpoint_payload, load_exact_resume, load_v13_weights_only
-from .contract import dataset_manifest_hash, load_manifest, training_mode, validate_v13_manifest
+from .checkpoint import checkpoint_payload, load_actor_weights_for_config, load_exact_resume
+from .contract import (
+    dataset_manifest_hash,
+    load_manifest,
+    training_mode,
+    validate_v13_manifest,
+    validate_v15_reused_manifest,
+)
 from .heuristic_evaluation import evaluate_against_heuristics
 from .tensorboard import SftMetricWindow, write_sft_scalars
 
@@ -57,6 +64,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "train_critic": False,
     "train_public_value": False,
     "policy_head_type": "isolated_action_query",
+    "offense_fusion": False,
+    "critic_head_type": "state_value",
+    "trainable_scope": "full_actor",
     "group_coef": 0.25,
     "public_value_coef": 0.0,
     "rule_coef": 0.05,
@@ -66,6 +76,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "shuffle_buffer_kyokus": 8192,
     "length_bucket_window_batches": 32,
     "checkpoint_interval_steps": 3000,
+    "save_initial_checkpoint": False,
     "log_interval_steps": 100,
     "validation_max_samples": 0,
     "validation_interval_steps": 1500,
@@ -109,6 +120,14 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("obsolete SFT configuration fields: " + ", ".join(sorted(obsolete)))
     if config.get("policy_head_type") != "isolated_action_query":
         raise ValueError("v13 SFT requires policy_head_type=isolated_action_query")
+    if str(config.get("trainable_scope", "full_actor")) not in {
+        "full_actor", "offense_projection",
+    }:
+        raise ValueError("trainable_scope must be full_actor or offense_projection")
+    if str(config.get("trainable_scope", "full_actor")) == "offense_projection" and not bool(
+        config.get("offense_fusion", False)
+    ):
+        raise ValueError("offense_projection scope requires offense_fusion")
     world_size = (
         int(config["learner_gpus"])
         if str(config["device"]).startswith("cuda") else 1
@@ -214,28 +233,6 @@ def length_bucketed_batches(
         yield from drain(window)
 
 
-def _action_group(action_id: int) -> str:
-    if action_id == 0:
-        return "pass"
-    if 1 <= action_id <= 74:
-        return "discard"
-    if action_id == 75:
-        return "reach"
-    if 76 <= action_id <= 132:
-        return "chi"
-    if 133 <= action_id <= 169:
-        return "pon"
-    if action_id == 170:
-        return "kan"
-    if 171 <= action_id <= 204:
-        return "kan"
-    if 205 <= action_id <= 238:
-        return "kan"
-    if action_id == 239:
-        return "hora"
-    return "ryukyoku"
-
-
 _GROUP_IDS = tuple(_action_group(action) for action in range(241))
 _GROUP_NAMES = ("pass", "discard", "reach", "chi", "pon", "kan", "hora", "ryukyoku")
 _GROUP_SLICES = (
@@ -289,6 +286,8 @@ def _model_config(config: dict[str, Any]) -> ModelConfig:
     values["context_tokens"] = int(config["context_tokens"])
     values["critic_layers"] = int(config.get("critic_layers", base.critic_layers))
     values["policy_head_type"] = str(config["policy_head_type"])
+    values["offense_fusion"] = bool(config.get("offense_fusion", False))
+    values["critic_head_type"] = str(config.get("critic_head_type", "state_value"))
     return ModelConfig(**values)
 
 
@@ -528,22 +527,36 @@ def _train_worker_impl(
         dist.init_process_group("nccl", rank=rank, world_size=world_size, device_id=device)
     model = KyokuTransformerActorCritic(_model_config(config)).to(device)
     if config.get("init_model"):
-        initialized = load_v13_weights_only(config["init_model"], device=device)
-        if initialized.config != model.config:
-            raise RuntimeError("weights-only initialization model_config differs from training config")
+        initialized = load_actor_weights_for_config(
+            config["init_model"], target_config=model.config, device=device,
+        )
         model.load_state_dict(initialized.state_dict(), strict=True)
         del initialized
+    drift_reference: KyokuTransformerActorCritic | None = None
+    drift_reference_path = config.get("logit_drift_reference_model")
+    if rank == 0 and drift_reference_path:
+        drift_reference = load_actor_weights_for_config(
+            drift_reference_path, target_config=model.config, device=device,
+        )
+        drift_reference.requires_grad_(False)
+        drift_reference.eval()
     train_critic = bool(config["train_critic"])
     train_value = train_critic or bool(config.get("train_public_value", True))
     frozen_roots: set[str] = set()
     if not train_critic:
         frozen_roots.add("critic_embedding")
     if not train_value:
-        frozen_roots.update({"critic_backbone", "value_head", "value_query"})
+        frozen_roots.update({"critic_backbone", "value_head", "q_head", "value_query"})
     if frozen_roots:
         for name, parameter in model.named_parameters():
             if name.split(".", 1)[0] in frozen_roots:
                 parameter.requires_grad_(False)
+    trainable_scope = str(config.get("trainable_scope", "full_actor"))
+    if trainable_scope == "offense_projection":
+        for name, parameter in model.named_parameters():
+            parameter.requires_grad_(name.startswith("offense_projection."))
+    if not any(parameter.requires_grad for parameter in model.parameters()):
+        raise RuntimeError("SFT configuration leaves no trainable parameters")
     optimized_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
     optimizer = torch.optim.AdamW(
         optimized_parameters,
@@ -556,7 +569,10 @@ def _train_worker_impl(
     manifest = load_manifest(dataset)
     raw_dataset = manifest.get("format") == "riichi-sft-kyoku-v1"
     if not raw_dataset:
-        validate_v13_manifest(manifest)
+        if bool(config.get("offense_fusion", False)):
+            validate_v15_reused_manifest(manifest)
+        else:
+            validate_v13_manifest(manifest)
     if distributed and raw_dataset:
         raise RuntimeError(
             "distributed SFT requires a precomputed encoded dataset so rank sample counts can be balanced"
@@ -606,6 +622,7 @@ def _train_worker_impl(
             config["resume"], model_config=model.config,
             training_mode=training_mode(config),
             dataset_manifest_hash=manifest_hash, world_size=world_size,
+            trainable_scope=trainable_scope,
         )
         model.load_state_dict(payload["model"])
         optimizer.load_state_dict(payload["optimizer"])
@@ -651,6 +668,39 @@ def _train_worker_impl(
     last_step_end = started
     metric_window = SftMetricWindow() if rank == 0 else None
     model.train()
+    if not config.get("resume") and bool(config.get("save_initial_checkpoint", False)):
+        initial_progress = _gather_rank_progress(world_size, 0)
+        if rank == 0:
+            initial_metrics: dict[str, float] = {}
+            if bool(config.get("validate_initial_checkpoint", False)):
+                module = model.module if isinstance(model, DistributedDataParallel) else model
+                initial_metrics = evaluate(
+                    module, dataset, config, device,
+                    max_samples=int(config["validation_samples_per_run"]),
+                )
+                best_validation_loss = float(initial_metrics["validation/policy_ce"])
+            _save_checkpoint(
+                output / "checkpoint_00000.pt", model, optimizer, scheduler,
+                config=config, manifest_hash=manifest_hash, epoch=0,
+                global_step=0, rank_batches_consumed=initial_progress,
+                best_validation_loss=best_validation_loss,
+                best_heuristic_point_delta=best_heuristic_point_delta,
+                metrics=initial_metrics,
+            )
+            if initial_metrics:
+                _save_checkpoint(
+                    output / "best.pt", model, optimizer, scheduler,
+                    config=config, manifest_hash=manifest_hash, epoch=0,
+                    global_step=0, rank_batches_consumed=initial_progress,
+                    best_validation_loss=best_validation_loss,
+                    best_heuristic_point_delta=best_heuristic_point_delta,
+                    metrics=initial_metrics,
+                )
+                if writer is not None:
+                    write_sft_scalars(writer, initial_metrics, 0)
+                model.train()
+        if distributed:
+            dist.barrier()
     join_context = model.join if isinstance(model, DistributedDataParallel) else nullcontext
     cursor_epoch = start_epoch
     cursor_steps_in_epoch = skip_steps
@@ -729,6 +779,21 @@ def _train_worker_impl(
                     else:
                         value_loss = None
                 loss.backward()
+                branch_grad_norms: dict[str, float] = {}
+                projection_grad_sq = 0.0
+                log_interval = max(1, int(config["log_interval_steps"]))
+                collect_gradient_metrics = (
+                    rank == 0 and (global_step + 1) % log_interval == 0
+                )
+                if collect_gradient_metrics:
+                    for name, parameter in model.named_parameters():
+                        if parameter.grad is None:
+                            continue
+                        root = name.removeprefix("module.").split(".", 1)[0]
+                        squared = float(parameter.grad.detach().float().square().sum())
+                        branch_grad_norms[root] = branch_grad_norms.get(root, 0.0) + squared
+                        if root == "offense_projection":
+                            projection_grad_sq += squared
                 grad_norm = nn.utils.clip_grad_norm_(model.parameters(), float(config["max_grad_norm"]))
                 optimizer.step()
                 scheduler.step()
@@ -749,7 +814,6 @@ def _train_worker_impl(
                         padded_tokens=padded_tokens,
                         step_seconds=step_finished - step_started,
                     )
-                log_interval = max(1, int(config["log_interval_steps"]))
                 if rank == 0 and global_step % log_interval == 0:
                     elapsed = time.perf_counter() - started
                     assert metric_window is not None
@@ -764,6 +828,42 @@ def _train_worker_impl(
                             local_samples / max(elapsed, 1e-9)
                         ),
                     })
+                    module = model.module if isinstance(model, DistributedDataParallel) else model
+                    projection = module.offense_projection
+                    if projection is not None:
+                        with torch.no_grad():
+                            projection_weight_sq = sum(
+                                float(parameter.detach().float().square().sum())
+                                for parameter in projection.parameters()
+                            )
+                        log_metrics["model/offense_projection_weight_norm"] = math.sqrt(
+                            projection_weight_sq
+                        )
+                        log_metrics["model/offense_projection_grad_norm"] = math.sqrt(
+                            projection_grad_sq
+                        )
+                    for branch, squared in branch_grad_norms.items():
+                        log_metrics[f"optimizer/grad_norm_branch/{branch}"] = math.sqrt(squared)
+                    if drift_reference is not None:
+                        with torch.no_grad(), torch.autocast(
+                            device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16,
+                        ):
+                            reference_logits = drift_reference.forward_policy(
+                                batch["token_factors"], batch["token_numeric"],
+                                batch["legal_mask"], batch["token_lengths"],
+                            )["policy_logits"].float()
+                        finite = torch.isfinite(reference_logits) & torch.isfinite(
+                            model_output["policy_logits"]
+                        )
+                        drift = (
+                            model_output["policy_logits"].float()[finite]
+                            - reference_logits[finite]
+                        )
+                        if drift.numel():
+                            log_metrics["model/v13_logit_drift_rms"] = float(
+                                drift.square().mean().sqrt()
+                            )
+                            log_metrics["model/v13_logit_drift_max"] = float(drift.abs().max())
                     if device.type == "cuda":
                         log_metrics.update({
                             "system/gpu_memory_allocated_mb": (
@@ -829,7 +929,7 @@ def _train_worker_impl(
                             if writer is not None:
                                 write_sft_scalars(writer, validation, global_step)
                                 writer.flush()
-                            candidate = float(validation["validation/loss"])
+                            candidate = float(validation["validation/policy_ce"])
                             if candidate < best_validation_loss:
                                 best_validation_loss = candidate
                                 _save_checkpoint(
@@ -900,6 +1000,14 @@ def _train_worker_impl(
                             )
                             model.train()
                         if checkpoint_due:
+                            _save_checkpoint(
+                                output / f"checkpoint_{global_step:05d}.pt",
+                                model, optimizer, scheduler,
+                                config=config, manifest_hash=manifest_hash, epoch=epoch,
+                                global_step=global_step, rank_batches_consumed=progress,
+                                best_validation_loss=best_validation_loss,
+                                best_heuristic_point_delta=best_heuristic_point_delta,
+                            )
                             _save_checkpoint(
                                 output / "latest.pt", model, optimizer, scheduler,
                                 config=config, manifest_hash=manifest_hash, epoch=epoch,
@@ -992,13 +1100,13 @@ def _train_worker_impl(
             config=config, manifest_hash=manifest_hash, epoch=cursor_epoch,
             global_step=global_step, rank_batches_consumed=progress,
             best_validation_loss=min(
-                best_validation_loss, float(metrics["validation/loss"])
+                best_validation_loss, float(metrics["validation/policy_ce"])
             ),
             best_heuristic_point_delta=best_heuristic_point_delta,
             metrics=metrics,
         )
-        if float(metrics["validation/loss"]) < best_validation_loss:
-            best_validation_loss = float(metrics["validation/loss"])
+        if float(metrics["validation/policy_ce"]) < best_validation_loss:
+            best_validation_loss = float(metrics["validation/policy_ce"])
             _save_checkpoint(
                 output / "best.pt", model, optimizer, scheduler,
                 config=config, manifest_hash=manifest_hash, epoch=cursor_epoch,

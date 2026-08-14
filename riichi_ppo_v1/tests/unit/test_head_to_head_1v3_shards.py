@@ -8,6 +8,8 @@ import pytest
 from riichi_ppo_v1.sft.head_to_head_1v3_shards import (
     merge_1v3_shards,
     pooled_bootstrap_ci,
+    validate_1v3_shard_plan,
+    validate_non_overlapping_seed_ranges,
 )
 
 
@@ -39,7 +41,7 @@ def synthetic_shard(index: int, *, seed_base: int = 20260812) -> dict:
         "protocol_version": 1,
         "format": "1v3",
         "hanchan_count": hanchans,
-        "seed_base": seed_base + index,
+        "seed_base": seed_base + index * hanchans,
         "elapsed_s": 20.0 + 0.5 * index,
         "model_a": {
             "checkpoint": f"/tmp/checkpoint_{index:05d}.pt",
@@ -121,6 +123,33 @@ def test_merge_rejects_mismatched_point_diff_samples() -> None:
     ][:-1]
     with pytest.raises(RuntimeError, match="point-diff samples total"):
         merge_1v3_shards(shards, seed_base=20260812, update=30)
+
+
+def test_shard_seed_ranges_are_disjoint_and_overlap_is_rejected() -> None:
+    shards = [synthetic_shard(index) for index in range(10)]
+    validate_non_overlapping_seed_ranges(shards)
+    assert [shard["seed_base"] for shard in shards] == [
+        20260812 + index * 160 for index in range(10)
+    ]
+    shards[1]["seed_base"] = shards[0]["seed_base"] + 1
+    with pytest.raises(RuntimeError, match="seed ranges overlap"):
+        validate_non_overlapping_seed_ranges(shards)
+
+
+def test_project_1v3_protocol_requires_ten_exact_disjoint_shards() -> None:
+    shards = [synthetic_shard(index) for index in range(10)]
+    validate_1v3_shard_plan(
+        shards, seed_base=20260812, hanchans_per_process=160,
+    )
+    with pytest.raises(RuntimeError, match="exactly 10 shards"):
+        validate_1v3_shard_plan(
+            shards[:-1], seed_base=20260812, hanchans_per_process=160,
+        )
+    shards[1]["seed_base"] = shards[0]["seed_base"] + 1
+    with pytest.raises(RuntimeError, match="seed plan differs"):
+        validate_1v3_shard_plan(
+            shards, seed_base=20260812, hanchans_per_process=160,
+        )
 
 
 def test_pooled_bootstrap_ci_is_deterministic() -> None:

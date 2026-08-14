@@ -76,7 +76,7 @@ async def play_connection(
         additional_headers={"Authorization": f"Bearer {token}"},
         open_timeout=15,
         ping_interval=20,
-        ping_timeout=20,
+        ping_timeout=40,
         close_timeout=10,
         max_size=4 * 1024 * 1024,
     ) as websocket:

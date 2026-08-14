@@ -7,6 +7,8 @@ iterations: 5000
 model_size: mid
 context_tokens: 4096
 policy_head_type: isolated_action_query
+offense_fusion: false
+critic_head_type: action_value
 critic_layers: 2
 inference_dtype: bf16
 game_mode: 4p-red-half
@@ -25,7 +27,7 @@ kyokus_per_worker: 1
 # 保留到倍满以上的点差信息，同时限制极少数异常/多倍役满样本。
 kyoku_reward_clip_points: 24000
 gamma: 0.99
-gae_lambda: 0.95
+qboost_lambda: 0.95
 ppo_clip: 0.20
 update_epochs: 4
 minibatch_size: 512
@@ -51,12 +53,12 @@ adam_beta2: 0.999
 adam_epsilon: 0.00001
 weight_decay: 0.01
 
-# 标准 SFT → PPO 衔接：actor-only SFT 导入后将 value head 置零，先固定
-# actor/shared 表征训练私有 critic，再以冻结的 SFT actor 作为 KL reference。
-zero_value_head_on_sft_init: true
+# 标准 SFT → PPO 衔接：actor-only SFT 导入后将 Q head 置零，先固定
+# actor/shared 表征训练私有 Q-Critic，再以冻结的 SFT actor 作为 KL reference。
+zero_q_head_on_sft_init: true
 critic_bootstrap_updates: 40
 critic_bootstrap_learning_rate: 0.00002
-# 正式 PPO 中 value loss 回传到 shared public backbone 的梯度倍率。
+# 正式 PPO 中 Q loss 回传到 shared public backbone 的梯度倍率。
 critic_public_grad_scale: 0.25
 sft_kl_coef_start: 0.02
 sft_kl_coef_end: 0.002

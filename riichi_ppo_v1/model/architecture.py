@@ -39,6 +39,8 @@ class ModelConfig:
     rope_base: float = 10_000.0
     eps: float = 1e-6
     policy_head_type: str = "legacy_fixed"
+    offense_fusion: bool = False
+    critic_head_type: str = "state_value"
 
     def __post_init__(self) -> None:
         if self.d_model != self.query_heads * self.head_dim:
@@ -55,6 +57,10 @@ class ModelConfig:
             raise ValueError("critic_layers must be positive")
         if self.policy_head_type not in {"legacy_fixed", "isolated_action_query"}:
             raise ValueError("policy_head_type must be legacy_fixed or isolated_action_query")
+        if self.offense_fusion and self.policy_head_type != "isolated_action_query":
+            raise ValueError("offense_fusion requires isolated_action_query")
+        if self.critic_head_type not in {"state_value", "action_value"}:
+            raise ValueError("critic_head_type must be state_value or action_value")
 
     @classmethod
     def preset(cls, size: str) -> "ModelConfig":
@@ -293,7 +299,20 @@ class KyokuTransformerActorCritic(nn.Module):
                 nn.SiLU(),
                 nn.Linear(self.config.d_model, 1),
             )
-        self.value_head = nn.Linear(self.config.d_model, 1)
+        if self.config.offense_fusion:
+            self.offense_projection: nn.Module | None = nn.Linear(
+                self.config.d_model, self.config.d_model
+            )
+            nn.init.zeros_(self.offense_projection.weight)
+            nn.init.zeros_(self.offense_projection.bias)
+        else:
+            self.offense_projection = None
+        if self.config.critic_head_type == "action_value":
+            self.q_head: nn.Module | None = nn.Linear(self.config.d_model, NUM_ACTIONS)
+            self.value_head: nn.Module | None = None
+        else:
+            self.value_head = nn.Linear(self.config.d_model, 1)
+            self.q_head = None
         nn.init.normal_(self.value_query, std=self.config.d_model ** -0.5)
 
     def _isolated_public(
@@ -320,7 +339,10 @@ class KyokuTransformerActorCritic(nn.Module):
         raw = actor.new_zeros((batch, NUM_ACTIONS), dtype=torch.float32)
         defense = defense_ids.ge(0)
         rows, positions = torch.nonzero(defense, as_tuple=True)
-        scores = self.policy_head(actor[rows, positions]).squeeze(-1).float()
+        policy_hidden = actor[rows, positions]
+        if self.offense_projection is not None:
+            policy_hidden = policy_hidden + self.offense_projection(actor[rows, positions - 1])
+        scores = self.policy_head(policy_hidden).squeeze(-1).float()
         raw[rows, defense_ids[rows, positions]] = scores
         if legal_mask is None:
             inferred = torch.zeros_like(raw, dtype=torch.bool)
@@ -408,9 +430,13 @@ class KyokuTransformerActorCritic(nn.Module):
             public_lengths = state_mask.long().sum(-1)
             public_capacity = int(public_lengths.max().item())
             packed_public = public_sequence.new_zeros((batch, public_capacity, width))
-            for row in range(batch):
-                state_length = int(public_lengths[row])
-                packed_public[row, :state_length] = public_sequence[row, state_mask[row]]
+            source_rows, source_positions = torch.nonzero(state_mask, as_tuple=True)
+            packed_positions = state_mask.long().cumsum(dim=1)[
+                source_rows, source_positions,
+            ] - 1
+            packed_public[source_rows, packed_positions] = public_sequence[
+                source_rows, source_positions,
+            ]
             public_sequence = packed_public
         else:
             sequence = tokens.new_zeros((batch, padded + 1, width))
@@ -479,8 +505,13 @@ class KyokuTransformerActorCritic(nn.Module):
                 if legal_mask.shape != (batch, NUM_ACTIONS):
                     raise ValueError("legal_mask must be [batch, 241]")
                 logits = raw.masked_fill(~legal_mask.to(device=raw.device, dtype=torch.bool), float("-inf"))
-        return {
+        output = {
             "raw_policy_logits": raw,
             "policy_logits": logits,
-            "value": self.value_head(critic_hidden).squeeze(-1).float(),
         }
+        if self.q_head is not None:
+            output["q_values"] = self.q_head(critic_hidden).float()
+        else:
+            assert self.value_head is not None
+            output["value"] = self.value_head(critic_hidden).squeeze(-1).float()
+        return output

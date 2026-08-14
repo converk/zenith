@@ -1,4 +1,4 @@
-"""Rollout records and kyoku-local GAE."""
+"""Rollout records and kyoku-local Expected-SARSA(lambda) Q-boosting."""
 
 from __future__ import annotations
 
@@ -16,27 +16,33 @@ class Transition:
     legal_mask: np.ndarray
     action: int
     logprob: float
-    value: float
+    q_taken: float
+    expected_q: float = 0.0
     reward: float = 0.0
     kyoku_reward: float = 0.0
+    hanchan_rank_reward: float = 0.0
     done: bool = False
     advantage: float = 0.0
-    return_: float = 0.0
+    q_target: float = 0.0
     critic_factors: np.ndarray | None = None
     critic_length: int = 0
-def finish_kyoku(transitions: list[Transition], gamma: float, gae_lambda: float) -> list[Transition]:
-    """Mark one kyoku terminal and calculate GAE without cross-kyoku leakage."""
+
+
+def finish_kyoku_qboost(
+    transitions: list[Transition], gamma: float, qboost_lambda: float,
+) -> list[Transition]:
+    """Mark one kyoku terminal and calculate a seat-local Expected-SARSA trace."""
     if not transitions:
         return []
     transitions[-1].done = True
-    gae = 0.0
+    trace = 0.0
     for index in range(len(transitions) - 1, -1, -1):
         current = transitions[index]
-        next_value = 0.0 if current.done else transitions[index + 1].value
-        delta = current.reward + gamma * next_value - current.value
-        gae = delta + gamma * gae_lambda * (0.0 if current.done else gae)
-        current.advantage = float(np.float32(gae))
-        current.return_ = float(np.float32(current.advantage + current.value))
+        next_expected_q = 0.0 if current.done else transitions[index + 1].expected_q
+        delta = current.reward + gamma * next_expected_q - current.q_taken
+        trace = delta + gamma * qboost_lambda * (0.0 if current.done else trace)
+        current.q_target = float(np.float32(current.q_taken + trace))
+        current.advantage = float(np.float32(current.q_target - current.expected_q))
     return transitions
 
 

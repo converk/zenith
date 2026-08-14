@@ -25,6 +25,7 @@ from riichi_ppo_v1.training.learner import (
     normalize_value_targets,
     scheduled_entropy_coefficient,
     scheduled_learning_rate,
+    scheduled_u_coefficient,
     transfer_batch_to_device,
     value_loss_values,
 )
@@ -38,7 +39,7 @@ def transition(value: float) -> Transition:
         np.eye(1, 241, 0, dtype=np.bool_)[0], 0, 0.0, value,
     )
     item.advantage = value
-    item.return_ = value
+    item.q_target = value
     return item
 
 
@@ -86,6 +87,12 @@ def test_entropy_schedule_linearly_anneals() -> None:
     assert np.isclose(scheduled_entropy_coefficient(0.01, 0.001, update=0, total_updates=100), 0.01)
     assert np.isclose(scheduled_entropy_coefficient(0.01, 0.001, update=50, total_updates=100), 0.0055)
     assert np.isclose(scheduled_entropy_coefficient(0.01, 0.001, update=100, total_updates=100), 0.001)
+
+
+def test_u_shaped_sft_kl_schedule_has_exact_joint_training_anchors() -> None:
+    assert scheduled_u_coefficient(0.010, 0.002, 0.005, 1, 760) == 0.010
+    assert scheduled_u_coefficient(0.010, 0.002, 0.005, 380, 760) == 0.002
+    assert scheduled_u_coefficient(0.010, 0.002, 0.005, 760, 760) == 0.005
 
 
 def test_value_loss_supports_huber_and_mse() -> None:
@@ -277,10 +284,10 @@ def test_cpu_batch_modes_fall_back_to_streaming() -> None:
         metrics = learner.update([transition(0.2), transition(-0.1), transition(0.3)], shuffle_seed=7)
         assert metrics["update/batch_mode_id"] == 0.0
         assert metrics["update/executed_minibatches"] == 2.0
-        assert metrics["value_loss_raw"] >= 0.0
-        assert metrics["value_target_std"] >= 0.0
-        assert metrics["value_prediction_std"] >= 0.0
-        assert metrics["value_explained_variance"] == metrics["explained_variance"]
+        assert metrics["q_loss_raw"] >= 0.0
+        assert metrics["q_target_std"] >= 0.0
+        assert metrics["q_taken_std"] >= 0.0
+        assert metrics["q_explained_variance"] >= 0.0
         assert metrics["grad_norm_post_clip"] <= learner.hp["max_grad_norm"]
         assert {"grad_norm_actor", "grad_norm_critic", "grad_norm_shared"}.issubset(metrics)
 
@@ -337,7 +344,7 @@ def test_checkpoint_save_is_atomic_without_tmp_leftovers() -> None:
         assert payload["iteration"] == 3
 
 
-def test_best_heuristic_sft_checkpoint_strict_loads_with_zeroed_value_head() -> None:
+def test_best_heuristic_sft_checkpoint_migrates_with_zeroed_q_head() -> None:
     checkpoint = (
         Path(__file__).resolve().parents[3]
         / "checkpoints/train_riichi_v13_sft/best_heuristic.pt"
@@ -349,7 +356,7 @@ def test_best_heuristic_sft_checkpoint_strict_loads_with_zeroed_value_head() -> 
         "cpu",
         **learner_kwargs(
             policy_head_type="isolated_action_query",
-            zero_value_head_on_sft_init=True,
+            zero_q_head_on_sft_init=True,
         ),
     )
     learner.load_model_weights(checkpoint)
@@ -358,15 +365,15 @@ def test_best_heuristic_sft_checkpoint_strict_loads_with_zeroed_value_head() -> 
     state = learner.model.state_dict()
     assert any(name.startswith("critic_embedding") for name in state)
     assert any(name.startswith("critic_backbone") for name in state)
-    assert "value_head.weight" in state
+    assert "q_head.weight" in state
     torch.testing.assert_close(
-        learner.model.value_head.weight,
-        torch.zeros_like(learner.model.value_head.weight),
+        learner.model.q_head.weight,
+        torch.zeros_like(learner.model.q_head.weight),
     )
-    if learner.model.value_head.bias is not None:
+    if learner.model.q_head.bias is not None:
         torch.testing.assert_close(
-            learner.model.value_head.bias,
-            torch.zeros_like(learner.model.value_head.bias),
+            learner.model.q_head.bias,
+            torch.zeros_like(learner.model.q_head.bias),
         )
     assert learner.reference_model is not None
 
@@ -425,7 +432,7 @@ def test_actor_only_sft_initialization_bootstraps_critic_before_policy() -> None
         sft_kl_coef_start=0.02,
         sft_kl_coef_end=0.0,
         sft_kl_anneal_updates=10,
-        zero_value_head_on_sft_init=True,
+        zero_q_head_on_sft_init=True,
         update_epochs=1,
         minibatch_size=2,
     )
@@ -447,12 +454,12 @@ def test_actor_only_sft_initialization_bootstraps_critic_before_policy() -> None
         assert learner.reference_model is not None
         assert not any(parameter.requires_grad for parameter in learner.reference_model.parameters())
         torch.testing.assert_close(
-            learner.model.value_head.weight,
-            torch.zeros_like(learner.model.value_head.weight),
+            learner.model.q_head.weight,
+            torch.zeros_like(learner.model.q_head.weight),
         )
         actor_before = learner.model.policy_head.weight.detach().clone()
         shared_before = learner.model.token_embedding.table.weight.detach().clone()
-        critic_before = learner.model.value_head.weight.detach().clone()
+        critic_before = learner.model.q_head.weight.detach().clone()
         rows = [transition(1.0), transition(-1.0)]
         for row in rows:
             row.legal_mask[:2] = True
@@ -468,7 +475,7 @@ def test_actor_only_sft_initialization_bootstraps_critic_before_policy() -> None
         assert metrics["system/critic_public_grad_scale"] == 0.0
         torch.testing.assert_close(learner.model.policy_head.weight, actor_before)
         torch.testing.assert_close(learner.model.token_embedding.table.weight, shared_before)
-        assert not torch.equal(learner.model.value_head.weight, critic_before)
+        assert not torch.equal(learner.model.q_head.weight, critic_before)
         joint_metrics = learner.update(rows, shuffle_seed=4)
         assert joint_metrics["training/critic_bootstrap"] == 0.0
         assert joint_metrics["training/policy_update"] == 1.0

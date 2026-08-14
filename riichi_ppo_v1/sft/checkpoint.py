@@ -65,6 +65,71 @@ def load_v13_weights_only(
     return model
 
 
+def load_actor_weights_for_config(
+    path: str | Path,
+    *,
+    target_config: ModelConfig,
+    device: torch.device | str = "cpu",
+) -> KyokuTransformerActorCritic:
+    """Load an SFT actor into either its native or the V15-compatible topology.
+
+    The only permitted topology migration adds the zero-initialized offense
+    projection and replaces the unused SFT value head with a zero-initialized
+    action-value head.  Every shared and actor tensor remains strict.
+    """
+    source = load_v13_weights_only(path, device="cpu")
+    if source.config == target_config:
+        source.to(device)
+        return source
+    source_values = asdict(source.config)
+    target_values = asdict(target_config)
+    permitted = {"offense_fusion", "critic_head_type"}
+    if any(
+        source_values[name] != target_values[name]
+        for name in source_values.keys() - permitted
+    ):
+        raise RuntimeError("SFT initialization model_config differs outside V15 topology fields")
+    if source.config.offense_fusion or source.config.critic_head_type != "state_value":
+        raise RuntimeError("only a legacy state-value SFT model can be migrated to V15")
+    if target_config.critic_head_type != "action_value":
+        raise RuntimeError("V15 migration requires an action-value target")
+
+    target = KyokuTransformerActorCritic(target_config)
+    source_state = source.state_dict()
+    target_state = target.state_dict()
+    ignored_source = {"value_head.weight", "value_head.bias"}
+    new_target = {
+        name for name in (
+            "offense_projection.weight", "offense_projection.bias",
+            "q_head.weight", "q_head.bias",
+        ) if name in target_state
+    }
+    unexpected = set(source_state) - set(target_state) - ignored_source
+    missing = set(target_state) - set(source_state) - new_target
+    if unexpected or missing:
+        raise RuntimeError(
+            "unexpected V13→V15 state difference: "
+            f"unexpected={sorted(unexpected)} missing={sorted(missing)}"
+        )
+    compatible = {
+        name: value for name, value in source_state.items()
+        if name in target_state
+    }
+    incompatible = target.load_state_dict(compatible, strict=False)
+    if set(incompatible.missing_keys) != new_target or incompatible.unexpected_keys:
+        raise RuntimeError("V13→V15 migration did not match the explicit allowlist")
+    with torch.no_grad():
+        if target.offense_projection is not None:
+            target.offense_projection.weight.zero_()
+            target.offense_projection.bias.zero_()
+        assert target.q_head is not None
+        target.q_head.weight.zero_()
+        target.q_head.bias.zero_()
+    target.to(device)
+    target.eval()
+    return target
+
+
 def load_exact_resume(
     path: str | Path,
     *,
@@ -72,6 +137,7 @@ def load_exact_resume(
     training_mode: str,
     dataset_manifest_hash: str,
     world_size: int,
+    trainable_scope: str | None = None,
 ) -> dict[str, Any]:
     """Load a complete current-format training state with no fallbacks."""
     payload = torch.load(Path(path), map_location="cpu", weights_only=False)
@@ -93,6 +159,10 @@ def load_exact_resume(
         raise RuntimeError("exact resume checkpoint has an incompatible model_config")
     if training_mode not in TRAINING_MODES or payload["training_mode"] != training_mode:
         raise RuntimeError("exact resume checkpoint has an incompatible training_mode")
+    if trainable_scope is not None:
+        saved_config = _require_mapping(payload, "sft_config")
+        if saved_config.get("trainable_scope", "full_actor") != trainable_scope:
+            raise RuntimeError("exact resume checkpoint has an incompatible trainable_scope")
     if payload["dataset_manifest_hash"] != dataset_manifest_hash:
         raise RuntimeError("exact resume checkpoint belongs to a different dataset manifest")
     cursor = _require_mapping(payload, "data_cursor")

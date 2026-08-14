@@ -14,6 +14,7 @@ from riichi_ppo_v1.sft.contract import (
     DATA_PLAN_VERSION,
     SFT_CONTRACT_VERSION,
     validate_v13_manifest,
+    validate_v15_reused_manifest,
 )
 
 
@@ -55,7 +56,7 @@ def test_exact_resume_requires_current_complete_contract_and_world_size() -> Non
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _step: 1.0)
     payload = checkpoint_payload(
-        model, optimizer, scheduler, config={}, manifest_hash="manifest",
+        model, optimizer, scheduler, config={"trainable_scope": "full_actor"}, manifest_hash="manifest",
         mode="actor_only", epoch=2, global_step=7, rank_batches_consumed=[3, 4],
         best_validation_loss=1.0, best_heuristic_point_delta=2.0, metrics={},
         rank_rng_states=[_rng_state(), _rng_state()],
@@ -65,13 +66,19 @@ def test_exact_resume_requires_current_complete_contract_and_world_size() -> Non
         torch.save(payload, path)
         loaded = load_exact_resume(
             path, model_config=model.config, training_mode="actor_only",
-            dataset_manifest_hash="manifest", world_size=2,
+            dataset_manifest_hash="manifest", world_size=2, trainable_scope="full_actor",
         )
         assert loaded["data_plan_version"] == DATA_PLAN_VERSION
         with pytest.raises(RuntimeError, match="different world size"):
             load_exact_resume(
                 path, model_config=model.config, training_mode="actor_only",
-                dataset_manifest_hash="manifest", world_size=1,
+                dataset_manifest_hash="manifest", world_size=1, trainable_scope="full_actor",
+            )
+        with pytest.raises(RuntimeError, match="trainable_scope"):
+            load_exact_resume(
+                path, model_config=model.config, training_mode="actor_only",
+                dataset_manifest_hash="manifest", world_size=2,
+                trainable_scope="offense_projection",
             )
 
 
@@ -95,3 +102,29 @@ def test_v13_training_modules_do_not_import_legacy_v11() -> None:
     package = Path(__file__).parents[2]
     for relative in ("sft/data.py", "sft/precompute.py", "sft/train.py", "sft/checkpoint.py"):
         assert "legacy.v11" not in (package / relative).read_text(encoding="utf-8")
+
+
+def test_v15_reused_cache_requires_complete_legal_and_teacher_coverage() -> None:
+    manifest = {
+        "format": "riichi-sft-encoded-v3",
+        "token_schema_version": 13,
+        "feature_schema_sha256": "ad8dc752f116d6d6430930e16c6a17322b3da980549d3350a5ddc461ee123036",
+        "rust_analysis_version": 4,
+        "decision_analysis_version": 16,
+        "counts": {
+            "train_kyokus": 1, "validation_kyokus": 1,
+            "train_decisions": 1, "validation_decisions": 1,
+        },
+        "field_statistics": {
+            "legal_action_id_counts": [1] * 241,
+            "expert_action_id_counts": [1] * 241,
+        },
+        "complete_action_coverage_required": True,
+        "ordered_public_history_verified": True,
+        "audit_skipped": False,
+        "audit_reports": ["audit.json"],
+    }
+    validate_v15_reused_manifest(manifest)
+    manifest["field_statistics"]["expert_action_id_counts"][240] = 0
+    with pytest.raises(RuntimeError, match="complete 241-action"):
+        validate_v15_reused_manifest(manifest)

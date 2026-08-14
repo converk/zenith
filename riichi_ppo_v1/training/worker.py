@@ -22,9 +22,10 @@ from .rewards import (
     DecisionAnalysisBatch,
     EfficiencyAnalyzer,
     PublicStateTracker,
+    terminal_hanchan_rank_rewards,
     terminal_kyoku_reward,
 )
-from .trajectory import Transition, finish_kyoku
+from .trajectory import Transition, finish_kyoku_qboost
 
 
 def active_decisions(
@@ -329,7 +330,8 @@ if ray is not None:
             token_factors, token_numeric, token_lengths, legal, critic_factors, critic_lengths = prepared
             action_ids = [int(value) for value in result["action_ids"]]
             logprobs = [float(value) for value in result["logprobs"]]
-            values = [float(value) for value in result["values"]]
+            q_taken = [float(value) for value in result["q_taken"]]
+            expected_q = [float(value) for value in result["expected_q"]]
             with self.profiler.stage("rollout/model_action_decode"):
                 actions = self.bridge.decode(decisions, action_ids)
             self.model_decisions += len(decisions)
@@ -342,7 +344,8 @@ if ray is not None:
                         transition = Transition(
                             token_factors[row, : token_lengths[row]].copy(),
                             token_numeric[row, : token_lengths[row]].copy(), int(token_lengths[row]),
-                            legal[row].copy(), action_id, logprobs[row], values[row],
+                            legal[row].copy(), action_id, logprobs[row], q_taken[row],
+                            expected_q=expected_q[row],
                             critic_factors=critic_factors[row, : critic_lengths[row]].copy(),
                             critic_length=int(critic_lengths[row]),
                         )
@@ -422,6 +425,15 @@ if ray is not None:
                 for decision in decisions:
                     policy = self.lineups[decision.env_index][decision.seat_id]
                     by_policy.setdefault(policy, []).append(decision)
+                pending_model_requests: list[
+                    tuple[
+                        str,
+                        list[Decision],
+                        DecisionAnalysisBatch,
+                        Any,
+                        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+                    ]
+                ] = []
                 for policy, policy_decisions in by_policy.items():
                     if policy == "random":
                         actions = []
@@ -453,8 +465,26 @@ if ray is not None:
                     request, prepared = self._submit_model_actions(
                         policy_decisions, namespace, greedy, analysis_batch,
                     )
+                    pending_model_requests.append((
+                        policy, policy_decisions, analysis_batch, request, prepared,
+                    ))
+
+                # Submit every policy namespace before blocking.  This lets the
+                # inference actor overlap the first request with preparation of
+                # the remaining namespaces and exposes more requests to its
+                # cross-worker batcher at the same time.
+                if pending_model_requests:
                     with self.profiler.stage("inference/rpc_wait"):
-                        result = ray.get(request)
+                        model_results = ray.get([
+                            request
+                            for _policy, _decisions, _analysis, request, _prepared
+                            in pending_model_requests
+                        ])
+                else:
+                    model_results = []
+                for (
+                    policy, policy_decisions, analysis_batch, _request, prepared,
+                ), result in zip(pending_model_requests, model_results, strict=True):
                     record_policy = should_record_transition(policy)
                     actions, transitions = self._model_actions(
                         policy_decisions, prepared, result, record_policy, analysis_batch,
@@ -485,6 +515,10 @@ if ray is not None:
                     ended_kyoku_indices.append(env_index)
                     self.match_kyoku_counts[env_index] += 1
                     scores = [int(x) for x in scores_by_env[env_index]]
+                    rank_rewards = (
+                        terminal_hanchan_rank_rewards(scores)
+                        if done[env_index] else (0.0, 0.0, 0.0, 0.0)
+                    )
                     current_seats = [
                         seat for seat, policy in enumerate(self.lineups[env_index])
                         if policy == "current"
@@ -497,18 +531,22 @@ if ray is not None:
                         open_meld_count=int(self.public.completed_open_meld_counts[env_index]),
                     )
                     for seat in range(NUM_PLAYERS):
-                        reward = terminal_kyoku_reward(
+                        kyoku_reward = terminal_kyoku_reward(
                             scores[seat] - self.start_scores[env_index][seat],
                             self.kyoku_reward_clip_points,
                         )
+                        rank_reward = float(rank_rewards[seat])
+                        reward = kyoku_reward + rank_reward
                         pending = self.pending[env_index][seat]
                         if self.lineups[env_index][seat] == "current":
-                            with self.profiler.stage("rollout/finish_kyoku_gae"):
+                            with self.profiler.stage("rollout/finish_kyoku_qboost"):
                                 if pending:
-                                    pending[-1].kyoku_reward = reward
+                                    pending[-1].kyoku_reward = kyoku_reward
+                                    pending[-1].hanchan_rank_reward = rank_reward
                                     pending[-1].reward += reward
-                                completed.extend(finish_kyoku(
-                                    pending, float(self.config["gamma"]), float(self.config["gae_lambda"]),
+                                completed.extend(finish_kyoku_qboost(
+                                    pending, float(self.config["gamma"]),
+                                    float(self.config["qboost_lambda"]),
                                 ))
                         rewards.append(reward)
                         self.pending[env_index][seat] = []

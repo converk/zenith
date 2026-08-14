@@ -1,7 +1,7 @@
 """Synchronous sharded 1v3 evaluation for V14 PPO checkpoints.
 
-Each update checkpoint is evaluated against the frozen V13 SFT baseline as 10
-parallel subprocesses x 160 hanchans (1600 total).  The training loop blocks on
+Each update checkpoint is evaluated against the frozen V13 SFT baseline in
+parallel subprocesses with disjoint contiguous seed ranges. The training loop blocks on
 this function before continuing to the next update, so a failed shard aborts
 training instead of silently producing a partial curve.
 """
@@ -18,6 +18,8 @@ from typing import Any
 
 import numpy as np
 
+REQUIRED_1V3_PROCESSES = 10
+
 
 def shard_summary_path(output_dir: str | Path, update: int) -> Path:
     return Path(output_dir) / f"vs_sft_u{int(update):03d}.json"
@@ -27,6 +29,52 @@ def shard_path(output_dir: str | Path, update: int, shard: int) -> Path:
     return Path(output_dir) / "shards" / (
         f"vs_sft_u{int(update):03d}_shard{int(shard):02d}.json"
     )
+
+
+def validate_non_overlapping_seed_ranges(shards: list[dict[str, Any]]) -> None:
+    """Require every shard's contiguous per-environment seed range to be disjoint."""
+    ranges = sorted(
+        (
+            int(shard["seed_base"]),
+            int(shard["seed_base"]) + int(shard["hanchan_count"]),
+        )
+        for shard in shards
+    )
+    for previous, current in zip(ranges, ranges[1:], strict=False):
+        if current[0] < previous[1]:
+            raise RuntimeError(
+                "1v3 shard seed ranges overlap: "
+                f"[{previous[0]}, {previous[1]}) and [{current[0]}, {current[1]})"
+            )
+
+
+def validate_1v3_shard_plan(
+    shards: list[dict[str, Any]],
+    *,
+    seed_base: int,
+    hanchans_per_process: int,
+) -> None:
+    """Enforce the project-wide 10-process, disjoint-seed 1v3 protocol."""
+    if len(shards) != REQUIRED_1V3_PROCESSES:
+        raise RuntimeError(
+            f"1v3 evaluation requires exactly {REQUIRED_1V3_PROCESSES} shards; "
+            f"got {len(shards)}"
+        )
+    expected_bases = [
+        int(seed_base) + shard * int(hanchans_per_process)
+        for shard in range(REQUIRED_1V3_PROCESSES)
+    ]
+    actual = sorted(
+        (int(shard["seed_base"]), int(shard["hanchan_count"]))
+        for shard in shards
+    )
+    expected = [(base, int(hanchans_per_process)) for base in expected_bases]
+    if actual != expected:
+        raise RuntimeError(
+            "1v3 shard seed plan differs from the required disjoint allocation: "
+            f"expected={expected} actual={actual}"
+        )
+    validate_non_overlapping_seed_ranges(shards)
 
 
 def pooled_bootstrap_ci(
@@ -81,6 +129,7 @@ def merge_1v3_shards(
     """Merge 10x160 synthetic or real shards into one 1600-hanchan summary."""
     if not shards:
         raise ValueError("cannot merge an empty shard list")
+    validate_non_overlapping_seed_ranges(shards)
     total = sum(int(shard["hanchan_count"]) for shard in shards)
     point_diffs = np.concatenate([
         np.asarray(shard["model_a"]["point_diff_samples"], dtype=np.float64)
@@ -182,14 +231,18 @@ def run_sharded_1v3(
     summary_path = shard_summary_path(output, update)
     if summary_path.is_file():
         return json.loads(summary_path.read_text(encoding="utf-8"))
-    if processes <= 0 or hanchans_per_process <= 0:
-        raise ValueError("processes and hanchans_per_process must be positive")
+    if int(processes) != REQUIRED_1V3_PROCESSES:
+        raise ValueError(
+            f"all 1v3 evaluations require exactly {REQUIRED_1V3_PROCESSES} processes"
+        )
+    if hanchans_per_process <= 0:
+        raise ValueError("hanchans_per_process must be positive")
     if len(devices) < 2 or processes % len(devices) != 0:
         raise ValueError("processes must be divisible by the device count")
     commands: list[tuple[int, str, list[str], dict[str, str]]] = []
     for shard in range(int(processes)):
         shard_output = shard_path(output, update, shard)
-        shard_seed = int(seed_base) + shard
+        shard_seed = int(seed_base) + shard * int(hanchans_per_process)
         device = str(devices[shard // (int(processes) // len(devices))])
         environment = dict(os.environ)
         environment["CUDA_DEVICE"] = device
@@ -242,6 +295,11 @@ def run_sharded_1v3(
     for shard, shard_output, _command, _environment in commands:
         with open(shard_output, encoding="utf-8") as file:
             shards.append(json.load(file))
+    validate_1v3_shard_plan(
+        shards,
+        seed_base=int(seed_base),
+        hanchans_per_process=int(hanchans_per_process),
+    )
     summary = merge_1v3_shards(shards, seed_base=seed_base, update=update)
     temporary = summary_path.with_suffix(summary_path.suffix + ".tmp")
     temporary.write_text(

@@ -6,6 +6,7 @@ import numpy as np
 
 from riichienv import Action, ActionType, Conditions, HandEvaluator, Meld, MeldType
 
+from riichi_ppo_v1.training.rewards import decision as decision_module
 from riichi_ppo_v1.model.bridge import Decision
 from riichi_ppo_v1.model.feature_schema import BREAK_MELD
 from riichi_ppo_v1.training.opponents.heuristic import HeuristicPolicy
@@ -244,6 +245,28 @@ def test_parallel_best_teacher_and_candidate_tokens_align_to_legal_mask() -> Non
     assert np.array_equal(factors[0][0::2, 2], factors[0][1::2, 2])
     assert np.all(factors[0][0::2, 9] == 1)
     assert np.all(factors[0][1::2, 9] == 2)
+
+
+def test_candidate_tokens_reuse_build_normalization_and_remaining(
+    monkeypatch,
+) -> None:
+    hand = [0, 4, 12, 16, 20, 21, 40, 72, 80, 84, 96, 104, 108, 109]
+    actions = [Action(ActionType.DISCARD, tile) for tile in hand]
+    obs = observation(hand, actions)
+    decision = Decision(0, 0, obs)
+    batch = DecisionAnalysisBatch.build([decision], analyzer=EfficiencyAnalyzer())
+    legal = np.zeros((1, 241), dtype=bool)
+    for candidate in batch.for_decision(decision).candidates:
+        legal[0, candidate.action_id] = True
+
+    def unexpected_recompute(*_args, **_kwargs):
+        raise AssertionError("step-local normalized data should be reused")
+
+    monkeypatch.setattr(decision_module, "action_id", unexpected_recompute)
+    monkeypatch.setattr(decision_module, "public_remaining", unexpected_recompute)
+    factors, numeric = batch.candidate_tokens([decision], legal)
+    assert factors[0].shape[0] == 2 * int(legal.sum())
+    assert numeric[0].shape[0] == factors[0].shape[0]
 
 
 def test_ankan_and_kakan_simulations_keep_all_four_kan_tiles() -> None:

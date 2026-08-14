@@ -49,6 +49,10 @@ def _mean(values: list[float]) -> float:
     return float(np.mean(values)) if values else 0.0
 
 
+def _std(values: list[float]) -> float:
+    return float(np.std(values)) if values else 0.0
+
+
 def _rate(numerator: float, denominator: float) -> float:
     return float(numerator / denominator) if denominator else 0.0
 
@@ -105,6 +109,7 @@ class SemanticMetrics:
     rewards: list[float] = field(default_factory=list)
     reward_efficiency: list[float] = field(default_factory=list)
     reward_kyoku: list[float] = field(default_factory=list)
+    reward_hanchan_rank: list[float] = field(default_factory=list)
     reward_weighted_efficiency: list[float] = field(default_factory=list)
     reward_weighted_kyoku: list[float] = field(default_factory=list)
     completed_matches: int = 0
@@ -182,8 +187,10 @@ class SemanticMetrics:
         efficiency = float(getattr(transition, "discard_regret", 0.0))
         efficiency_weight = float(getattr(transition, "discard_weight", 0.0))
         kyoku = float(getattr(transition, "kyoku_reward"))
+        hanchan_rank = float(getattr(transition, "hanchan_rank_reward", 0.0))
         self.rewards.append(float(getattr(transition, "reward")))
         self.reward_efficiency.append(efficiency); self.reward_kyoku.append(kyoku)
+        self.reward_hanchan_rank.append(hanchan_rank)
         self.reward_weighted_efficiency.append(efficiency_weight * efficiency)
         self.reward_weighted_kyoku.append(kyoku)
 
@@ -435,9 +442,11 @@ class SemanticMetrics:
             result[f"{prefix}/breakdown/{group}/draw_rate"] = _rate(
                 self.kyoku_group_draws[group], count,
             )
-        for name, values in (("efficiency", self.reward_efficiency), ("kyoku", self.reward_kyoku),
+        for name, values in (("total", self.rewards), ("efficiency", self.reward_efficiency), ("kyoku", self.reward_kyoku),
+                             ("hanchan_rank", self.reward_hanchan_rank),
                              ("weighted_efficiency", self.reward_weighted_efficiency), ("weighted_kyoku", self.reward_weighted_kyoku)):
             result[f"{prefix}/reward/{name}_mean"] = _mean(values)
+            result[f"{prefix}/reward/{name}_std"] = _std(values)
         total_seats = sum(self.policy_seats.values())
         total_decisions = sum(self.policy_decisions.values())
         result[f"{prefix}/opponents/current_seat_fraction"] = _rate(self.policy_seats["current"], total_seats)
@@ -457,13 +466,17 @@ class RollingKyokuMetrics:
 
 def ppo_buffer_metrics(transitions: Iterable[object]) -> dict[str, float]:
     rows = list(transitions)
-    values = np.asarray([float(item.value) for item in rows], dtype=np.float64)
-    returns = np.asarray([float(item.return_) for item in rows], dtype=np.float64)
+    q_taken = np.asarray([float(item.q_taken) for item in rows], dtype=np.float64)
+    expected_q = np.asarray([float(item.expected_q) for item in rows], dtype=np.float64)
+    q_targets = np.asarray([float(item.q_target) for item in rows], dtype=np.float64)
     advantages = np.asarray([float(item.advantage) for item in rows], dtype=np.float64)
-    variance = float(np.var(returns))
-    explained = 0.0 if variance <= 1e-12 else 1.0 - float(np.var(returns - values)) / variance
-    result = {"explained_variance": explained}
-    for name, values_ in (("old_value", values), ("return", returns), ("advantage", advantages)):
+    variance = float(np.var(q_targets))
+    explained = 0.0 if variance <= 1e-12 else 1.0 - float(np.var(q_targets - q_taken)) / variance
+    result = {"q_explained_variance": explained}
+    for name, values_ in (
+        ("q_taken", q_taken), ("expected_q", expected_q),
+        ("q_target", q_targets), ("qboost_advantage", advantages),
+    ):
         result[f"buffer/{name}_mean"] = float(values_.mean()) if len(values_) else 0.0
         result[f"buffer/{name}_std"] = float(values_.std()) if len(values_) else 0.0
     return result

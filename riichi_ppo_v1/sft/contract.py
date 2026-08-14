@@ -63,6 +63,34 @@ def validate_v13_manifest(manifest: Mapping[str, Any]) -> None:
         )
 
 
+def validate_v15_reused_manifest(manifest: Mapping[str, Any]) -> None:
+    """Fail closed on the immutable V13 cache fields required by V15 SFT."""
+    validate_v13_manifest(manifest)
+    counts = manifest.get("counts")
+    statistics = manifest.get("field_statistics")
+    if not isinstance(counts, Mapping) or any(
+        int(counts.get(name, 0)) <= 0
+        for name in ("train_kyokus", "validation_kyokus", "train_decisions", "validation_decisions")
+    ):
+        raise RuntimeError("V15 SFT requires positive train/validation kyoku and decision counts")
+    if not isinstance(statistics, Mapping):
+        raise RuntimeError("V15 SFT requires audited field_statistics")
+    for name in ("legal_action_id_counts", "expert_action_id_counts"):
+        coverage = statistics.get(name)
+        if (
+            not isinstance(coverage, list)
+            or len(coverage) != 241
+            or any(int(value) <= 0 for value in coverage)
+        ):
+            raise RuntimeError(f"V15 SFT requires complete 241-action {name}")
+    if manifest.get("complete_action_coverage_required") is not True:
+        raise RuntimeError("V15 SFT manifest does not require complete action coverage")
+    if manifest.get("ordered_public_history_verified") is not True:
+        raise RuntimeError("V15 SFT manifest lacks ordered public-history verification")
+    if manifest.get("audit_skipped") is not False or not manifest.get("audit_reports"):
+        raise RuntimeError("V15 SFT requires completed cache audit reports")
+
+
 def training_mode(config: Mapping[str, Any]) -> str:
     if bool(config["train_critic"]):
         return "joint_actor_critic"

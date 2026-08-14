@@ -31,6 +31,15 @@ def isolated_config() -> ModelConfig:
     )
 
 
+def v15_config() -> ModelConfig:
+    return ModelConfig(
+        layers=2, shared_layers=1, critic_layers=1, d_model=32,
+        query_heads=2, kv_heads=1, head_dim=16, ffn_dim=64,
+        context_tokens=64, policy_head_type="isolated_action_query",
+        offense_fusion=True, critic_head_type="action_value",
+    )
+
+
 def test_default_model_topology_is_three_plus_one_plus_two() -> None:
     model = KyokuTransformerActorCritic(ModelConfig())
     assert len(model.public_backbone.blocks) == 3
@@ -245,6 +254,49 @@ def test_isolated_action_queries_are_permutation_invariant() -> None:
         b = model(*second)
     torch.testing.assert_close(a["raw_policy_logits"][:, [0, 5, 75]], b["raw_policy_logits"][:, [0, 5, 75]])
     torch.testing.assert_close(a["value"], b["value"])
+
+
+def test_v15_zero_projection_preserves_v13_policy_logits_and_receives_gradient() -> None:
+    torch.manual_seed(13)
+    legacy = KyokuTransformerActorCritic(isolated_config()).eval()
+    v15 = KyokuTransformerActorCritic(v15_config()).eval()
+    common = {
+        name: value for name, value in legacy.state_dict().items()
+        if name in v15.state_dict() and v15.state_dict()[name].shape == value.shape
+    }
+    missing, unexpected = v15.load_state_dict(common, strict=False)
+    assert not unexpected
+    assert set(missing) == {
+        "offense_projection.weight", "offense_projection.bias",
+        "q_head.weight", "q_head.bias",
+    }
+    inputs = isolated_inputs((0, 5, 75))
+    with torch.no_grad():
+        old_logits = legacy(*inputs)["raw_policy_logits"]
+        new_logits = v15(*inputs)["raw_policy_logits"]
+    torch.testing.assert_close(new_logits, old_logits, rtol=0.0, atol=0.0)
+
+    v15.train()
+    v15(*inputs)["raw_policy_logits"][:, [0, 5, 75]].sum().backward()
+    assert v15.offense_projection.weight.grad is not None
+    assert torch.count_nonzero(v15.offense_projection.weight.grad) > 0
+
+
+def test_v15_q_critic_outputs_fixed_action_space_and_is_permutation_invariant() -> None:
+    torch.manual_seed(14)
+    model = KyokuTransformerActorCritic(v15_config()).eval()
+    first = isolated_inputs((0, 5, 75))
+    second = isolated_inputs((75, 0, 5))
+    critic = torch.ones(1, 2, 10, dtype=torch.long)
+    with torch.no_grad():
+        a = model(*first, critic_factors=critic, critic_lengths=torch.tensor([2]))
+        b = model(*second, critic_factors=critic, critic_lengths=torch.tensor([2]))
+    assert a["q_values"].shape == (1, 241)
+    assert "value" not in a
+    torch.testing.assert_close(
+        a["raw_policy_logits"][:, [0, 5, 75]],
+        b["raw_policy_logits"][:, [0, 5, 75]],
+    )
 
 
 def test_isolated_action_queries_mask_illegal_and_handle_single_action() -> None:
