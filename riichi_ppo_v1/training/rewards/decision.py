@@ -259,8 +259,6 @@ def _rule_state(
     melds: list[object],
     structural_shanten: int,
     remaining: np.ndarray,
-    *,
-    legacy: bool = False,
 ) -> RuleState:
     if structural_shanten != 0:
         return RuleState(structural_shanten)
@@ -280,9 +278,8 @@ def _rule_state(
         seat, int(getattr(observation, "oya", 0)), int(getattr(observation, "round_wind", 0)),
         int(getattr(observation, "honba", 0)), int(getattr(observation, "riichi_sticks", 0)),
         bool((getattr(observation, "riichi_declared", ()) or (False,) * 4)[seat]),
-        False if legacy else bool(getattr(observation, "missed_agari_doujun", False)),
-        False if legacy else bool(getattr(observation, "missed_agari_riichi", False)),
-        legacy,
+        bool(getattr(observation, "missed_agari_doujun", False)),
+        bool(getattr(observation, "missed_agari_riichi", False)),
     )
     cached = _RULE_CACHE.get(cache_key)
     if cached is not None:
@@ -298,19 +295,17 @@ def _rule_state(
         closed = _is_closed(melds)
         riichi_now = bool((getattr(observation, "riichi_declared", ()) or (False,) * 4)[seat])
         furiten = bool(set(waits) & _river_types(observation))
-        if not legacy:
-            furiten = bool(
-                furiten
-                or getattr(observation, "missed_agari_doujun", False)
-                or getattr(observation, "missed_agari_riichi", False)
-            )
+        furiten = bool(
+            furiten
+            or getattr(observation, "missed_agari_doujun", False)
+            or getattr(observation, "missed_agari_riichi", False)
+        )
         ron_live = tsumo_live = ron_points = tsumo_points = 0
         ron_value_sum = tsumo_value_sum = 0
         riichi_ron_points = riichi_ron_value_sum = 0
         damaten_ron_yaku = False
         current_ron_yaku = False
         can_tsumo = False
-        legacy_intrinsic_yaku = False
         riichi_route = False
         dora = [int(tile) for tile in getattr(observation, "dora_indicators", ()) or ()]
         base = dict(
@@ -333,7 +328,6 @@ def _rule_state(
             current_ron_yaku |= bool(ron.is_win)
             damaten_ron_yaku |= bool(damaten_ron.is_win)
             can_tsumo |= bool(tsumo.is_win)
-            legacy_intrinsic_yaku |= bool(ron.is_win or tsumo.is_win)
             if ron.is_win and not furiten:
                 ron_live += copies
                 points = _score_total(ron, False, dealer)
@@ -351,7 +345,7 @@ def _rule_state(
                     points = _score_total(reach, False, dealer)
                     riichi_ron_points = max(riichi_ron_points, points)
                     riichi_ron_value_sum += copies * points
-        encoded_yaku = legacy_intrinsic_yaku if legacy else damaten_ron_yaku
+        encoded_yaku = damaten_ron_yaku
         open_no_yaku = not closed and not (damaten_ron_yaku or can_tsumo)
         effective = 1 if open_no_yaku else 0
         has_legal_route = current_ron_yaku or can_tsumo or riichi_route
@@ -641,13 +635,12 @@ def _candidate(
     public: object | None,
     *,
     kind: str | None = None,
-    legacy: bool = False,
 ) -> Candidate:
     observation = decision.observation
     normalized_kind = action_kind(action) if kind is None else kind
     discarded = getattr(action, "tile", None) if normalized_kind == "dahai" else None
     rules = _rule_state(
-        observation, hand, melds, int(analysis.shanten), remaining, legacy=legacy,
+        observation, hand, melds, int(analysis.shanten), remaining,
     )
     kept_tiles = [
         *hand,
@@ -814,7 +807,6 @@ class DecisionAnalysisBatch:
         analyzer: EfficiencyAnalyzer,
         public: object | None = None,
         profiler: object | None = None,
-        _legacy_v11: bool = False,
     ) -> "DecisionAnalysisBatch":
         decisions = list(decisions)
         remaining_by_row = [
@@ -836,11 +828,7 @@ class DecisionAnalysisBatch:
             normalized_by_row.append(normalized)
             hand = _physical_hand(observation)
             melds = _own_melds(observation)
-            response_kinds = (
-                {"chi", "pon", "daiminkan"}
-                if _legacy_v11
-                else {"chi", "pon", "daiminkan", "hora", "ron"}
-            )
+            response_kinds = {"chi", "pon", "daiminkan", "hora", "ron"}
             response_window = any(
                 kind in response_kinds for _action, kind, _aid in normalized
             )
@@ -896,7 +884,7 @@ class DecisionAnalysisBatch:
                     jobs.append((row, action, kind, aid, post, call_melds))
                     hands.append(_counts(post))
                     opened.append(len(call_melds))
-                elif not _legacy_v11 and kind == "ankan":
+                elif kind == "ankan":
                     post = hand.copy()
                     values = list(consumed_tiles(action))
                     tile = getattr(action, "tile", None)
@@ -921,7 +909,7 @@ class DecisionAnalysisBatch:
                     jobs.append((row, action, kind, aid, post, call_melds))
                     hands.append(_counts(post))
                     opened.append(len(call_melds))
-                elif not _legacy_v11 and kind == "kakan":
+                elif kind == "kakan":
                     # Kakan consumes one concealed tile and upgrades an existing
                     # pon, so the fixed-meld count does not change.
                     post = hand.copy()
@@ -956,7 +944,7 @@ class DecisionAnalysisBatch:
             remaining = remaining_by_row[row]
             candidate = _candidate(
                 decisions[row], action, aid, hand, melds, structural, remaining, public,
-                kind=kind, legacy=_legacy_v11,
+                kind=kind,
             )
             grouped[row].setdefault(aid, []).append(candidate)
         if profiler is not None:
@@ -969,9 +957,7 @@ class DecisionAnalysisBatch:
                 selected = min(variants, key=lambda item: item.rank)
                 collapsed.append(replace(selected, legal_discard_count=len(variants)))
             kinds = {kind for _action, kind, _aid in normalized_by_row[row]}
-            foregone_win = bool(
-                not _legacy_v11 and kinds & {"hora", "ron", "tsumo"}
-            )
+            foregone_win = bool(kinds & {"hora", "ron", "tsumo"})
             non_pass = [item for item in collapsed if item.action_id != 0]
             if non_pass:
                 best_non_pass = min(non_pass, key=lambda item: item.rank)
@@ -993,11 +979,7 @@ class DecisionAnalysisBatch:
             candidates = tuple(collapsed)
             best = min((candidate.rank for candidate in candidates), default=None)
             teacher = np.zeros(NUM_ACTIONS, dtype=np.bool_)
-            if _legacy_v11 and best is not None:
-                for candidate in candidates:
-                    if candidate.rank == best:
-                        teacher[candidate.action_id] = True
-            elif candidates:
+            if candidates:
                 best_structural = min(candidate.structural_shanten for candidate in candidates)
                 structural = [candidate for candidate in candidates if candidate.structural_shanten == best_structural]
                 best_effective = min(candidate.effective_shanten for candidate in structural)
@@ -1012,7 +994,7 @@ class DecisionAnalysisBatch:
                 ("dahai" if "dahai" in kinds else
                  ("call" if kinds & {"chi", "pon", "daiminkan"} else ""))
             )
-            if not supervised or (not _legacy_v11 and len(candidates) < 2):
+            if not supervised or len(candidates) < 2:
                 teacher.fill(False)
             rows[id(decision)] = DecisionAnalysis(
                 decision, actions_by_row[row], candidates, best, teacher, supervised,
@@ -1033,21 +1015,6 @@ class DecisionAnalysisBatch:
                 id(decision): remaining_by_row[row]
                 for row, decision in enumerate(decisions)
             },
-        )
-
-    @classmethod
-    def build_legacy_v11(
-        cls,
-        decisions: Iterable[object],
-        *,
-        analyzer: EfficiencyAnalyzer,
-        public: object | None = None,
-        profiler: object | None = None,
-    ) -> "DecisionAnalysisBatch":
-        """Frozen compatibility hook; only ``legacy.v11`` may call this."""
-        return cls.build(
-            decisions, analyzer=analyzer, public=public, profiler=profiler,
-            _legacy_v11=True,
         )
 
     def for_decision(self, decision: object) -> DecisionAnalysis:

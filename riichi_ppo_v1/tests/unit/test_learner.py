@@ -33,10 +33,22 @@ from riichi_ppo_v1.training.trajectory import Transition
 
 
 def transition(value: float) -> Transition:
+    # 三行状态摘要 + action 0/1 的两对 offense/defense 查询(与现行
+    # isolated_action_query 布局一致,便于用例把两个合法动作都置真)。
+    factors = np.zeros((7, 10), dtype=np.uint8)
+    factors[0] = [1, 1, 4, 1, 1, 1, 0, 0, 1, 1]
+    factors[1] = [2, 2, 1, 1, 0, 0, 0, 0, 0, 0]
+    factors[2, 0] = 2
+    for pair, action in enumerate((0, 1)):
+        offense, defense = 3 + 2 * pair, 4 + 2 * pair
+        factors[offense] = [7, 0, action + 1, 0, 0, 0, 0, 0, 0, 1]
+        factors[defense] = [7, 0, action + 1, 0, 0, 0, 0, 0, 0, 2]
+    legal = np.zeros(241, dtype=np.bool_)
+    legal[[0, 1]] = True
     item = Transition(
-        np.asarray([[1, 1, 4, 1, 1, 1, 0, 0, 1, 1]], dtype=np.uint8),
-        np.zeros((1, 8), dtype=np.float32), 1,
-        np.eye(1, 241, 0, dtype=np.bool_)[0], 0, 0.0, value,
+        factors,
+        np.zeros((7, 8), dtype=np.float32), 7,
+        legal, 0, 0.0, value,
     )
     item.advantage = value
     item.q_target = value
@@ -419,10 +431,10 @@ def test_model_initialization_starts_joint_ppo() -> None:
         resumed = PPOLearner("mid", "cpu", **kwargs)
         resumed.load(resume_path)
         assert resumed.iteration == 1
-        actor_before_joint = resumed.model.policy_head.weight.detach().clone()
+        actor_before_joint = resumed.model.policy_head[1].weight.detach().clone()
         joint_metrics = resumed.update(rows, shuffle_seed=4)
         assert joint_metrics["training/policy_update"] == 2.0
-        assert not torch.equal(resumed.model.policy_head.weight, actor_before_joint)
+        assert not torch.equal(resumed.model.policy_head[1].weight, actor_before_joint)
 
 
 def test_actor_only_sft_initialization_bootstraps_critic_before_policy() -> None:
@@ -457,7 +469,7 @@ def test_actor_only_sft_initialization_bootstraps_critic_before_policy() -> None
             learner.model.q_head.weight,
             torch.zeros_like(learner.model.q_head.weight),
         )
-        actor_before = learner.model.policy_head.weight.detach().clone()
+        actor_before = learner.model.policy_head[1].weight.detach().clone()
         shared_before = learner.model.token_embedding.table.weight.detach().clone()
         critic_before = learner.model.q_head.weight.detach().clone()
         rows = [transition(1.0), transition(-1.0)]
@@ -473,14 +485,14 @@ def test_actor_only_sft_initialization_bootstraps_critic_before_policy() -> None
         assert metrics["system/shared_learning_rate"] == 0.0
         assert metrics["system/critic_learning_rate"] == 1e-4
         assert metrics["system/critic_public_grad_scale"] == 0.0
-        torch.testing.assert_close(learner.model.policy_head.weight, actor_before)
+        torch.testing.assert_close(learner.model.policy_head[1].weight, actor_before)
         torch.testing.assert_close(learner.model.token_embedding.table.weight, shared_before)
         assert not torch.equal(learner.model.q_head.weight, critic_before)
         joint_metrics = learner.update(rows, shuffle_seed=4)
         assert joint_metrics["training/critic_bootstrap"] == 0.0
         assert joint_metrics["training/policy_update"] == 1.0
         assert joint_metrics["system/sft_kl_coef"] > 0.0
-        assert not torch.equal(learner.model.policy_head.weight, actor_before)
+        assert not torch.equal(learner.model.policy_head[1].weight, actor_before)
 
 
 def test_model_initialization_accepts_current_sft_contract_checkpoint() -> None:

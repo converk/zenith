@@ -27,8 +27,8 @@ one-based encoding.
 Complete suji requires every applicable anchor (both sides for middle tiles),
 and kabe strength comes from related suited tiles rather than the candidate.
 
-V11 is available only through `legacy/v11` for weights-only evaluation. V11
-cache generation, training, aligned batches, and exact resume are unsupported.
+v11 兼容已移除:历史 v11 checkpoint 仅作冷存储保留,不提供权重评测或训练路径;
+当前唯一契约是 v13。
 
 ## 0.4% semantic canary
 

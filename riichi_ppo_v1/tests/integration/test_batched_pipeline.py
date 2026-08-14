@@ -23,6 +23,10 @@ from riichi_ppo_v1.model.semantic_validation import (
     assert_actor_token_semantics,
     assert_critic_token_semantics,
 )
+from riichi_ppo_v1.training.rewards import (
+    DecisionAnalysisBatch,
+    EfficiencyAnalyzer,
+)
 
 
 @unittest.skipUnless(riichi is not None and BatchedRiichiEnv is not None, "local extensions are not installed")
@@ -84,7 +88,12 @@ class BatchedPipelineTest(unittest.TestCase):
         bridge = BatchedStateBridge(riichi.MjaiKyokuStateMachineManager(1), 1, critic_include_public_state=True)
         bridge.sync(observations)
         decisions = [Decision(0, int(seat), obs) for seat, obs in observations[0].items() if obs.legal_actions()]
-        factors, numeric, lengths, masks, _generation, critic, critic_lengths = bridge.prepare(decisions)
+        analysis = DecisionAnalysisBatch.build(
+            decisions, analyzer=EfficiencyAnalyzer(),
+        )
+        factors, numeric, lengths, masks, _generation, critic, critic_lengths = bridge.prepare(
+            decisions, analysis,
+        )
         assert_actor_token_semantics(factors, numeric, lengths)
         assert_critic_token_semantics(critic, critic_lengths, include_public_state=True)
         self.assertTrue(np.all(masks.any(axis=1)))

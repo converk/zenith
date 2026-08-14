@@ -132,19 +132,14 @@ class PPOPolicyAdapter(V13PolicyAdapter):
 def load_policy_adapter(
     path: str | Path, *, device: torch.device | str,
 ) -> PolicyAdapter:
-    """Dispatch once at the checkpoint boundary; evaluators stay version-free."""
+    """在 checkpoint 边界做一次分发,评测器保持版本无关。"""
     checkpoint = Path(path)
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
     if not isinstance(payload, dict):
         raise RuntimeError(f"invalid policy checkpoint: {checkpoint}")
     contract = payload.get("sft_contract_version")
-    schema = payload.get("token_schema_version")
     if contract == SFT_CONTRACT_VERSION:
         return V13PolicyAdapter.from_checkpoint(checkpoint, device=device)
-    if contract is None and schema == 11:
-        from ..legacy.v11 import V11PolicyAdapter
-
-        return V11PolicyAdapter.from_checkpoint(checkpoint, device=device)
     if int(payload.get("ppo_format_version", 0)) == 2:
         return PPOPolicyAdapter.from_checkpoint(checkpoint, device=device)
-    raise RuntimeError("checkpoint has no supported v11/v13 evaluation contract")
+    raise RuntimeError("checkpoint has no supported v13 evaluation contract")

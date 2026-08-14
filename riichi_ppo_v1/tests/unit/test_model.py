@@ -60,39 +60,45 @@ def semantic_token_inputs(batch: int, length: int):
 
 def test_model_masks_actions_and_backpropagates() -> None:
     model = KyokuTransformerActorCritic(config())
-    factors, numeric = semantic_token_inputs(2, 3)
-    legal = torch.zeros(2, 241, dtype=torch.bool)
-    legal[:, [0, 10]] = True
-    output = model(factors, numeric, legal, torch.tensor([2, 2]))
+    factors, numeric, legal, lengths = isolated_inputs((0, 10))
+    factors = torch.cat((factors, factors))
+    numeric = torch.cat((numeric, numeric))
+    legal = torch.cat((legal, legal))
+    lengths = torch.cat((lengths, lengths))
+    output = model(factors, numeric, legal, lengths)
     assert output["policy_logits"].shape == (2, 241)
     assert output["policy_logits"].dtype is torch.float32
     assert output["value"].dtype is torch.float32
     assert torch.isneginf(output["policy_logits"][:, 1]).all()
     (output["value"].mean() + output["policy_logits"][:, 0].mean()).backward()
-    assert model.policy_head.weight.grad is not None
+    assert model.policy_head[1].weight.grad is not None
     assert model.value_head.weight.grad is not None
 
 
 def test_right_padding_does_not_change_query_output() -> None:
     torch.manual_seed(3)
     model = KyokuTransformerActorCritic(config()).eval()
-    short = semantic_token_inputs(1, 3)
-    padded = semantic_token_inputs(1, 7)
-    padded[0][:, :3] = short[0]
-    padded[1][:, :3] = short[1]
-    legal = torch.ones(1, 241, dtype=torch.bool)
+    short_f, short_n, legal, lengths = isolated_inputs((0, 5))
+    padded_f = torch.zeros(
+        (1, short_f.shape[1] + 2, short_f.shape[2]), dtype=short_f.dtype,
+    )
+    padded_n = torch.zeros(
+        (1, short_n.shape[1] + 2, short_n.shape[2]), dtype=short_n.dtype,
+    )
+    padded_f[0, : short_f.shape[1]] = short_f[0]
+    padded_n[0, : short_n.shape[1]] = short_n[0]
     with torch.no_grad():
-        a = model(*short, legal, torch.tensor([2]))
-        b = model(*padded, legal, torch.tensor([2]))
+        a = model(short_f, short_n, legal, lengths)
+        b = model(padded_f, padded_n, legal, lengths)
     torch.testing.assert_close(a["raw_policy_logits"], b["raw_policy_logits"])
     torch.testing.assert_close(a["value"], b["value"])
 
 
 def test_context_overflow_is_not_truncated() -> None:
     model = KyokuTransformerActorCritic(config(context_tokens=4))
-    factors, numeric = semantic_token_inputs(1, 4)
+    factors, numeric, legal, lengths = isolated_inputs((0,))
     try:
-        model(factors, numeric, token_lengths=torch.tensor([4]))
+        model(factors, numeric, legal, token_lengths=lengths)
     except ValueError as error:
         assert "context overflow" in str(error)
     else:  # pragma: no cover
@@ -102,8 +108,7 @@ def test_context_overflow_is_not_truncated() -> None:
 def test_critic_private_inputs_do_not_change_policy_logits() -> None:
     torch.manual_seed(5)
     model = KyokuTransformerActorCritic(config()).eval()
-    factors, numeric = semantic_token_inputs(1, 3)
-    legal = torch.ones(1, 241, dtype=torch.bool)
+    factors, numeric, legal, lengths = isolated_inputs((0, 5))
     critic_factors_a = torch.ones(1, 2, 10, dtype=torch.long)
     critic_factors_b = torch.full((1, 2, 10), 2, dtype=torch.long)
     critic_lengths = torch.tensor([2])
@@ -113,7 +118,7 @@ def test_critic_private_inputs_do_not_change_policy_logits() -> None:
             factors,
             numeric,
             legal,
-            torch.tensor([2]),
+            lengths,
             critic_factors=critic_factors_a,
             critic_lengths=critic_lengths,
         )
@@ -121,7 +126,7 @@ def test_critic_private_inputs_do_not_change_policy_logits() -> None:
             factors,
             numeric,
             legal,
-            torch.tensor([2]),
+            lengths,
             critic_factors=critic_factors_b,
             critic_lengths=critic_lengths,
         )
@@ -133,8 +138,7 @@ def test_critic_private_inputs_do_not_change_policy_logits() -> None:
 def test_critic_receives_every_shared_public_token() -> None:
     torch.manual_seed(6)
     model = KyokuTransformerActorCritic(config()).eval()
-    factors, numeric = semantic_token_inputs(1, 4)
-    token_lengths = torch.tensor([2])
+    factors, numeric, legal, token_lengths = isolated_inputs((0, 5))
     critic_factors = torch.ones(1, 2, 10, dtype=torch.long)
     critic_lengths = torch.tensor([2])
     captured: dict[str, torch.Tensor] = {}
@@ -145,16 +149,25 @@ def test_critic_receives_every_shared_public_token() -> None:
 
     handle = model.critic_backbone.register_forward_pre_hook(capture)
     with torch.no_grad():
-        model(factors, numeric, token_lengths=token_lengths, critic_factors=critic_factors, critic_lengths=critic_lengths)
-        tokens = model.token_embedding(factors, numeric)
-        public_input = tokens.new_zeros((1, factors.shape[1] + 1, model.config.d_model))
-        public_input[:, :factors.shape[1]] = tokens
-        public_input[0, token_lengths[0]] = model.query
-        expected_public = model.public_backbone(public_input, token_lengths + 1)
+        model(
+            factors, numeric, legal, token_lengths=token_lengths,
+            critic_factors=critic_factors, critic_lengths=critic_lengths,
+        )
+        shared, _actor, state_mask, _defense_ids, _valid = model._isolated_public(
+            factors, numeric, token_lengths, legal,
+        )
+        batch = factors.shape[0]
+        public_capacity = int(state_mask.long().sum(-1).max().item())
+        packed = shared.new_zeros((batch, public_capacity, model.config.d_model))
+        source_rows, source_positions = torch.nonzero(state_mask, as_tuple=True)
+        packed_positions = state_mask.long().cumsum(dim=1)[
+            source_rows, source_positions,
+        ] - 1
+        packed[source_rows, packed_positions] = shared[source_rows, source_positions]
     handle.remove()
 
-    public_length = int(token_lengths[0]) + 1
-    torch.testing.assert_close(captured["sequence"][0, :public_length], expected_public[0, :public_length])
+    public_length = packed.shape[1]
+    torch.testing.assert_close(captured["sequence"][0, :public_length], packed[0])
     assert int(captured["lengths"][0]) == public_length + int(critic_lengths[0]) + 1
 
 
@@ -163,15 +176,15 @@ def test_critic_public_gradient_scale_only_reduces_shared_value_gradient() -> No
     full = KyokuTransformerActorCritic(config())
     scaled = KyokuTransformerActorCritic(config())
     scaled.load_state_dict(full.state_dict())
-    factors, numeric = semantic_token_inputs(1, 3)
+    factors, numeric, legal, lengths = isolated_inputs((0, 5))
     critic_factors = torch.ones(1, 2, 10, dtype=torch.long)
     kwargs = {
-        "token_lengths": torch.tensor([2]),
+        "token_lengths": lengths,
         "critic_factors": critic_factors,
         "critic_lengths": torch.tensor([2]),
     }
-    full(factors, numeric, critic_public_grad_scale=1.0, **kwargs)["value"].sum().backward()
-    scaled(factors, numeric, critic_public_grad_scale=0.25, **kwargs)["value"].sum().backward()
+    full(factors, numeric, legal, critic_public_grad_scale=1.0, **kwargs)["value"].sum().backward()
+    scaled(factors, numeric, legal, critic_public_grad_scale=0.25, **kwargs)["value"].sum().backward()
 
     full_shared = full.public_backbone.blocks[0].attention.qkv.weight.grad
     scaled_shared = scaled.public_backbone.blocks[0].attention.qkv.weight.grad
@@ -186,25 +199,25 @@ def test_critic_public_gradient_scale_only_reduces_shared_value_gradient() -> No
 def test_critic_padding_does_not_change_value() -> None:
     torch.manual_seed(8)
     model = KyokuTransformerActorCritic(config()).eval()
-    factors, numeric = semantic_token_inputs(1, 3)
+    factors, numeric, legal, lengths = isolated_inputs((0, 5))
     short_critic = torch.ones(1, 1, 10, dtype=torch.long)
     padded_critic = torch.zeros(1, 4, 10, dtype=torch.long)
     padded_critic[:, :1] = short_critic
-    kwargs = {"token_lengths": torch.tensor([2]), "critic_lengths": torch.tensor([1])}
+    kwargs = {"token_lengths": lengths, "critic_lengths": torch.tensor([1])}
     with torch.no_grad():
-        short = model(factors, numeric, critic_factors=short_critic, **kwargs)
-        padded = model(factors, numeric, critic_factors=padded_critic, **kwargs)
+        short = model(factors, numeric, legal, critic_factors=short_critic, **kwargs)
+        padded = model(factors, numeric, legal, critic_factors=padded_critic, **kwargs)
     torch.testing.assert_close(short["raw_policy_logits"], padded["raw_policy_logits"])
     torch.testing.assert_close(short["value"], padded["value"])
 
 
 def test_critic_context_accounts_for_public_and_private_tokens() -> None:
-    model = KyokuTransformerActorCritic(config(context_tokens=6))
-    factors, numeric = semantic_token_inputs(1, 3)
-    common = {"token_lengths": torch.tensor([3])}
-    model(factors, numeric, critic_factors=torch.ones(1, 1, 10, dtype=torch.long), critic_lengths=torch.tensor([1]), **common)
+    model = KyokuTransformerActorCritic(config(context_tokens=5))
+    factors, numeric, legal, lengths = isolated_inputs((0,))
+    common = {"token_lengths": lengths}
+    model(factors, numeric, legal, critic_factors=torch.ones(1, 1, 10, dtype=torch.long), critic_lengths=torch.tensor([1]), **common)
     try:
-        model(factors, numeric, critic_factors=torch.ones(1, 2, 10, dtype=torch.long), critic_lengths=torch.tensor([2]), **common)
+        model(factors, numeric, legal, critic_factors=torch.ones(1, 2, 10, dtype=torch.long), critic_lengths=torch.tensor([2]), **common)
     except ValueError as error:
         assert "critic context overflow" in str(error)
     else:  # pragma: no cover
@@ -214,12 +227,12 @@ def test_critic_context_accounts_for_public_and_private_tokens() -> None:
 def test_value_loss_updates_only_shared_public_and_critic_branches() -> None:
     torch.manual_seed(7)
     model = KyokuTransformerActorCritic(config())
-    factors, numeric = semantic_token_inputs(1, 3)
+    factors, numeric, legal, lengths = isolated_inputs((0, 5))
     output = model(
         factors,
         numeric,
-        torch.ones(1, 241, dtype=torch.bool),
-        torch.tensor([2]),
+        legal,
+        lengths,
         critic_factors=torch.ones(1, 2, 10, dtype=torch.long),
         critic_lengths=torch.tensor([2]),
     )
@@ -233,15 +246,13 @@ def test_value_loss_updates_only_shared_public_and_critic_branches() -> None:
     assert any(
         parameter.grad is not None
         for name, parameter in model.named_parameters()
-        if name.startswith(("token_embedding", "query", "public_backbone", "critic_embedding", "critic_backbone", "value_query", "value_head"))
+        if name.startswith(("token_embedding", "public_backbone", "critic_embedding", "critic_backbone", "value_query", "value_head"))
     )
 
 
 def test_mid_parameter_count_matches_the_three_plus_one_plus_two_budget() -> None:
     model = KyokuTransformerActorCritic(ModelConfig.preset("mid"))
-    assert sum(parameter.numel() for parameter in model.parameters()) == 2_825_330
-    isolated = KyokuTransformerActorCritic(ModelConfig(policy_head_type="isolated_action_query"))
-    assert sum(parameter.numel() for parameter in isolated.parameters()) <= int(2_825_330 * 1.10)
+    assert sum(parameter.numel() for parameter in model.parameters()) == 2_816_066
 
 
 def test_isolated_action_queries_are_permutation_invariant() -> None:

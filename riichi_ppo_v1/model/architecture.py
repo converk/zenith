@@ -1,7 +1,8 @@
-"""Semantic-token decoder-only GQA actor-critic.
+"""语义 token 解码器型 GQA 演员-评论家。
 
-v13 adds isolated two-token action queries while retaining the legacy fixed
-241-way head so frozen v11 checkpoints remain loadable by the legacy adapter.
+v13 契约使用隔离的两 token 动作查询(offense/defense 相邻对),输出固定的
+241 维动作空间。历史 v11 checkpoint 兼容已移除,模型头只支持
+``isolated_action_query``。
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ class ModelConfig:
     context_tokens: int = 4096
     rope_base: float = 10_000.0
     eps: float = 1e-6
-    policy_head_type: str = "legacy_fixed"
+    policy_head_type: str = "isolated_action_query"
     offense_fusion: bool = False
     critic_head_type: str = "state_value"
 
@@ -55,10 +56,8 @@ class ModelConfig:
             raise ValueError("shared_layers must be positive and leave at least one actor-only layer")
         if self.critic_layers < 1:
             raise ValueError("critic_layers must be positive")
-        if self.policy_head_type not in {"legacy_fixed", "isolated_action_query"}:
-            raise ValueError("policy_head_type must be legacy_fixed or isolated_action_query")
-        if self.offense_fusion and self.policy_head_type != "isolated_action_query":
-            raise ValueError("offense_fusion requires isolated_action_query")
+        if self.policy_head_type != "isolated_action_query":
+            raise ValueError("policy_head_type must be isolated_action_query")
         if self.critic_head_type not in {"state_value", "action_value"}:
             raise ValueError("critic_head_type must be state_value or action_value")
 
@@ -287,18 +286,13 @@ class KyokuTransformerActorCritic(nn.Module):
         self.public_backbone = Decoder(self.config, layers=self.config.shared_layers, final_norm=False)
         self.actor_backbone = Decoder(self.config, layers=self.config.layers - self.config.shared_layers)
         self.critic_backbone = Decoder(self.config, layers=self.config.critic_layers)
-        if self.config.policy_head_type == "legacy_fixed":
-            self.query = nn.Parameter(torch.empty(self.config.d_model))
-            self.policy_head: nn.Module = nn.Linear(self.config.d_model, NUM_ACTIONS)
-            nn.init.normal_(self.query, std=self.config.d_model ** -0.5)
-        else:
-            self.register_parameter("query", None)
-            self.policy_head = nn.Sequential(
-                nn.RMSNorm(self.config.d_model, eps=self.config.eps),
-                nn.Linear(self.config.d_model, self.config.d_model),
-                nn.SiLU(),
-                nn.Linear(self.config.d_model, 1),
-            )
+        self.register_parameter("query", None)
+        self.policy_head = nn.Sequential(
+            nn.RMSNorm(self.config.d_model, eps=self.config.eps),
+            nn.Linear(self.config.d_model, self.config.d_model),
+            nn.SiLU(),
+            nn.Linear(self.config.d_model, 1),
+        )
         if self.config.offense_fusion:
             self.offense_projection: nn.Module | None = nn.Linear(
                 self.config.d_model, self.config.d_model
@@ -359,9 +353,8 @@ class KyokuTransformerActorCritic(nn.Module):
         token_lengths: Tensor | None = None,
     ) -> dict[str, Tensor]:
         """Run only the shared-public and actor branches."""
-        extra = int(self.config.policy_head_type == "legacy_fixed")
-        if token_factors.shape[1] + extra > self.config.context_tokens:
-            raise ValueError(f"context overflow: {token_factors.shape[1] + 1} > {self.config.context_tokens}")
+        if token_factors.shape[1] > self.config.context_tokens:
+            raise ValueError(f"context overflow: {token_factors.shape[1]} > {self.config.context_tokens}")
         if token_lengths is None:
             token_lengths = token_factors.ne(0).any(-1).long().sum(-1)
         token_lengths = token_lengths.to(device=token_factors.device, dtype=torch.long)
@@ -369,27 +362,10 @@ class KyokuTransformerActorCritic(nn.Module):
             raise ValueError("token_lengths must have one entry per batch row")
         if torch.any(token_lengths < 0) or torch.any(token_lengths > token_factors.shape[1]):
             raise ValueError("token_lengths exceed supplied token rows")
-        if self.config.policy_head_type == "isolated_action_query":
-            _shared, actor, _state, defense_ids, _valid = self._isolated_public(
-                token_factors, token_numeric, token_lengths, legal_mask
-            )
-            raw, logits = self._isolated_logits(actor, defense_ids, legal_mask)
-            return {"raw_policy_logits": raw, "policy_logits": logits}
-        tokens = self.token_embedding(token_factors, token_numeric)
-        batch, padded, width = tokens.shape
-        sequence = tokens.new_zeros((batch, padded + 1, width))
-        sequence[:, :padded] = tokens
-        rows = torch.arange(batch, device=tokens.device)
-        sequence[rows, token_lengths] = self.query
-        public_sequence = self.public_backbone(sequence, token_lengths + 1)
-        hidden = self.actor_backbone(public_sequence, token_lengths + 1)[rows, token_lengths]
-        raw = self.policy_head(hidden).float()
-        if legal_mask is None:
-            logits = raw
-        else:
-            if legal_mask.shape != (batch, NUM_ACTIONS):
-                raise ValueError("legal_mask must be [batch, 241]")
-            logits = raw.masked_fill(~legal_mask.to(device=raw.device, dtype=torch.bool), float("-inf"))
+        _shared, actor, _state, defense_ids, _valid = self._isolated_public(
+            token_factors, token_numeric, token_lengths, legal_mask
+        )
+        raw, logits = self._isolated_logits(actor, defense_ids, legal_mask)
         return {"raw_policy_logits": raw, "policy_logits": logits}
 
     def forward(
@@ -409,9 +385,8 @@ class KyokuTransformerActorCritic(nn.Module):
             return self.forward_policy(
                 token_factors, token_numeric, legal_mask, token_lengths
             )
-        extra = int(self.config.policy_head_type == "legacy_fixed")
-        if token_factors.shape[1] + extra > self.config.context_tokens:
-            raise ValueError(f"context overflow: {token_factors.shape[1] + 1} > {self.config.context_tokens}")
+        if token_factors.shape[1] > self.config.context_tokens:
+            raise ValueError(f"context overflow: {token_factors.shape[1]} > {self.config.context_tokens}")
         if token_lengths is None:
             token_lengths = token_factors.ne(0).any(-1).long().sum(-1)
         token_lengths = token_lengths.to(device=token_factors.device, dtype=torch.long)
@@ -422,29 +397,21 @@ class KyokuTransformerActorCritic(nn.Module):
         tokens = self.token_embedding(token_factors, token_numeric)
         batch, padded, width = tokens.shape
         rows = torch.arange(batch, device=tokens.device)
-        if self.config.policy_head_type == "isolated_action_query":
-            public_sequence, actor_sequence, state_mask, defense_ids, _valid = self._isolated_public(
-                token_factors, token_numeric, token_lengths, legal_mask
-            )
-            raw, logits = self._isolated_logits(actor_sequence, defense_ids, legal_mask)
-            public_lengths = state_mask.long().sum(-1)
-            public_capacity = int(public_lengths.max().item())
-            packed_public = public_sequence.new_zeros((batch, public_capacity, width))
-            source_rows, source_positions = torch.nonzero(state_mask, as_tuple=True)
-            packed_positions = state_mask.long().cumsum(dim=1)[
-                source_rows, source_positions,
-            ] - 1
-            packed_public[source_rows, packed_positions] = public_sequence[
-                source_rows, source_positions,
-            ]
-            public_sequence = packed_public
-        else:
-            sequence = tokens.new_zeros((batch, padded + 1, width))
-            sequence[:, :padded] = tokens
-            sequence[rows, token_lengths] = self.query
-            public_lengths = token_lengths + 1
-            public_sequence = self.public_backbone(sequence, public_lengths)
-            hidden = self.actor_backbone(public_sequence, token_lengths + 1)[rows, token_lengths]
+        public_sequence, actor_sequence, state_mask, defense_ids, _valid = self._isolated_public(
+            token_factors, token_numeric, token_lengths, legal_mask
+        )
+        raw, logits = self._isolated_logits(actor_sequence, defense_ids, legal_mask)
+        public_lengths = state_mask.long().sum(-1)
+        public_capacity = int(public_lengths.max().item())
+        packed_public = public_sequence.new_zeros((batch, public_capacity, width))
+        source_rows, source_positions = torch.nonzero(state_mask, as_tuple=True)
+        packed_positions = state_mask.long().cumsum(dim=1)[
+            source_rows, source_positions,
+        ] - 1
+        packed_public[source_rows, packed_positions] = public_sequence[
+            source_rows, source_positions,
+        ]
+        public_sequence = packed_public
         if critic_factors is None:
             critic_factors = token_factors.new_zeros((batch, 0, TOKEN_WIDTH))
         if critic_lengths is None:
@@ -493,18 +460,8 @@ class KyokuTransformerActorCritic(nn.Module):
         value_indices = public_lengths + critic_lengths
         critic_sequence[rows, value_indices] = self.value_query
         critic_hidden = self.critic_backbone(critic_sequence, critic_sequence_lengths)[rows, value_indices]
-        # Autocast makes the preceding matrix multiplies BF16, but policy
-        # probabilities and value estimates feed PPO's numerically sensitive
-        # ratio/loss path.  Promote them before leaving the model, as in
-        # exp/training's ActorCritic.
-        if self.config.policy_head_type == "legacy_fixed":
-            raw = self.policy_head(hidden).float()
-            if legal_mask is None:
-                logits = raw
-            else:
-                if legal_mask.shape != (batch, NUM_ACTIONS):
-                    raise ValueError("legal_mask must be [batch, 241]")
-                logits = raw.masked_fill(~legal_mask.to(device=raw.device, dtype=torch.bool), float("-inf"))
+        # Autocast 使前面的矩阵乘落在 BF16,但策略概率与价值估计要进入 PPO 的
+        # 数值敏感 ratio/loss 路径,离开模型前先提升精度。
         output = {
             "raw_policy_logits": raw,
             "policy_logits": logits,

@@ -98,8 +98,9 @@ def test_rank_steps_only_and_missing_training_mode_are_rejected() -> None:
             )
 
 
-def test_v13_training_modules_do_not_import_legacy_v11() -> None:
+def test_training_modules_do_not_import_legacy_v11() -> None:
     package = Path(__file__).parents[2]
+    assert not (package / "legacy").exists()
     for relative in ("sft/data.py", "sft/precompute.py", "sft/train.py", "sft/checkpoint.py"):
         assert "legacy.v11" not in (package / relative).read_text(encoding="utf-8")
 

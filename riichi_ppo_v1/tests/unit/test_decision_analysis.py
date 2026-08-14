@@ -383,17 +383,6 @@ def test_temporary_and_riichi_missed_win_states_are_furiten() -> None:
         assert candidate.live_ron == 0
 
 
-def test_schema_11_keeps_kan_candidate_features_frozen_as_na() -> None:
-    hand = [0, 1, 2, 3, 4, 8, 12, 16, 20, 36, 40, 44, 72, 76]
-    ankan = Action(ActionType.ANKAN, 0, [0, 1, 2, 3])
-    obs = observation(hand, [ankan])
-    decision = Decision(0, 0, obs)
-    row = DecisionAnalysisBatch.build_legacy_v11(
-        [decision], analyzer=EfficiencyAnalyzer(),
-    ).for_decision(decision)
-    assert row.candidates == ()
-
-
 def test_red_and_normal_five_discards_keep_distinct_protocol_candidates() -> None:
     hand = [16, 17, 0, 4, 8, 12, 20, 36, 40, 44, 72, 76, 80, 108]
     actions = [Action(ActionType.DISCARD, 16), Action(ActionType.DISCARD, 17)]
