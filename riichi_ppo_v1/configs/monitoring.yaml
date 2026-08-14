@@ -20,19 +20,6 @@ gpu_monitor: false
 # GPU telemetry 采样间隔，单位秒。较小值能捕捉更细的波动，但会增加少量系统调用开销。
 gpu_sample_interval_s: 0.25
 
-# 固定启发式基线评测。每次使用同一组种子、轮换候选座位，并以贪心策略
-# 对阵效率/防守启发式对手，因此不同 update 的曲线可以直接比较。
-evaluation_enabled: true
-evaluation_interval_updates: 15
-evaluation_hanchan_count: 96
-# 每个 learner GPU 同时推进的半庄数；双卡时 96 场拆成 48 + 48。
-evaluation_parallel_hanchan_count: 48
-evaluation_seed_base: 20260717
-evaluation_game_mode: 4p-red-half
-evaluation_max_steps: 4000
-evaluation_cache_capacity: 131072
-evaluation_jsonl: evaluation.jsonl
-
 # JSONL 语义训练指标只记录公开 MJAI 事件、动作类别和最终结算；不会写入手牌或墙牌。
 # TensorBoard 仅投影精选的 PPO 与运行健康指标；完整诊断保留在 JSONL。
 semantic_metrics_enabled: true

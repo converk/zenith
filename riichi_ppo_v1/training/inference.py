@@ -214,44 +214,6 @@ if ray is not None:
             self.model.eval()
             return metrics
 
-        def evaluate_heuristics(
-            self,
-            *,
-            seed_offset: int = 0,
-            hanchan_count: int | None = None,
-            parallel_hanchans: int | None = None,
-        ) -> dict[str, float]:
-            """Evaluate this rank's current policy against the fixed public baselines."""
-            from ..sft.heuristic_evaluation import evaluate_against_heuristics
-            from .evaluation import heuristic_evaluation_config, ppo_evaluation_metrics
-
-            model = getattr(self.learner.model, "module", self.learner.model)
-            evaluation_config = heuristic_evaluation_config(self.config)
-            evaluation_config["heuristic_evaluation_seed_base"] = (
-                int(evaluation_config.get("heuristic_evaluation_seed_base", 20260717))
-                + int(seed_offset)
-            )
-            if parallel_hanchans is not None:
-                evaluation_config["heuristic_evaluation_parallel_hanchan_count"] = int(
-                    parallel_hanchans
-                )
-            shard_hanchans = int(
-                hanchan_count
-                if hanchan_count is not None
-                else evaluation_config.get("heuristic_evaluation_hanchan_count", 96)
-            )
-            metrics = evaluate_against_heuristics(
-                model,
-                self.device,
-                evaluation_config,
-                hanchan_count=shard_hanchans,
-                # Keep the exact same seats, seeds and opponents at every
-                # checkpoint so the TensorBoard curve remains comparable.
-                cycle=0,
-            )
-            self.model.eval()
-            return ppo_evaluation_metrics(metrics)
-
         def _model_for_namespace(self, namespace: str) -> torch.nn.Module:
             if namespace == "rollout":
                 return self.model

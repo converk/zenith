@@ -26,11 +26,6 @@ import yaml
 from torch.utils.tensorboard import SummaryWriter
 
 from .profiling import GpuSampler, append_jsonl
-from .evaluation import (
-    evaluation_shards,
-    merge_ppo_evaluation_summaries,
-    should_run_evaluation,
-)
 from .metrics import RollingKyokuMetrics, append_metric_jsonl, metric_counters
 from .tensorboard import learner_peak_allocated_mb, write_curated_scalars
 from ..model.schema import TOKEN_SCHEMA_VERSION
@@ -333,67 +328,6 @@ def run(config: dict[str, Any]) -> None:
             ]),
         }
 
-    def run_evaluation(update: int) -> None:
-        """Run the fixed public baseline at a safe rollout/update boundary."""
-        if not should_run_evaluation(config, update):
-            return
-        hanchan_count = int(config.get("evaluation_hanchan_count", 96))
-        parallel_hanchans = int(
-            config.get("evaluation_parallel_hanchan_count", 48)
-        )
-        shards = evaluation_shards(hanchan_count, len(inference_actors))
-        shard_values = ray.get([
-            actor.evaluate_heuristics.remote(
-                seed_offset=offset,
-                hanchan_count=count,
-                parallel_hanchans=min(parallel_hanchans, count),
-            )
-            for actor, (offset, count) in zip(
-                inference_actors, shards, strict=False,
-            )
-        ])
-        values = merge_ppo_evaluation_summaries(shard_values)
-        write_curated_scalars(writer, values, update)
-        writer.flush()
-        append_metric_jsonl(
-            semantic_path,
-            update=update,
-            global_decisions=global_decisions,
-            global_kyokus=global_kyokus,
-            source="evaluation",
-            metrics=values,
-            metadata={
-                "seed_base": int(config.get("evaluation_seed_base", 20260717)),
-                "hanchan_count": hanchan_count,
-                "shards": [
-                    {"rank": rank, "seed_offset": offset, "hanchan_count": count}
-                    for rank, (offset, count) in enumerate(shards)
-                ],
-                "opponents": "fixed_efficiency_defense_heuristics",
-                "greedy": True,
-            },
-        )
-        append_jsonl(
-            Path(config["checkpoint_dir"])
-            / str(config.get("evaluation_jsonl", "evaluation.jsonl")),
-            {
-                "update": int(update),
-                "timestamp": time.time(),
-                **values,
-            },
-        )
-        print(
-            f"evaluation update={update} "
-            f"hanchans={values.get('eval/match/count', 0):.0f} "
-            f"mean_rank={values.get('eval/match/mean_rank', 0.0):.4f} "
-            f"first_place_rate={values.get('eval/match/first_place_rate', 0.0):.4f} "
-            f"match_point_delta_mean={values.get('eval/match/point_delta_mean', 0.0):.2f} "
-            f"win_rate={values.get('eval/kyoku/win_rate', 0.0):.4f} "
-            f"deal_in_rate={values.get('eval/kyoku/deal_in_rate', 0.0):.4f} "
-            f"optimal_shanten_rate={values.get('eval/efficiency/optimal_shanten_rate', 0.0):.4f}",
-            flush=True,
-        )
-
     def run_1v3_evaluation(update: int) -> dict[str, Any] | None:
         """Block on the fixed 1600-hanchan 1v3 vs V13 SFT evaluation."""
         if not bool(config.get("eval1v3_enabled", False)):
@@ -570,7 +504,6 @@ def run(config: dict[str, Any]) -> None:
                                         "game_mode": config["game_mode"],
                                         "opponent_mix": "current_self_play_all_seats",
                                     })
-            run_evaluation(update_number)
             checkpoint_interval = max(1, int(config.get("checkpoint_interval_updates", 50)))
             if update_number % checkpoint_interval == 0:
                 checkpoint_path = Path(config["checkpoint_dir"]) / f"checkpoint_{update_number:05d}.pt"
@@ -657,7 +590,7 @@ def main() -> None:
 def smoke_main() -> None:
     args = _parser(smoke=True).parse_args()
     config = load_config(args.config)
-    config.update({"device": args.device or "cpu", "num_workers": 1, "learner_gpus": 1, "envs_per_worker": 1, "kyokus_per_worker": args.kyokus, "iterations": 1, "update_epochs": 4, "target_kl": 0.0, "minibatch_size": 32, "update_batch_mode": "auto", "checkpoint_dir": "checkpoints/riichi_ppo_v1_smoke", "evaluation_enabled": False})
+    config.update({"device": args.device or "cpu", "num_workers": 1, "learner_gpus": 1, "envs_per_worker": 1, "kyokus_per_worker": args.kyokus, "iterations": 1, "update_epochs": 4, "target_kl": 0.0, "minibatch_size": 32, "update_batch_mode": "auto", "checkpoint_dir": "checkpoints/riichi_ppo_v1_smoke"})
     if args.iterations is not None:
         config["iterations"] = args.iterations
     if args.checkpoint_dir:
