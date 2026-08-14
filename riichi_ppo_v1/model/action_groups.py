@@ -1,10 +1,10 @@
-"""Canonical action-id grouping shared by SFT training and evaluation."""
+"""SFT 训练与评测共用的规范化动作分组。"""
 
 from __future__ import annotations
 
 
 def action_group(action_id: int) -> str:
-    """Return the semantic action group for a 241-way action id."""
+    """返回 241 维动作空间中指定动作 id 的语义分组。"""
     boundaries = (
         (1, "pass"),
         (75, "discard"),

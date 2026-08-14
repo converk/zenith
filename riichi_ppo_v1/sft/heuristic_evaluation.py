@@ -21,7 +21,7 @@ from ..training.rewards import (
 )
 from ..training.worker import active_decisions
 from .evaluation_cases import DEFENSE, EFFICIENCY, evaluation_cases
-from .policy_adapter import PolicyAdapter, V13PolicyAdapter
+from ..evaluation.policy_adapter import PolicyAdapter, V13PolicyAdapter
 
 
 def _phase(discard_count: int) -> str:

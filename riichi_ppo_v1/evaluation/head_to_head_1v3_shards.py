@@ -1,9 +1,8 @@
-"""Synchronous sharded 1v3 evaluation for V14 PPO checkpoints.
+"""PPO checkpoint 的同步分片 1v3 评测。
 
-Each update checkpoint is evaluated against the frozen V13 SFT baseline in
-parallel subprocesses with disjoint contiguous seed ranges. The training loop blocks on
-this function before continuing to the next update, so a failed shard aborts
-training instead of silently producing a partial curve.
+每个 update checkpoint 在并行子进程中以互不相交的连续种子区间对阵冻结的
+V13 SFT 基线。训练循环在继续下一个 update 前阻塞等待本函数,因此单个分片失败
+会中止训练,而不是静默产出残缺曲线。
 """
 
 from __future__ import annotations
@@ -250,7 +249,7 @@ def run_sharded_1v3(
         command = [
             sys.executable,
             "-m",
-            "riichi_ppo_v1.sft.head_to_head_1v3",
+            "riichi_ppo_v1.evaluation.head_to_head_1v3",
             "--model-a", str(checkpoint),
             "--model-b", str(model_b),
             "--hanchans", str(int(hanchans_per_process)),

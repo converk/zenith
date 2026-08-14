@@ -1,4 +1,4 @@
-"""Run strict real-environment validation for semantic state and action protocols."""
+"""在真实环境中严格验证语义状态与动作协议。"""
 
 from __future__ import annotations
 

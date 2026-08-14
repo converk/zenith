@@ -28,7 +28,7 @@ from torch.utils.tensorboard import SummaryWriter
 import yaml
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
-from .action_groups import action_group as _action_group
+from ..model.action_groups import action_group as _action_group
 from .data import SftSample, iter_split_samples
 from .checkpoint import checkpoint_payload, load_actor_weights_for_config, load_exact_resume
 from .contract import (

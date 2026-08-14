@@ -1,4 +1,4 @@
-"""Version-independent policy boundary for deterministic evaluation."""
+"""确定性评测的版本无关策略边界。"""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ import torch
 
 from ..model.bridge import BatchedStateBridge, Decision
 from ..model import KyokuTransformerActorCritic, ModelConfig
-from .checkpoint import load_v13_weights_only
-from .contract import SFT_CONTRACT_VERSION, assert_runtime_contract
+from ..sft.checkpoint import load_v13_weights_only
+from ..sft.contract import SFT_CONTRACT_VERSION, assert_runtime_contract
 
 
 @dataclass(frozen=True)

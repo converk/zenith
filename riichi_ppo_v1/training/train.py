@@ -35,7 +35,7 @@ from .metrics import RollingKyokuMetrics, append_metric_jsonl, metric_counters
 from .tensorboard import learner_peak_allocated_mb, write_curated_scalars
 from ..model.schema import TOKEN_SCHEMA_VERSION
 from .learner import validate_fresh_model_checkpoint_contract
-from ..sft.head_to_head_1v3_shards import (
+from ..evaluation.head_to_head_1v3_shards import (
     REQUIRED_1V3_PROCESSES,
     run_sharded_1v3,
     validate_1v3_shard_plan,

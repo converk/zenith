@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from riichi_ppo_v1.sft.head_to_head_1v3_shards import (
+from riichi_ppo_v1.evaluation.head_to_head_1v3_shards import (
     merge_1v3_shards,
     pooled_bootstrap_ci,
     validate_1v3_shard_plan,

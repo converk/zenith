@@ -1,10 +1,8 @@
-"""Deterministic 1v3 evaluation: one candidate seat vs three opponent seats.
+"""确定性 1v3 评测:一个候选座位对阵三个对手座位。
 
-The candidate model occupies one seat per hanchan; the other three seats all
-play the opponent model greedily.  The candidate seat rotates across the four
-positions over hanchans.  Reported metrics: first-place rate, mean rank, mean
-point difference against the average of the three opponents, and a paired
-bootstrap 95% CI over per-hanchan point differences.
+候选模型每半庄占一个座位,其余三席均由对手模型贪心出牌;候选座位在半庄之间
+轮转四个位置。上报指标包括一位率、平均名次、相对三名对手平均点差,以及基于
+每半庄点差的配对 bootstrap 95% 置信区间。
 """
 
 from __future__ import annotations
@@ -33,7 +31,7 @@ from ..training.rewards import (
     PublicStateTracker,
 )
 from ..training.worker import active_decisions
-from .action_groups import action_group as _action_group
+from ..model.action_groups import action_group as _action_group
 from .policy_adapter import load_policy_adapter
 
 

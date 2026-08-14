@@ -21,7 +21,7 @@ from riichi_ppo_v1.sft.contract import (
     SFT_CONTRACT_VERSION,
     assert_runtime_contract,
 )
-from riichi_ppo_v1.sft.policy_adapter import PPOPolicyAdapter
+from riichi_ppo_v1.evaluation.policy_adapter import PPOPolicyAdapter
 
 from .bridge import PreparedDecision
 from .model import (
