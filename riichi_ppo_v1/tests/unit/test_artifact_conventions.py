@@ -221,3 +221,35 @@ def test_sft_cadence_single_point() -> None:
         config = _read_yaml(CONFIG_DIR / name)
         duplicated = cadence_keys & set(config)
         assert not duplicated, f"{name} 复制了节奏键: {sorted(duplicated)}"
+
+
+def test_no_historical_locks_in_configs_and_docs() -> None:
+    """配置与文档不得锁定历史版本/日期目录/废弃数据集(拼接避免自引用)。"""
+    needles = "|".join(
+        (
+            "train_riichi_" + "ppo_v14",
+            "train_riichi_" + "v13_sft",
+            "80pct_v11",
+            "tenhou-to-mjai",
+            "audit/reports/v14_ppo_20260812",
+            "audit/reports/v15_ppo_20260814",
+            "v13_sft_20260802",
+            "v15_ppo_20260814",
+        )
+    )
+    result = subprocess.run(
+        [
+            "rg", "-n", "--hidden", "-g", "!*.pyc",
+            "-g", "!test_artifact_conventions.py",
+            needles,
+            "riichi_ppo_v1/configs",
+            "riichi_ppo_v1/README.md",
+            "riichi_ppo_v1/docs",
+            "riichi_lab_bot/README.md",
+            "AGENTS.md",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout == "", f"仍有历史版本锁:\n{result.stdout}"

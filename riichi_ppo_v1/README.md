@@ -25,11 +25,12 @@ CUDA_DEVICE=0,1 conda run -n Mahjong-AI riichi-sft-train \
 如使用稳定抽样的 40% 数据并消除训练期间的在线回放，可先在后台物化 actor-only 缓存：
 
 ```bash
+mkdir -p logs/v13
 nohup conda run -n Mahjong-AI riichi-sft-precompute \
   --source datasets/tenhou_sft_2024_2025 \
   --output datasets/tenhou_sft_2024_2025_encoded_40pct_v13_v16 \
   --subset-denominator 5 --subset-remainders 0,1 --workers 16 \
-  > logs/sft-precompute-40pct.log 2>&1 &
+  > logs/v13/sft-precompute-40pct.log 2>&1 &
 ```
 
 完成后直接把该目录传给 `riichi-sft-train --dataset`。编码数据使用 fp16 numeric、bit-packed legal mask 和可变长 token；其 manifest 绑定 token schema，并验证公开牌河与有序 MJAI history 一致，协议变化时会拒绝旧缓存。
@@ -52,8 +53,10 @@ CUDA_DEVICE=0,1 conda run -n Mahjong-AI riichi-ppo-train \
 
 PPO 唯一评测机制是固定 1v3 对抗:每 30 个 update 一次、10 个进程各 160 半庄
 (共 1600 半庄),候选策略对阵由 `eval1v3_model_b` 指定的对手模型。对手模型、
-种子基数、设备与输出目录都来自版本配置;结果写入 `eval1v3_output_dir`,摘要
-追加到 `<checkpoint_dir>/eval1v3.jsonl`。默认配置不含任何版本化对手或目录。
+种子基数、设备与输出目录都来自版本配置;结果写入 `eval1v3_output_dir`
+(固定为 `audit/reports/<版本号>/eval`),摘要追加到该目录下的
+`eval1v3.jsonl`,进度记录写入 `audit/reports/<版本号>/report/PROGRESS.md`。
+默认配置不含任何版本化对手或目录。
 
 SFT 的固定启发式评测独立于 PPO reward，使用轮换座位的效率/防守启发式对手。它记录名次、分差、和牌、放铳、被自摸、流局、立直、副露及座位/阶段分组指标。
 
@@ -62,6 +65,17 @@ SFT 的固定启发式评测独立于 PPO reward，使用轮换座位的效率/�
 - `configs/sft.yaml`：SFT 数据加载、优化器、checkpoint 与启发式评测。
 - `configs/training.yaml`：当前标准 PPO 的拓扑、优化器与 checkpoint。
 - `configs/monitoring.yaml`：性能和公开语义指标采集，不改变训练算法。
+
+## 产物目录规范
+
+- 所有运行日志(json/txt/log)写入 `logs/<版本号>/`,禁止在 `logs/` 根目录或
+  他处单独生成日志文件;运行脚本用 `tee` 把训练与 Ray/子进程输出重定向到该目录。
+- 初始设计文档、实验报告、测试与验证脚本唯一存放于
+  `audit/reports/<版本号>/` 的 `design/`、`report/`、`scripts/`,评测与验证输出
+  放 `eval/`;这些固定类型子目录中的 design/report/scripts 进版本控制。
+- checkpoint 固定保存在 `checkpoints/train_riichi_<版本号>/<阶段>`;现行数据集为
+  `datasets/tenhou_sft_2024_2025` 与
+  `datasets/tenhou_sft_2024_2025_encoded_40pct_v13_v16`。
 
 最小 CPU 检查：
 

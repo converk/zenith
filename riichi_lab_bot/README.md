@@ -98,7 +98,7 @@ CUDA_DEVICE=0,1 riichi-lab-bot validate \
 | `--device` | `auto` | `auto`、`cpu`、`cuda` 或 `cuda:index` |
 | `--dtype` | `auto` | `auto`、`fp32` 或 `bf16` |
 | `CUDA_DEVICE` | 未设置 | 在导入 PyTorch 前映射为 `CUDA_VISIBLE_DEVICES` |
-| `--jsonl-log` | 未设置 | 追加写入结构化运行日志 |
+| `--jsonl-log` | 未设置 | 追加写入结构化运行日志,按规范写 `logs/<版本号>/`(如 `logs/v15/bot-online.jsonl`) |
 | `--log-level` | `INFO` | `DEBUG`、`INFO`、`WARNING` 或 `ERROR` |
 | `--url` | RiichiLab 官方 endpoint | 连接本地/自托管服务器时覆盖 |
 
