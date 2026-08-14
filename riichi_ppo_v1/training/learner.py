@@ -244,7 +244,7 @@ def discounted_empirical_returns(
 
 
 def approximate_kl_values(new_logprob: torch.Tensor, old_logprob: torch.Tensor) -> torch.Tensor:
-    """Return exp/training's per-sample PPO approximate KL estimate."""
+    """返回每条样本的 PPO 近似 KL 估计。"""
     log_ratio = new_logprob - old_logprob
     ratio = log_ratio.exp()
     return (ratio - 1.0) - log_ratio
@@ -388,8 +388,7 @@ class PPOLearner:
         self.model = KyokuTransformerActorCritic(self.config).to(self.device)
         self.hp = hyperparameters
         # Keep FP32 parameters and optimizer state, but use BF16 tensor cores for
-        # CUDA forwards when available.  This matches exp/training's production
-        # policy: unsupported hardware is deliberately FP32 rather than FP16.
+        # 可用时走 CUDA forward;不支持 BF16 的硬件有意保持 FP32 而非 FP16。
         requested_bf16 = str(hyperparameters.get("inference_dtype", "bf16")).lower() == "bf16"
         self.use_bf16 = bool(
             requested_bf16 and self.device.type == "cuda" and torch.cuda.is_bf16_supported()

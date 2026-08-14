@@ -12,10 +12,9 @@ import numpy as np
 # rather than re-implementing candidate-token encoding.  ``DecisionAnalysisBatch``
 # produces the segment=7 candidate tokens (one per legal action) that the model
 # sees during SFT, PPO rollout, and online evaluation
-# (``riichi_ppo_v1/sft/head_to_head.py``, ``heuristic_evaluation.py``).
+# (``riichi_ppo_v1/evaluation/head_to_head_1v3.py``, ``sft/heuristic_evaluation.py``)。
 # Without these tokens the model's input distribution shifts → argmax drifts on
-# ~43% of decisions in empirical tests (see
-# ``riichi_lab_bot/tools/verify_candidate_token_drift.py``).
+# ~43% of decisions in empirical tests.
 from riichi_ppo_v1.model.bridge import (
     NUM_PLAYERS,
     Decision,

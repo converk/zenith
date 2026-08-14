@@ -55,14 +55,14 @@ action-240 rows.
 ```bash
 conda run -n Mahjong-AI python -m riichi_ppo_v1.sft.precompute \
   --source datasets/tenhou_sft_2024_2025 \
-  --output datasets/tenhou_sft_2024_2025_encoded_40pct_v13 \
+  --output datasets/tenhou_sft_2024_2025_encoded_40pct_v13_v16 \
   --subset-denominator 5 --subset-remainders 0,1 \
   --workers 16
 ```
 
 性能验证使用 PPO smoke：`conda run -n Mahjong-AI riichi-ppo-smoke --device cuda`，
 跑三轮并单独报告第 2–3 轮。PPO smoke 使用 `target_kl=0.0`、`update_epochs=4`、
-`kyokus_per_worker=1`；长期训练保持 `kyokus_per_worker=16`。
+`kyokus_per_worker=16`(与长期训练默认一致)。
 
 The expected full-cache totals are 94,009,417 training decisions and 951,475
 validation decisions. Stop before training if the actual totals or selection

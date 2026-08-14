@@ -1,7 +1,7 @@
 # RiichiLab 独立对局客户端
 
-这个目录包含一个可独立运行的四人麻将客户端，用
-`checkpoints/train_riichi_ppo_v14/checkpoint_00510.pt` 中的语义 token 模型连接
+这个目录包含一个可独立运行的四人麻将客户端，用 `--checkpoint` 指定的语义
+token 模型(例如 `checkpoints/train_riichi_ppo_v14/checkpoint_00510.pt`)连接
 [RiichiLab](https://riichi.dev/)。
 
 它直接复用 `riichi_ppo_v1` 的 V13 模型结构、checkpoint 加载、语义 token
@@ -21,11 +21,10 @@ python -m pip install -e ./riichi_lab_bot
 ```
 
 安装会使用 `torch==2.7.1` 和 `websockets==16.1.1`。可以用下面的命令
-检查入口、原生扩展和默认 checkpoint：
+检查入口与原生扩展：
 
 ```bash
 python -c "import riichi, riichienv, riichi_lab_bot; print('runtime ok')"
-test -f checkpoints/train_riichi_ppo_v14/checkpoint_00510.pt
 riichi-lab-bot --help
 ```
 
@@ -35,7 +34,7 @@ riichi-lab-bot --help
 推理统计，最终汇总只计算后两场：
 
 ```bash
-CUDA_DEVICE=2,3 riichi-lab-bot local \
+CUDA_DEVICE=0,1 riichi-lab-bot local \
   --games 3 \
   --seed 20260730 \
   --device cuda:0 \
@@ -53,7 +52,8 @@ RiichiLab 的 `request_action.observation`。四席共享一份模型权重，�
 CPU 正确性测试也可直接运行：
 
 ```bash
-riichi-lab-bot local --games 1 --device cpu --dtype fp32
+riichi-lab-bot local --games 1 --device cpu --dtype fp32 \
+  --checkpoint checkpoints/train_riichi_ppo_v14/checkpoint_00510.pt
 ```
 
 ## 创建并验证机器人
@@ -71,7 +71,7 @@ export RIICHI_BOT_TOKEN
 3. Pending 状态的机器人连接 validation：
 
 ```bash
-CUDA_DEVICE=2,3 riichi-lab-bot validate \
+CUDA_DEVICE=0,1 riichi-lab-bot validate \
   --device cuda:0 \
   --dtype fp32 \
   --checkpoint checkpoints/train_riichi_ppo_v14/checkpoint_00510.pt
@@ -93,8 +93,8 @@ CUDA_DEVICE=2,3 riichi-lab-bot validate \
 
 | 参数或环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `--checkpoint` | `checkpoints/train_riichi_ppo_v14/checkpoint_00510.pt` | checkpoint 文件 |
-| `RIICHI_CHECKPOINT` | 未设置 | `--checkpoint` 未指定时覆盖默认模型 |
+| `--checkpoint` | 必填(无内置默认) | checkpoint 文件,不锁定历史版本 |
+| `RIICHI_CHECKPOINT` | 未设置 | `--checkpoint` 未显式给出时提供模型路径 |
 | `--device` | `auto` | `auto`、`cpu`、`cuda` 或 `cuda:index` |
 | `--dtype` | `auto` | `auto`、`fp32` 或 `bf16` |
 | `CUDA_DEVICE` | 未设置 | 在导入 PyTorch 前映射为 `CUDA_VISIBLE_DEVICES` |
@@ -102,9 +102,9 @@ CUDA_DEVICE=2,3 riichi-lab-bot validate \
 | `--log-level` | `INFO` | `DEBUG`、`INFO`、`WARNING` 或 `ERROR` |
 | `--url` | RiichiLab 官方 endpoint | 连接本地/自托管服务器时覆盖 |
 
-配置优先级为 `--checkpoint`、`RIICHI_CHECKPOINT`、项目默认路径。模型在
-进程启动时加载一次；运行期间 checkpoint 文件发生变化不会热更新当前
-进程。
+配置优先级为 `--checkpoint`、`RIICHI_CHECKPOINT`;两者都缺时程序报错退出。
+模型在进程启动时加载一次;运行期间 checkpoint 文件发生变化不会热更新
+当前进程。
 
 `auto` 在支持 BF16 的 CUDA 上选择 BF16；本任务的验证与本地对局统一显式
 使用 `--dtype fp32`。该模型只支持四人 Observation 和 schema 13

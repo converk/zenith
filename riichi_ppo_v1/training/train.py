@@ -15,7 +15,7 @@ from typing import Any
 
 # Keep the user-facing project convention while using CUDA's standard
 # visibility variable.  This must run before importing torch (and before Ray
-# launches workers) so ``CUDA_DEVICE=0,3`` exposes those physical GPUs while
+# launches workers) so ``CUDA_DEVICE=0,1`` exposes those physical GPUs while
 # each Ray GPU actor still sees its assigned device as ``cuda:0``.
 if os.environ.get("CUDA_DEVICE") and not os.environ.get("CUDA_VISIBLE_DEVICES"):
     os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["CUDA_DEVICE"]
