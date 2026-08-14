@@ -33,7 +33,7 @@ report = {
     "checkpoints": {},
 }
 for filename in ("latest.pt", "best.pt"):
-    payload = torch.load(Path("checkpoints/train_riichi_v13_sft") / filename, map_location="cpu", weights_only=False)
+    payload = torch.load(Path("checkpoints/train_riichi_v13/sft") / filename, map_location="cpu", weights_only=False)
     shape_mismatch = {}
     current = model.state_dict()
     for name, value in payload["model"].items():

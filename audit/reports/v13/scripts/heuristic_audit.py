@@ -3,7 +3,7 @@ from pathlib import Path
 import torch
 from riichi_ppo_v1.model import KyokuTransformerActorCritic,ModelConfig
 from riichi_ppo_v1.sft.heuristic_evaluation import evaluate_against_heuristics
-p=torch.load('checkpoints/train_riichi_v13_sft/best.pt',map_location='cpu',weights_only=False)
+p=torch.load('checkpoints/train_riichi_v13/sft/best.pt',map_location='cpu',weights_only=False)
 m=KyokuTransformerActorCritic(ModelConfig(**p['model_config'])); m.load_state_dict(p['model']); d=torch.device('cuda:0'); m.to(d)
 c=dict(p['sft_config']); c.update({'heuristic_evaluation_hanchan_count':96,'heuristic_evaluation_parallel_hanchan_count':24,'heuristic_evaluation_seed_base':20260717})
 OUT=Path(__file__).resolve().parents[1]

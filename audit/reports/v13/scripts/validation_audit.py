@@ -5,7 +5,7 @@ from riichi_ppo_v1.model import KyokuTransformerActorCritic,ModelConfig
 from riichi_ppo_v1.sft.train import evaluate
 
 dataset=Path('datasets/tenhou_sft_2024_2025_encoded_40pct_v13_v16')
-payload=torch.load('checkpoints/train_riichi_v13_sft/best.pt',map_location='cpu',weights_only=False)
+payload=torch.load('checkpoints/train_riichi_v13/sft/best.pt',map_location='cpu',weights_only=False)
 model=KyokuTransformerActorCritic(ModelConfig(**payload['model_config']))
 model.load_state_dict(payload['model']); device=torch.device('cuda:0'); model.to(device)
 config=dict(payload['sft_config']); config['learner_gpus']=2
