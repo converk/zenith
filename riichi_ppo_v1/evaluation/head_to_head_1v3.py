@@ -32,6 +32,7 @@ from ..training.rewards import (
 )
 from ..training.worker import active_decisions
 from ..model.action_groups import action_group as _action_group
+from .mechanism import DEFAULT_1V3_HANCHANS_PER_PROCESS, TOTAL_1V3_HANCHANS
 from .policy_adapter import load_policy_adapter
 
 
@@ -74,9 +75,9 @@ def evaluate_1v3(
     device: str = "cuda",
     model_a_device: str | None = None,
     model_b_device: str | None = None,
-    hanchan_count: int = 500,
-    parallel_hanchans: int = 24,
-    seed_base: int = 20290000,
+    hanchan_count: int = TOTAL_1V3_HANCHANS,
+    parallel_hanchans: int = DEFAULT_1V3_HANCHANS_PER_PROCESS,
+    seed_base: int = 0,
     game_mode: str = "4p-red-half",
     max_steps: int = 4000,
 ) -> dict[str, Any]:
@@ -367,9 +368,11 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-a", required=True)
     parser.add_argument("--model-b", required=True)
-    parser.add_argument("--hanchans", type=int, default=500)
-    parser.add_argument("--parallel-hanchans", type=int, default=24)
-    parser.add_argument("--seed-base", type=int, default=20290000)
+    parser.add_argument("--hanchans", type=int, default=TOTAL_1V3_HANCHANS)
+    parser.add_argument(
+        "--parallel-hanchans", type=int, default=DEFAULT_1V3_HANCHANS_PER_PROCESS
+    )
+    parser.add_argument("--seed-base", type=int, default=0)
     parser.add_argument("--game-mode", default="4p-red-half")
     parser.add_argument("--max-steps", type=int, default=4000)
     parser.add_argument("--device", default="cuda")

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import subprocess
 
 import pytest
@@ -140,3 +141,48 @@ def test_current_datasets_present_and_obsolete_absent() -> None:
     assert not (
         datasets / "tenhou_sft_2024_2025_encoded_remaining_80pct_v11"
     ).exists()
+
+
+def test_1v3_mechanism_constants() -> None:
+    """1v3 机制常量(10/160/1600/30)在 mechanism.py 单一来源。"""
+    from riichi_ppo_v1.evaluation import mechanism
+
+    assert mechanism.REQUIRED_1V3_PROCESSES == 10
+    assert mechanism.DEFAULT_1V3_HANCHANS_PER_PROCESS == 160
+    assert mechanism.TOTAL_1V3_HANCHANS == 1600
+    assert mechanism.DEFAULT_1V3_INTERVAL_UPDATES == 30
+
+
+def test_head_to_head_cli_defaults_align_with_mechanism() -> None:
+    """独立 1v3 CLI 默认值必须与固定机制一致(1600/160/seed 0)。"""
+    from riichi_ppo_v1.evaluation.head_to_head_1v3 import _parser
+
+    args = _parser().parse_args(
+        ["--model-a", "a", "--model-b", "b", "--output", "out"]
+    )
+    assert args.hanchans == 1600
+    assert args.parallel_hanchans == 160
+    assert args.seed_base == 0
+
+
+def test_progress_md_path_lives_in_report() -> None:
+    """PROGRESS.md 落在 `audit/reports/<版本号>/report`,输出目录缺省时跳过。"""
+    from riichi_ppo_v1.evaluation.mechanism import progress_md_path
+    from riichi_ppo_v1.training.train import _progress_md_path
+
+    assert progress_md_path("audit/reports/v15/eval") == Path(
+        "audit/reports/v15/report/PROGRESS.md"
+    )
+    assert _progress_md_path({"eval1v3_output_dir": "audit/reports/v15/eval"}) == Path(
+        "audit/reports/v15/report/PROGRESS.md"
+    )
+    assert _progress_md_path({}) is None
+
+
+def test_eval_output_dirs_match_version_convention() -> None:
+    """版本配置的 `eval1v3_output_dir` 必须为 `audit/reports/<版本号>/eval`。"""
+    for name in ("v14_ppo.yaml", "v14_ppo_resume.yaml", "v15_ppo.yaml"):
+        config = _read_yaml(CONFIG_DIR / name)
+        assert re.fullmatch(
+            r"audit/reports/v[0-9]+/eval", config["eval1v3_output_dir"]
+        ), config["eval1v3_output_dir"]

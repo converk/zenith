@@ -17,11 +17,12 @@ from typing import Any
 
 import numpy as np
 
-REQUIRED_1V3_PROCESSES = 10
-# 固定 1v3 机制:每 30 updates 一次、每进程 160 半庄(10 进程共 1600 半庄)。
-# 这些是机制常量,修改必须走宪法修订,禁止在实验配置中悄悄覆盖。
-DEFAULT_1V3_INTERVAL_UPDATES = 30
-DEFAULT_1V3_HANCHANS_PER_PROCESS = 160
+from .mechanism import (
+    DEFAULT_1V3_HANCHANS_PER_PROCESS,
+    DEFAULT_1V3_INTERVAL_UPDATES,
+    REQUIRED_1V3_PROCESSES,
+    progress_md_path,
+)
 
 
 def shard_summary_path(output_dir: str | Path, update: int) -> Path:
@@ -197,7 +198,7 @@ def _record_progress_failure(
     update: int,
     failures: list[tuple[int, int, str]],
 ) -> None:
-    progress = Path(output_dir).resolve().parent / "PROGRESS.md"
+    progress = progress_md_path(output_dir).resolve()
     if not progress.is_file():
         return
     lines = [

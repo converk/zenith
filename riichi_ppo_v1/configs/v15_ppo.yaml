@@ -86,6 +86,6 @@ eval1v3_parallel_hanchans: 160
 eval1v3_model_b: checkpoints/train_riichi_v13/sft/best_heuristic.pt
 eval1v3_seed_base: 20260814
 eval1v3_devices: ["0", "1"]
-eval1v3_output_dir: audit/reports/v15_ppo_20260814/eval
+eval1v3_output_dir: audit/reports/v15/eval
 
 progress_update_interval_updates: 60

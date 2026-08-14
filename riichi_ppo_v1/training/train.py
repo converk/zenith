@@ -32,23 +32,29 @@ from .tensorboard import learner_peak_allocated_mb, write_curated_scalars
 from ..model.schema import TOKEN_SCHEMA_VERSION
 from .learner import validate_fresh_model_checkpoint_contract
 from ..evaluation.head_to_head_1v3_shards import (
+    run_sharded_1v3,
+    validate_1v3_shard_plan,
+)
+from ..evaluation.mechanism import (
     DEFAULT_1V3_HANCHANS_PER_PROCESS,
     DEFAULT_1V3_INTERVAL_UPDATES,
     REQUIRED_1V3_PROCESSES,
-    run_sharded_1v3,
-    validate_1v3_shard_plan,
+    progress_md_path,
 )
 
 
 _CONFIG_GROUPS = ("training", "monitoring")
 
 
-def _progress_md_path(config: dict[str, Any]) -> Path:
-    return (
-        Path(config.get("eval1v3_output_dir", config["checkpoint_dir"]))
-        .parent
-        / "PROGRESS.md"
-    )
+def _progress_md_path(config: dict[str, Any]) -> Path | None:
+    """进度报告路径:`audit/reports/<版本号>/report/PROGRESS.md`。
+
+    `eval1v3_output_dir` 缺省时返回 ``None``,跳过进度写入。
+    """
+    output_value = config.get("eval1v3_output_dir")
+    if not output_value:
+        return None
+    return progress_md_path(output_value)
 
 
 def _update_progress_md(
@@ -60,6 +66,8 @@ def _update_progress_md(
 ) -> None:
     """Append the required per-60-update progress entry to PROGRESS.md."""
     progress = _progress_md_path(config)
+    if progress is None:
+        return
     if not progress.is_file():
         return
     interval = max(1, int(config.get("progress_update_interval_updates", 60)))
@@ -416,7 +424,7 @@ def run(config: dict[str, Any]) -> None:
             flush=True,
         )
         append_jsonl(
-            Path(config["checkpoint_dir"]) / "eval1v3.jsonl",
+            output_dir / "eval1v3.jsonl",
             {"update": int(update), "timestamp": time.time(), **summary},
         )
         return summary
