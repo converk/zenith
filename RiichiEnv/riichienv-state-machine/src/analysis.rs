@@ -4,6 +4,7 @@ use numpy::{
 };
 use pyo3::{exceptions::PyValueError, prelude::*};
 
+use crate::mjai_kyoku_state_machine::{NUM_ACTIONS, TILE_KINDS};
 use crate::{shanten, HAND_ANALYSIS_VERSION, SHANTEN_UNAVAILABLE};
 
 fn suji_safe(tile: usize, river: u64) -> bool {
@@ -135,13 +136,15 @@ fn analyze_features(
     passed_masks: PyReadonlyArray2<'_, u64>,
 ) -> PyResult<FeatureAnalysis> {
     let shape = counts.shape();
-    if shape.len() != 2 || shape[1] != 34 {
-        return Err(PyValueError::new_err("counts must have shape uint8[N,34]"));
+    if shape.len() != 2 || shape[1] != TILE_KINDS {
+        return Err(PyValueError::new_err(format!(
+            "counts must have shape uint8[N,{TILE_KINDS}]"
+        )));
     }
     let rows = shape[0];
     if action_ids.shape() != [rows]
         || open_melds.shape() != [rows]
-        || remaining.shape() != [rows, 34]
+        || remaining.shape() != [rows, TILE_KINDS]
         || discard_types.shape() != [rows]
         || river_masks.shape() != [rows, 3]
         || passed_masks.shape() != [rows, 3]
@@ -156,11 +159,11 @@ fn analyze_features(
     let mut sorted_ids = action_ids.to_vec();
     sorted_ids.sort_unstable();
     if sorted_ids.windows(2).any(|pair| pair[0] == pair[1])
-        || sorted_ids.iter().any(|&id| id >= 241)
+        || sorted_ids.iter().any(|&id| usize::from(id) >= NUM_ACTIONS)
     {
-        return Err(PyValueError::new_err(
-            "action ids must be unique and inside [0,241)",
-        ));
+        return Err(PyValueError::new_err(format!(
+            "action ids must be unique and inside [0,{NUM_ACTIONS})"
+        )));
     }
     let counts = counts
         .as_slice()
@@ -186,9 +189,9 @@ fn analyze_features(
         ));
     }
     if discard_types.iter().any(|&tile| !(-1..=33).contains(&tile)) {
-        return Err(PyValueError::new_err(
-            "discard types must be N/A (-1) or inside [0,34)",
-        ));
+        return Err(PyValueError::new_err(format!(
+            "discard types must be N/A (-1) or inside [0,{TILE_KINDS})"
+        )));
     }
     if action_ids
         .iter()
@@ -202,16 +205,16 @@ fn analyze_features(
     if rivers
         .iter()
         .chain(passed.iter())
-        .any(|&mask| mask >> 34 != 0)
+        .any(|&mask| mask >> TILE_KINDS != 0)
     {
-        return Err(PyValueError::new_err(
-            "public tile masks may use only the low 34 bits",
-        ));
+        return Err(PyValueError::new_err(format!(
+            "public tile masks may use only the low {TILE_KINDS} bits"
+        )));
     }
 
     let values = py.detach(|| {
         (0..rows).map(|row| {
-            let hand_slice = &counts[row * 34..(row + 1) * 34];
+            let hand_slice = &counts[row * TILE_KINDS..(row + 1) * TILE_KINDS];
             let melds = open_melds[row];
             if melds > 4 || hand_slice.iter().any(|&count| count > 4) {
                 return Err(format!("invalid hand row {row}"));
@@ -226,7 +229,7 @@ fn analyze_features(
                     "row {row} action {action_id} must describe a normalized 13-tile post-action shape"
                 ));
             }
-            let mut hand = [0_u8; 34];
+            let mut hand = [0_u8; TILE_KINDS];
             hand.copy_from_slice(hand_slice);
             let sh = shanten::calculate(&hand, melds);
             let mut improving = 0_u64;
@@ -234,7 +237,7 @@ fn analyze_features(
             // row has no single well-defined improving draw until a discard
             // is chosen, so return the explicit empty/N/A mask.
             if total == 13 && sh.overall != SHANTEN_UNAVAILABLE {
-                for tile in 0..34 {
+                for tile in 0..TILE_KINDS {
                     if hand[tile] >= 4 { continue; }
                     let mut next = hand;
                     next[tile] += 1;
@@ -243,14 +246,14 @@ fn analyze_features(
                     }
                 }
             }
-            let remain = &remaining[row * 34..(row + 1) * 34];
-            let ukeire = (0..34).filter(|&tile| improving & (1_u64 << tile) != 0)
+            let remain = &remaining[row * TILE_KINDS..(row + 1) * TILE_KINDS];
+            let ukeire = (0..TILE_KINDS).filter(|&tile| improving & (1_u64 << tile) != 0)
                 .map(|tile| u16::from(remain[tile])).sum::<u16>();
             let tile = discard_types[row];
             let mut defense = [0_u8; 5]; // genbutsu, suji, wall, honor-visible, passed
             if tile >= 0 {
                 let tile = usize::try_from(tile).map_err(|_| format!("invalid discard type at row {row}"))?;
-                if tile >= 34 { return Err(format!("invalid discard type at row {row}")); }
+                if tile >= TILE_KINDS { return Err(format!("invalid discard type at row {row}")); }
                 for opponent in 0..3 {
                     let river = rivers[row * 3 + opponent];
                     if river & (1_u64 << tile) != 0 { defense[0] |= 1 << opponent; }
@@ -305,7 +308,7 @@ fn analyze_features(
         if discard_types[row] >= 0 {
             let tile = discard_types[row] as usize;
             numeric_values[numeric_base + 2] =
-                (4_u8.saturating_sub(remaining[row * 34 + tile])) as f32 / 4.0;
+                (4_u8.saturating_sub(remaining[row * TILE_KINDS + tile])) as f32 / 4.0;
             numeric_values[numeric_base + 3] = defense[3] as f32 / 4.0;
         }
     }
@@ -355,8 +358,10 @@ fn analyze_hands(
     open_melds: PyReadonlyArray1<'_, u8>,
 ) -> PyResult<HandAnalysis> {
     let shape = counts.shape();
-    if shape.len() != 2 || shape[1] != 34 {
-        return Err(PyValueError::new_err("counts must have shape uint8[N,34]"));
+    if shape.len() != 2 || shape[1] != TILE_KINDS {
+        return Err(PyValueError::new_err(format!(
+            "counts must have shape uint8[N,{TILE_KINDS}]"
+        )));
     }
     let rows = shape[0];
     if open_melds.shape() != [rows] {
@@ -369,7 +374,11 @@ fn analyze_hands(
         .as_slice()
         .map_err(|_| PyValueError::new_err("open_melds must be C-contiguous"))?;
     let mut hands = Vec::with_capacity(rows);
-    for (row, (&melds, values)) in open_melds.iter().zip(counts.chunks_exact(34)).enumerate() {
+    for (row, (&melds, values)) in open_melds
+        .iter()
+        .zip(counts.chunks_exact(TILE_KINDS))
+        .enumerate()
+    {
         if melds > 4 || values.iter().any(|&count| count > 4) {
             return Err(PyValueError::new_err(format!(
                 "invalid count or open_melds in row {row}"
@@ -385,7 +394,7 @@ fn analyze_hands(
                 "row {row} represents {total} tiles; expected 13 or 14"
             )));
         }
-        let mut hand = [0_u8; 34];
+        let mut hand = [0_u8; TILE_KINDS];
         hand.copy_from_slice(values);
         hands.push((hand, melds));
     }
@@ -399,7 +408,7 @@ fn analyze_hands(
                 let total = hand.iter().map(|&value| usize::from(value)).sum::<usize>()
                     + 3 * usize::from(*melds);
                 if total == 13 && value.overall != SHANTEN_UNAVAILABLE {
-                    for tile in 0..34 {
+                    for tile in 0..TILE_KINDS {
                         if hand[tile] >= 4 {
                             continue;
                         }

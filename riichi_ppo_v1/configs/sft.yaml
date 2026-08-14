@@ -26,17 +26,12 @@ inference_dtype: bf16
 shuffle_buffer_kyokus: 8192
 # 在 32 个 batch 的窗口内按长度分桶，再随机打乱 batch 顺序；减少 padding 而不形成长度课程。
 length_bucket_window_batches: 32
-checkpoint_interval_steps: 3000
 log_interval_steps: 100
 validation_max_samples: 0
-validation_interval_steps: 1500
 validation_samples_per_run: 150000
 # 固定种子、四座轮换；候选 SFT actor 使用合法掩码下的确定性 argmax。
 heuristic_evaluation_enabled: true
-heuristic_evaluation_interval_steps: 7000
-heuristic_evaluation_hanchan_count: 96
 heuristic_evaluation_parallel_hanchan_count: 24
-heuristic_evaluation_final_hanchan_count: 96
 heuristic_evaluation_seed_base: 20260717
 heuristic_evaluation_game_mode: 4p-red-half
 heuristic_evaluation_max_steps: 4000

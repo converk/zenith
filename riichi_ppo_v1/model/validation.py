@@ -102,7 +102,7 @@ def assert_full_action_space(manager: Any) -> None:
     )
     mask = np.asarray(mask, dtype=bool)
     if mask.shape != (1, NUM_ACTIONS) or not mask[0].all():
-        raise AssertionError(f"expected all 241 slots, got shape={mask.shape} count={mask.sum(axis=1)}")
+        raise AssertionError(f"expected all {NUM_ACTIONS} slots, got shape={mask.shape} count={mask.sum(axis=1)}")
     for action_id, expected in enumerate(templates):
         returned = manager.decode_actions([0], [action_id])[0]
         if canonical(returned) != canonical(expected):

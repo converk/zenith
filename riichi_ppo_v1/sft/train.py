@@ -29,9 +29,12 @@ import yaml
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
 from ..model.action_groups import action_group as _action_group
+from ..model.schema import NUM_ACTIONS
 from .data import SftSample, iter_split_samples
 from .checkpoint import checkpoint_payload, load_actor_weights_for_config, load_exact_resume
 from .contract import (
+    SFT_CADENCE_STEPS,
+    SFT_FINAL_EVAL_HANCHAN_COUNT,
     dataset_manifest_hash,
     load_manifest,
     training_mode,
@@ -75,18 +78,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "inference_dtype": "bf16",
     "shuffle_buffer_kyokus": 8192,
     "length_bucket_window_batches": 32,
-    "checkpoint_interval_steps": 3000,
+    "checkpoint_interval_steps": SFT_CADENCE_STEPS,
     "save_initial_checkpoint": False,
     "log_interval_steps": 100,
     "validation_max_samples": 0,
-    "validation_interval_steps": 1500,
+    "validation_interval_steps": SFT_CADENCE_STEPS,
     "validation_samples_per_run": 150000,
     "heuristic_evaluation_enabled": True,
-    "heuristic_evaluation_interval_steps": 7000,
-    "heuristic_evaluation_hanchan_count": 96,
+    "heuristic_evaluation_interval_steps": SFT_CADENCE_STEPS,
+    "heuristic_evaluation_hanchan_count": SFT_FINAL_EVAL_HANCHAN_COUNT,
     "heuristic_evaluation_parallel_hanchan_count": 24,
-    "heuristic_evaluation_final_hanchan_count": 96,
-    "heuristic_evaluation_seed_base": 20260717,
+    "heuristic_evaluation_final_hanchan_count": SFT_FINAL_EVAL_HANCHAN_COUNT,
+    "heuristic_evaluation_seed_base": 0,
     "heuristic_evaluation_game_mode": "4p-red-half",
     "heuristic_evaluation_max_steps": 4000,
     "checkpoint_dir": "checkpoints/train_riichi_v13_sft",
@@ -160,10 +163,10 @@ def collate_samples(
     factors = torch.zeros((batch, max_tokens, 10), dtype=torch.uint8)
     numeric = torch.zeros((batch, max_tokens, 8), dtype=torch.float32)
     lengths = torch.empty(batch, dtype=torch.long)
-    legal = torch.empty((batch, 241), dtype=torch.bool)
+    legal = torch.empty((batch, NUM_ACTIONS), dtype=torch.bool)
     actions = torch.empty(batch, dtype=torch.long)
     targets = torch.empty(batch, dtype=torch.float32)
-    teachers = torch.zeros((batch, 241), dtype=torch.bool)
+    teachers = torch.zeros((batch, NUM_ACTIONS), dtype=torch.bool)
     for row, sample in enumerate(samples):
         factors[row, :sample.token_length] = torch.from_numpy(sample.token_factors)
         numeric[row, :sample.token_length] = torch.from_numpy(sample.token_numeric)
@@ -233,11 +236,11 @@ def length_bucketed_batches(
         yield from drain(window)
 
 
-_GROUP_IDS = tuple(_action_group(action) for action in range(241))
+_GROUP_IDS = tuple(_action_group(action) for action in range(NUM_ACTIONS))
 _GROUP_NAMES = ("pass", "discard", "reach", "chi", "pon", "kan", "hora", "ryukyoku")
 _GROUP_SLICES = (
     slice(0, 1), slice(1, 75), slice(75, 76), slice(76, 133),
-    slice(133, 170), slice(170, 239), slice(239, 240), slice(240, 241),
+    slice(133, 170), slice(170, 239), slice(239, 240), slice(240, NUM_ACTIONS),
 )
 _ACTION_GROUP_INDEX = torch.tensor(
     [_GROUP_NAMES.index(value) for value in _GROUP_IDS], dtype=torch.long,
@@ -1069,7 +1072,10 @@ def _train_worker_impl(
                 device,
                 config,
                 hanchan_count=int(
-                    config.get("heuristic_evaluation_final_hanchan_count", 128)
+                    config.get(
+                        "heuristic_evaluation_final_hanchan_count",
+                        SFT_FINAL_EVAL_HANCHAN_COUNT,
+                    )
                 ),
                 cycle=0,
             )

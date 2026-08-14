@@ -19,6 +19,7 @@ from .feature_schema import (
     VALUE_RIICHI_ROUTE,
     encode_shanten,
 )
+from .schema import TILE_KINDS
 
 
 def _own_hand(observation: object) -> list[int]:
@@ -171,7 +172,7 @@ def encode_actor_state_summary(
     factors = np.zeros((6, 10), dtype=np.uint8)
     numeric = np.zeros((6, 8), dtype=np.float32)
     hand = _own_hand(observation)
-    counts = np.bincount([tile // 4 for tile in hand], minlength=34).astype(np.uint8)
+    counts = np.bincount([tile // 4 for tile in hand], minlength=TILE_KINDS).astype(np.uint8)
     opened = _own_meld_count(observation)
     analyzed = analyzer.analyze([counts], [opened])[0]
     riichi = tuple(_required_sequence(observation, "riichi_declared", length=4))
@@ -218,7 +219,7 @@ def encode_actor_state_summary(
     numeric[0, 3] = _signed_unit(analyzed.thirteen_orphans_shanten or 0, 13)
     if ukeire_available:
         numeric[0, 4] = _unit(remaining_ukeire(analyzed.improving_mask, remaining), 40)
-        numeric[0, 5] = _unit(int(analyzed.improving_mask).bit_count(), 34)
+        numeric[0, 5] = _unit(int(analyzed.improving_mask).bit_count(), TILE_KINDS)
 
     value_flags = (
         (VALUE_DAMATEN_YAKU if current_rules.damaten_ron_yaku else 0)

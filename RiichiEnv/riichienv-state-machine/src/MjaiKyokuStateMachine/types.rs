@@ -1,6 +1,8 @@
 const NUM_PLAYERS: usize = 4;
 const ENVS_PER_THREAD: usize = 8;
-const NUM_ACTIONS: usize = 241;
+// 固定 241 维动作空间与 34 类牌:领域不变常量,单一命名定义,禁止散落魔法数字。
+pub(crate) const NUM_ACTIONS: usize = 241;
+pub(crate) const TILE_KINDS: usize = 34;
 
 const ACTOR_NONE: u8 = 0;
 const ACTOR_SELF: u8 = 1;

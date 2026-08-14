@@ -1,3 +1,13 @@
-"""Versioned serialization constants shared by PPO and SFT."""
+"""PPO 与 SFT 共用的版本化序列化与领域常量。
+
+领域不变常量(动作空间维度、牌类数)在此单一命名定义,其余模块一律引用,禁止
+散落魔法数字。
+"""
 
 TOKEN_SCHEMA_VERSION = 13
+# 固定 241 维动作空间(协议维度,不随实验版本变化)。
+NUM_ACTIONS = 241
+# 34 类牌(万/饼/索各 9 类 + 风/三元 7 类)。
+TILE_KINDS = 34
+# 136 张实体牌 TID(34 类牌 × 4 张)。
+TID_COUNT = 136

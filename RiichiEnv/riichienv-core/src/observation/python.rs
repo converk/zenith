@@ -4,7 +4,7 @@ use pyo3::types::{PyDict, PyDictMethods};
 
 use crate::action::{Action, ActionEncoder, ActionType};
 use crate::shanten;
-use crate::types::{Meld, MeldType};
+use crate::types::{Meld, MeldType, TILE_MAX, TILES_4P};
 use crate::yaku_checker;
 
 use super::Observation;
@@ -237,7 +237,7 @@ impl Observation {
         decay_rate: Option<f32>,
     ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
         let decay_rate = decay_rate.unwrap_or(0.2);
-        let mut arr = Array2::<f32>::zeros((4, 34));
+        let mut arr = Array2::<f32>::zeros((4, TILE_MAX));
 
         // Encode discard history for all 4 players in relative seat order
         for (ch_idx, &abs_idx) in self.rel_order().iter().enumerate() {
@@ -251,7 +251,7 @@ impl Observation {
             // Iterate through all discards, applying exponential decay
             for (turn, &tile) in discs.iter().enumerate() {
                 let tile_idx = (tile as usize) / 4;
-                if tile_idx < 34 {
+                if tile_idx < TILE_MAX {
                     // Age = how many turns ago this discard happened
                     // Most recent discard has age 0
                     let age = (max_len - 1 - turn) as f32;
@@ -524,20 +524,20 @@ impl Observation {
         // Total: 74 channels
 
         let num_channels = 74;
-        let mut arr = Array2::<f32>::zeros((num_channels, 34));
+        let mut arr = Array2::<f32>::zeros((num_channels, TILE_MAX));
 
         // 1. Hand (0-3), 2. Red (4)
-        let mut counts = [0u8; 34];
+        let mut counts = [0u8; TILE_MAX];
         for &t in &self.hands[self.player_id as usize] {
             let idx = (t as usize) / 4;
-            if idx < 34 {
+            if idx < TILE_MAX {
                 counts[idx] += 1;
                 if t == 16 || t == 52 || t == 88 {
                     arr[[4, idx]] = 1.0;
                 }
             }
         }
-        for i in 0..34 {
+        for i in 0..TILE_MAX {
             let c = counts[i];
             if c >= 1 {
                 arr[[0, i]] = 1.0;
@@ -560,7 +560,7 @@ impl Observation {
             }
             for &t in &meld.tiles {
                 let idx = (t as usize) / 4;
-                if idx < 34 {
+                if idx < TILE_MAX {
                     arr[[5 + m_idx, idx]] = 1.0;
                 }
             }
@@ -569,7 +569,7 @@ impl Observation {
         // 4. Dora Indicators (9)
         for &t in &self.dora_indicators {
             let idx = (t as usize) / 4;
-            if idx < 34 {
+            if idx < TILE_MAX {
                 arr[[9, idx]] = 1.0;
             }
         }
@@ -578,7 +578,7 @@ impl Observation {
         let discs = &self.discards[self.player_id as usize];
         for (i, &t) in discs.iter().rev().take(4).enumerate() {
             let idx = (t as usize) / 4;
-            if idx < 34 {
+            if idx < TILE_MAX {
                 arr[[10 + i, idx]] = 1.0;
             }
         }
@@ -589,7 +589,7 @@ impl Observation {
             let discs = &self.discards[opp_id as usize];
             for (j, &t) in discs.iter().rev().take(4).enumerate() {
                 let idx = (t as usize) / 4;
-                if idx < 34 {
+                if idx < TILE_MAX {
                     let ch_base = 14 + (i as usize - 1) * 4;
                     arr[[ch_base + j, idx]] = 1.0;
                 }
@@ -599,7 +599,7 @@ impl Observation {
         // 7. Discard Counts (All players, normalized, relative order) (26-29)
         for (ch_idx, &abs_idx) in self.rel_order().iter().enumerate() {
             let count_norm = (self.discards[abs_idx].len() as f32) / 24.0;
-            for k in 0..34 {
+            for k in 0..TILE_MAX {
                 arr[[26 + ch_idx, k]] = count_norm;
             }
         }
@@ -618,22 +618,22 @@ impl Observation {
         // Visible hands (just self)
         tiles_used += self.hands[self.player_id as usize].len();
         tiles_used += self.dora_indicators.len();
-        let tiles_left = (136_i32 - tiles_used as i32).max(0) as f32;
+        let tiles_left = (TILES_4P as i32 - tiles_used as i32).max(0) as f32;
         let tiles_left_norm = tiles_left / 70.0; // Max ~70 tiles left in wall
-        for k in 0..34 {
+        for k in 0..TILE_MAX {
             arr[[30, k]] = tiles_left_norm;
         }
 
         // 9. Riichi (31-34)
         if self.riichi_declared[self.player_id as usize] {
-            for i in 0..34 {
+            for i in 0..TILE_MAX {
                 arr[[31, i]] = 1.0;
             }
         }
         for i in 1..4 {
             let opp_id = (self.player_id + i) % 4;
             if self.riichi_declared[opp_id as usize] {
-                for k in 0..34 {
+                for k in 0..TILE_MAX {
                     arr[[32 + (i as usize - 1), k]] = 1.0;
                 }
             }
@@ -920,16 +920,16 @@ impl Observation {
         &self,
         py: Python<'py>,
     ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
-        let mut arr = Array3::<f32>::zeros((4, 7, 34));
+        let mut arr = Array3::<f32>::zeros((4, 7, TILE_MAX));
 
         for (player_idx, discards) in self.discards.iter().enumerate() {
             // Count each tile type (up to 4 copies)
-            let mut tile_counts = [0u8; 34];
+            let mut tile_counts = [0u8; TILE_MAX];
             let mut aka_flags = [false; 3]; // aka 5m/5p/5s
 
             for &tile in discards {
                 let tile_type = (tile / 4) as usize;
-                if tile_type < 34 {
+                if tile_type < TILE_MAX {
                     let count_idx = tile_counts[tile_type].min(3) as usize;
                     arr[[player_idx, count_idx, tile_type]] = 1.0;
                     tile_counts[tile_type] = tile_counts[tile_type].saturating_add(1);

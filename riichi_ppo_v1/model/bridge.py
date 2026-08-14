@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 from ..training.profiling import StageProfiler
+from .schema import NUM_ACTIONS, TID_COUNT
 from .critic_features import (
     collect_visible_table_state,
     empty_critic_features,
@@ -19,7 +20,6 @@ from .critic_features import (
 )
 
 NUM_PLAYERS = 4
-NUM_ACTIONS = 241
 _DECISION_ACTION_TYPES = frozenset({"dahai", "reach", "ankan", "kakan", "ryukyoku"})
 
 
@@ -42,7 +42,7 @@ def tile_id_to_mjai(tile_id: int | None) -> str | None:
     red = {16: "5mr", 52: "5pr", 88: "5sr"}
     if tile in red:
         return red[tile]
-    if not 0 <= tile < 136:
+    if not 0 <= tile < TID_COUNT:
         raise ValueError(f"invalid RiichiEnv tile id {tile}")
     suit = tile // 36
     if suit < 3:

@@ -7,7 +7,6 @@ import asyncio
 import json
 import logging
 import os
-from pathlib import Path
 
 from .client import (
     RANKED_URL,
@@ -20,17 +19,9 @@ from .policy import PolicyEngine
 from .telemetry import EventRecorder
 
 
-def _default_checkpoint() -> str:
-    override = os.environ.get("RIICHI_CHECKPOINT")
-    if override:
-        return override
-    repository = Path(__file__).resolve().parents[3]
-    return str(
-        repository
-        / "checkpoints"
-        / "train_riichi_ppo_v14"
-        / "checkpoint_00510.pt"
-    )
+def _default_checkpoint() -> str | None:
+    """返回环境变量指定的 checkpoint;未设置时为 None,由 main 强制要求显式提供。"""
+    return os.environ.get("RIICHI_CHECKPOINT")
 
 
 def _common_parser() -> argparse.ArgumentParser:
@@ -69,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
         "local", parents=[common], help="run local RiichiEnv games"
     )
     local.add_argument("--games", type=int, default=3)
-    local.add_argument("--seed", type=int, default=20260730)
+    local.add_argument("--seed", type=int, default=0)
     local.add_argument("--max-steps", type=int, default=4000)
 
     validate = subparsers.add_parser(
@@ -116,7 +107,12 @@ def _online_token() -> str:
 
 
 def main() -> None:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    if not args.checkpoint:
+        parser.error(
+            "--checkpoint 或环境变量 RIICHI_CHECKPOINT 必须提供"
+        )
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format="%(asctime)s %(levelname)s %(message)s",

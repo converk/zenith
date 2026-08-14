@@ -16,6 +16,7 @@ from typing import Any, Iterator
 import numpy as np
 
 from ..model.bridge import action_jsons_and_decision_flag, snapshot_json
+from ..model.schema import NUM_ACTIONS
 from ..model.critic_features import (
     FIELD_PUBLIC_MELD_TILE,
     FIELD_PUBLIC_RIVER,
@@ -258,7 +259,7 @@ def validate_encoded_chunk(path: Path) -> dict[str, int]:
         identities = list(zip(*(stored[name].tolist() for name in identity_fields), strict=True))
         if len(set(identities)) != len(identities):
             raise AssertionError("cache contains duplicate per-sample identities")
-        masks = np.unpackbits(legal, axis=1, bitorder="little", count=241).astype(np.bool_)
+        masks = np.unpackbits(legal, axis=1, bitorder="little", count=NUM_ACTIONS).astype(np.bool_)
         totals: Counter[str] = Counter()
         for row, action in enumerate(actions):
             start, end = int(offsets[row]), int(offsets[row + 1])
@@ -337,7 +338,7 @@ def _roundtrip_cache(records: list[tuple[str, str]]) -> tuple[dict[str, Any], di
                 raise AssertionError("cache offsets do not cover encoded factors")
             if not np.array_equal(stored["actions"], np.asarray([sample.action for sample in samples], dtype=np.uint8)):
                 raise AssertionError("cache actions changed on round-trip")
-            unpacked = np.unpackbits(stored["legal"], axis=1, bitorder="little", count=241).astype(np.bool_)
+            unpacked = np.unpackbits(stored["legal"], axis=1, bitorder="little", count=NUM_ACTIONS).astype(np.bool_)
             if not np.array_equal(unpacked, np.stack([sample.legal_mask for sample in samples])):
                 raise AssertionError("cache legal masks changed on round-trip")
         structure = validate_encoded_chunk(path)

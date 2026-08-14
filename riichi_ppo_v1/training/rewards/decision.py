@@ -24,8 +24,8 @@ from ...model.feature_schema import (
     encode_shanten,
 )
 from ...model.dora import dora_type_multiplicities
+from ...model.schema import NUM_ACTIONS, TILE_KINDS
 
-NUM_ACTIONS = 241
 SCHEMA_VERSION = DECISION_ANALYSIS_VERSION
 _RULE_CACHE_CAPACITY = 131_072
 _RULE_CACHE: OrderedDict[tuple[object, ...], "RuleState"] = OrderedDict()
@@ -405,7 +405,7 @@ def _defense_feature_batch(
     opened = np.zeros(len(legal_ids), dtype=np.uint8)
     for row, aid_value in enumerate(legal_ids):
         feature = features_by_id.get(int(aid_value))
-        if feature is not None and len(feature.concealed_counts) == 34:
+        if feature is not None and len(feature.concealed_counts) == TILE_KINDS:
             hands[row] = np.asarray(feature.concealed_counts, dtype=np.uint8)
             opened[row] = int(feature.open_meld_count)
         else:

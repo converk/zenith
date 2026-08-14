@@ -27,6 +27,7 @@ from .bridge import PreparedDecision
 from .model import (
     NUM_ACTIONS,
     NUMERIC_WIDTH,
+    TOKEN_SCHEMA_VERSION,
     TOKEN_WIDTH,
 )
 
@@ -115,13 +116,13 @@ class PolicyEngine:
         if not is_sft and not is_ppo:
             raise ValueError(
                 "incompatible token schema: "
-                f"checkpoint={schema!r}, runtime=13"
+                f"checkpoint={schema!r}, runtime={TOKEN_SCHEMA_VERSION}"
             )
         if is_ppo:
-            if int(schema or 0) != 13:
+            if int(schema or 0) != TOKEN_SCHEMA_VERSION:
                 raise ValueError(
                     "incompatible token schema: "
-                    f"checkpoint={schema!r}, runtime=13"
+                    f"checkpoint={schema!r}, runtime={TOKEN_SCHEMA_VERSION}"
                 )
             if payload.get("feature_schema_sha256") != feature_schema_sha256():
                 raise ValueError("incompatible feature schema hash")
@@ -156,7 +157,7 @@ class PolicyEngine:
             "checkpoint_format": checkpoint_format,
             "sft_contract_version": contract,
             "ppo_format_version": ppo_format if is_ppo else None,
-            "token_schema_version": 13,
+            "token_schema_version": TOKEN_SCHEMA_VERSION,
             "policy_head_type": model_config["policy_head_type"],
             "model_config": dict(model_config),
         }

@@ -11,7 +11,7 @@ from ..model.validation import run_random_coverage, write_coverage
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--games", type=int, default=128)
-    parser.add_argument("--seed", type=int, default=20260713)
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-steps", type=int, default=2500)
     parser.add_argument("--output", default="riichi_ppo_v1_coverage.json")
     args = parser.parse_args()

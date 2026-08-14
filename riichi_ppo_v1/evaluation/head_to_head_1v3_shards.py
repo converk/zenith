@@ -18,6 +18,10 @@ from typing import Any
 import numpy as np
 
 REQUIRED_1V3_PROCESSES = 10
+# 固定 1v3 机制:每 30 updates 一次、每进程 160 半庄(10 进程共 1600 半庄)。
+# 这些是机制常量,修改必须走宪法修订,禁止在实验配置中悄悄覆盖。
+DEFAULT_1V3_INTERVAL_UPDATES = 30
+DEFAULT_1V3_HANCHANS_PER_PROCESS = 160
 
 
 def shard_summary_path(output_dir: str | Path, update: int) -> Path:

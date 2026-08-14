@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .schema import NUM_ACTIONS
+
 
 def action_group(action_id: int) -> str:
     """返回 241 维动作空间中指定动作 id 的语义分组。"""
@@ -13,6 +15,6 @@ def action_group(action_id: int) -> str:
         (170, "pon"),
         (239, "kan"),
         (240, "hora"),
-        (241, "ryukyoku"),
+        (NUM_ACTIONS, "ryukyoku"),
     )
     return next(name for end, name in boundaries if int(action_id) < end)

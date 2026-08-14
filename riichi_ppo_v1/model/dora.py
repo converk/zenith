@@ -1,4 +1,4 @@
-"""Shared public dora-indicator semantics for actor feature encoding."""
+"""演员特征编码共用的公开宝牌指示牌语义。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from collections.abc import Iterable
 
 
 def dora_type(indicator: int) -> int:
-    """Return the 34-tile type selected by one physical indicator."""
+    """返回一枚物理指示牌翻开后对应的 34 类牌型。"""
     tile = int(indicator) // 4
     if tile < 27:
         base = tile // 9 * 9

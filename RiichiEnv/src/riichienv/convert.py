@@ -1,9 +1,14 @@
+"""136 维 TID 与 MPSZ/MJAI 字符串的转换。"""
+
+from .consts import TID_COUNT
+
+
 def tid_to_mpsz(tid: int) -> str:
     """
     Convert 136-based tile ID to MPSZ string (e.g. 1z, 5p, 0p).
     0-based index: 0 is red 5 for m, p, s.
     """
-    if not (0 <= tid < 136):
+    if not (0 <= tid < TID_COUNT):
         raise ValueError(f"Invalid TID: {tid}")
 
     # Check Red 5
@@ -33,7 +38,7 @@ def tid_to_mjai(tid: int) -> str:
     """
     Convert 136-based tile ID to MJAI string (e.g. E, 5p, 5pr).
     """
-    if not (0 <= tid < 136):
+    if not (0 <= tid < TID_COUNT):
         raise ValueError(f"Invalid TID: {tid}")
 
     # Red 5s

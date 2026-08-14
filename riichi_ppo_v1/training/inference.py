@@ -19,6 +19,7 @@ except ImportError:
     ray = None
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
+from ..model.schema import NUM_ACTIONS
 from .learner import PPOLearner
 from .profiling import StageProfiler
 from .trajectory import Transition
@@ -68,7 +69,7 @@ def collate_request_rows(
     factors = np.zeros((batch, max_length, 10), dtype=np.uint8)
     numeric = np.zeros((batch, max_length, 8), dtype=np.float32)
     critic_factors = np.zeros((batch, max_critic_length, 10), dtype=np.uint8)
-    legal = np.empty((batch, 241), dtype=np.bool_)
+    legal = np.empty((batch, NUM_ACTIONS), dtype=np.bool_)
     for index, (request_index, row) in enumerate(group):
         request = requests[request_index]
         length = int(lengths[index])

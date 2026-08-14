@@ -61,12 +61,15 @@ class CriticFeatures:
     length: int
 
 
+from .schema import TID_COUNT
+
+
 def tile_id_to_type(tile: Any) -> int | None:
-    """Return a 34-tile type, deliberately folding red fives into ordinary fives."""
+    """返回 34 类牌型,故意把红五并入普通五。"""
     if tile is None:
         return None
     value = int(tile)
-    if not 0 <= value < 136:
+    if not 0 <= value < TID_COUNT:
         return None
     return value // 4
 
@@ -231,7 +234,7 @@ def encode_future_wall_tokens(wall: Iterable[int]) -> list[tuple[int, ...]]:
         if tile is None:
             raise ValueError("future wall contains a missing tile id")
         value = int(tile)
-        if not 0 <= value < 136:
+        if not 0 <= value < TID_COUNT:
             raise ValueError(f"invalid RiichiEnv tile id {value} in future wall")
         tile_type = tile_id_to_type(value)
         if tile_type is None:

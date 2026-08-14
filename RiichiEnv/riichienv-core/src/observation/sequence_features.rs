@@ -9,6 +9,7 @@
 
 use crate::action::{Action, ActionType};
 use crate::parser::mjai_to_tid;
+use crate::types::TILES_4P;
 
 use super::Observation;
 
@@ -363,7 +364,7 @@ impl Observation {
         let my_hand = &self.hands[self.player_id as usize];
         for &tid in my_hand {
             let tid = tid as u16;
-            if tid < 136 {
+            if tid < TILES_4P as u16 {
                 tokens.push(268 + tid);
             }
         }
@@ -380,7 +381,7 @@ impl Observation {
     /// Count approximate tiles remaining in the wall.
     fn count_tiles_remaining(&self) -> u16 {
         let n = 4; // 4 players
-        let total_tiles: u32 = 136; // 4P
+        let total_tiles: u32 = TILES_4P as u32;
 
         let mut used: u32 = 0;
         // Hands

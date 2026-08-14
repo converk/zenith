@@ -31,6 +31,8 @@ from .tensorboard import learner_peak_allocated_mb, write_curated_scalars
 from ..model.schema import TOKEN_SCHEMA_VERSION
 from .learner import validate_fresh_model_checkpoint_contract
 from ..evaluation.head_to_head_1v3_shards import (
+    DEFAULT_1V3_HANCHANS_PER_PROCESS,
+    DEFAULT_1V3_INTERVAL_UPDATES,
     REQUIRED_1V3_PROCESSES,
     run_sharded_1v3,
     validate_1v3_shard_plan,
@@ -42,7 +44,7 @@ _CONFIG_GROUPS = ("training", "monitoring")
 
 def _progress_md_path(config: dict[str, Any]) -> Path:
     return (
-        Path(config.get("eval1v3_output_dir", "audit/reports/v14_ppo_20260812/eval"))
+        Path(config.get("eval1v3_output_dir", config["checkpoint_dir"]))
         .parent
         / "PROGRESS.md"
     )
@@ -329,10 +331,13 @@ def run(config: dict[str, Any]) -> None:
         }
 
     def run_1v3_evaluation(update: int) -> dict[str, Any] | None:
-        """Block on the fixed 1600-hanchan 1v3 vs V13 SFT evaluation."""
+        """阻塞执行固定 1600 半庄的 1v3 对抗评测。"""
         if not bool(config.get("eval1v3_enabled", False)):
             return None
-        interval = max(1, int(config.get("eval1v3_interval_updates", 30)))
+        interval = max(
+            1,
+            int(config.get("eval1v3_interval_updates", DEFAULT_1V3_INTERVAL_UPDATES)),
+        )
         if update <= 0 or int(update) % interval != 0:
             return None
         checkpoint_path = (
@@ -343,16 +348,28 @@ def run(config: dict[str, Any]) -> None:
                 "checkpoint required by the 1v3 evaluation does not exist: "
                 f"{checkpoint_path}"
             )
-        output_dir = Path(config["eval1v3_output_dir"])
+        output_value = config.get("eval1v3_output_dir")
+        if not output_value:
+            raise RuntimeError("eval1v3_output_dir is required when 1v3 evaluation is enabled")
+        output_dir = Path(output_value)
+        model_b = config.get("eval1v3_model_b")
+        if not model_b:
+            raise RuntimeError("eval1v3_model_b is required when 1v3 evaluation is enabled")
         processes = int(config.get("eval1v3_processes", REQUIRED_1V3_PROCESSES))
         if processes != REQUIRED_1V3_PROCESSES:
             raise RuntimeError(
                 f"all 1v3 evaluations require exactly {REQUIRED_1V3_PROCESSES} processes"
             )
         hanchans_per_process = int(
-            config.get("eval1v3_hanchans_per_process", 160)
+            config.get("eval1v3_hanchans_per_process", DEFAULT_1V3_HANCHANS_PER_PROCESS)
         )
-        seed_base = int(config.get("eval1v3_seed_base", 20260812))
+        seed_value = config.get("eval1v3_seed_base")
+        if seed_value is None:
+            raise RuntimeError("eval1v3_seed_base is required when 1v3 evaluation is enabled")
+        seed_base = int(seed_value)
+        parallel_hanchans = int(
+            config.get("eval1v3_parallel_hanchans", hanchans_per_process)
+        )
         summary_path = output_dir / f"vs_sft_u{int(update):03d}.json"
         if summary_path.is_file():
             with open(summary_path, encoding="utf-8") as file:
@@ -365,16 +382,14 @@ def run(config: dict[str, Any]) -> None:
         else:
             summary = run_sharded_1v3(
                 checkpoint_path,
-                config["eval1v3_model_b"],
+                model_b,
                 update=int(update),
                 processes=processes,
                 hanchans_per_process=hanchans_per_process,
-                parallel_hanchans=int(
-                    config.get("eval1v3_parallel_hanchans", 160)
-                ),
+                parallel_hanchans=parallel_hanchans,
                 devices=tuple(
                     str(device)
-                    for device in config.get("eval1v3_devices", ("0", "2"))
+                    for device in config.get("eval1v3_devices", ("0", "1"))
                 ),
                 seed_base=seed_base,
                 output_dir=output_dir,

@@ -23,7 +23,7 @@ from ..model.feature_schema import (
     RUST_ANALYSIS_VERSION,
     feature_schema_sha256,
 )
-from ..model.schema import TOKEN_SCHEMA_VERSION
+from ..model.schema import NUM_ACTIONS, TOKEN_SCHEMA_VERSION
 from ..sft.contract import SFT_CONTRACT_VERSION
 from ..sft.checkpoint import load_actor_weights_for_config
 from .metrics import ppo_buffer_metrics
@@ -288,7 +288,7 @@ def materialize_host_batch(
         factors = _empty_host_tensor((batch, max_length, 10), torch.uint8, pin_memory).zero_()
         numeric = _empty_host_tensor((batch, max_length, 8), torch.float32, pin_memory).zero_()
         critic_factors = _empty_host_tensor((batch, max_critic_length, 10), torch.uint8, pin_memory).zero_()
-        legal = _empty_host_tensor((batch, 241), torch.bool, pin_memory)
+        legal = _empty_host_tensor((batch, NUM_ACTIONS), torch.bool, pin_memory)
         token_lengths = _empty_host_tensor((batch,), torch.long, pin_memory)
         critic_lengths = _empty_host_tensor((batch,), torch.long, pin_memory)
         actions = _empty_host_tensor((batch,), torch.long, pin_memory)
@@ -533,7 +533,7 @@ class PPOLearner:
             max_critic_length = max(int(t.critic_length) for t in selected)
             total += batch * max_length * (10 + 8 * 4)
             total += batch * max_critic_length * (10 + 8 * 4 + 34 * 4)
-            total += batch * (241 + 2 * 8 + 4 * 4 + 4)  # masks, lengths, scalar PPO fields and weights
+            total += batch * (NUM_ACTIONS + 2 * 8 + 4 * 4 + 4)  # masks, lengths, scalar PPO fields and weights
         return int(total)
 
     def _resolve_batch_mode(self, requested: str, estimated_cache_bytes: int) -> tuple[str, float, float]:

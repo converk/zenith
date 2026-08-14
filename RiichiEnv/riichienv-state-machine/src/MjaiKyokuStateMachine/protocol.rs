@@ -138,7 +138,7 @@ fn same_tiles_unordered<const N: usize>(left: &[MjaiTile; N], right: &[MjaiTile;
 
 fn tile34_from_tile(tile: MjaiTile) -> Result<usize, String> {
     let tile_id = tile.deaka().as_usize();
-    if tile_id < 34 {
+    if tile_id < TILE_KINDS {
         Ok(tile_id)
     } else {
         Err("tile cannot be mapped to TILE34".to_owned())

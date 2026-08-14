@@ -22,6 +22,7 @@ import numpy as np
 from ..model.feature_schema import (
     ENCODED_FORMAT,
 )
+from ..model.schema import NUM_ACTIONS
 from ..training.rewards.efficiency import EfficiencyAnalyzer
 from .data import SftSample, _member_metadata, encode_kyoku
 from .contract import SFT_CONTRACT_VERSION, validate_v13_manifest
@@ -93,7 +94,7 @@ def _write_chunk(path: Path, samples: list[SftSample]) -> int:
         actions=np.asarray([sample.action for sample in samples], dtype=np.uint8),
         value_targets=np.asarray([sample.value_target for sample in samples], dtype=np.float16),
         teacher_masks=np.packbits(np.stack([
-            sample.teacher_mask if sample.teacher_mask is not None else np.zeros(241, dtype=np.bool_)
+            sample.teacher_mask if sample.teacher_mask is not None else np.zeros(NUM_ACTIONS, dtype=np.bool_)
             for sample in samples
         ]), axis=1, bitorder="little"),
         years=np.asarray([sample.year for sample in samples], dtype=np.int16),
@@ -202,8 +203,8 @@ def _empty_field_statistics() -> dict[str, np.ndarray]:
         "numeric_saturated": np.zeros(8, dtype=np.int64),
         "numeric_out_of_range": np.zeros(8, dtype=np.int64),
         "numeric_total": np.zeros(8, dtype=np.int64),
-        "legal_actions": np.zeros(241, dtype=np.int64),
-        "expert_actions": np.zeros(241, dtype=np.int64),
+        "legal_actions": np.zeros(NUM_ACTIONS, dtype=np.int64),
+        "expert_actions": np.zeros(NUM_ACTIONS, dtype=np.int64),
     }
 
 
@@ -248,7 +249,7 @@ def _action_coverage(values: np.ndarray) -> dict[str, int]:
     groups = {
         "pass": (0, 1), "discard": (1, 75), "reach": (75, 76), "chi": (76, 133),
         "pon": (133, 170), "daiminkan": (170, 171), "ankan": (171, 205),
-        "kakan": (205, 239), "hora": (239, 240), "ryukyoku": (240, 241),
+        "kakan": (205, 239), "hora": (239, 240), "ryukyoku": (240, NUM_ACTIONS),
     }
     return {name: int(values[start:end].sum()) for name, (start, end) in groups.items()}
 
@@ -447,7 +448,7 @@ def precompute(
         "game_sample_remainder": game_sample_remainder,
         "actor_only": True,
         "numeric_dtype": "float16",
-        "legal_encoding": "packbits-little-241",
+        "legal_encoding": f"packbits-little-{NUM_ACTIONS}",
         "ordered_public_history_verified": True,
         "complete_action_coverage_required": bool(require_complete_action_coverage),
         "audit_reports": [] if skip_audit else [str(path) for path in audit_reports],
@@ -547,20 +548,20 @@ def iter_precomputed_samples(
                 start, end = int(offsets[row]), int(offsets[row + 1])
                 yield SftSample(
                     factors[start:end].copy(), numeric[start:end].astype(np.float32),
-                    np.unpackbits(legal[row], bitorder="little", count=241).astype(np.bool_), int(actions[row]),
+                    np.unpackbits(legal[row], bitorder="little", count=NUM_ACTIONS).astype(np.bool_), int(actions[row]),
                     float(values[row]), np.zeros((0, 10), dtype=np.uint8),
                     int(years[row]), str(game_ids[row]),
                     int(kyoku_indices[row]), int(seats[row]),
                     int(decision_indices[row]),
-                    (np.unpackbits(teachers[row], bitorder="little", count=241).astype(np.bool_)
-                     if teachers is not None else np.zeros(241, dtype=np.bool_)),
+                    (np.unpackbits(teachers[row], bitorder="little", count=NUM_ACTIONS).astype(np.bool_)
+                     if teachers is not None else np.zeros(NUM_ACTIONS, dtype=np.bool_)),
                 )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=Path("datasets/tenhou_sft_2024_2025"))
-    parser.add_argument("--output", type=Path, default=Path("datasets/tenhou_sft_2024_2025_encoded_10pct_v13"))
+    parser.add_argument("--output", type=Path, required=True, help="编码缓存输出目录(必填,不提供历史默认)")
     parser.add_argument("--subset-denominator", type=int, default=10)
     parser.add_argument("--subset-remainder", type=int, default=0)
     parser.add_argument(

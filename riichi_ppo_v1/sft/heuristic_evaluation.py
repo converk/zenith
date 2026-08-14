@@ -22,6 +22,7 @@ from ..training.rewards import (
 from ..training.worker import active_decisions
 from .evaluation_cases import DEFENSE, EFFICIENCY, evaluation_cases
 from ..evaluation.policy_adapter import PolicyAdapter, V13PolicyAdapter
+from .contract import SFT_FINAL_EVAL_HANCHAN_COUNT
 
 
 def _phase(discard_count: int) -> str:
@@ -51,11 +52,14 @@ def evaluate_against_heuristics(
         ) from exc
 
     count = int(
-        config.get("heuristic_evaluation_hanchan_count", 128)
+        config.get(
+            "heuristic_evaluation_hanchan_count",
+            SFT_FINAL_EVAL_HANCHAN_COUNT,
+        )
         if hanchan_count is None else hanchan_count
     )
     cases = evaluation_cases(
-        int(config.get("heuristic_evaluation_seed_base", 20260717)),
+        int(config.get("heuristic_evaluation_seed_base", 0)),
         count,
         cycle=int(cycle),
     )

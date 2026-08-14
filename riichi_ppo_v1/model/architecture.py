@@ -19,8 +19,8 @@ from .feature_schema import (
     ACTION_QUERY_OFFENSE,
     ACTION_QUERY_SEGMENT,
 )
+from .schema import NUM_ACTIONS
 
-NUM_ACTIONS = 241
 TOKEN_WIDTH = 10
 NUMERIC_WIDTH = 8
 TOKEN_CARDINALITIES = (8, 32, 256, 8, 8, 16, 4, 16, 256, 4)
@@ -175,7 +175,7 @@ def isolated_action_layout(
     malformed |= offense_counts.gt(1).any(dim=1)
     if legal_mask is not None:
         if legal_mask.shape != (batch, NUM_ACTIONS):
-            raise ValueError("legal_mask must be [batch, 241]")
+            raise ValueError(f"legal_mask must be [batch, {NUM_ACTIONS}]")
         malformed |= (offense_counts != legal_mask.long()).any(dim=1)
     if bool(malformed.any()):
         raise ValueError(

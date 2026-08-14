@@ -8,12 +8,17 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..model.feature_schema import ENCODED_FORMAT
+from ..model.schema import NUM_ACTIONS
 
 SFT_CONTRACT_VERSION = "riichi-sft-v13-1"
 RUNTIME_CONTRACT_ID = "riichi-runtime-v13-1"
 DATA_PLAN_VERSION = 1
 DATA_CURSOR_VERSION = 1
 TRAINING_MODES = frozenset({"actor_only", "actor_public_value", "joint_actor_critic"})
+# 固定 SFT 节奏(宪法原则 IV):验证、启发式评测与 checkpoint 保存每 3000 steps
+# 一次,最终评估保持 96 半庄。参数只在代码中定义一处,禁止在实验配置里复制。
+SFT_CADENCE_STEPS = 3000
+SFT_FINAL_EVAL_HANCHAN_COUNT = 96
 _FORMAL_V13_MANIFEST_CONTRACT = (
     13,
     "ad8dc752f116d6d6430930e16c6a17322b3da980549d3350a5ddc461ee123036",
@@ -79,10 +84,10 @@ def validate_v15_reused_manifest(manifest: Mapping[str, Any]) -> None:
         coverage = statistics.get(name)
         if (
             not isinstance(coverage, list)
-            or len(coverage) != 241
+            or len(coverage) != NUM_ACTIONS
             or any(int(value) <= 0 for value in coverage)
         ):
-            raise RuntimeError(f"V15 SFT requires complete 241-action {name}")
+            raise RuntimeError(f"V15 SFT requires complete {NUM_ACTIONS}-action {name}")
     if manifest.get("complete_action_coverage_required") is not True:
         raise RuntimeError("V15 SFT manifest does not require complete action coverage")
     if manifest.get("ordered_public_history_verified") is not True:
