@@ -1,4 +1,4 @@
-"""Single fail-closed contract boundary for the supported v13 SFT path."""
+"""受支持 v13 SFT 路径的唯一 fail-closed 契约边界。"""
 
 from __future__ import annotations
 

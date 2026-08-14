@@ -1,4 +1,4 @@
-"""Checkpoint loading and deterministic policy inference."""
+"""checkpoint 加载与确定性策略推理。"""
 
 from __future__ import annotations
 

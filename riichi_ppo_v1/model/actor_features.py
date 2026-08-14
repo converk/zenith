@@ -1,4 +1,4 @@
-"""Compact deterministic public-state summaries for v13 actor inputs."""
+"""v13 actor 输入的紧凑确定性公开状态摘要。"""
 
 from __future__ import annotations
 

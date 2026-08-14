@@ -1,4 +1,4 @@
-"""Strict conversion boundary between RiichiEnv, MJAI and the Rust state machine."""
+"""RiichiEnv、MJAI 与 Rust 状态机之间的严格转换边界。"""
 
 from __future__ import annotations
 

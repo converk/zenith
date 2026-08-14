@@ -1,4 +1,4 @@
-"""Deterministic end-to-end integrity checks for compact SFT preprocessing."""
+"""紧凑 SFT 预处理的确定性端到端完整性校验。"""
 
 from __future__ import annotations
 

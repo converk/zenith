@@ -3,11 +3,12 @@ from __future__ import annotations
 import importlib
 import inspect
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import riichi_lab_bot.client as client
 from riichi_lab_bot import cli
 from riichi_ppo_v1.sft.train import load_config as load_sft_config
-from riichi_ppo_v1.training.train import load_config
+from riichi_ppo_v1.training.train import cleanup_smoke_artifacts, load_config
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -47,3 +48,14 @@ def test_riichi_lab_bot_retains_ranked_but_validate_path_is_independent() -> Non
     combined = inspect.getsource(client) + inspect.getsource(cli)
     assert "def run_ranked" in combined
     assert "def play_connection" in combined
+
+
+def test_smoke_cleanup_removes_only_smoke_artifacts() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        target = root / "checkpoints" / "riichi_ppo_v1_smoke"
+        (target / "tensorboard").mkdir(parents=True)
+        (target / "metrics.jsonl").write_text("{}", encoding="utf-8")
+        cleanup_smoke_artifacts(target)
+        assert not target.exists()
+        assert root.exists()

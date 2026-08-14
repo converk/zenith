@@ -1,4 +1,4 @@
-"""GPU PPO actors with cross-worker rollout inference batches."""
+"""GPU PPO actor,支持跨 worker 的 rollout 推理批处理。"""
 
 from __future__ import annotations
 

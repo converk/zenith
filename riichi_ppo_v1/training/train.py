@@ -1,4 +1,4 @@
-"""Command-line entry points for synchronous Ray PPO training."""
+"""同步 Ray PPO 训练的命令行入口。"""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import random
+import shutil
 import socket
 import time
 from typing import Any
@@ -587,6 +588,11 @@ def apply_cli_overrides(config: dict[str, Any], args: argparse.Namespace) -> Non
     config.update({name: value for name, value in overrides.items() if value is not None})
 
 
+def cleanup_smoke_artifacts(path: str | Path) -> None:
+    """删除冒烟测试产生的 checkpoint/日志/结果目录(仅限冒烟自身产物)。"""
+    shutil.rmtree(path, ignore_errors=True)
+
+
 def main() -> None:
     args = _parser().parse_args()
     config = load_config(args.config)
@@ -611,7 +617,15 @@ def smoke_main() -> None:
     if args.checkpoint_dir:
         config["checkpoint_dir"] = args.checkpoint_dir
     apply_cli_overrides(config, args)
-    run(config)
+    smoke_dir = Path(config["checkpoint_dir"])
+    preexisting = smoke_dir.exists()
+    try:
+        run(config)
+    finally:
+        # 冒烟结束时必须删除其产生的日志与结果文件;只在目录由本次冒烟创建时
+        # 清理,避免误删用户显式指定的既有目录。
+        if not preexisting:
+            cleanup_smoke_artifacts(smoke_dir)
 
 
 if __name__ == "__main__":

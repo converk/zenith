@@ -1,4 +1,4 @@
-"""Materialize a deterministic compact, actor-only SFT subset for fast training."""
+"""物化确定性的紧凑 actor-only SFT 子集以加速训练。"""
 
 from __future__ import annotations
 

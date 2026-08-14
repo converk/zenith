@@ -1,9 +1,7 @@
-"""Rule-aware public decision analysis shared by rollout, teachers and opponents.
+"""rollout、教师信号与对手共用的规则感知公开决策分析。
 
-The analyzer deliberately uses only fields visible in the acting player's
-``Observation``.  Structural shanten is batched through ``EfficiencyAnalyzer``;
-exact waits, yaku and score estimates are evaluated only for structural-tenpai
-candidates.
+分析器只使用出牌玩家 ``Observation`` 中可见的字段;结构向听数经
+``EfficiencyAnalyzer`` 批量计算,精确听牌、役与分数估计只对结构听牌候选计算。
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""In-process SFT policy evaluation against fixed heuristic opponents."""
+"""进程内 SFT 策略对固定启发式对手的评测。"""
 
 from __future__ import annotations
 
