@@ -317,10 +317,19 @@ def prepare_archives(
     return manifest
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """构建 riichi-sft-prepare 命令行解析器。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--archive-dir", type=Path, default=Path("datasets/tenhou-to-mjai"))
+    parser.add_argument(
+        "--archive-dir",
+        type=Path,
+        required=True,
+        help=(
+            "天凤年度归档目录(必填);`datasets/tenhou-to-mjai` 已作为废弃中间产物"
+            "被决策删除,不得再作为默认路径"
+        ),
+    )
     parser.add_argument("--archive-2024", type=Path)
     parser.add_argument("--archive-2025", type=Path)
     parser.add_argument("--shard-size", type=int, default=4096)
@@ -330,7 +339,11 @@ def main() -> None:
         help="ordered CPU replay workers (default: up to 24 physical-core-oriented workers)",
     )
     parser.add_argument("--no-download", action="store_true")
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
     archives: dict[int, Path] = {}
     for year in (2024, 2025):
         supplied = getattr(args, f"archive_{year}")

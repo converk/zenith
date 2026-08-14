@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 
+import pytest
 import yaml
 
 
@@ -115,3 +116,27 @@ def test_no_legacy_checkpoint_paths_in_tracked_sources() -> None:
         text=True,
     )
     assert result.stdout == "", f"仍有旧 checkpoint 路径引用:\n{result.stdout}"
+
+
+def test_prepare_archive_dir_is_required() -> None:
+    """`prepare.py --archive-dir` 必填,默认值不得重建已废弃目录。"""
+    from riichi_ppo_v1.sft.prepare import build_parser
+
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--output", "datasets/example"])
+    args = parser.parse_args(
+        ["--output", "datasets/example", "--archive-dir", "datasets/raw"]
+    )
+    assert args.archive_dir == Path("datasets/raw")
+
+
+def test_current_datasets_present_and_obsolete_absent() -> None:
+    """现行数据集保留,两个废弃数据集不存在。"""
+    datasets = ROOT / "datasets"
+    assert (datasets / "tenhou_sft_2024_2025").is_dir()
+    assert (datasets / "tenhou_sft_2024_2025_encoded_40pct_v13_v16").is_dir()
+    assert not (datasets / "tenhou-to-mjai").exists()
+    assert not (
+        datasets / "tenhou_sft_2024_2025_encoded_remaining_80pct_v11"
+    ).exists()
