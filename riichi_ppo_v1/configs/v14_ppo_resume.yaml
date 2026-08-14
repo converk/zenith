@@ -1,5 +1,90 @@
-# 从已保存的 V14 checkpoint 精确恢复长训（不重新初始化模型/优化器/RNG）。
-# 用途：u120 历史池 bug 修复后从 u90 恢复；后因插入 SFT 全席基准，
-# 暂停训练并从最近完整 checkpoint（u600）恢复。
-resume: checkpoints/train_riichi_ppo_v14/checkpoint_00600.pt
+# 从已保存的 V14 checkpoint 精确恢复长训(不重新初始化模型/优化器/RNG)。
+# 用途:u120 历史池 bug 修复后从 u90 恢复;后因插入 SFT 全席基准,暂停训练并从
+# 最近完整 checkpoint(u600)恢复。本文件为 v14_ppo.yaml 的完整自包含副本,
+# 仅覆盖 resume 与 init_model,不再依赖父配置 overlay。
+seed: 1
+token_schema_version: 13
+device: cuda
+learner_gpus: 2
+iterations: 800
+model_size: mid
+context_tokens: 4096
+policy_head_type: isolated_action_query
+offense_fusion: false
+critic_head_type: action_value
+critic_layers: 2
+inference_dtype: bf16
+game_mode: 4p-red-half
+
+# Rollout 与推理拓扑。
+num_workers: 12
+envs_per_worker: 32
+env_step_threads: 4
+inference_max_batch_size: 512
+inference_batch_wait_ms: 5.0
+inference_batch_target_rows: 0
+inference_batch_target_workers: 0
+kyokus_per_worker: 16
+
+# 标准 PPO。
+kyoku_reward_clip_points: 24000
+gamma: 0.99
+qboost_lambda: 0.95
+ppo_clip: 0.2
+update_epochs: 4
+minibatch_size: 512
+update_batch_mode: streaming
+entropy_start: 0.01
+entropy_end: 0.001
+value_coef: 0.5
+value_loss: huber
+value_target_normalization: batch_std
+value_target_std_floor: 0.01
+max_grad_norm: 0.5
+target_kl: 0.02
+learning_rate: 0.00002
+actor_learning_rate: 0.00002
+shared_learning_rate: 0.000005
+critic_learning_rate: 0.00004
+total_updates: 800
+warmup_fraction: 0.02
+adam_beta1: 0.9
+adam_beta2: 0.999
+adam_epsilon: 0.00001
+weight_decay: 0.01
+
+# SFT -> PPO 衔接。
+zero_q_head_on_sft_init: true
+critic_bootstrap_updates: 40
+critic_bootstrap_learning_rate: 0.00002
+critic_public_grad_scale: 0.25
+sft_kl_coef_start: 0.02
+sft_kl_coef_end: 0.002
+sft_kl_anneal_updates: 800
+
+checkpoint_interval_updates: 30
+checkpoint_dir: checkpoints/train_riichi_ppo_v14
 init_model: null
+resume: checkpoints/train_riichi_ppo_v14/checkpoint_00600.pt
+
+opponent_mix:
+  enabled: true
+  current_frac: 0.7
+  sft_frac: 0.2
+  historical_frac: 0.1
+  random_frac: 0.0
+  historical_min_update: 60
+  historical_lag_updates: 60
+
+# 固定 1v3 对抗评测;对手模型、种子基数、设备与输出目录来自本配置。
+eval1v3_enabled: true
+eval1v3_interval_updates: 30
+eval1v3_processes: 10
+eval1v3_hanchans_per_process: 160
+eval1v3_parallel_hanchans: 160
+eval1v3_model_b: checkpoints/train_riichi_v13_sft/best_heuristic.pt
+eval1v3_seed_base: 20260812
+eval1v3_devices: ["0", "2"]
+eval1v3_output_dir: audit/reports/v14_ppo_20260812/eval
+
+progress_update_interval_updates: 60

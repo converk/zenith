@@ -122,25 +122,17 @@ def _packaged_config_path(group: str) -> str:
 
 def load_config(
     path: str | None = None,
-    *,
-    model_path: str | None = None,
-    environment_path: str | None = None,
-    training_path: str | None = None,
 ) -> dict[str, Any]:
-    """Merge packaged defaults, optional group overrides, then an overlay YAML.
+    """加载自包含版本配置或打包的当前默认配置。
 
-    The packaged defaults are split into training/runtime parameters and
-    monitoring/profiling parameters while preserving the old ``--config``
-    entry point as a final full-config override.
+    传入 ``path`` 时该文件必须是自包含的完整版本配置,直接加载、不叠加打包
+    默认;未传时合并打包的 ``training`` 与 ``monitoring`` 两组当前默认。
     """
+    if path is not None:
+        return _load_config_file(path)
     config: dict[str, Any] = {}
     for group in _CONFIG_GROUPS:
         config.update(_load_config_file(_packaged_config_path(group)))
-    for override in (model_path, environment_path, training_path):
-        if override:
-            config.update(_load_config_file(override))
-    if path:
-        config.update(_load_config_file(path))
     return config
 
 
@@ -606,10 +598,7 @@ def run(config: dict[str, Any]) -> None:
 
 def _parser(smoke: bool = False) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default=None, help="YAML overlay applied after all grouped defaults")
-    parser.add_argument("--model-config", default=None, help="YAML overlay for model settings")
-    parser.add_argument("--environment-config", default=None, help="YAML overlay for environment settings")
-    parser.add_argument("--training-config", default=None, help="YAML overlay for training/runtime settings")
+    parser.add_argument("--config", default=None, help="自包含版本配置 YAML(不与打包默认叠加)")
     parser.add_argument("--device", default=None)
     parser.add_argument("--iterations", type=int, default=None)
     parser.add_argument("--checkpoint-dir", default=None)
@@ -652,12 +641,7 @@ def apply_cli_overrides(config: dict[str, Any], args: argparse.Namespace) -> Non
 
 def main() -> None:
     args = _parser().parse_args()
-    config = load_config(
-        args.config,
-        model_path=args.model_config,
-        environment_path=args.environment_config,
-        training_path=args.training_config,
-    )
+    config = load_config(args.config)
     if args.device:
         config["device"] = args.device
     if args.iterations is not None:
@@ -672,12 +656,7 @@ def main() -> None:
 
 def smoke_main() -> None:
     args = _parser(smoke=True).parse_args()
-    config = load_config(
-        args.config,
-        model_path=args.model_config,
-        environment_path=args.environment_config,
-        training_path=args.training_config,
-    )
+    config = load_config(args.config)
     config.update({"device": args.device or "cpu", "num_workers": 1, "learner_gpus": 1, "envs_per_worker": 1, "kyokus_per_worker": args.kyokus, "iterations": 1, "update_epochs": 4, "target_kl": 0.0, "minibatch_size": 32, "update_batch_mode": "auto", "checkpoint_dir": "checkpoints/riichi_ppo_v1_smoke", "evaluation_enabled": False})
     if args.iterations is not None:
         config["iterations"] = args.iterations

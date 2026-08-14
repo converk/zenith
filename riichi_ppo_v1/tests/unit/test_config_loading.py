@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from tempfile import TemporaryDirectory
 import unittest
 
 from riichi_ppo_v1.training.train import load_config
@@ -22,7 +21,7 @@ class ConfigLoadingTest(unittest.TestCase):
         self.assertEqual(config["kyokus_per_worker"], 1)
         self.assertEqual(config["kyoku_reward_clip_points"], 24000)
         self.assertEqual(config["total_updates"], 5000)
-        self.assertEqual(config["checkpoint_dir"], "checkpoints/train_riichi_ppo")
+        self.assertEqual(config["checkpoint_dir"], "checkpoints/train_riichi_current")
         self.assertIsNone(config["resume"])
         self.assertEqual(config["update_batch_mode"], "streaming")
         self.assertEqual(config["qboost_lambda"], 0.95)
@@ -49,7 +48,7 @@ class ConfigLoadingTest(unittest.TestCase):
         self.assertEqual(config["sft_kl_coef_end"], 0.002)
         self.assertEqual(config["sft_kl_anneal_updates"], 5000)
         self.assertEqual(config["learner_gpus"], 2)
-        self.assertEqual(config["checkpoint_dir"], "checkpoints/train_riichi_ppo")
+        self.assertEqual(config["checkpoint_dir"], "checkpoints/train_riichi_current")
         self.assertEqual(config["gamma"], 0.99)
         self.assertIsNone(config["resume"])
         self.assertTrue(config["evaluation_enabled"])
@@ -62,29 +61,23 @@ class ConfigLoadingTest(unittest.TestCase):
         self.assertNotIn("opponent_pool_capacity", config)
         self.assertNotIn("split_policy_inference", config)
 
-    def test_group_overrides_precede_the_legacy_full_config_overlay(self) -> None:
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            training = root / "training.yaml"
-            overlay = root / "overlay.yaml"
-            training.write_text("context_tokens: 512\nmodel_size: small\nminibatch_size: 512\nupdate_batch_mode: auto\n", encoding="utf-8")
-            overlay.write_text("context_tokens: 1024\nnum_workers: 2\n", encoding="utf-8")
-            config = load_config(str(overlay), training_path=str(training))
-
-        self.assertEqual(config["model_size"], "small")
-        self.assertEqual(config["context_tokens"], 1024)
-        self.assertEqual(config["num_workers"], 2)
-        self.assertEqual(config["minibatch_size"], 512)
-        self.assertEqual(config["update_batch_mode"], "auto")
-        self.assertEqual(config["game_mode"], "4p-red-half")
-
-    def test_v15_overlay_resolves_to_the_formal_training_configuration(self) -> None:
+    def test_self_contained_version_config_does_not_merge_packaged_defaults(self) -> None:
         config_path = (
             Path(__file__).resolve().parents[2] / "configs" / "v15_ppo.yaml"
         )
         config = load_config(str(config_path))
 
-        # Inherited production topology.
+        # 自包含:不叠加打包默认,监控组键不得混入。
+        self.assertNotIn("profile_enabled", config)
+        self.assertNotIn("semantic_metrics_jsonl", config)
+
+    def test_v15_config_is_self_contained(self) -> None:
+        config_path = (
+            Path(__file__).resolve().parents[2] / "configs" / "v15_ppo.yaml"
+        )
+        config = load_config(str(config_path))
+
+        # 生产拓扑完整写在版本配置内。
         self.assertEqual(config["learner_gpus"], 2)
         self.assertEqual(config["num_workers"], 12)
         self.assertEqual(config["envs_per_worker"], 32)
@@ -98,7 +91,7 @@ class ConfigLoadingTest(unittest.TestCase):
         self.assertEqual(config["critic_layers"], 2)
         self.assertEqual(config["inference_dtype"], "bf16")
 
-        # V15 formal-run overrides.
+        # V15 正式运行参数。
         self.assertEqual(config["kyokus_per_worker"], 16)
         self.assertEqual(config["iterations"], 1200)
         self.assertEqual(config["total_updates"], 1200)
@@ -111,6 +104,24 @@ class ConfigLoadingTest(unittest.TestCase):
         self.assertEqual(config["eval1v3_processes"], 10)
         self.assertEqual(config["eval1v3_hanchans_per_process"], 160)
         self.assertEqual(config["eval1v3_devices"], ["0", "1"])
+
+    def test_v14_resume_config_is_flattened_and_self_contained(self) -> None:
+        configs = Path(__file__).resolve().parents[2] / "configs"
+        base = load_config(str(configs / "v14_ppo.yaml"))
+        resumed = load_config(str(configs / "v14_ppo_resume.yaml"))
+
+        # 展平:除 resume/init_model 外与 v14_ppo.yaml 完全一致。
+        self.assertNotEqual(base["resume"], resumed["resume"])
+        for name, value in base.items():
+            if name in ("resume", "init_model"):
+                continue
+            self.assertEqual(resumed[name], value, name)
+        self.assertEqual(
+            resumed["resume"],
+            "checkpoints/train_riichi_ppo_v14/checkpoint_00600.pt",
+        )
+        self.assertIsNone(resumed["init_model"])
+        self.assertEqual(resumed["num_workers"], 12)
 
     def test_worker_partitioning_balances_workers_across_learners(self) -> None:
         self.assertEqual(partition_worker_indices(6, 2), [[0, 2, 4], [1, 3, 5]])

@@ -27,7 +27,7 @@ def test_remaining_tools_are_importable_and_covered() -> None:
 def test_remaining_configs_are_loadable() -> None:
     training = load_config()
     assert training["policy_head_type"] == "isolated_action_query"
-    assert training["checkpoint_dir"] == "checkpoints/train_riichi_ppo"
+    assert training["checkpoint_dir"] == "checkpoints/train_riichi_current"
     sft = load_sft_config(ROOT / "configs" / "sft.yaml")
     assert sft["policy_head_type"] == "isolated_action_query"
     assert sft["checkpoint_dir"] == "checkpoints/train_riichi_v13_sft"

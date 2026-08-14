@@ -65,7 +65,7 @@ sft_kl_coef_end: 0.002
 sft_kl_anneal_updates: 5000
 
 checkpoint_interval_updates: 50
-checkpoint_dir: checkpoints/train_riichi_ppo
+checkpoint_dir: checkpoints/train_riichi_current
 resume: null
 # 新 PPO 从 SFT 或旧 PPO checkpoint 的 model state 初始化；不恢复其训练状态。
 init_model: null
