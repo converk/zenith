@@ -186,3 +186,38 @@ def test_eval_output_dirs_match_version_convention() -> None:
         assert re.fullmatch(
             r"audit/reports/v[0-9]+/eval", config["eval1v3_output_dir"]
         ), config["eval1v3_output_dir"]
+
+
+def test_sft_cadence_single_point() -> None:
+    """SFT 节奏只在 sft.yaml(及契约常量)定义,实验配置零复制。"""
+    from riichi_ppo_v1.sft.contract import (
+        SFT_CADENCE_STEPS,
+        SFT_FINAL_EVAL_HANCHAN_COUNT,
+    )
+
+    assert SFT_CADENCE_STEPS == 3000
+    assert SFT_FINAL_EVAL_HANCHAN_COUNT == 96
+    sft = _read_yaml(CONFIG_DIR / "sft.yaml")
+    assert sft["validation_interval_steps"] == SFT_CADENCE_STEPS
+    assert sft["checkpoint_interval_steps"] == SFT_CADENCE_STEPS
+    assert sft["heuristic_evaluation_interval_steps"] == SFT_CADENCE_STEPS
+    assert (
+        sft["heuristic_evaluation_hanchan_count"]
+        == SFT_FINAL_EVAL_HANCHAN_COUNT
+    )
+    assert (
+        sft["heuristic_evaluation_final_hanchan_count"]
+        == SFT_FINAL_EVAL_HANCHAN_COUNT
+    )
+    cadence_keys = {
+        "validation_interval_steps",
+        "checkpoint_interval_steps",
+        "heuristic_evaluation_interval_steps",
+        "heuristic_evaluation_hanchan_count",
+        "heuristic_evaluation_final_hanchan_count",
+        "heuristic_evaluation_enabled",
+    }
+    for name in ("v15_sft_offense_warmup.yaml", "v15_sft_actor_finetune.yaml"):
+        config = _read_yaml(CONFIG_DIR / name)
+        duplicated = cadence_keys & set(config)
+        assert not duplicated, f"{name} 复制了节奏键: {sorted(duplicated)}"

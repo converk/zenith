@@ -16,11 +16,9 @@ batch_size: 512
 learning_rate: 0.0001
 min_learning_rate: 0.00001
 warmup_fraction: 0.02
-validation_interval_steps: 3000
 validation_samples_per_run: 0
 save_initial_checkpoint: true
 validate_initial_checkpoint: true
-heuristic_evaluation_enabled: true
 init_model: checkpoints/train_riichi_v13/sft/best_heuristic.pt
 logit_drift_reference_model: checkpoints/train_riichi_v13/sft/best_heuristic.pt
 checkpoint_dir: checkpoints/train_riichi_v15/sft/stage_a
