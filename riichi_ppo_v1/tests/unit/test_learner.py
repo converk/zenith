@@ -359,7 +359,7 @@ def test_checkpoint_save_is_atomic_without_tmp_leftovers() -> None:
 def test_best_heuristic_sft_checkpoint_migrates_with_zeroed_q_head() -> None:
     checkpoint = (
         Path(__file__).resolve().parents[3]
-        / "checkpoints/train_riichi_v13_sft/best_heuristic.pt"
+        / "checkpoints/train_riichi_v13/sft/best_heuristic.pt"
     )
     if not checkpoint.is_file():
         pytest.skip("V13 SFT checkpoint is not present in this workspace")

@@ -92,7 +92,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "heuristic_evaluation_seed_base": 0,
     "heuristic_evaluation_game_mode": "4p-red-half",
     "heuristic_evaluation_max_steps": 4000,
-    "checkpoint_dir": "checkpoints/train_riichi_v13_sft",
+    # 中性兜底:具体版本路径只允许出现在版本配置(如 configs/sft.yaml)中。
+    "checkpoint_dir": "checkpoints/train_riichi_current",
     "tensorboard_enabled": True,
     "tensorboard_dirname": "tensorboard",
     "resume": None,

@@ -92,7 +92,7 @@ def test_metric_window_and_event_projection_are_actor_only_aware(tmp_path: Path)
 def test_output_defaults_to_config_and_cli_override_wins() -> None:
     config = sft_train.load_config(None)
     assert sft_train.resolve_output(config, None) == Path(
-        "checkpoints/train_riichi_v13_sft"
+        "checkpoints/train_riichi_current"
     )
     assert sft_train.resolve_output(config, Path("/tmp/custom-sft")) == Path("/tmp/custom-sft")
 

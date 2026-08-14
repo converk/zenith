@@ -1,7 +1,7 @@
 # RiichiLab 独立对局客户端
 
 这个目录包含一个可独立运行的四人麻将客户端，用 `--checkpoint` 指定的语义
-token 模型(例如 `checkpoints/train_riichi_ppo_v14/checkpoint_00510.pt`)连接
+token 模型(例如 `checkpoints/train_riichi_v15/ppo/checkpoint_00480.pt`)连接
 [RiichiLab](https://riichi.dev/)。
 
 它直接复用 `riichi_ppo_v1` 的 V13 模型结构、checkpoint 加载、语义 token
@@ -39,7 +39,7 @@ CUDA_DEVICE=0,1 riichi-lab-bot local \
   --seed 20260730 \
   --device cuda:0 \
   --dtype fp32 \
-  --checkpoint checkpoints/train_riichi_ppo_v14/checkpoint_00510.pt
+  --checkpoint checkpoints/train_riichi_v15/ppo/checkpoint_00480.pt
 ```
 
 本地测试会对每份 Observation 先执行 base64 序列化和反序列化，以模拟
@@ -53,7 +53,7 @@ CPU 正确性测试也可直接运行：
 
 ```bash
 riichi-lab-bot local --games 1 --device cpu --dtype fp32 \
-  --checkpoint checkpoints/train_riichi_ppo_v14/checkpoint_00510.pt
+  --checkpoint checkpoints/train_riichi_v15/ppo/checkpoint_00480.pt
 ```
 
 ## 创建并验证机器人
@@ -74,7 +74,7 @@ export RIICHI_BOT_TOKEN
 CUDA_DEVICE=0,1 riichi-lab-bot validate \
   --device cuda:0 \
   --dtype fp32 \
-  --checkpoint checkpoints/train_riichi_ppo_v14/checkpoint_00510.pt
+  --checkpoint checkpoints/train_riichi_v15/ppo/checkpoint_00480.pt
 ```
 
 默认连接 `wss://game.riichi.dev/ws/validate`。客户端会等待

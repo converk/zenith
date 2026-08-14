@@ -35,7 +35,7 @@ heuristic_evaluation_parallel_hanchan_count: 24
 heuristic_evaluation_seed_base: 20260717
 heuristic_evaluation_game_mode: 4p-red-half
 heuristic_evaluation_max_steps: 4000
-checkpoint_dir: checkpoints/train_riichi_v13_sft
+checkpoint_dir: checkpoints/train_riichi_v13/sft
 tensorboard_enabled: true
 tensorboard_dirname: tensorboard
 resume: null

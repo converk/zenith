@@ -31,7 +31,7 @@ def test_remaining_configs_are_loadable() -> None:
     assert training["checkpoint_dir"] == "checkpoints/train_riichi_current"
     sft = load_sft_config(ROOT / "configs" / "sft.yaml")
     assert sft["policy_head_type"] == "isolated_action_query"
-    assert sft["checkpoint_dir"] == "checkpoints/train_riichi_v13_sft"
+    assert sft["checkpoint_dir"] == "checkpoints/train_riichi_v13/sft"
     for name in CONFIG_NAMES:
         assert (ROOT / "configs" / name).exists()
 

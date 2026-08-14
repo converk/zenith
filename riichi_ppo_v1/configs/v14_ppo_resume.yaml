@@ -63,9 +63,9 @@ sft_kl_coef_end: 0.002
 sft_kl_anneal_updates: 800
 
 checkpoint_interval_updates: 30
-checkpoint_dir: checkpoints/train_riichi_ppo_v14
+checkpoint_dir: checkpoints/train_riichi_v14
 init_model: null
-resume: checkpoints/train_riichi_ppo_v14/checkpoint_00600.pt
+resume: checkpoints/train_riichi_v14/checkpoint_00600.pt
 
 opponent_mix:
   enabled: true
@@ -82,7 +82,7 @@ eval1v3_interval_updates: 30
 eval1v3_processes: 10
 eval1v3_hanchans_per_process: 160
 eval1v3_parallel_hanchans: 160
-eval1v3_model_b: checkpoints/train_riichi_v13_sft/best_heuristic.pt
+eval1v3_model_b: checkpoints/train_riichi_v13/sft/best_heuristic.pt
 eval1v3_seed_base: 20260812
 eval1v3_devices: ["0", "2"]
 eval1v3_output_dir: audit/reports/v14_ppo_20260812/eval

@@ -16,7 +16,7 @@ from riichi_ppo_v1.sft.train import (
 
 ROOT = Path(__file__).parents[3]
 DATASET = ROOT / "datasets/tenhou_sft_2024_2025_encoded_40pct_v13_v16"
-CHECKPOINT = ROOT / "checkpoints/train_riichi_v13_sft/best_heuristic.pt"
+CHECKPOINT = ROOT / "checkpoints/train_riichi_v13/sft/best_heuristic.pt"
 
 
 @pytest.mark.skipif(

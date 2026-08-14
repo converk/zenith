@@ -21,6 +21,6 @@ def default_checkpoint() -> Path:
     return (
         repository_root()
         / "checkpoints"
-        / "train_riichi_ppo_v14"
+        / "train_riichi_v14"
         / "checkpoint_00510.pt"
     )

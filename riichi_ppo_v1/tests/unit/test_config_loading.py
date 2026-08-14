@@ -118,7 +118,7 @@ class ConfigLoadingTest(unittest.TestCase):
             self.assertEqual(resumed[name], value, name)
         self.assertEqual(
             resumed["resume"],
-            "checkpoints/train_riichi_ppo_v14/checkpoint_00600.pt",
+            "checkpoints/train_riichi_v14/checkpoint_00600.pt",
         )
         self.assertIsNone(resumed["init_model"])
         self.assertEqual(resumed["num_workers"], 12)

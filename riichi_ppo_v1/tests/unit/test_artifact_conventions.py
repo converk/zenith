@@ -82,3 +82,36 @@ def test_audit_version_dirs_have_fixed_types() -> None:
         assert entries == {"design", "report", "eval", "scripts"}, (
             f"{version_dir} 应只含四个固定类型子目录,实际: {sorted(entries)}"
         )
+
+
+def test_checkpoint_layout_uses_train_riichi_versions() -> None:
+    """checkpoint 顶层必须为 `train_riichi_<版本号>` 规范布局。"""
+    checkpoints = ROOT / "checkpoints"
+    names = {path.name for path in checkpoints.iterdir() if path.is_dir()}
+    assert names == {"train_riichi_v13", "train_riichi_v14", "train_riichi_v15"}
+
+
+def test_sft_checkpoint_default_is_neutral() -> None:
+    """SFT 代码默认 checkpoint 目录必须中性,不得锁定历史版本。"""
+    from riichi_ppo_v1.sft.train import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["checkpoint_dir"] == "checkpoints/train_riichi_current"
+
+
+def test_no_legacy_checkpoint_paths_in_tracked_sources() -> None:
+    """三组件受版本控制源码不得引用旧 checkpoint 路径(拼接避免自引用)。"""
+    legacy_v14 = "train_riichi_" + "ppo_v14"
+    legacy_v13 = "train_riichi_" + "v13_sft"
+    result = subprocess.run(
+        [
+            "rg", "-n", "--hidden",
+            "-g", "!*.pyc", "-g", "!*.pt", "-g", "!*.jsonl", "-g", "!*.log",
+            "-g", "!test_artifact_conventions.py",
+            f"{legacy_v14}|{legacy_v13}",
+            "riichi_ppo_v1", "riichi_lab_bot", "RiichiEnv",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout == "", f"仍有旧 checkpoint 路径引用:\n{result.stdout}"

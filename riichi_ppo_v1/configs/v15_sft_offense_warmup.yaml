@@ -21,6 +21,6 @@ validation_samples_per_run: 0
 save_initial_checkpoint: true
 validate_initial_checkpoint: true
 heuristic_evaluation_enabled: true
-init_model: checkpoints/train_riichi_v13_sft/best_heuristic.pt
-logit_drift_reference_model: checkpoints/train_riichi_v13_sft/best_heuristic.pt
+init_model: checkpoints/train_riichi_v13/sft/best_heuristic.pt
+logit_drift_reference_model: checkpoints/train_riichi_v13/sft/best_heuristic.pt
 checkpoint_dir: checkpoints/train_riichi_v15/sft/stage_a
