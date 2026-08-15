@@ -229,7 +229,7 @@ Top-3 Q-boosting(候选 Top-3∪行为动作 ≤4、h_a detach),训练稳定跑�
 
 ### Implementation for User Story 5
 
-- [ ] T042 [US5] 新增 `riichi_ppo_v1/docs/v16_input_protocol.md`,并同步
+- [X] T042 [US5] 新增 `riichi_ppo_v1/docs/v16_input_protocol.md`,并同步
   `riichi_ppo_v1/docs/KyokuEventTupleProtocol.md` 的状态后缀/查询段落(与
   `contracts/actor-input-v16.md` 逐条一致)
 - [ ] T043 [P] [US5] 清理 v13 契约与派生特征:`riichi_ppo_v1/model/feature_schema.py`、
@@ -244,7 +244,7 @@ Top-3 Q-boosting(候选 Top-3∪行为动作 ≤4、h_a detach),训练稳定跑�
 - [ ] T047 [US5] 同步 README、`docs/directory-responsibilities.md`、AGENTS.md
   与代码路径(新增 `model/encoding_protocol.py`、`training/grp/`、
   `docs/v16_input_protocol.md` 等)
-- [ ] T048 [US5] 评测机制不变核查:`git diff -- riichi_ppo_v1/evaluation/mechanism.py
+- [X] T048 [US5] 评测机制不变核查:`git diff -- riichi_ppo_v1/evaluation/mechanism.py
   riichi_ppo_v1/configs/sft.yaml` 为空
 - [ ] T049 [US5] 全仓 `python -m pytest` + `cargo test` 全绿;删除目标零引用复核
 - [ ] T050 [US5] 更新 `audit/reports/v16/report/PROGRESS.md`:完成状态、Recall@3、

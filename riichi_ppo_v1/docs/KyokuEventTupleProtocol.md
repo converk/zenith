@@ -121,3 +121,20 @@ Python 在提交前将 RiichiEnv 的物理牌号转为 MJAI 牌字符串，并�
 ## 6. 错误边界
 
 边界层会拒绝非法 MJAI JSON、非法牌、错误座位、重复或越界 batch 索引、错误张量形状、空合法 mask 和超长上下文。解码后若 RiichiEnv 拒绝 MJAI 动作，bridge 立即报错；这表示合法掩码、动作映射或环境窗口不一致，不能静默替换为其他动作。
+
+## 7. V16 信息编码协议(现行契约)
+
+自 V16 起,上述 v13 token schema 与四版本拆分(token schema / feature schema /
+rust-analysis / decision-analysis)不再是现行契约,仅作为 v13/v15 存量产物的
+历史记录保留。现行 Actor 输入为:
+
+```text
+Objective Facts(历史事件 + 自身手牌 + 摸牌)
++ Compact Snapshot(基础场况 + Score Pressure + 3×7 对手摘要)
++ 每个合法动作一对(Offense Query, Defense Query)
+```
+
+20 个 query slot(O0–O9/D0–D9)的语义、基数、N/A 规则与终局约定、Snapshot
+字段与不变量,以 [v16_input_protocol.md](v16_input_protocol.md) 与
+`specs/003-v16-model-rework/contracts/actor-input-v16.md` 为权威;实现常量单一
+来源为 `model/encoding_protocol.py`(`encoding_protocol_version = 16`)。
