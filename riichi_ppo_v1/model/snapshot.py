@@ -13,6 +13,23 @@ import numpy as np
 
 import riichi
 
+from .encoding_protocol import (
+    SNAPSHOT_HONBA_SCALE,
+    SNAPSHOT_MELD_SCALE,
+    SNAPSHOT_PRESSURE_SCALE,
+    SNAPSHOT_RIVER_SCALE,
+    SNAPSHOT_SCORE_SCALE,
+    SNAPSHOT_STICKS_SCALE,
+    SNAPSHOT_TILES_LEFT_SCALE,
+    SNAPSHOT_TURN_SCALE,
+    SNAPSHOT_KIND_BASE,
+    SNAPSHOT_KIND_DORA,
+    SNAPSHOT_KIND_SCORE,
+    SNAPSHOT_KIND_SUMMARY,
+    SNAPSHOT_CAT_WIDTH,
+    SNAPSHOT_NUM_WIDTH,
+)
+
 
 @dataclass(frozen=True)
 class OpponentSummary:
@@ -112,3 +129,66 @@ def build_snapshot_facts(observation: object) -> SnapshotFacts:
         opponent_summary=summaries,
     )
 
+
+def _clip_unit(value: float, scale: float) -> float:
+    """非负计数的 [0,1] 固定归一化。"""
+    return float(np.clip(float(value) / scale, 0.0, 1.0))
+
+
+def _clip_signed(value: float, scale: float) -> float:
+    """点数/分差的 [-5,5] 固定归一化。"""
+    return float(np.clip(float(value) / scale, -5.0, 5.0))
+
+
+def encode_snapshot_rows(
+    facts: SnapshotFacts,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """把 SnapshotFacts 编码为统一行格式:(kinds, categorical, numeric)。
+
+    返回 ``kinds`` [S]、``categorical`` [S,4] uint8、``numeric`` [S,7] float32;
+    行顺序固定为 base(1)+ dora(k)+ score(1)+ summary(21),连续字段在此一次性
+    应用固定归一化刻度,训练/推理不再动态缩放。
+    """
+    kinds: list[int] = [SNAPSHOT_KIND_BASE]
+    categorical: list[list[int]] = [[
+        min(max(int(facts.round_wind), 0), 1),
+        min(max(int(facts.kyoku_index), 0), 7),
+        int(facts.oya_relative),
+        max(0, int(facts.self_rank) - 1),
+    ]]
+    numeric: list[list[float]] = [[
+        _clip_unit(facts.honba, SNAPSHOT_HONBA_SCALE),
+        _clip_unit(facts.riichi_sticks, SNAPSHOT_STICKS_SCALE),
+        _clip_unit(facts.tiles_left, SNAPSHOT_TILES_LEFT_SCALE),
+        0.0, 0.0, 0.0, 0.0,
+    ]]
+    for tile_type in facts.dora_indicator_types:
+        kinds.append(SNAPSHOT_KIND_DORA)
+        categorical.append([min(max(int(tile_type), 0), 33), 0, 0, 0])
+        numeric.append([0.0] * SNAPSHOT_NUM_WIDTH)
+    kinds.append(SNAPSHOT_KIND_SCORE)
+    categorical.append([0, 0, 0, 0])
+    numeric.append([
+        *(_clip_signed(score, SNAPSHOT_SCORE_SCALE) for score in facts.scores),
+        *(_clip_signed(pressure, SNAPSHOT_PRESSURE_SCALE) for pressure in facts.score_pressure),
+    ])
+    for summary in facts.opponent_summary:
+        kinds.append(SNAPSHOT_KIND_SUMMARY)
+        categorical.append([int(summary.declared), int(summary.menzen), 0, 0])
+        reach_turn = 0.0 if summary.reach_turn < 0 else float(summary.reach_turn)
+        numeric.append([
+            _clip_unit(reach_turn, SNAPSHOT_TURN_SCALE),
+            _clip_unit(summary.meld_count, SNAPSHOT_MELD_SCALE),
+            _clip_unit(summary.river_count, SNAPSHOT_RIVER_SCALE),
+            _clip_unit(summary.tedashi_count, SNAPSHOT_RIVER_SCALE),
+            _clip_unit(summary.tsumogiri_count, SNAPSHOT_RIVER_SCALE),
+            0.0, 0.0,
+        ])
+    kinds_array = np.asarray(kinds, dtype=np.uint8)
+    categorical_array = np.zeros((len(kinds), SNAPSHOT_CAT_WIDTH), dtype=np.uint8)
+    for row, values in enumerate(categorical):
+        categorical_array[row, :len(values)] = values
+    numeric_array = np.zeros((len(kinds), SNAPSHOT_NUM_WIDTH), dtype=np.float32)
+    for row, values in enumerate(numeric):
+        numeric_array[row, :len(values)] = values
+    return kinds_array, categorical_array, numeric_array

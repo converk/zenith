@@ -29,8 +29,16 @@ import riichienv
 
 from .dora import dora_type_multiplicities
 from .encoding_protocol import (
+    ACTION_TYPE_CODES,
     QUERY_DEFENSE,
     QUERY_OFFENSE,
+    QUERY_ROW_ACTION_ID,
+    QUERY_ROW_ACTION_TYPE,
+    QUERY_ROW_ANSWER_START,
+    QUERY_ROW_PRIMARY_TILE,
+    QUERY_ROW_QUERY_TYPE,
+    QUERY_ROW_SOURCE_SEAT,
+    QUERY_ROW_WIDTH,
     bucket_d6,
     bucket_d9,
     bucket_o1,
@@ -479,3 +487,26 @@ def analyze_action_queries(
         ),
     )
     return offense_query, defense_query
+
+
+def encode_query_row(query: ActionQuery) -> np.ndarray:
+    """把 ActionQuery 编码为固定宽度存储行(见 QUERY_ROW_WIDTH)。
+
+    行布局:[query_type, action_id, action_type_code, primary_tile_code,
+    source_seat_code, answer_0..answer_9];primary_tile/source_seat 的 0 表示
+    N/A,answer 直接使用各 slot 的 categorical 编码。
+    """
+    row = np.zeros(QUERY_ROW_WIDTH, dtype=np.int32)
+    row[QUERY_ROW_QUERY_TYPE] = int(query.query_type)
+    row[QUERY_ROW_ACTION_ID] = int(query.action_id)
+    row[QUERY_ROW_ACTION_TYPE] = int(ACTION_TYPE_CODES.get(query.action_type, 0))
+    row[QUERY_ROW_PRIMARY_TILE] = (
+        0 if query.primary_tile is None else int(query.primary_tile) + 1
+    )
+    row[QUERY_ROW_SOURCE_SEAT] = (
+        0 if query.source_seat is None else int(query.source_seat) + 1
+    )
+    if len(query.answers) != 10:
+        raise ValueError(f"action query must have 10 answers, got {len(query.answers)}")
+    row[QUERY_ROW_ANSWER_START:] = [int(value) for value in query.answers]
+    return row

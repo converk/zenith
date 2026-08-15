@@ -87,7 +87,7 @@ oracle 100% 一致。
 - [X] T014 [P] [US1] 新建 `riichi_ppo_v1/model/action_query.py`:为每个合法动作
   计算一对 10-slot Offense/Defense Query 并按单 token 聚合(E_action+E_queryType
   +ΣE_{slot}(answer)→LayerNorm/Projection 到 d_model=256)
-- [ ] T015 [US1] 修改 `riichi_ppo_v1/model/bridge.py`:装配 Objective Facts+
+- [X] T015 [US1] 修改 `riichi_ppo_v1/model/bridge.py`:装配 Objective Facts+
   Snapshot+queries;critic_factors 只保留三家对手手牌与后续 5 张牌山
 - [X] T016 [US1] 运行 T008–T010 直至全绿;语义硬门槛结果写入
   `audit/reports/v16/report/PROGRESS.md`

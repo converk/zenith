@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 from ..training.profiling import StageProfiler
+from .action_query import analyze_action_queries, encode_query_row
 from .schema import NUM_ACTIONS, TID_COUNT
 from .critic_features import (
     collect_visible_table_state,
@@ -18,6 +19,7 @@ from .critic_features import (
     encode_public_summary,
     pad_critic_feature_rows,
 )
+from .snapshot import build_snapshot_facts, encode_snapshot_rows
 
 NUM_PLAYERS = 4
 _DECISION_ACTION_TYPES = frozenset({"dahai", "reach", "ankan", "kakan", "ryukyoku"})
@@ -32,6 +34,31 @@ class Decision:
     @property
     def batch_index(self) -> int:
         return self.env_index * NUM_PLAYERS + self.seat_id
+
+
+@dataclass(frozen=True)
+class V16PreparedBatch:
+    """V16 输入编码的批量化装配结果。
+
+    目标序列 = Objective Facts(history)+ Compact Snapshot + 每动作一对
+    Offense/Defense Query;Critic 特权输入(三家对手手牌 + 后 5 牌山)单独保存,
+    不含公开牌河/副露重复表示。
+    """
+
+    history_factors: np.ndarray
+    history_numeric: np.ndarray
+    history_lengths: np.ndarray
+    snapshot_kinds: np.ndarray
+    snapshot_cat: np.ndarray
+    snapshot_num: np.ndarray
+    snapshot_lengths: np.ndarray
+    query_rows: np.ndarray
+    query_action_ids: np.ndarray
+    query_pair_counts: np.ndarray
+    legal_mask: np.ndarray
+    history_generations: np.ndarray
+    critic_factors: np.ndarray
+    critic_lengths: np.ndarray
 
 
 def tile_id_to_mjai(tile_id: int | None) -> str | None:
@@ -76,6 +103,11 @@ def _normalized_action_json(raw_action: str, tsumogiri: bool) -> tuple[str, str]
             raise ValueError(f"{action_type} replay action does not contain its called tile") from exc
         value["consumed"] = consumed
     return json.dumps(value, separators=(",", ":"), sort_keys=True), action_type
+
+
+def _canonical_mjai(value: str) -> str:
+    """把 MJAI 字符串重排为与 action_jsons 一致的规范 JSON。"""
+    return json.dumps(json.loads(value), separators=(",", ":"), sort_keys=True)
 
 
 def action_jsons_and_decision_flag(observation: Any) -> tuple[list[str], int]:
@@ -303,3 +335,167 @@ class BatchedStateBridge:
                     raise RuntimeError(f"MJAI action was rejected: env={decision.env_index} seat={decision.seat_id} action_id={action_id} mjai={mjai}")
                 result.append(action)
         return result
+
+    def prepare_v16(
+        self,
+        decisions: list[Decision],
+        walls: list[list[int]] | None = None,
+    ) -> V16PreparedBatch:
+        """装配 V16 输入:Objective Facts + Snapshot + 每动作一对 Query。
+
+        每个唯一 action id(合法掩码内)生成一对 query,重复物理动作按同一
+        action id 取代表动作;Critic 只保留三家对手手牌与后 5 张牌山。
+        """
+        if not decisions:
+            raise ValueError("cannot prepare an empty decision batch")
+        batch_indices = [decision.batch_index for decision in decisions]
+        with self.profiler.stage("state/legal_action_json"):
+            action_rows = [action_jsons_and_decision_flag(decision.observation) for decision in decisions]
+            legal_actions = [actions for actions, _flag in action_rows]
+        with self.profiler.stage("state/snapshot_json"):
+            snapshots = [
+                snapshot_json(decision.observation, decision_flag)
+                for decision, (_actions, decision_flag) in zip(decisions, action_rows, strict=True)
+            ]
+        with self.profiler.stage("state/rust_prepare_decisions"):
+            prepared = self.state_machine.prepare_decisions(
+                batch_indices, legal_actions, snapshots,
+            )
+        with self.profiler.stage("state/rust_decode_actions"):
+            mask = np.asarray(prepared[3], dtype=np.bool_)
+            ids_by_row: list[list[int]] = [
+                np.flatnonzero(mask[row]).tolist() for row in range(len(decisions))
+            ]
+            decode_pairs = [
+                (batch_indices[row], action_id)
+                for row, ids in enumerate(ids_by_row)
+                for action_id in ids
+            ]
+            decoded = (
+                self.state_machine.decode_actions(
+                    [pair[0] for pair in decode_pairs],
+                    [pair[1] for pair in decode_pairs],
+                )
+                if decode_pairs
+                else []
+            )
+        with self.profiler.stage("state/v16_query_assembly"):
+            query_rows: list[np.ndarray] = []
+            action_id_rows: list[np.ndarray] = []
+            snapshot_rows: list[np.ndarray] = []
+            decoded_cursor = 0
+            for row, decision in enumerate(decisions):
+                observation = decision.observation
+                legal = list(observation.legal_actions())
+                templates = action_jsons(observation)
+                if len(legal) != len(templates):
+                    raise RuntimeError(
+                        f"env={decision.env_index} seat={decision.seat_id} legal/template length mismatch"
+                    )
+                representative: dict[str, Any] = {}
+                for action, template in zip(legal, templates, strict=True):
+                    representative.setdefault(_canonical_mjai(template), action)
+                ids = ids_by_row[row]
+                row_decoded = decoded[decoded_cursor : decoded_cursor + len(ids)]
+                decoded_cursor += len(ids)
+                actions_by_id: dict[int, Any] = {}
+                for action_id, raw in zip(ids, row_decoded, strict=True):
+                    action = representative.get(_canonical_mjai(raw))
+                    if action is None:
+                        raise RuntimeError(
+                            f"decoded action_id={action_id} has no legal representative "
+                            f"env={decision.env_index} seat={decision.seat_id} mjai={raw}"
+                        )
+                    actions_by_id[int(action_id)] = action
+                rows: list[np.ndarray] = []
+                action_ids: list[int] = []
+                for action_id in ids:
+                    offense, defense = analyze_action_queries(
+                        observation, actions_by_id[int(action_id)], int(action_id),
+                    )
+                    rows.append(encode_query_row(offense))
+                    rows.append(encode_query_row(defense))
+                    action_ids.append(int(action_id))
+                query_rows.append(np.asarray(rows, dtype=np.int32) if rows else np.zeros((0, 15), dtype=np.int32))
+                action_id_rows.append(np.asarray(action_ids, dtype=np.int32))
+                kinds, categorical, numeric = encode_snapshot_rows(build_snapshot_facts(observation))
+                snapshot_rows.append((kinds, categorical, numeric))
+        with self.profiler.stage("state/critic_feature_encode"):
+            if self.observations_by_env is None:
+                critic_features = [empty_critic_features() for _decision in decisions]
+            else:
+                table_cache = {
+                    env_index: collect_visible_table_state(
+                        self.observations_by_env[env_index],
+                        include_public_state=False,
+                    )
+                    for env_index in {decision.env_index for decision in decisions}
+                }
+                critic_features = [
+                    encode_critic_features(
+                        table_cache[decision.env_index],
+                        decision.seat_id,
+                        future_wall_tiles=(
+                            walls[decision.env_index][:5]
+                            if walls is not None
+                            else ()
+                        ),
+                    )
+                    for decision in decisions
+                ]
+            critic_factors, critic_lengths = pad_critic_feature_rows(critic_features)
+        with self.profiler.stage("state/numpy_array_convert"):
+            history_factors = np.asarray(prepared[0], dtype=np.uint8)
+            history_numeric = np.asarray(prepared[1], dtype=np.float32)
+            history_lengths = np.asarray(prepared[2], dtype=np.int64)
+            history_generations = np.asarray(prepared[4], dtype=np.int64)
+            mask_a = np.asarray(mask, dtype=np.bool_)
+            if mask_a.shape != (len(decisions), NUM_ACTIONS) or not np.all(mask_a.any(axis=1)):
+                raise RuntimeError("state machine returned an empty or malformed decision mask")
+        with self.profiler.stage("state/v16_padding"):
+            batch = len(decisions)
+            history_width = int(history_lengths.max())
+            snapshot_count = max(len(rows[0]) for rows in snapshot_rows)
+            snapshot_kinds = np.zeros((batch, snapshot_count), dtype=np.uint8)
+            snapshot_cat = np.zeros((batch, snapshot_count, 4), dtype=np.uint8)
+            snapshot_num = np.zeros((batch, snapshot_count, 7), dtype=np.float32)
+            snapshot_lengths = np.zeros(batch, dtype=np.int64)
+            for row, (kinds, categorical, numeric) in enumerate(snapshot_rows):
+                length = len(kinds)
+                snapshot_kinds[row, :length] = kinds
+                snapshot_cat[row, :length] = categorical
+                snapshot_num[row, :length] = numeric
+                snapshot_lengths[row] = length
+            action_capacity = max(len(ids) for ids in action_id_rows)
+            if action_capacity < 1:
+                raise RuntimeError("v16 batch requires at least one legal action per row")
+            query_array = np.zeros((batch, 2 * action_capacity, 15), dtype=np.int32)
+            action_ids_array = np.zeros((batch, action_capacity), dtype=np.int32)
+            pair_counts = np.zeros(batch, dtype=np.int64)
+            for row, (rows_value, ids_value) in enumerate(zip(query_rows, action_id_rows, strict=True)):
+                count = len(ids_value)
+                if rows_value.shape[0] != 2 * count:
+                    raise RuntimeError("v16 query rows must be one offense/defense pair per action")
+                query_array[row, : rows_value.shape[0]] = rows_value
+                action_ids_array[row, :count] = ids_value
+                pair_counts[row] = count
+            if history_factors.shape[1] < history_width:
+                raise RuntimeError("prepared history factors are shorter than declared lengths")
+            history_factors = history_factors[:, :history_width]
+            history_numeric = history_numeric[:, :history_width]
+        return V16PreparedBatch(
+            history_factors=history_factors,
+            history_numeric=history_numeric,
+            history_lengths=history_lengths,
+            snapshot_kinds=snapshot_kinds,
+            snapshot_cat=snapshot_cat,
+            snapshot_num=snapshot_num,
+            snapshot_lengths=snapshot_lengths,
+            query_rows=query_array,
+            query_action_ids=action_ids_array,
+            query_pair_counts=pair_counts,
+            legal_mask=mask_a,
+            history_generations=history_generations,
+            critic_factors=np.asarray(critic_factors, dtype=np.uint8),
+            critic_lengths=np.asarray(critic_lengths, dtype=np.int64),
+        )
