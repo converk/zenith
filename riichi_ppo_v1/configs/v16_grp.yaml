@@ -1,0 +1,13 @@
+# V16 GRP 离线训练:自包含完整配置,不与打包默认叠加。
+# 数据集由 quickstart 场景 5 的 prepare 命令先行构造;训练后 GRP 完全冻结,
+# σ_GRP 写回数据集 JSON,PPO 阶段只读。
+seed: 1
+device: cuda
+epochs: 30
+batch_size: 64
+learning_rate: 0.001
+weight_decay: 0.0
+max_grad_norm: 1.0
+shuffle_buffer_samples: 65536
+log_interval_steps: 100
+checkpoint_dir: checkpoints/train_riichi_v16/grp

@@ -154,19 +154,19 @@ oracle 100% 一致。
 
 ### Tests for User Story 3(先写,必须先失败)
 
-- [ ] T027 [P] [US3] 编写 `riichi_ppo_v1/tests/unit/test_grp.py`:4 视角旋转、
+- [X] T027 [P] [US3] 编写 `riichi_ppo_v1/tests/unit/test_grp.py`:4 视角旋转、
   首局 START、prefix→最终排名标签、CE 损失形状、参数量 50–70K、冻结权重不变
 
 ### Implementation for User Story 3
 
-- [ ] T028 [US3] 新建 `riichi_ppo_v1/model/grp.py`:GRP 网络(Linear 64→2 层
+- [X] T028 [US3] 新建 `riichi_ppo_v1/model/grp.py`:GRP 网络(Linear 64→2 层
   GRU(64)→Linear 64→32→SiLU→Linear 32→4→Rank Softmax)与输入契约常量
-- [ ] T029 [US3] 新建 `riichi_ppo_v1/training/grp/prepare.py`:从
+- [X] T029 [US3] 新建 `riichi_ppo_v1/training/grp/prepare.py`:从
   `datasets/tenhou_sft_2024_2025` 构造 `datasets/tenhou_grp_2024_2025_v16`
   (40% 划分、4 视角、prefix 标签),离线计算并固化 σ_GRP/σ_Score 到数据集 JSON
-- [ ] T030 [US3] 新建 `riichi_ppo_v1/training/grp/train.py`:GRP 离线训练入口,
+- [X] T030 [US3] 新建 `riichi_ppo_v1/training/grp/train.py`:GRP 离线训练入口,
   checkpoint 保存到 `checkpoints/train_riichi_v16/grp`(含配置快照)
-- [ ] T031 [US3] 新建 `riichi_ppo_v1/configs/v16_grp.yaml`:自包含 GRP 训练配置
+- [X] T031 [US3] 新建 `riichi_ppo_v1/configs/v16_grp.yaml`:自包含 GRP 训练配置
 - [ ] T032 [US3] 跑 GRP prepare+train 冒烟(quickstart 场景 5),验证损失下降、
   验证集排名预测优于均匀随机、冻结校验通过,结果写入
   `audit/reports/v16/report/PROGRESS.md`
