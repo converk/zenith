@@ -19,6 +19,10 @@ Sync Impact Report
   (logs/<version>/ and audit/reports/<version>/ conventions); added
   cleanup deletion authorization to Principle II (code blocks and files
   only, artifacts excluded).
+- Amendment 2026-08-16: 1.3.0 -> 1.4.0 (MINOR). Updated Principle II
+  active-contract declaration: single information-encoding protocol v16
+  (replacing the token-schema/feature-schema multi-version split), active
+  experiment generation v16.
 -->
 # Zenith Constitution
 
@@ -36,7 +40,8 @@ Sync Impact Report
 
 ### II. 单一现行版本契约(Single Active Contract)
 
-- 现行 token schema 为 v13;v15 是当前活跃实验代。
+- 现行信息编码协议为 v16(单一版本,取代 token schema / feature schema 等多版本
+  拆分);v16 是当前活跃实验代。
 - 彻底放弃 v11 checkpoint 兼容(2026-08-15 决策):移除 `legacy/v11` 适配器、
   `legacy_fixed` 模型头、`build_legacy_v11` 及相关测试;v11 权重仅作冷存储保留。
 - v14 实验资产保留为冷存储,不再被当前代码引用,也不恢复其训练。
@@ -123,4 +128,4 @@ Sync Impact Report
 - 每次清理提交必须对照本宪法做合规检查。
 - AGENTS.md 保留为运行时指导文件,不得与本宪法矛盾。
 
-**Version**: 1.3.0 | **Ratified**: 2026-08-15 | **Last Amended**: 2026-08-15
+**Version**: 1.4.0 | **Ratified**: 2026-08-15 | **Last Amended**: 2026-08-16
