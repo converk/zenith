@@ -170,9 +170,13 @@ class QueryEmbedding(nn.Module):
         offense = torch.zeros_like(embedded)
         defense = torch.zeros_like(embedded)
         for index, embedding in enumerate(self.offense_slots):
-            offense = offense + embedding(answers[..., index])
+            maximum = SLOT_CARDINALITIES[OFFENSE_SLOT_ORDER[index]] - 1
+            # 非 offense 行会在下方被 where 丢弃,先按本 slot 基数截断避免
+            # 越界;真实越界数据由编码期审计负责拒绝。
+            offense = offense + embedding(answers[..., index].clamp(0, maximum))
         for index, embedding in enumerate(self.defense_slots):
-            defense = defense + embedding(answers[..., index])
+            maximum = SLOT_CARDINALITIES[DEFENSE_SLOT_ORDER[index]] - 1
+            defense = defense + embedding(answers[..., index].clamp(0, maximum))
         is_offense = query_type.eq(1).unsqueeze(-1)
         embedded = embedded + torch.where(is_offense, offense, defense)
         return self.projection(self.norm(embedded))
@@ -189,7 +193,8 @@ class SnapshotEmbedding(nn.Module):
     def __init__(self, d_model: int) -> None:
         super().__init__()
         self.d_model = d_model
-        self.base = FactorEmbedding((4, 4, 4, 4), d_model, 3)
+        # 场风 E/S(2)、局数 E1..S4(8)、庄家相对(4)、自身顺位(4)。
+        self.base = FactorEmbedding((2, 8, 4, 4), d_model, 3)
         self.dora = FactorEmbedding((34,), d_model, 0)
         self.score = FactorEmbedding((), d_model, SNAPSHOT_NUM_WIDTH)
         self.summary = FactorEmbedding((2, 2), d_model, 5)
@@ -212,13 +217,15 @@ class SnapshotEmbedding(nn.Module):
         output = numeric.new_zeros((batch, rows, self.d_model))
         kind = kinds.unsqueeze(-1)
         routes = (
-            (SNAPSHOT_KIND_BASE, self.base, 4, 3),
-            (SNAPSHOT_KIND_DORA, self.dora, 1, 0),
-            (SNAPSHOT_KIND_SCORE, self.score, 0, SNAPSHOT_NUM_WIDTH),
-            (SNAPSHOT_KIND_SUMMARY, self.summary, 2, 5),
+            (SNAPSHOT_KIND_BASE, self.base, 4, 3, 7),
+            (SNAPSHOT_KIND_DORA, self.dora, 1, 0, 33),
+            (SNAPSHOT_KIND_SCORE, self.score, 0, SNAPSHOT_NUM_WIDTH, 0),
+            (SNAPSHOT_KIND_SUMMARY, self.summary, 2, 5, 1),
         )
-        for kind_code, module, cat_width, num_width in routes:
-            factors = categorical[:, :, :cat_width].long()
+        for kind_code, module, cat_width, num_width, cat_max in routes:
+            # 每个模块会在全量行上求值,非本 kind 行的取值被 where 丢弃;先按该
+            # 模块的基数截断,避免非本 kind 行越界触发 Embedding 索引错误。
+            factors = categorical[:, :, :cat_width].long().clamp(0, cat_max)
             values = numeric[:, :, :num_width] if num_width else None
             embedded = module(factors, values)
             output = torch.where(kind.eq(kind_code), embedded, output)
@@ -709,7 +716,7 @@ class KyokuTransformerActorCritic(nn.Module):
         action_logits = self.policy_mlp(action_hiddens).squeeze(-1).float()
         raw = actor.new_zeros((batch, NUM_ACTIONS), dtype=torch.float32)
         masked_logits = torch.where(pair_valid, action_logits, torch.zeros_like(action_logits))
-        raw.scatter_add_(1, query_action_ids, masked_logits)
+        raw.scatter_add_(1, query_action_ids.to(device=device, dtype=torch.long), masked_logits)
         logits = raw.masked_fill(
             ~legal_mask.to(device=device, dtype=torch.bool), float("-inf"),
         )
