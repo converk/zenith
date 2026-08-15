@@ -106,17 +106,17 @@ oracle 100% 一致。
 
 ### Tests for User Story 2(先写,必须先失败)
 
-- [ ] T017 [P] [US2] 编写 `riichi_ppo_v1/tests/unit/test_v16_architecture.py`:
+- [X] T017 [P] [US2] 编写 `riichi_ppo_v1/tests/unit/test_v16_architecture.py`:
   参数量(总 7.5–7.8M ±0.3M、Actor 推理约 5.3M ±0.3M)、d_model=heads×head_dim
   校验、Offense/Defense 对称融合、不存在 zero-init 与 241 维 Q head
 
 ### Implementation for User Story 2
 
-- [ ] T018 [US2] 修改 `riichi_ppo_v1/model/architecture.py`:`ModelConfig` 增加
+- [X] T018 [US2] 修改 `riichi_ppo_v1/model/architecture.py`:`ModelConfig` 增加
   v16 preset(d_model=256、Q=16、KV=4、head_dim=16、FFN=1088、shared=4、
   actor=1、critic=2);策略头改为对称融合(concat→Linear 512→256→SiLU→Policy
   MLP),删除 `offense_fusion` zero-init 分支
-- [ ] T019 [US2] 修改 `riichi_ppo_v1/model/architecture.py` Critic 路径:公共序列
+- [X] T019 [US2] 修改 `riichi_ppo_v1/model/architecture.py` Critic 路径:公共序列
   使用新 Snapshot,特权输入(三家手牌+后 5 牌山)与 Value Query 保持不变,不追加
   Action Query Token
 - [ ] T020 [P] [US2] 修改 `riichi_ppo_v1/sft/precompute.py`:接入 V16 编码器,

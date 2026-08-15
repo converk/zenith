@@ -17,6 +17,62 @@ QUERY_OFFENSE = 1
 QUERY_DEFENSE = 2
 QUERY_SLOT_COUNT = 10
 
+# 每个 query 的存储行宽:[query_type, action_id, action_type_code,
+# primary_tile_code, source_seat_code, answer_0..answer_9]。
+QUERY_ROW_WIDTH = 15
+# query 存储行的字段下标(单一来源,供编码/嵌入/审计共用)。
+QUERY_ROW_QUERY_TYPE = 0
+QUERY_ROW_ACTION_ID = 1
+QUERY_ROW_ACTION_TYPE = 2
+QUERY_ROW_PRIMARY_TILE = 3
+QUERY_ROW_SOURCE_SEAT = 4
+QUERY_ROW_ANSWER_START = 5
+
+# 动作类型 → 编码(0 保留给 padding;和牌自摸/荣和归一为同一类型)。
+ACTION_TYPE_CODES: dict[str, int] = {
+    "none": 1,
+    "pass": 1,
+    "dahai": 2,
+    "reach": 3,
+    "chi": 4,
+    "pon": 5,
+    "daiminkan": 6,
+    "ankan": 7,
+    "kakan": 8,
+    "tsumo": 9,
+    "ron": 9,
+    "hora": 9,
+    "ryukyoku": 10,
+}
+ACTION_TYPE_CARDINALITY = 11
+
+# Compact Snapshot 行类型(单一来源)。
+SNAPSHOT_KIND_BASE = 0
+SNAPSHOT_KIND_DORA = 1
+SNAPSHOT_KIND_SCORE = 2
+SNAPSHOT_KIND_SUMMARY = 3
+SNAPSHOT_KIND_COUNT = 4
+SNAPSHOT_CAT_WIDTH = 4
+SNAPSHOT_NUM_WIDTH = 7
+
+# Snapshot 连续字段的固定归一化刻度(编码期一次性应用,训练期不再动态缩放)。
+SNAPSHOT_SCORE_SCALE = 25_000.0
+SNAPSHOT_PRESSURE_SCALE = 25_000.0
+SNAPSHOT_HONBA_SCALE = 10.0
+SNAPSHOT_STICKS_SCALE = 10.0
+SNAPSHOT_TILES_LEFT_SCALE = 136.0
+SNAPSHOT_TURN_SCALE = 20.0
+SNAPSHOT_MELD_SCALE = 4.0
+SNAPSHOT_RIVER_SCALE = 20.0
+
+# slot 的规范顺序(嵌入与审计共用,禁止依赖 dict 的隐式迭代顺序)。
+OFFENSE_SLOT_ORDER: tuple[str, ...] = (
+    "O0", "O1", "O2", "O3", "O4", "O5", "O6", "O7", "O8", "O9",
+)
+DEFENSE_SLOT_ORDER: tuple[str, ...] = (
+    "D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9",
+)
+
 # 每个 slot 的规范取值列表:列表下标即 categorical 编码值。N/A 的位置严格沿用
 # 设计文档钦定的枚举顺序:O3/O4/O5/O6 的 N/A 在首位,O8 与 D0–D5、D9 的 N/A 在
 # 末位。

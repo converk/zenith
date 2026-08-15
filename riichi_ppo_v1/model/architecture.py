@@ -19,6 +19,18 @@ from .feature_schema import (
     ACTION_QUERY_OFFENSE,
     ACTION_QUERY_SEGMENT,
 )
+from .encoding_protocol import (
+    DEFENSE_SLOT_ORDER,
+    OFFENSE_SLOT_ORDER,
+    QUERY_ROW_WIDTH,
+    SLOT_CARDINALITIES,
+    SNAPSHOT_CAT_WIDTH,
+    SNAPSHOT_KIND_BASE,
+    SNAPSHOT_KIND_DORA,
+    SNAPSHOT_KIND_SCORE,
+    SNAPSHOT_KIND_SUMMARY,
+    SNAPSHOT_NUM_WIDTH,
+)
 from .schema import NUM_ACTIONS
 
 TOKEN_WIDTH = 10
@@ -56,8 +68,10 @@ class ModelConfig:
             raise ValueError("shared_layers must be positive and leave at least one actor-only layer")
         if self.critic_layers < 1:
             raise ValueError("critic_layers must be positive")
-        if self.policy_head_type != "isolated_action_query":
-            raise ValueError("policy_head_type must be isolated_action_query")
+        if self.policy_head_type not in {"isolated_action_query", "symmetric_action_query"}:
+            raise ValueError(
+                "policy_head_type must be isolated_action_query or symmetric_action_query"
+            )
         if self.critic_head_type not in {"state_value", "action_value"}:
             raise ValueError("critic_head_type must be state_value or action_value")
 
@@ -66,11 +80,22 @@ class ModelConfig:
         configs = {
             "mid": cls(),
             "large": cls(d_model=384, query_heads=12, kv_heads=3, head_dim=32, ffn_dim=1152),
+            "v16": cls(
+                layers=5,
+                shared_layers=4,
+                critic_layers=2,
+                d_model=256,
+                query_heads=16,
+                kv_heads=4,
+                head_dim=16,
+                ffn_dim=1088,
+                policy_head_type="symmetric_action_query",
+            ),
         }
         try:
             return configs[size]
         except KeyError as exc:
-            raise ValueError("model size must be 'mid' or 'large'") from exc
+            raise ValueError("model size must be 'mid', 'large' or 'v16'") from exc
 
 
 class FactorEmbedding(nn.Module):
@@ -104,6 +129,100 @@ class FactorEmbedding(nn.Module):
                 raise ValueError(f"numeric features must match token factors with width {self.numeric.in_features}")
             embedded = embedded + self.numeric(numeric.float())
         return self.norm(embedded)
+
+
+class QueryEmbedding(nn.Module):
+    """V16 动作 Query 的单 token 聚合嵌入。
+
+    ``E_q = E_action + E_queryType + Σ_i E_{type,i}(answer_i)``,再经
+    LayerNorm/Projection 到 d_model。Offense 与 Defense 使用各自独立、结构对称
+    的 10 组 slot 嵌入;两个分支共用同一个 action/queryType 嵌入与投影层。
+    """
+
+    def __init__(self, d_model: int) -> None:
+        super().__init__()
+        self.action = nn.Embedding(NUM_ACTIONS, d_model)
+        self.query_type = nn.Embedding(3, d_model)
+        self.offense_slots = nn.ModuleList(
+            nn.Embedding(SLOT_CARDINALITIES[slot], d_model) for slot in OFFENSE_SLOT_ORDER
+        )
+        self.defense_slots = nn.ModuleList(
+            nn.Embedding(SLOT_CARDINALITIES[slot], d_model) for slot in DEFENSE_SLOT_ORDER
+        )
+        self.norm = nn.RMSNorm(d_model)
+        self.projection = nn.Linear(d_model, d_model, bias=False)
+        for embedding in (self.action, self.query_type, *self.offense_slots, *self.defense_slots):
+            nn.init.normal_(embedding.weight, std=1.0 / math.sqrt(d_model))
+
+    def forward(self, rows: Tensor) -> Tensor:
+        """``rows`` 为 [B, Q, QUERY_ROW_WIDTH] 的整型编码行。"""
+        if rows.ndim != 3 or rows.shape[-1] != QUERY_ROW_WIDTH:
+            raise ValueError(f"query rows must be [batch, queries, {QUERY_ROW_WIDTH}]")
+        rows = rows.long()
+        query_type = rows[..., 0]
+        action_ids = rows[..., 1]
+        answers = rows[..., 5:]
+        if torch.any(action_ids < 0) or torch.any(action_ids >= NUM_ACTIONS):
+            raise ValueError("query action_id is outside the fixed action space")
+        if torch.any(query_type < 0) or torch.any(query_type > 2):
+            raise ValueError("query_type must be 0..2")
+        embedded = self.action(action_ids) + self.query_type(query_type)
+        offense = torch.zeros_like(embedded)
+        defense = torch.zeros_like(embedded)
+        for index, embedding in enumerate(self.offense_slots):
+            offense = offense + embedding(answers[..., index])
+        for index, embedding in enumerate(self.defense_slots):
+            defense = defense + embedding(answers[..., index])
+        is_offense = query_type.eq(1).unsqueeze(-1)
+        embedded = embedded + torch.where(is_offense, offense, defense)
+        return self.projection(self.norm(embedded))
+
+
+class SnapshotEmbedding(nn.Module):
+    """V16 Compact Snapshot 的分段混合嵌入。
+
+    快照存储为统一形状的行(kind + 4 列 categorical + 7 列连续),每种 kind 使用
+    独立的 categorical 基数与连续宽度,产出各自的一条 d_model token:
+    base(场况)、dora(每张宝牌指示一条)、score(点数/分差)、summary(3×7 对手摘要)。
+    """
+
+    def __init__(self, d_model: int) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.base = FactorEmbedding((4, 4, 4, 4), d_model, 3)
+        self.dora = FactorEmbedding((34,), d_model, 0)
+        self.score = FactorEmbedding((), d_model, SNAPSHOT_NUM_WIDTH)
+        self.summary = FactorEmbedding((2, 2), d_model, 5)
+
+    def forward(self, kinds: Tensor, categorical: Tensor, numeric: Tensor) -> Tensor:
+        """``kinds`` [B,S]、``categorical`` [B,S,4]、``numeric`` [B,S,7]。"""
+        if kinds.ndim != 2 or categorical.ndim != 3 or numeric.ndim != 3:
+            raise ValueError("snapshot kinds/categorical/numeric shapes are malformed")
+        if categorical.shape[-1] != SNAPSHOT_CAT_WIDTH or numeric.shape[-1] != SNAPSHOT_NUM_WIDTH:
+            raise ValueError(
+                f"snapshot rows must be {SNAPSHOT_CAT_WIDTH} categorical + "
+                f"{SNAPSHOT_NUM_WIDTH} numeric columns"
+            )
+        if categorical.shape[:2] != kinds.shape or numeric.shape[:2] != kinds.shape:
+            raise ValueError("snapshot kind/categorical/numeric row counts differ")
+        if torch.any(kinds < 0) or torch.any(kinds >= 4):
+            raise ValueError("snapshot kind must be 0..3")
+        batch, rows, _width = numeric.shape
+        device = numeric.device
+        output = numeric.new_zeros((batch, rows, self.d_model))
+        kind = kinds.unsqueeze(-1)
+        routes = (
+            (SNAPSHOT_KIND_BASE, self.base, 4, 3),
+            (SNAPSHOT_KIND_DORA, self.dora, 1, 0),
+            (SNAPSHOT_KIND_SCORE, self.score, 0, SNAPSHOT_NUM_WIDTH),
+            (SNAPSHOT_KIND_SUMMARY, self.summary, 2, 5),
+        )
+        for kind_code, module, cat_width, num_width in routes:
+            factors = categorical[:, :, :cat_width].long()
+            values = numeric[:, :, :num_width] if num_width else None
+            embedded = module(factors, values)
+            output = torch.where(kind.eq(kind_code), embedded, output)
+        return output
 
 
 def _rope_values(position_ids: Tensor, head_dim: int, dtype: torch.dtype, base: float) -> tuple[Tensor, Tensor]:
@@ -287,26 +406,45 @@ class KyokuTransformerActorCritic(nn.Module):
         self.actor_backbone = Decoder(self.config, layers=self.config.layers - self.config.shared_layers)
         self.critic_backbone = Decoder(self.config, layers=self.config.critic_layers)
         self.register_parameter("query", None)
-        self.policy_head = nn.Sequential(
-            nn.RMSNorm(self.config.d_model, eps=self.config.eps),
-            nn.Linear(self.config.d_model, self.config.d_model),
-            nn.SiLU(),
-            nn.Linear(self.config.d_model, 1),
-        )
-        if self.config.offense_fusion:
-            self.offense_projection: nn.Module | None = nn.Linear(
-                self.config.d_model, self.config.d_model
+        if self.config.policy_head_type == "symmetric_action_query":
+            # V16:Offense/Defense 对称融合(concat 512→256→SiLU→Policy MLP),
+            # 普通初始化、无 zero-init 分支、无 241 维 Q head。
+            self.snapshot_embeddings = SnapshotEmbedding(self.config.d_model)
+            self.query_embedding = QueryEmbedding(self.config.d_model)
+            self.action_fusion = nn.Sequential(
+                nn.Linear(2 * self.config.d_model, self.config.d_model),
+                nn.SiLU(),
             )
-            nn.init.zeros_(self.offense_projection.weight)
-            nn.init.zeros_(self.offense_projection.bias)
-        else:
+            self.policy_mlp = nn.Sequential(
+                nn.RMSNorm(self.config.d_model, eps=self.config.eps),
+                nn.Linear(self.config.d_model, self.config.d_model),
+                nn.SiLU(),
+                nn.Linear(self.config.d_model, 1),
+            )
             self.offense_projection = None
-        if self.config.critic_head_type == "action_value":
-            self.q_head: nn.Module | None = nn.Linear(self.config.d_model, NUM_ACTIONS)
-            self.value_head: nn.Module | None = None
-        else:
-            self.value_head = nn.Linear(self.config.d_model, 1)
             self.q_head = None
+            self.value_head = nn.Linear(self.config.d_model, 1)
+        else:
+            self.policy_head = nn.Sequential(
+                nn.RMSNorm(self.config.d_model, eps=self.config.eps),
+                nn.Linear(self.config.d_model, self.config.d_model),
+                nn.SiLU(),
+                nn.Linear(self.config.d_model, 1),
+            )
+            if self.config.offense_fusion:
+                self.offense_projection: nn.Module | None = nn.Linear(
+                    self.config.d_model, self.config.d_model
+                )
+                nn.init.zeros_(self.offense_projection.weight)
+                nn.init.zeros_(self.offense_projection.bias)
+            else:
+                self.offense_projection = None
+            if self.config.critic_head_type == "action_value":
+                self.q_head: nn.Module | None = nn.Linear(self.config.d_model, NUM_ACTIONS)
+                self.value_head: nn.Module | None = None
+            else:
+                self.value_head = nn.Linear(self.config.d_model, 1)
+                self.q_head = None
         nn.init.normal_(self.value_query, std=self.config.d_model ** -0.5)
 
     def _isolated_public(
@@ -471,4 +609,164 @@ class KyokuTransformerActorCritic(nn.Module):
         else:
             assert self.value_head is not None
             output["value"] = self.value_head(critic_hidden).squeeze(-1).float()
+        return output
+
+    def forward_v16(
+        self,
+        history_factors: Tensor,
+        history_numeric: Tensor,
+        history_lengths: Tensor,
+        snapshot_kinds: Tensor,
+        snapshot_cat: Tensor,
+        snapshot_num: Tensor,
+        snapshot_lengths: Tensor,
+        query_rows: Tensor,
+        query_action_ids: Tensor,
+        query_pair_counts: Tensor,
+        legal_mask: Tensor,
+        *,
+        critic_factors: Tensor | None = None,
+        critic_lengths: Tensor | None = None,
+        detach_critic_public: bool = False,
+        critic_public_grad_scale: float = 1.0,
+        policy_only: bool = False,
+    ) -> dict[str, Tensor]:
+        """V16 前向:Objective Facts + Compact Snapshot + 每动作一对 Query。
+
+        Query token 加入主序列末尾(每动作 Offense/Defense 相邻),策略头对每一
+        对做对称融合;Critic 公共前缀只含 Objective Facts + Snapshot(不追加
+        Action Query Token),其后拼接特权输入(三家手牌 + 后 5 牌山)与 Value
+        Query。
+        """
+        if self.config.policy_head_type != "symmetric_action_query":
+            raise ValueError("forward_v16 requires the v16 symmetric policy head")
+        if history_factors.ndim != 3 or history_factors.shape[-1] != TOKEN_WIDTH:
+            raise ValueError(f"history_factors must be [batch, tokens, {TOKEN_WIDTH}]")
+        if history_numeric.shape != (*history_factors.shape[:2], NUMERIC_WIDTH):
+            raise ValueError(f"history_numeric must be [batch, tokens, {NUMERIC_WIDTH}]")
+        if snapshot_kinds.ndim != 2 or snapshot_cat.shape != (*snapshot_kinds.shape, SNAPSHOT_CAT_WIDTH):
+            raise ValueError("snapshot categorical shape is malformed")
+        if snapshot_num.shape != (*snapshot_kinds.shape, SNAPSHOT_NUM_WIDTH):
+            raise ValueError("snapshot numeric shape is malformed")
+        if query_rows.ndim != 3 or query_rows.shape[-1] != QUERY_ROW_WIDTH:
+            raise ValueError(f"query_rows must be [batch, queries, {QUERY_ROW_WIDTH}]")
+        if query_action_ids.ndim != 2 or query_rows.shape[1] != 2 * query_action_ids.shape[1]:
+            raise ValueError("query rows must be exactly one offense/defense pair per action")
+        batch, history_capacity, _ = history_factors.shape
+        device = history_factors.device
+
+        def lengths(value: Tensor, capacity: int, label: str) -> Tensor:
+            result = value.to(device=device, dtype=torch.long)
+            if result.shape != (batch,):
+                raise ValueError(f"{label} must have one entry per batch row")
+            if torch.any(result < 0) or torch.any(result > capacity):
+                raise ValueError(f"{label} exceed supplied rows")
+            return result
+
+        history_lengths = lengths(history_lengths, history_capacity, "history_lengths")
+        snapshot_lengths = lengths(
+            snapshot_lengths, snapshot_kinds.shape[1], "snapshot_lengths",
+        )
+        pair_counts = lengths(
+            query_pair_counts, query_action_ids.shape[1], "query_pair_counts",
+        )
+        if legal_mask.shape != (batch, NUM_ACTIONS):
+            raise ValueError(f"legal_mask must be [batch, {NUM_ACTIONS}]")
+        if torch.any(query_action_ids < 0) or torch.any(query_action_ids >= NUM_ACTIONS):
+            raise ValueError("query_action_ids are outside the fixed action space")
+        if torch.any(history_lengths + snapshot_lengths + 2 * pair_counts > self.config.context_tokens):
+            raise ValueError("v16 context overflow: history + snapshot + queries exceed context_tokens")
+
+        history = self.token_embedding(history_factors, history_numeric)
+        snapshot = self.snapshot_embeddings(snapshot_kinds, snapshot_cat, snapshot_num)
+        queries = self.query_embedding(query_rows)
+        tokens = torch.cat((history, snapshot, queries), dim=1)
+        total_lengths = history_lengths + snapshot_lengths + 2 * pair_counts
+        attention_mask, valid = _attention_layout(total_lengths, tokens.shape[1])
+        position_ids = torch.arange(tokens.shape[1], device=device)[None].expand(batch, -1)
+        shared = self.public_backbone(
+            tokens, total_lengths, attention_mask=attention_mask, valid=valid,
+            position_ids=position_ids,
+        )
+        actor = self.actor_backbone(
+            shared, total_lengths, attention_mask=attention_mask, valid=valid,
+            position_ids=position_ids,
+        )
+
+        # 对称融合策略头:同一动作的 offense/defense 表示 concat 后共享投影。
+        action_capacity = query_action_ids.shape[1]
+        rows = torch.arange(batch, device=device)
+        pair_offsets = torch.arange(action_capacity, device=device)[None].expand(batch, -1)
+        public_prefix = (history_lengths + snapshot_lengths)[:, None]
+        offense_positions = public_prefix + 2 * pair_offsets
+        defense_positions = offense_positions + 1
+        pair_valid = pair_offsets < pair_counts[:, None]
+        offense_hidden = actor[rows[:, None], offense_positions]
+        defense_hidden = actor[rows[:, None], defense_positions]
+        action_hiddens = self.action_fusion(
+            torch.cat((offense_hidden, defense_hidden), dim=-1)
+        )
+        action_logits = self.policy_mlp(action_hiddens).squeeze(-1).float()
+        raw = actor.new_zeros((batch, NUM_ACTIONS), dtype=torch.float32)
+        masked_logits = torch.where(pair_valid, action_logits, torch.zeros_like(action_logits))
+        raw.scatter_add_(1, query_action_ids, masked_logits)
+        logits = raw.masked_fill(
+            ~legal_mask.to(device=device, dtype=torch.bool), float("-inf"),
+        )
+        output: dict[str, Tensor] = {
+            "raw_policy_logits": raw,
+            "policy_logits": logits,
+        }
+        if policy_only:
+            return output
+
+        # Critic:公共前缀打包(不含 query token)+ 特权输入 + Value Query。
+        public_lengths = history_lengths + snapshot_lengths
+        public_capacity = max(int(public_lengths.max().item()), 1)
+        packed_public = shared.new_zeros((batch, public_capacity, self.config.d_model))
+        public_positions = torch.arange(public_capacity, device=device)[None, :].expand(batch, -1)
+        public_valid = public_positions < public_lengths[:, None]
+        source_rows = rows[:, None].expand_as(public_positions)[public_valid]
+        packed_public[source_rows, public_positions[public_valid]] = shared[source_rows, public_positions[public_valid]]
+
+        if critic_factors is None:
+            critic_factors = history_factors.new_zeros((batch, 0, TOKEN_WIDTH))
+        if critic_lengths is None:
+            critic_lengths = critic_factors.ne(0).any(-1).long().sum(-1)
+        critic_factors = critic_factors.to(device=device)
+        critic_lengths = lengths(critic_lengths, critic_factors.shape[1], "critic_lengths")
+        if critic_factors.ndim != 3 or critic_factors.shape[0] != batch or critic_factors.shape[-1] != TOKEN_WIDTH:
+            raise ValueError(f"critic_factors must be [batch, critic_tokens, {TOKEN_WIDTH}]")
+        critic_sequence_lengths = public_lengths + critic_lengths + 1
+        if torch.any(critic_sequence_lengths > self.config.context_tokens):
+            raise ValueError(
+                "critic context overflow: public tokens + critic tokens + value query exceed context_tokens"
+            )
+        critic_private = self.critic_embedding(critic_factors)
+        critic_capacity = int(critic_sequence_lengths.max().item())
+        critic_sequence = critic_private.new_zeros((batch, critic_capacity, self.config.d_model))
+        public_grad_scale = 0.0 if detach_critic_public else float(critic_public_grad_scale)
+        if not 0.0 <= public_grad_scale <= 1.0:
+            raise ValueError("critic_public_grad_scale must be in [0, 1]")
+        if public_grad_scale == 0.0:
+            critic_public = packed_public.detach()
+        elif public_grad_scale == 1.0:
+            critic_public = packed_public
+        else:
+            detached_public = packed_public.detach()
+            critic_public = detached_public + public_grad_scale * (packed_public - detached_public)
+        critic_sequence[source_rows, public_positions[public_valid]] = critic_public[public_valid]
+        private_positions = public_lengths[:, None] + torch.arange(
+            critic_private.shape[1], device=device,
+        )[None, :]
+        private_valid = torch.arange(critic_private.shape[1], device=device)[None, :] < critic_lengths[:, None]
+        private_rows = rows[:, None].expand_as(private_positions)[private_valid]
+        critic_sequence[private_rows, private_positions[private_valid]] = critic_private[private_valid]
+        value_indices = public_lengths + critic_lengths
+        critic_sequence[rows, value_indices] = self.value_query
+        critic_hidden = self.critic_backbone(critic_sequence, critic_sequence_lengths)[rows, value_indices]
+        assert self.value_head is not None
+        output["value"] = self.value_head(critic_hidden).squeeze(-1).float()
+        output["critic_hidden"] = critic_hidden
+        output["action_hiddens"] = action_hiddens
         return output
