@@ -1171,10 +1171,12 @@ def main() -> None:
     parser.add_argument("--max-train-steps", type=int)
     parser.add_argument("--stop-after-steps", type=int)
     args = parser.parse_args()
-    config = load_config(args.config)
-    if str(config.get("policy_head_type")) == "symmetric_action_query":
-        # V16 输入/网络/训练循环在独立模块中实现,避免与 v13 路径耦合。
+    raw_overlay = yaml.safe_load(args.config.read_text(encoding="utf-8")) if args.config else None
+    if isinstance(raw_overlay, dict) and str(raw_overlay.get("policy_head_type")) == "symmetric_action_query":
+        # V16 输入/网络/训练循环在独立模块中实现,其默认配置不含 v13 节奏键。
+        from .train_v16 import load_config as load_v16_config
         from .train_v16 import main as train_v16_main
+        config = load_v16_config(args.config)
         dataset = (
             args.dataset
             if args.dataset is not None
@@ -1192,12 +1194,14 @@ def main() -> None:
             config["max_train_steps"] = args.max_train_steps
         if args.stop_after_steps is not None:
             config["stop_after_steps"] = args.stop_after_steps
+        config["dataset"] = str(dataset)
         train_v16_main(
             config,
             dataset=dataset,
             output=args.output if args.output is not None else None,
         )
         return
+    config = load_config(args.config)
     if args.resume:
         config["resume"] = str(args.resume)
     if args.init_model:

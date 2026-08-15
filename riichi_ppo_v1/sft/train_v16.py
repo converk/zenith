@@ -430,8 +430,8 @@ def _train_v16_worker_impl(
                 padded_tokens = len(rows) * max(sample.token_length for sample in rows)
                 optimizer.zero_grad(set_to_none=True)
                 with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
-                    output = _v16_forward(model, batch)
-                    loss = F.cross_entropy(output["policy_logits"].float(), batch["actions"])
+                    model_output = _v16_forward(model, batch)
+                    loss = F.cross_entropy(model_output["policy_logits"].float(), batch["actions"])
                     policy_ce = loss.detach()
                 loss.backward()
                 grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -447,7 +447,7 @@ def _train_v16_worker_impl(
                         batch["history_lengths"] + batch["snapshot_lengths"] + 2 * batch["pair_counts"]
                     )
                     metric_window.update(
-                        logits=output["policy_logits"].detach(),
+                        logits=model_output["policy_logits"].detach(),
                         actions=batch["actions"],
                         legal_mask=batch["legal_mask"],
                         token_lengths=total_lengths,
@@ -511,6 +511,9 @@ def _train_v16_worker_impl(
                 config=config, manifest_hash=manifest_hash, epoch=start_epoch,
                 global_step=global_step, rank_batches_consumed=[steps_in_epoch] * world_size,
                 best_validation_loss=best_validation_loss, metrics=metrics,
+            )
+            (output / "metrics.json").write_text(
+                json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
             )
             if writer is not None:
                 write_sft_scalars(writer, metrics, global_step)
