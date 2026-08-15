@@ -167,7 +167,7 @@ oracle 100% 一致。
 - [X] T030 [US3] 新建 `riichi_ppo_v1/training/grp/train.py`:GRP 离线训练入口,
   checkpoint 保存到 `checkpoints/train_riichi_v16/grp`(含配置快照)
 - [X] T031 [US3] 新建 `riichi_ppo_v1/configs/v16_grp.yaml`:自包含 GRP 训练配置
-- [ ] T032 [US3] 跑 GRP prepare+train 冒烟(quickstart 场景 5),验证损失下降、
+- [X] T032 [US3] 跑 GRP prepare+train 冒烟(quickstart 场景 5),验证损失下降、
   验证集排名预测优于均匀随机、冻结校验通过,结果写入
   `audit/reports/v16/report/PROGRESS.md`
 
