@@ -312,6 +312,11 @@ def analyze_action_queries(
     sticks = int(observation.riichi_sticks)
     declared = bool(observation.riichi_declared[seat])
     tile = getattr(action, "tile", None)
+    # 离线回放里 reach/dahai 可能不在 Action 上携带物理牌,改为取当前摸牌。
+    if tile is None and kind in {"reach", "dahai"}:
+        drawn = getattr(observation, "drawn_tile", None)
+        if drawn is not None:
+            tile = int(drawn)
     primary_type = int(tile) // 4 if tile is not None else None
     menzen = _menzen(melds)
 

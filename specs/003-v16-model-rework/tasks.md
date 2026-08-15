@@ -119,18 +119,18 @@ oracle 100% 一致。
 - [X] T019 [US2] 修改 `riichi_ppo_v1/model/architecture.py` Critic 路径:公共序列
   使用新 Snapshot,特权输入(三家手牌+后 5 牌山)与 Value Query 保持不变,不追加
   Action Query Token
-- [ ] T020 [P] [US2] 修改 `riichi_ppo_v1/sft/precompute.py`:接入 V16 编码器,
+- [X] T020 [P] [US2] 修改 `riichi_ppo_v1/sft/precompute.py`:接入 V16 编码器,
   manifest 写入 `format=riichi-sft-encoded-v16`、单一
   `encoding_protocol_version=16` 与协议契约 sha256,删除多版本字段
-- [ ] T021 [P] [US2] 修改 `riichi_ppo_v1/sft/contract.py`、
+- [X] T021 [P] [US2] 修改 `riichi_ppo_v1/sft/contract.py`、
   `riichi_ppo_v1/sft/data.py` 与 `riichi_ppo_v1/sft/train.py`:新增
   `validate_v16_manifest`,并把 `data.py`(约 L238–241 对
   `riichi-sft-encoded-v*` 无条件调用 `validate_v13_manifest`)与训练入口的
   manifest 校验切换到 v16 契约
-- [ ] T022 [P] [US2] 新建 `riichi_ppo_v1/configs/v16_sft.yaml`:自包含完整配置
+- [X] T022 [P] [US2] 新建 `riichi_ppo_v1/configs/v16_sft.yaml`:自包含完整配置
   (v16 preset、`checkpoint_dir: checkpoints/train_riichi_v16/sft`、日志
   `logs/v16/`);节奏键不得复制(沿用 sft.yaml 单点定义)
-- [ ] T023 [P] [US2] 修改 `riichi_ppo_v1/sft/train.py`:接入 V16 输入与 checkpoint
+- [X] T023 [P] [US2] 修改 `riichi_ppo_v1/sft/train.py`:接入 V16 输入与 checkpoint
   路径,延续 3000 steps 节奏并输出 train/validation top3(Recall@3)
 - [ ] T024 [US2] 跑 canary 编码(quickstart 场景 2,`datasets/tenhou_sft_canary_v16`):
   审计每个合法/专家动作组非零、数值越界为 0、manifest 契约正确,通过后删除 canary

@@ -1172,6 +1172,32 @@ def main() -> None:
     parser.add_argument("--stop-after-steps", type=int)
     args = parser.parse_args()
     config = load_config(args.config)
+    if str(config.get("policy_head_type")) == "symmetric_action_query":
+        # V16 输入/网络/训练循环在独立模块中实现,避免与 v13 路径耦合。
+        from .train_v16 import main as train_v16_main
+        dataset = (
+            args.dataset
+            if args.dataset is not None
+            else Path(str(config.get("dataset", "datasets/tenhou_sft_2024_2025_encoded_40pct_v16")))
+        )
+        if args.resume:
+            config["resume"] = str(args.resume)
+        if args.init_model:
+            config["init_model"] = str(args.init_model)
+        if args.device:
+            config["device"] = args.device
+        if args.learner_gpus is not None:
+            config["learner_gpus"] = args.learner_gpus
+        if args.max_train_steps is not None:
+            config["max_train_steps"] = args.max_train_steps
+        if args.stop_after_steps is not None:
+            config["stop_after_steps"] = args.stop_after_steps
+        train_v16_main(
+            config,
+            dataset=dataset,
+            output=args.output if args.output is not None else None,
+        )
+        return
     if args.resume:
         config["resume"] = str(args.resume)
     if args.init_model:

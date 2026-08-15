@@ -7,6 +7,10 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..model.encoding_protocol import (
+    ENCODED_FORMAT as V16_ENCODED_FORMAT,
+    ENCODING_PROTOCOL_VERSION,
+)
 from ..model.feature_schema import ENCODED_FORMAT
 from ..model.schema import NUM_ACTIONS
 
@@ -24,6 +28,11 @@ _FORMAL_V13_MANIFEST_CONTRACT = (
     "ad8dc752f116d6d6430930e16c6a17322b3da980549d3350a5ddc461ee123036",
     4,
     16,
+)
+# v16 协议契约的冻结内容哈希(specs/003-v16-model-rework/contracts/
+# actor-input-v16.md),数据集 manifest 与校验器共用此单一来源。
+V16_ACTOR_INPUT_CONTRACT_SHA256 = (
+    "56874dfb4738af3a506221c1001083ac67fe5188aa2042ae1576f5a852a7ed3b"
 )
 
 
@@ -66,6 +75,33 @@ def validate_v13_manifest(manifest: Mapping[str, Any]) -> None:
         raise RuntimeError(
             "encoded dataset lacks the supported v13 SFT contract; re-encode it"
         )
+
+
+def validate_v16_manifest(manifest: Mapping[str, Any]) -> None:
+    """Fail closed on the v16 单协议版本 manifest 契约。
+
+    只接受单一 ``format=riichi-sft-encoded-v16``、单一
+    ``encoding_protocol_version=16`` 与冻结的协议契约 sha256;多版本字段一律
+    视为未知格式拒绝。
+    """
+    if manifest.get("format") != V16_ENCODED_FORMAT:
+        raise RuntimeError("only the v16 encoded SFT format is supported")
+    if manifest.get("encoding_protocol_version") != ENCODING_PROTOCOL_VERSION:
+        raise RuntimeError(
+            f"v16 SFT manifest requires encoding_protocol_version={ENCODING_PROTOCOL_VERSION}"
+        )
+    if manifest.get("encoding_contract_sha256") != V16_ACTOR_INPUT_CONTRACT_SHA256:
+        raise RuntimeError(
+            "encoded dataset carries an unknown v16 protocol contract hash"
+        )
+    if not isinstance(manifest.get("source_manifest_sha256"), str) or not manifest["source_manifest_sha256"]:
+        raise RuntimeError("v16 SFT manifest lacks source_manifest_sha256")
+    counts = manifest.get("counts")
+    if not isinstance(counts, Mapping) or any(
+        int(counts.get(name, 0)) <= 0
+        for name in ("train_kyokus", "validation_kyokus", "train_decisions", "validation_decisions")
+    ):
+        raise RuntimeError("v16 SFT requires positive train/validation kyoku and decision counts")
 
 
 def validate_v15_reused_manifest(manifest: Mapping[str, Any]) -> None:
