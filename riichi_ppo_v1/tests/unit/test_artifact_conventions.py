@@ -77,7 +77,7 @@ def test_gitignore_allows_audit_type_dirs() -> None:
 def test_audit_version_dirs_have_fixed_types() -> None:
     """`audit/reports/<版本号>/` 只允许 design/report/eval/scripts 四类子目录。"""
     reports = ROOT / "audit" / "reports"
-    for version in ("v13", "v14", "v15"):
+    for version in ("v13", "v14", "v15", "v16"):
         version_dir = reports / version
         assert version_dir.is_dir(), f"{version_dir} 不存在"
         entries = {path.name for path in version_dir.iterdir()}
@@ -90,7 +90,12 @@ def test_checkpoint_layout_uses_train_riichi_versions() -> None:
     """checkpoint 顶层必须为 `train_riichi_<版本号>` 规范布局。"""
     checkpoints = ROOT / "checkpoints"
     names = {path.name for path in checkpoints.iterdir() if path.is_dir()}
-    assert names == {"train_riichi_v13", "train_riichi_v14", "train_riichi_v15"}
+    assert names == {
+        "train_riichi_v13",
+        "train_riichi_v14",
+        "train_riichi_v15",
+        "train_riichi_v16",
+    }
 
 
 def test_sft_checkpoint_default_is_neutral() -> None:
