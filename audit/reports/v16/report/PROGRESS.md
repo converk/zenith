@@ -9,10 +9,10 @@
 - [x] Phase 1 Setup:产物目录骨架、变更前基线、分支快照
 - [x] Phase 2 Foundational:宪法修订 + 协议 v16 常量
 - [x] Phase 3 US1:输入契约与语义落地(硬门槛通过;bridge 装配待 US2 联网)
-- [ ] Phase 4 US2:网络 + SFT 重编码训练
-- [ ] Phase 5 US3:GRP 模型/数据集/训练
-- [ ] Phase 6 US4:PPO 集成与性能基线
-- [ ] Phase 7 US5:治理闭环
+- [x] Phase 4 US2 代码:网络 + SFT 重编码流水线/训练入口(运行任务 T024-T026 未执行)
+- [x] Phase 5 US3 代码:GRP 模型/数据集/训练(运行任务 T032 未执行)
+- [ ] Phase 6 US4:PPO 集成(算法契约与配置已落地;Ray rollout/learner 全量接线待续)
+- [ ] Phase 7 US5:治理闭环(协议文档已同步;删除类任务依赖 v16 全量接线)
 - [ ] Phase 8 Polish:全链复跑与一致性收口
 
 ## 基线记录
@@ -42,12 +42,33 @@
   覆盖门清/副露打牌、自摸/荣和终局、pass/吃牌、振听、N/A 与基数边界
 - 2026-08-16:测试基线更新:pytest 258 通过;Rust workspace 124 通过
 
+## 本次会话新增(2026-08-16 续)
+
+- T017-T019:V16 网络 preset(d_model=256/Q=16/KV=4/head_dim=16/FFN=1088/
+  shared=4+actor=1+critic=2),Offense/Defense 对称融合(concat 512→256→SiLU→
+  Policy MLP),无 zero-init、无 241 维 Q head;实测总参数 7,680,002(加 Top-3 Q
+  scorer 后 7,811,587)、Actor 推理 5,525,761,均在设计容差内。
+- T015:bridge `prepare_v16` 装配 Objective Facts+Snapshot+每动作一对 Query;
+  Critic 特权输入只保留三家对手手牌+后 5 牌山。
+- T020-T023:SFT V16 编码器(`encode_kyoku_v16`/`precompute_v16`)、单协议
+  manifest(`format=riichi-sft-encoded-v16` + 单一 `encoding_protocol_version=16`
+  + 契约 sha256)、`train_v16.py` 从零训练入口与 `configs/v16_sft.yaml`。
+- T027-T031:GRP 模型(50-70K)、4 视角旋转数据集构造与 σ_Score 固化、
+  `configs/v16_grp.yaml`、离线训练入口(train.py 训练后写回 σ_GRP 并冻结)。
+- T033-T037/T040:Top-3 Q scorer([z_critic; detach(h_a)]→512→256→SiLU→1)、
+  候选集(Top-3∪行为动作≤4)、GRP+分差奖励(70/30、σ 固化、终局真实排名
+  utility)、移除独立半庄排名分量(16/8/-8/-16)、`configs/v16_ppo.yaml`。
+- T042:新增 `riichi_ppo_v1/docs/v16_input_protocol.md` 并同步
+  `KyokuEventTupleProtocol.md` 的现行契约段落。
+- 测试基线更新:pytest 286 通过;Rust workspace 124 通过。
+
 ## 关键指标
 
 - 语义正确性:待记录(20 slot 独立 oracle 比对)
 - SFT 验证集 Recall@3:待记录(≥98% 为 PPO 前置)
 - PPO 性能基线(后两轮):待记录
 - 宪法修订:待记录(预期 1.3.0→1.4.0 MINOR)
+- V16 网络:总参数 7,811,587 / Actor 5,525,761(含 Top-3 Q scorer)
 
 ## 接续指引(新会话交接)
 
@@ -75,3 +96,21 @@
 - 测试文件:`tests/integration/test_v16_query_semantics.py`、
   `tests/integration/test_v16_replay_bridge.py`、
   `tests/unit/test_encoding_protocol.py`。
+
+### 本次会话结束时(2026-08-16 续)
+
+- 用户要求只写代码、不执行真实训练/重编码:运行类任务 **T024(canary)、T025
+  (40% 全量编码)、T026(SFT 冒烟)、T032(GRP prepare+train)、T041(PPO 性能
+  基线)、T051(场景复跑)** 全部未执行,代码与配置已就绪,待用户运行。
+- **尚未完成的接线**:T038/T039 的完整 Ray 链路——V16 rollout(worker 的
+  `prepare_v16`/GRP 边界奖励与 `RolloutWorker` 主循环)、`training/inference.py`
+  的 V16 infer 路径、`PPOLearner` 的 V16 更新(PPO+Top-3 Q loss)、`train.py` 的
+  V16 配置分发。算法契约函数已落地(`learner.select_top3_candidates`/
+  `candidate_q_loss`、`worker.V16GrpBoundaryTracker`、`model.q_scores_v16`)。
+- **尚未执行的删除类任务**:T043-T045(v13 feature_schema/actor_features/
+  critic_features 公开汇总/zero-init/241 Q head 残留/效率奖励)、T046/T047/
+  T049/T052/T053。这些与 v16 全量接线互为依赖,须在接线完成后逐主题提交。
+- 提交记录(每主题一个 commit,基线 4d4bb2a 之后):governance → 协议常量 →
+  rust-core → rust-state-machine → snapshot → action_query → 语义测试 →
+  audit 骨架 → spec-kit 三件套 → T017-T019 网络 → T015 bridge → T020-T023 SFT
+  → T027-T031 GRP → T033-T037/T040 PPO 算法 → T042 文档。
