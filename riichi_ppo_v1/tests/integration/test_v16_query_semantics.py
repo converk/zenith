@@ -169,6 +169,27 @@ def test_pass_and_chi_conventions() -> None:
     })
 
 
+def test_open_hand_pass_uses_concealed_counts() -> None:
+    """副露手 10 暗牌 + 1 副露:pass 的形状只统计暗牌(内核 3×副露数还原)。"""
+    hands = [
+        [0, 4, 8, 48, 53, 56, 96, 100, 104, 16],
+        [],
+        [],
+        [],
+    ]
+    melds = [
+        [Meld(MeldType.Pon, [36, 37, 38], True, 2, None)],
+        [],
+        [],
+        [],
+    ]
+    observation = _make_observation(0, hands, [[], [], [], []], melds)
+    offense, defense = analyze_action_queries(observation, Action(ActionType.PASS), 240)
+    # 10 暗牌 + 1 副露的现状:O0 有值而非 N/A,D6–D8 只统计暗牌库存。
+    assert offense.answers[0] < len(OFFENSE_SLOT_LABELS["O0"])
+    assert all(0 <= defense.answers[index] < 5 for index in (6, 7, 8))
+
+
 @pytest.mark.parametrize("scenario", ["pinfu", "open", "tsumo", "chi"])
 def test_codes_stay_within_declared_cardinality(scenario: str) -> None:
     """全部编码值必须在 contracts 声明的基数内。"""

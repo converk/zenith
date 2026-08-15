@@ -161,7 +161,6 @@ def _menzen(melds: list[object]) -> bool:
 
 
 def _analyze_offense_row(
-    shape_counts: np.ndarray,
     concealed_tiles: list[int],
     melds: list[object],
     remaining: np.ndarray,
@@ -177,9 +176,13 @@ def _analyze_offense_row(
     riichi_sticks: int,
 ) -> tuple[int, int, int, int, int, int, int, int]:
     """调用 state-machine 与 core 内核,返回 (O0..O6, O8)(不含 O7/O9)。"""
+    three_melds, kan_types = _decompose_melds(melds)
+    shape_counts, three_melds = _kernel_shape(
+        concealed_tiles, three_melds, kan_types, target=13,
+    )
     result = riichi.analyze_offense_v16(
         np.ascontiguousarray(shape_counts[None], dtype=np.uint8),
-        np.asarray([sum(1 for meld in melds if bool(getattr(meld, "opened", True)))], dtype=np.uint8),
+        np.asarray([three_melds], dtype=np.uint8),
         np.ascontiguousarray(remaining[None], dtype=np.uint8),
         np.asarray([own_river], dtype=np.uint64),
         np.asarray([bool(missed_doujun)], dtype=bool),
@@ -263,22 +266,6 @@ def _source_seat(observation: object, kind: str) -> int | None:
     return None
 
 
-def _shanten_14(concealed_types: list[int], open_melds: int) -> int:
-    """14 张形状的向听数 = 暗牌去掉一张后的最小向听(吃/碰后的强制打牌形状)。"""
-    counts = np.bincount(concealed_types, minlength=TILE_KINDS)
-    best = 127
-    for tile in range(TILE_KINDS):
-        if counts[tile] > 0:
-            reduced = counts.copy()
-            reduced[tile] -= 1
-            result = riichi.analyze_hands(
-                np.ascontiguousarray(reduced, dtype=np.uint8)[None],
-                np.asarray([int(open_melds)], dtype=np.uint8),
-            )
-            best = min(best, int(np.asarray(result.shanten)[0, 0]))
-    return best
-
-
 def _shanten_counts(counts: np.ndarray, open_melds: int = 0) -> int:
     """34 计数形状的向听(state-machine shanten,生产路径)。"""
     result = riichi.analyze_hands(
@@ -286,6 +273,52 @@ def _shanten_counts(counts: np.ndarray, open_melds: int = 0) -> int:
         np.asarray([int(open_melds)], dtype=np.uint8),
     )
     return int(np.asarray(result.shanten)[0, 0])
+
+
+def _decompose_melds(melds: list[object]) -> tuple[int, list[int]]:
+    """把副露拆成「3 张副露数 + 4 张杠牌型列表」。
+
+    杠的向听等价于一组刻子;其第四张并入暗牌计数(4-copy),不进入 3×副露数。
+    """
+    three_melds = 0
+    kan_types: list[int] = []
+    for meld in melds:
+        tiles = [int(tile) // 4 for tile in (getattr(meld, "tiles", ()) or ())]
+        if len(tiles) == 4 and tiles:
+            kan_types.append(tiles[0])
+        elif tiles:
+            three_melds += 1
+    return three_melds, kan_types
+
+
+def _kernel_shape(
+    concealed_tiles: list[int],
+    three_melds: int = 0,
+    kan_types: list[int] | None = None,
+    target: int = 13,
+) -> tuple[np.ndarray, int]:
+    """内核形状:暗牌计数 + 杠 4-copy,并把偶发多余暗牌剔除到目标张数。"""
+    counts = np.bincount(
+        [tile // 4 for tile in concealed_tiles], minlength=TILE_KINDS,
+    ).astype(np.uint8)
+    for tile_type in kan_types or ():
+        counts[int(tile_type)] += 4
+    excess = int(counts.sum()) + 3 * int(three_melds) - int(target)
+    for _ in range(max(0, excess)):
+        for tile_type in range(TILE_KINDS):
+            if counts[tile_type] > 0:
+                counts[tile_type] -= 1
+                break
+    return counts, int(three_melds)
+
+
+def _remove_first_by_type(hand: list[int], tile_type: int, count: int) -> None:
+    """按牌型从手牌移除指定张数(回放可能把同类牌归一为同一物理 id)。"""
+    for _ in range(int(count)):
+        for index, physical in enumerate(hand):
+            if int(physical) // 4 == int(tile_type):
+                hand.pop(index)
+                break
 
 
 def analyze_action_queries(
@@ -351,7 +384,7 @@ def analyze_action_queries(
                 pass
         shape = np.bincount([t // 4 for t in post], minlength=TILE_KINDS).astype(np.uint8)
         head = _analyze_offense_row(
-            shape, post, melds, remaining, own_river,
+            post, melds, remaining, own_river,
             bool(observation.missed_agari_doujun),
             bool(observation.missed_agari_riichi),
             True, score, dora_indicators, player_wind, round_wind, honba, sticks,
@@ -375,7 +408,7 @@ def analyze_action_queries(
                 pass
         shape = np.bincount([t // 4 for t in post], minlength=TILE_KINDS).astype(np.uint8)
         head = _analyze_offense_row(
-            shape, post, melds, remaining, own_river,
+            post, melds, remaining, own_river,
             bool(observation.missed_agari_doujun),
             bool(observation.missed_agari_riichi),
             declared, score, dora_indicators, player_wind, round_wind, honba, sticks,
@@ -393,35 +426,65 @@ def analyze_action_queries(
     elif kind in {"chi", "pon", "ankan", "daiminkan", "kakan"}:
         consumed = [int(value) for value in (getattr(action, "consume_tiles", ()) or ())]
         post = list(hand)
-        for value in consumed:
-            try:
-                post.remove(value)
-            except ValueError:
-                continue
         called = int(tile) if tile is not None else None
-        if kind == "ankan":
-            # RiichiEnv 暗杠后手牌仍保留 4 张杠牌;取 13 张物理牌计算向听。
-            full = list(post)
-        elif kind == "daiminkan":
-            full = list(post) + ([called] * 3 if called is not None else consumed)
-        elif kind == "kakan":
-            full = _physical_tiles(post, melds) + ([called] if called is not None else [])
-        else:  # chi / pon
+        # 离线回放把同类牌归一化为同一物理 id,必须按牌型取走指定张数。
+        if kind == "kakan":
+            added = called if called is not None else (consumed[-1] if consumed else None)
+            if added is not None:
+                _remove_first_by_type(post, int(added) // 4, 1)
+        else:
+            counts: dict[int, int] = {}
+            for value in consumed:
+                tile_type = value // 4
+                counts[tile_type] = counts.get(tile_type, 0) + 1
+            for tile_type, count in sorted(counts.items()):
+                _remove_first_by_type(post, tile_type, count)
+        three_melds, kan_types = _decompose_melds(melds)
+        kan_type = (
+            (called if called is not None else consumed[0]) // 4
+            if (called is not None or consumed)
+            else None
+        )
+        post_menzen = menzen and kind == "ankan"
+        if kind in {"chi", "pon"}:
+            # 吃/碰后还有强制打牌:按 14 张形状取向听。
+            counts, three_melds = _kernel_shape(post, three_melds + 1, kan_types, target=14)
+            shanten = _shanten_counts(counts, three_melds)
             new_meld = [*consumed]
             if called is not None and called not in new_meld:
                 new_meld.append(called)
             full = _physical_tiles(post, melds) + new_meld
-        opened_count = sum(
-            1 for meld in melds if bool(getattr(meld, "opened", True))
-        )
-        post_menzen = menzen and kind == "ankan"
-        if kind in {"chi", "pon"}:
-            shanten = _shanten_14([t // 4 for t in post], opened_count + 1)
-        else:
-            shanten = _shanten_counts(
-                np.bincount([t // 4 for t in post], minlength=TILE_KINDS),
-                opened_count + (0 if kind == "ankan" else 1),
+        elif kind == "daiminkan":
+            counts, three_melds = _kernel_shape(
+                post, three_melds, [*kan_types, kan_type] if kan_type is not None else kan_types,
+                target=13,
             )
+            shanten = _shanten_counts(counts, three_melds)
+            full = list(post) + ([called] * 3 if called is not None else consumed)
+        elif kind == "ankan":
+            # 暗杠 4 张仍属于自身手牌;向听按 13 张物理牌(4-copy 近似)计算。
+            counts, three_melds = _kernel_shape(
+                post, three_melds, [*kan_types, kan_type] if kan_type is not None else kan_types,
+                target=13,
+            )
+            shanten = _shanten_counts(counts, three_melds)
+            full = list(post) + consumed
+        else:
+            # 加杠:从手牌再移除升级的那一张,组数不变。
+            added = called if called is not None else (consumed[-1] if consumed else None)
+            if added is not None:
+                try:
+                    post.remove(added)
+                except ValueError:
+                    pass
+            # 加杠把既有碰升级为 4 张杠:3 张组数减一,杠 4-copy 并入暗牌。
+            counts, three_melds = _kernel_shape(
+                post, max(0, three_melds - 1),
+                [*kan_types, kan_type] if kan_type is not None else kan_types,
+                target=13,
+            )
+            shanten = _shanten_counts(counts, three_melds)
+            full = _physical_tiles(post, melds) + ([added] if added is not None else [])
         offense = (
             0 if shanten < 0 else min(shanten, 5) + 1,
             0, 0, 0, 0, 0, 0,
@@ -440,9 +503,10 @@ def analyze_action_queries(
         # none / pass / ryukyoku:当前手牌不变。
         full = _physical_tiles(hand, melds)
         if len(full) == 13:
-            shape = np.bincount([t // 4 for t in full], minlength=TILE_KINDS).astype(np.uint8)
+            # 内核按「暗牌计数 + 3×副露数」还原总张数;副露牌已固定在场上,
+            # 手牌形状只统计暗牌。
             head = _analyze_offense_row(
-                shape, hand, melds, remaining, own_river,
+                hand, melds, remaining, own_river,
                 bool(observation.missed_agari_doujun),
                 bool(observation.missed_agari_riichi),
                 declared, score, dora_indicators, player_wind, round_wind, honba, sticks,
@@ -454,10 +518,22 @@ def analyze_action_queries(
                 bucket_o9(_count_dora_aka(full, dora_mult)),
             )
         else:
-            opened_count = sum(
-                1 for meld in melds if bool(getattr(meld, "opened", True))
-            )
-            shanten = _shanten_14([t // 4 for t in hand], opened_count)
+            three_melds, kan_types = _decompose_melds(melds)
+            if not melds:
+                # 门清 14 张:取去掉一张后的最小向听。
+                shanten = min(
+                    _shanten_counts(
+                        _kernel_shape(
+                            [tile for index, tile in enumerate(hand) if index != drop],
+                            0, [], target=13,
+                        )[0],
+                        0,
+                    )
+                    for drop in range(len(hand))
+                )
+            else:
+                counts, three_melds = _kernel_shape(hand, three_melds, kan_types, target=13)
+                shanten = _shanten_counts(counts, three_melds)
             offense = (
                 0 if shanten < 0 else min(shanten, 5) + 1,
                 0, 0, 0, 0, 0, 0,
@@ -465,9 +541,12 @@ def analyze_action_queries(
                 2,
                 bucket_o9(_count_dora_aka(full, dora_mult)),
             )
-        shape_full = np.bincount([t // 4 for t in full], minlength=TILE_KINDS).astype(np.uint8)
+        # 防守库存只统计仍可打出的暗牌,不含已固定的副露牌。
+        shape_concealed = np.bincount(
+            [t // 4 for t in hand], minlength=TILE_KINDS,
+        ).astype(np.uint8)
         defense_genbutsu, defense_suji, defense_stock, _kernel_visible = _analyze_defense_row(
-            None, shape_full, remaining, rivers, opponents,
+            None, shape_concealed, remaining, rivers, opponents,
         )
         defense_visible = bucket_d9(None)
 
