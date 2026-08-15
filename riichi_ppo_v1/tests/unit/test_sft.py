@@ -155,7 +155,8 @@ def test_encoded_sft_shards_are_disjoint_across_ddp_ranks() -> None:
             _write_chunk(train / f"train-{index:05d}.npz", samples[index:index + 1])
         (root / "manifest.json").write_text(json.dumps({
             "format": "riichi-sft-encoded-v3",
-            "token_schema_version": TOKEN_SCHEMA_VERSION,
+            # v13 存量缓存契约固定为 13;v16 迁移后由 test 更新为新契约。
+            "token_schema_version": 13,
             "feature_schema_sha256": feature_schema_sha256(),
             "rust_analysis_version": RUST_ANALYSIS_VERSION,
             "decision_analysis_version": DECISION_ANALYSIS_VERSION,
@@ -188,7 +189,7 @@ def test_encoded_sft_global_plan_balances_odd_rows_without_duplicates() -> None:
         _write_chunk(train / "train-00001.npz", samples[2:])
         (root / "manifest.json").write_text(json.dumps({
             "format": "riichi-sft-encoded-v3",
-            "token_schema_version": TOKEN_SCHEMA_VERSION,
+            "token_schema_version": 13,
             "feature_schema_sha256": feature_schema_sha256(),
             "rust_analysis_version": RUST_ANALYSIS_VERSION,
             "decision_analysis_version": DECISION_ANALYSIS_VERSION,
@@ -220,7 +221,7 @@ def test_encoded_sft_shard_columns_are_decompressed_once(monkeypatch: pytest.Mon
         _write_chunk(train / "train-00000.npz", samples)
         (root / "manifest.json").write_text(json.dumps({
             "format": "riichi-sft-encoded-v3",
-            "token_schema_version": TOKEN_SCHEMA_VERSION,
+            "token_schema_version": 13,
             "feature_schema_sha256": feature_schema_sha256(),
             "rust_analysis_version": RUST_ANALYSIS_VERSION,
             "decision_analysis_version": DECISION_ANALYSIS_VERSION,
