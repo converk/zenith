@@ -20,6 +20,7 @@ pub mod state;
 pub mod state_3p;
 #[cfg(feature = "python")]
 mod yaku_checker;
+pub mod offense_analysis;
 
 pub use hand_evaluator::check_riichi_candidates;
 

@@ -67,6 +67,7 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<riichienv_core::replay::WinResultContextIterator>()?;
     m.add_class::<riichienv_core::rule::GameRule>()?;
     m.add_class::<riichienv_core::yaku::Yaku>()?;
+    m.add_class::<riichienv_core::offense_analysis::YakuAnalysisV16>()?;
 
     // Env classes
     m.add_class::<riichienv_core::action::ActionType>()?;
@@ -89,5 +90,9 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(riichienv_core::yaku::get_all_yaku_py, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        riichienv_core::offense_analysis::analyze_offense_v16,
+        m
+    )?)?;
     Ok(())
 }

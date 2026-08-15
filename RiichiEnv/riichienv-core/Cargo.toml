@@ -22,6 +22,7 @@ rand = "0.10"
 sha2 = "0.10"
 hex = "0.4"
 ndarray = "0.17"
+numpy = { version = "0.28", optional = true }
 base64 = "0.22"
 
 [dev-dependencies]
@@ -33,5 +34,5 @@ harness = false
 
 [features]
 default = ["dep:flate2"]
-python = ["dep:pyo3", "dep:flate2"]
+python = ["dep:pyo3", "dep:flate2", "dep:numpy"]
 wasm = []

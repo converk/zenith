@@ -733,6 +733,7 @@ dependencies = [
  "flate2",
  "hex",
  "ndarray",
+ "numpy",
  "pyo3",
  "rand 0.10.2",
  "serde",
