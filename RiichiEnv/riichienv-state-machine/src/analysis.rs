@@ -119,9 +119,529 @@ impl HandAnalysis {
 pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<HandAnalysis>()?;
     module.add_class::<FeatureAnalysis>()?;
+    module.add_class::<DefenseAnalysisV16>()?;
+    module.add_class::<OffenseAnalysisV16>()?;
     module.add_function(wrap_pyfunction!(analyze_hands, module)?)?;
     module.add_function(wrap_pyfunction!(analyze_features, module)?)?;
+    module.add_function(wrap_pyfunction!(analyze_defense_v16, module)?)?;
+    module.add_function(wrap_pyfunction!(analyze_offense_v16, module)?)?;
+    module.add_function(wrap_pyfunction!(public_opponent_summary, module)?)?;
     Ok(())
+}
+
+/// V16 进攻事实内核(O0–O3、O6、O8)。
+///
+/// 只评价「动作后形状」(暗牌计数 + 3×副露数 = 13);役/基础番(O4/O5)由 core 的
+/// `riichienv.analyze_offense_v16` 按等待牌计算。向听复用本 crate 的既有
+/// shanten 实现(生产路径)。
+#[pyclass(name = "OffenseAnalysisV16", frozen)]
+pub struct OffenseAnalysisV16 {
+    shanten: Py<PyArray1<i8>>,
+    effective_kinds: Py<PyArray1<u8>>,
+    effective_remaining: Py<PyArray1<u16>>,
+    wait_kinds: Py<PyArray1<u8>>,
+    wait_mask: Py<PyArray1<u64>>,
+    furiten: Py<PyArray1<u8>>,
+    can_riichi: Py<PyArray1<u8>>,
+}
+
+#[pymethods]
+impl OffenseAnalysisV16 {
+    #[getter]
+    fn shanten(&self, py: Python<'_>) -> Py<PyArray1<i8>> {
+        self.shanten.clone_ref(py)
+    }
+    #[getter]
+    fn effective_kinds(&self, py: Python<'_>) -> Py<PyArray1<u8>> {
+        self.effective_kinds.clone_ref(py)
+    }
+    #[getter]
+    fn effective_remaining(&self, py: Python<'_>) -> Py<PyArray1<u16>> {
+        self.effective_remaining.clone_ref(py)
+    }
+    #[getter]
+    fn wait_kinds(&self, py: Python<'_>) -> Py<PyArray1<u8>> {
+        self.wait_kinds.clone_ref(py)
+    }
+    #[getter]
+    fn wait_mask(&self, py: Python<'_>) -> Py<PyArray1<u64>> {
+        self.wait_mask.clone_ref(py)
+    }
+    #[getter]
+    fn furiten(&self, py: Python<'_>) -> Py<PyArray1<u8>> {
+        self.furiten.clone_ref(py)
+    }
+    #[getter]
+    fn can_riichi(&self, py: Python<'_>) -> Py<PyArray1<u8>> {
+        self.can_riichi.clone_ref(py)
+    }
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn analyze_offense_v16(
+    py: Python<'_>,
+    shape_counts: PyReadonlyArray2<'_, u8>,
+    open_melds: PyReadonlyArray1<'_, u8>,
+    remaining: PyReadonlyArray2<'_, u8>,
+    own_rivers: PyReadonlyArray1<'_, u64>,
+    missed_doujun: PyReadonlyArray1<'_, bool>,
+    missed_riichi: PyReadonlyArray1<'_, bool>,
+    riichi_declared: PyReadonlyArray1<'_, bool>,
+    scores: PyReadonlyArray1<'_, i32>,
+) -> PyResult<OffenseAnalysisV16> {
+    let shape = shape_counts.shape();
+    if shape.len() != 2 || shape[1] != TILE_KINDS {
+        return Err(PyValueError::new_err(format!(
+            "shape_counts must have shape uint8[N,{TILE_KINDS}]"
+        )));
+    }
+    let rows = shape[0];
+    for (name, length) in [
+        ("open_melds", open_melds.len()),
+        ("own_rivers", own_rivers.len()),
+        ("missed_doujun", missed_doujun.len()),
+        ("missed_riichi", missed_riichi.len()),
+        ("riichi_declared", riichi_declared.len()),
+        ("scores", scores.len()),
+    ] {
+        if length != rows {
+            return Err(PyValueError::new_err(format!(
+                "{name} must have length {rows}, got {length}"
+            )));
+        }
+    }
+    if remaining.shape() != [rows, TILE_KINDS] {
+        return Err(PyValueError::new_err("remaining must have shape uint8[N,34]"));
+    }
+    let shape_values = shape_counts
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("shape_counts must be contiguous"))?;
+    let meld_values = open_melds
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("open_melds must be contiguous"))?;
+    let remaining_values = remaining
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("remaining must be contiguous"))?;
+    let river_values = own_rivers
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("own_rivers must be contiguous"))?;
+    let doujun_values = missed_doujun
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("missed_doujun must be contiguous"))?;
+    let riichi_missed_values = missed_riichi
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("missed_riichi must be contiguous"))?;
+    let riichi_values = riichi_declared
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("riichi_declared must be contiguous"))?;
+    let score_values = scores
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("scores must be contiguous"))?;
+
+    let mut out_shanten = vec![0_i8; rows];
+    let mut out_kinds = vec![0_u8; rows];
+    let mut out_remaining = vec![0_u16; rows];
+    let mut out_waits = vec![0_u8; rows];
+    let mut out_mask = vec![0_u64; rows];
+    let mut out_furiten = vec![0_u8; rows];
+    let mut out_riichi = vec![0_u8; rows];
+
+    py.detach(|| {
+        for row in 0..rows {
+            let start = row * TILE_KINDS;
+            let mut counts = [0_u8; TILE_KINDS];
+            counts.copy_from_slice(&shape_values[start..start + TILE_KINDS]);
+            let total: u16 = counts.iter().map(|&value| u16::from(value)).sum::<u16>()
+                + 3 * u16::from(meld_values[row]);
+            if total != 13 {
+                return Err(format!(
+                    "row {row} shape represents {total} tiles (counts + 3×melds); expected 13"
+                ));
+            }
+            if counts.iter().any(|&value| value > 4) {
+                return Err(format!("row {row} contains a count above 4"));
+            }
+            let remaining_row = &remaining_values[start..start + TILE_KINDS];
+            let river = river_values[row];
+            if river >> TILE_KINDS != 0 {
+                return Err(format!("row {row} own river mask exceeds {TILE_KINDS} bits"));
+            }
+            let shanten_value = shanten::calculate(&counts, meld_values[row]).overall;
+
+            let mut improving = 0_u64;
+            if shanten_value > 0 {
+                for tile in 0..TILE_KINDS {
+                    if counts[tile] >= 4 {
+                        continue;
+                    }
+                    let mut next = counts;
+                    next[tile] += 1;
+                    if shanten::calculate(&next, meld_values[row]).overall < shanten_value {
+                        improving |= 1_u64 << tile;
+                    }
+                }
+            }
+            let mut wait_mask = 0_u64;
+            if shanten_value == 0 {
+                for tile in 0..TILE_KINDS {
+                    if counts[tile] >= 4 {
+                        continue;
+                    }
+                    let mut next = counts;
+                    next[tile] += 1;
+                    if shanten::calculate(&next, meld_values[row]).overall < 0 {
+                        wait_mask |= 1_u64 << tile;
+                    }
+                }
+            }
+            let furiten = if shanten_value != 0 || wait_mask == 0 {
+                0
+            } else if (0..TILE_KINDS).any(|tile| {
+                wait_mask & (1_u64 << tile) != 0 && river & (1_u64 << tile) != 0
+            }) {
+                2
+            } else if doujun_values[row] || riichi_missed_values[row] {
+                3
+            } else {
+                1
+            };
+            let can_riichi = if riichi_values[row] {
+                0
+            } else if meld_values[row] > 0 {
+                2
+            } else if score_values[row] < 1000 {
+                2
+            } else if wait_mask == 0 {
+                2
+            } else {
+                1
+            };
+
+            out_shanten[row] = shanten_value;
+            out_kinds[row] = improving.count_ones() as u8;
+            out_remaining[row] = (0..TILE_KINDS)
+                .filter(|&tile| improving & (1_u64 << tile) != 0)
+                .map(|tile| u16::from(remaining_row[tile]))
+                .sum::<u16>();
+            out_waits[row] = u8::try_from(wait_mask.count_ones()).unwrap_or(u8::MAX);
+            out_mask[row] = wait_mask;
+            out_furiten[row] = furiten;
+            out_riichi[row] = can_riichi;
+        }
+        Ok(())
+    })
+    .map_err(PyValueError::new_err)?;
+
+    let shanten_array = PyArray1::from_vec(py, out_shanten);
+    let kinds_array = PyArray1::from_vec(py, out_kinds);
+    let remaining_array = PyArray1::from_vec(py, out_remaining);
+    let waits_array = PyArray1::from_vec(py, out_waits);
+    let mask_array = PyArray1::from_vec(py, out_mask);
+    let furiten_array = PyArray1::from_vec(py, out_furiten);
+    let riichi_array = PyArray1::from_vec(py, out_riichi);
+    for array in [
+        shanten_array.as_any(),
+        kinds_array.as_any(),
+        remaining_array.as_any(),
+        waits_array.as_any(),
+        mask_array.as_any(),
+        furiten_array.as_any(),
+        riichi_array.as_any(),
+    ] {
+        array.call_method1("setflags", (false,))?;
+    }
+    Ok(OffenseAnalysisV16 {
+        shanten: shanten_array.unbind(),
+        effective_kinds: kinds_array.unbind(),
+        effective_remaining: remaining_array.unbind(),
+        wait_kinds: waits_array.unbind(),
+        wait_mask: mask_array.unbind(),
+        furiten: furiten_array.unbind(),
+        can_riichi: riichi_array.unbind(),
+    })
+}
+
+/// V16 对手 7 项摘要:是否立直、立直巡目、副露数、是否门清、舍牌数、手切次数、
+/// 摸切次数。输入为公开 MJAI 状态逐座位事实,输出每对手一行的归一化编码。
+///
+/// 立直巡目 N/A(-1)编码为 255;计数按契约边界截断(副露 0..4,其余 0..24)。
+#[pyfunction]
+pub fn public_opponent_summary(
+    py: Python<'_>,
+    declared: PyReadonlyArray1<'_, u8>,
+    reach_turn: PyReadonlyArray1<'_, i16>,
+    meld_count: PyReadonlyArray1<'_, u8>,
+    river_count: PyReadonlyArray1<'_, u8>,
+    tedashi_count: PyReadonlyArray1<'_, u8>,
+    tsumogiri_count: PyReadonlyArray1<'_, u8>,
+) -> PyResult<Py<PyArray2<u8>>> {
+    let rows = declared.len();
+    for (name, length) in [
+        ("reach_turn", reach_turn.len()),
+        ("meld_count", meld_count.len()),
+        ("river_count", river_count.len()),
+        ("tedashi_count", tedashi_count.len()),
+        ("tsumogiri_count", tsumogiri_count.len()),
+    ] {
+        if length != rows {
+            return Err(PyValueError::new_err(format!(
+                "{name} must have length {rows}, got {length}"
+            )));
+        }
+    }
+    let declared_values = declared
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("declared must be contiguous"))?;
+    let reach_values = reach_turn
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("reach_turn must be contiguous"))?;
+    let meld_values = meld_count
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("meld_count must be contiguous"))?;
+    let river_values = river_count
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("river_count must be contiguous"))?;
+    let tedashi_values = tedashi_count
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("tedashi_count must be contiguous"))?;
+    let tsumogiri_values = tsumogiri_count
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("tsumogiri_count must be contiguous"))?;
+
+    let mut out = vec![0_u8; rows * 7];
+    let summary: Result<(), String> = py.detach(|| {
+        for row in 0..rows {
+            let melds = meld_values[row].min(4);
+            out[row * 7] = declared_values[row].min(1);
+            out[row * 7 + 1] = if reach_values[row] < 0 {
+                255
+            } else {
+                u8::try_from(reach_values[row]).unwrap_or(255).min(24)
+            };
+            out[row * 7 + 2] = melds;
+            out[row * 7 + 3] = u8::from(melds == 0);
+            out[row * 7 + 4] = river_values[row].min(24);
+            out[row * 7 + 5] = tedashi_values[row].min(24);
+            out[row * 7 + 6] = tsumogiri_values[row].min(24);
+        }
+        Ok(())
+    });
+    drop(summary);
+    let array = Array2::from_shape_vec((rows, 7), out)
+        .expect("opponent summary shape")
+        .into_pyarray(py);
+    array.call_method1("setflags", (false,))?;
+    Ok(array.unbind())
+}
+
+#[pyclass(name = "DefenseAnalysisV16", frozen)]
+pub struct DefenseAnalysisV16 {
+    genbutsu: Py<PyArray2<u8>>,
+    suji: Py<PyArray2<u8>>,
+    stock: Py<PyArray2<u8>>,
+    visible: Py<PyArray1<u8>>,
+}
+
+#[pymethods]
+impl DefenseAnalysisV16 {
+    #[getter]
+    fn genbutsu(&self, py: Python<'_>) -> Py<PyArray2<u8>> {
+        self.genbutsu.clone_ref(py)
+    }
+    #[getter]
+    fn suji(&self, py: Python<'_>) -> Py<PyArray2<u8>> {
+        self.suji.clone_ref(py)
+    }
+    #[getter]
+    fn stock(&self, py: Python<'_>) -> Py<PyArray2<u8>> {
+        self.stock.clone_ref(py)
+    }
+    #[getter]
+    fn visible(&self, py: Python<'_>) -> Py<PyArray1<u8>> {
+        self.visible.clone_ref(py)
+    }
+}
+
+/// V16 防守事实内核(D0–D9)。
+///
+/// 编码值与 `model/encoding_protocol.py` 的 DEFENSE_SLOT_LABELS 下标一致:
+/// GENBUTSU=0/NOT_GENBUTSU=1/N/A=2;SUJI=0/NOT_SUJI=1/N/A=2;库存 0..4(4+);
+/// D9 公开出现数 0..4,N/A=5。
+#[pyfunction]
+pub fn analyze_defense_v16(
+    py: Python<'_>,
+    discard_types: PyReadonlyArray1<'_, i16>,
+    river_masks: PyReadonlyArray2<'_, u64>,
+    hand_counts: PyReadonlyArray2<'_, u8>,
+    remaining: PyReadonlyArray2<'_, u8>,
+) -> PyResult<DefenseAnalysisV16> {
+    let rows = discard_types.len();
+    if river_masks.shape() != [rows, 3] {
+        return Err(PyValueError::new_err("river_masks must have shape uint64[N,3]"));
+    }
+    if hand_counts.shape() != [rows, TILE_KINDS] {
+        return Err(PyValueError::new_err(
+            "hand_counts must have shape uint8[N,34]",
+        ));
+    }
+    if remaining.shape() != [rows, TILE_KINDS] {
+        return Err(PyValueError::new_err(
+            "remaining must have shape uint8[N,34]",
+        ));
+    }
+    let discard_values = discard_types
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("discard_types must be contiguous"))?;
+    let river_values = river_masks
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("river_masks must be contiguous"))?;
+    let hand_values = hand_counts
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("hand_counts must be contiguous"))?;
+    let remaining_values = remaining
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("remaining must be contiguous"))?;
+
+    let mut genbutsu = vec![0_u8; rows * 3];
+    let mut suji = vec![0_u8; rows * 3];
+    let mut stock = vec![0_u8; rows * 3];
+    let mut visible = vec![0_u8; rows];
+
+    let values = py.detach(|| {
+        for row in 0..rows {
+            if river_values[row * 3..row * 3 + 3]
+                .iter()
+                .any(|&mask| mask >> TILE_KINDS != 0)
+            {
+                return Err(format!("row {row} river mask exceeds {TILE_KINDS} bits"));
+            }
+            let tile = discard_values[row];
+            if tile < -1 || tile >= TILE_KINDS as i16 {
+                return Err(format!("row {row} discard type {tile} is out of range"));
+            }
+            let hand_row: [u8; TILE_KINDS] = hand_values
+                [row * TILE_KINDS..(row + 1) * TILE_KINDS]
+                .try_into()
+                .expect("hand row width");
+            let remaining_row: [u8; TILE_KINDS] = remaining_values
+                [row * TILE_KINDS..(row + 1) * TILE_KINDS]
+                .try_into()
+                .expect("remaining row width");
+            let rivers: [u64; 3] = river_values[row * 3..row * 3 + 3]
+                .try_into()
+                .expect("river row width");
+            let (row_genbutsu, row_suji, row_stock, row_visible) =
+                defense_row(tile, &rivers, &hand_row, &remaining_row);
+            for opponent in 0..3 {
+                genbutsu[row * 3 + opponent] = row_genbutsu[opponent];
+                suji[row * 3 + opponent] = row_suji[opponent];
+                stock[row * 3 + opponent] = row_stock[opponent];
+            }
+            visible[row] = row_visible;
+        }
+        Ok(())
+    });
+    drop(values);
+
+    let genbutsu_array = Array2::from_shape_vec((rows, 3), genbutsu)
+        .expect("defense genbutsu shape")
+        .into_pyarray(py);
+    let suji_array = Array2::from_shape_vec((rows, 3), suji)
+        .expect("defense suji shape")
+        .into_pyarray(py);
+    let stock_array = Array2::from_shape_vec((rows, 3), stock)
+        .expect("defense stock shape")
+        .into_pyarray(py);
+    let visible_array = PyArray1::from_vec(py, visible);
+    for array in [
+        genbutsu_array.as_any(),
+        suji_array.as_any(),
+        stock_array.as_any(),
+        visible_array.as_any(),
+    ] {
+        array.call_method1("setflags", (false,))?;
+    }
+    Ok(DefenseAnalysisV16 {
+        genbutsu: genbutsu_array.unbind(),
+        suji: suji_array.unbind(),
+        stock: stock_array.unbind(),
+        visible: visible_array.unbind(),
+    })
+}
+
+/// 单行防守事实(D0–D9),与 Python 侧 `encoding_protocol.py` 的编码下标一致。
+fn defense_row(
+    tile: i16,
+    rivers: &[u64; 3],
+    hand: &[u8; TILE_KINDS],
+    remaining: &[u8; TILE_KINDS],
+) -> ([u8; 3], [u8; 3], [u8; 3], u8) {
+    let mut genbutsu = [2_u8; 3];
+    let mut suji = [2_u8; 3];
+    let mut stock = [0_u8; 3];
+    for opponent in 0..3 {
+        let river = rivers[opponent];
+        let mut count = 0_u8;
+        for kind in 0..TILE_KINDS {
+            if hand[kind] > 0 && river & (1_u64 << kind) != 0 {
+                count += 1;
+            }
+        }
+        stock[opponent] = count.min(4);
+    }
+    if tile < 0 {
+        return (genbutsu, suji, stock, 5);
+    }
+    let tile = tile as usize;
+    let visible = (4_usize.saturating_sub(usize::from(remaining[tile])))
+        .min(4) as u8;
+    for opponent in 0..3 {
+        let river = rivers[opponent];
+        genbutsu[opponent] = u8::from(river & (1_u64 << tile) != 0);
+        suji[opponent] = u8::from(suji_safe(tile, river));
+    }
+    (genbutsu, suji, stock, visible)
+}
+
+#[cfg(test)]
+mod defense_tests {
+    use super::*;
+
+    #[test]
+    fn test_genbutsu_suji_and_stock() {
+        // 对手 0 河含 1m/4m/7m:4m 是现物,且两侧筋锚(1m、7m)齐全故成筋。
+        let rivers = [1_u64 << 0 | 1_u64 << 3 | 1_u64 << 6, 0, 1_u64 << 8];
+        let mut hand = [0_u8; TILE_KINDS];
+        hand[2] = 1; // 3m
+        hand[3] = 1; // 4m
+        let remaining = [4_u8; TILE_KINDS];
+        let (genbutsu, suji, stock, visible) = defense_row(3, &rivers, &hand, &remaining);
+        assert_eq!(genbutsu, [1, 0, 0]);
+        assert_eq!(suji, [1, 0, 0]);
+        // 现物库存只数「手中牌种 ∩ 对手河」:手中 3m/4m,仅 4m 在对手 0 河内。
+        assert_eq!(stock, [1, 0, 0]);
+        assert_eq!(visible, 0);
+    }
+
+    #[test]
+    fn test_non_discard_na_and_visible() {
+        let rivers = [1_u64 << 3, 0, 0];
+        let mut hand = [0_u8; TILE_KINDS];
+        hand[3] = 2;
+        let mut remaining = [4_u8; TILE_KINDS];
+        remaining[5] = 1;
+        let (genbutsu, suji, stock, visible) =
+            defense_row(-1, &rivers, &hand, &remaining);
+        assert_eq!(genbutsu, [2, 2, 2]);
+        assert_eq!(suji, [2, 2, 2]);
+        // 非打牌动作仍计算安全牌库存:手中 4m 是对手 0 的现物。
+        assert_eq!(stock, [1, 0, 0]);
+        assert_eq!(visible, 5);
+        let (_g, _s, _k, visible_discard) =
+            defense_row(5, &rivers, &hand, &remaining);
+        assert_eq!(visible_discard, 3);
+    }
 }
 
 #[pyfunction]
