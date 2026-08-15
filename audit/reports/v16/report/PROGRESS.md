@@ -62,6 +62,21 @@
   `KyokuEventTupleProtocol.md` 的现行契约段落。
 - 测试基线更新:pytest 286 通过;Rust workspace 124 通过。
 
+## 运行任务结果(2026-08-16 续,仅 GPU 0)
+
+- T024 canary 编码通过:15,505 局(train 15,462 + validation 43),94.9 万决策;
+  query answer 越界 0、snapshot 数值越界 0、合法/专家动作组全覆盖,manifest
+  契约正确;验证后 canary 目录已删除。
+- T029/T032 GRP:按 game_id 聚合完整半庄(修复逐局误编码),train 143,802 半庄
+  (575,208 视角样本)、validation 1,461 半庄;σ_Score=4.2656 固化;GPU 0 训练
+  30 epochs(269,629 steps),验证集排名准确率 **93.86%**(均匀随机 25%),σ_GRP=
+  2.7112 写回 dataset.json,模型冻结并保存
+  `checkpoints/train_riichi_v16/grp/best.pt`。
+- T025 40% 全量编码进行中:目标 1,538,630 局(1,523,056 train + 15,574
+  validation),16 进程;本记录时约 24%。
+- v16 SFT 训练循环已在 GPU 0 小数据集冒烟通过(12 steps,checkpoint/metrics/
+  tensorboard 落盘),修复了 v16 配置加载与输出变量遮蔽两处缺陷。
+
 ## 关键指标
 
 - 语义正确性:待记录(20 slot 独立 oracle 比对)
