@@ -221,7 +221,7 @@ if ray is not None:
             self.model_decisions = 0
             self.recorded_decisions = 0
             self.kyoku_reward_clip_points = int(
-                config.get("kyoku_reward_clip_points", 24_000)
+                config.get("kyoku_reward_clip_points", 32_000)
             )
             if self.kyoku_reward_clip_points <= 0:
                 raise ValueError("kyoku_reward_clip_points must be positive")

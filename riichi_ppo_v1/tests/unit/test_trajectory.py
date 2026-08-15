@@ -16,9 +16,10 @@ def transition(q_taken: float, expected_q: float | None = None) -> Transition:
 
 
 def test_terminal_kyoku_reward_uses_configured_symmetric_clip() -> None:
-    assert terminal_kyoku_reward(12_000, 24_000) == 12.0
-    assert terminal_kyoku_reward(30_000, 24_000) == 24.0
-    assert terminal_kyoku_reward(-30_000, 24_000) == -24.0
+    assert terminal_kyoku_reward(12_000, 32_000) == 12.0
+    assert terminal_kyoku_reward(30_000, 32_000) == 30.0
+    assert terminal_kyoku_reward(-30_000, 32_000) == -30.0
+    assert terminal_kyoku_reward(40_000, 32_000) == 32.0
     with pytest.raises(ValueError, match="must be positive"):
         terminal_kyoku_reward(1_000, 0)
 
@@ -62,10 +63,10 @@ def test_qboost_uses_expected_next_q_and_current_policy_baseline() -> None:
 
 def test_hanchan_rank_reward_is_zero_sum_and_breaks_ties_by_seat() -> None:
     assert terminal_hanchan_rank_rewards([40_000, 30_000, 20_000, 10_000]) == (
-        12.0, 6.0, -6.0, -12.0,
+        16.0, 8.0, -8.0, -16.0,
     )
     tied = terminal_hanchan_rank_rewards([25_000, 25_000, 25_000, 25_000])
-    assert tied == (12.0, 6.0, -6.0, -12.0)
+    assert tied == (16.0, 8.0, -8.0, -16.0)
     assert sum(tied) == 0.0
 
 

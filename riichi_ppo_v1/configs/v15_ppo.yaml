@@ -25,8 +25,8 @@ inference_batch_target_workers: 0
 kyokus_per_worker: 16
 
 # 标准 PPO。每个 transition 只在所属小局结算时得到终局分差 reward。
-kyoku_reward_clip_points: 24000
-gamma: 0.99
+kyoku_reward_clip_points: 32000
+gamma: 1.0
 qboost_lambda: 0.95
 ppo_clip: 0.2
 update_epochs: 4

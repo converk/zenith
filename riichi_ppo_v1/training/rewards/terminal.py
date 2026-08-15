@@ -20,7 +20,7 @@ def terminal_hanchan_rank_rewards(scores: list[int] | tuple[int, ...]) -> tuple[
     if len(scores) != 4:
         raise ValueError("hanchan rank reward requires four final scores")
     ranking = sorted(range(4), key=lambda seat: (-int(scores[seat]), seat))
-    by_rank = (12.0, 6.0, -6.0, -12.0)
+    by_rank = (16.0, 8.0, -8.0, -16.0)
     rewards = [0.0] * 4
     for rank, seat in enumerate(ranking):
         rewards[seat] = by_rank[rank]
