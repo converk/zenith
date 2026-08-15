@@ -300,11 +300,21 @@ def run(config: dict[str, Any]) -> None:
     init_method = local_distributed_init_method() if learner_gpus > 1 else None
     configure_ray_stderr_logging()
     ray.init(ignore_reinit_error=True)
+    # 可见卡少于 learner 数时按比例请求小数 GPU,允许多个 rank 共驻同一张卡;
+    # 可见卡充足时仍为 1.0,保持每个 rank 独占一张卡。
+    visible_gpus = torch.cuda.device_count()
+    actor_gpu_request = min(1.0, visible_gpus / max(1, learner_gpus))
+    # NCCL 不允许两个 rank 落在同一张卡上;共驻单卡时改用 gloo 后端。
+    dist_backend = "gloo" if visible_gpus < learner_gpus else "nccl"
     inference_actors = []
     for rank, worker_ids in enumerate(partitions):
         actor_config = dict(config)
         actor_config["inference_actor_num_workers"] = len(worker_ids)
-        inference_actors.append(RolloutInferenceActor.remote(actor_config, rank, learner_gpus, init_method))
+        inference_actors.append(
+            RolloutInferenceActor.options(num_gpus=actor_gpu_request).remote(
+                actor_config, rank, learner_gpus, init_method, dist_backend,
+            )
+        )
     inference = inference_actors[0]
     saved_actor_rng = resume_payload.get("extra_state", {}).get("actor_rng_states", [])
     if saved_actor_rng:

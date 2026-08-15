@@ -113,6 +113,7 @@ if ray is not None:
             rank: int = 0,
             world_size: int = 1,
             init_method: str | None = None,
+            backend: str = "nccl",
         ) -> None:
             if not torch.cuda.is_available():
                 raise RuntimeError("central rollout inference requires CUDA")
@@ -125,7 +126,7 @@ if ray is not None:
                 if init_method is None:
                     raise ValueError("distributed actors require an init_method")
                 dist.init_process_group(
-                    backend="nccl",
+                    backend=backend,
                     init_method=init_method,
                     rank=self.rank,
                     world_size=self.world_size,
