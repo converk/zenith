@@ -185,30 +185,30 @@ Top-3 Q-boosting(候选 Top-3∪行为动作 ≤4、h_a detach),训练稳定跑�
 
 ### Tests for User Story 4(先写,必须先失败)
 
-- [ ] T033 [P] [US4] 编写 `riichi_ppo_v1/tests/unit/test_v16_q_scorer.py`:训练
+- [X] T033 [P] [US4] 编写 `riichi_ppo_v1/tests/unit/test_v16_q_scorer.py`:训练
   候选 = Top-3 ∪ 行为动作(≤4)、boost = Top-3、动作表示 detach、Q loss 不直接
   更新 Actor 参数
-- [ ] T034 [P] [US4] 编写 `riichi_ppo_v1/tests/unit/test_v16_reward.py`:奖励公式
+- [X] T034 [P] [US4] 编写 `riichi_ppo_v1/tests/unit/test_v16_reward.py`:奖励公式
   R=0.7·clip(R_GRP/σ_GRP,±5)+0.3·clip(clip(Δscore/1000,±12)/σ_Score,±5)、
   utility [12,4,-6,-10]、σ 训练期不变、终局用真实排名 utility
 
 ### Implementation for User Story 4
 
-- [ ] T035 [US4] 修改 `riichi_ppo_v1/model/architecture.py`:新增 Top-3 Q scorer
+- [X] T035 [US4] 修改 `riichi_ppo_v1/model/architecture.py`:新增 Top-3 Q scorer
   (输入 [z_critic; detach(h_a)] →512→256→SiLU→1),删除 241 维 `q_head`
-- [ ] T036 [US4] 移除独立半庄排名奖励分量:删除
+- [X] T036 [US4] 移除独立半庄排名奖励分量:删除
   `riichi_ppo_v1/training/rewards/terminal.py` 的
   `terminal_hanchan_rank_rewards` 及其在 `riichi_ppo_v1/training/worker.py`
   的调用(排名效用已由 GRP 终局 V_terminal=U(rank) 覆盖,避免双计);utility
   [12,4,-6,-10] 仅由 `riichi_ppo_v1/training/grp/reward.py` 提供
-- [ ] T037 [US4] 新建 `riichi_ppo_v1/training/grp/reward.py`:GRP 期望/delta 与
+- [X] T037 [US4] 新建 `riichi_ppo_v1/training/grp/reward.py`:GRP 期望/delta 与
   归一化组合(加载离线固化的 σ_GRP/σ_Score)
 - [ ] T038 [US4] 修改 `riichi_ppo_v1/training/learner.py`:Top-3 Q loss/boost
   与候选集、GRP+分差奖励装配、GRP 权重冻结检查
 - [ ] T039 [US4] 修改 `riichi_ppo_v1/training/worker.py`:小局边界 GRP 推理
   (每局边界一次,不每动作执行)与奖励计算,并补充断言测试(SC-011):GRP 调用次数
   等于小局边界数、不随动作数增长
-- [ ] T040 [US4] 新建 `riichi_ppo_v1/configs/v16_ppo.yaml`:自包含完整配置
+- [X] T040 [US4] 新建 `riichi_ppo_v1/configs/v16_ppo.yaml`:自包含完整配置
   (init_model=v16 SFT checkpoint、1v3 对手/种子/输出目录显式给出、
   `eval1v3_output_dir: audit/reports/v16/eval`);1v3 节奏键不得复制
 - [ ] T041 [US4] 跑 PPO 性能基线 3 轮(quickstart 场景 6,target_kl=0.0、

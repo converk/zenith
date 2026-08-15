@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from riichi_ppo_v1.training.rewards import terminal_hanchan_rank_rewards, terminal_kyoku_reward
+from riichi_ppo_v1.training.rewards import terminal_kyoku_reward
 
 from riichi_ppo_v1.training.learner import length_bucketed_minibatches, transition_length_metrics
 from riichi_ppo_v1.training.trajectory import Transition, finish_kyoku_qboost
@@ -59,15 +59,6 @@ def test_qboost_uses_expected_next_q_and_current_policy_baseline() -> None:
     assert rows[-1].advantage == np.float32(0.9)
     assert rows[0].q_target == np.float32(0.4 + first_trace)
     assert rows[0].advantage == np.float32(rows[0].q_target - 0.25)
-
-
-def test_hanchan_rank_reward_is_zero_sum_and_breaks_ties_by_seat() -> None:
-    assert terminal_hanchan_rank_rewards([40_000, 30_000, 20_000, 10_000]) == (
-        16.0, 8.0, -8.0, -16.0,
-    )
-    tied = terminal_hanchan_rank_rewards([25_000, 25_000, 25_000, 25_000])
-    assert tied == (16.0, 8.0, -8.0, -16.0)
-    assert sum(tied) == 0.0
 
 
 def test_transition_length_metrics_report_tokens_and_query() -> None:

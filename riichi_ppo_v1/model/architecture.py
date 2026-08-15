@@ -431,6 +431,12 @@ class KyokuTransformerActorCritic(nn.Module):
             self.offense_projection = None
             self.q_head = None
             self.value_head = nn.Linear(self.config.d_model, 1)
+            # Top-3 Q scorer:输入 [z_critic; detach(h_a)] →512→256→SiLU→1。
+            self.q_scorer = nn.Sequential(
+                nn.Linear(2 * self.config.d_model, self.config.d_model),
+                nn.SiLU(),
+                nn.Linear(self.config.d_model, 1),
+            )
         else:
             self.policy_head = nn.Sequential(
                 nn.RMSNorm(self.config.d_model, eps=self.config.eps),
@@ -777,3 +783,37 @@ class KyokuTransformerActorCritic(nn.Module):
         output["critic_hidden"] = critic_hidden
         output["action_hiddens"] = action_hiddens
         return output
+
+    def q_scores_v16(
+        self,
+        critic_hidden: Tensor,
+        action_hiddens: Tensor,
+        action_ids: Tensor,
+        pair_counts: Tensor,
+        candidate_ids: Tensor,
+    ) -> Tensor:
+        """对候选动作评分:输入 [z_critic; detach(h_a)] →512→256→SiLU→1。
+
+        ``action_hiddens`` 在进入 scorer 前强制 detach,保证 Q loss 不会经动作
+        表示直接更新 Actor;无效候选(越界/缺失)返回 -inf。
+        """
+        batch, action_capacity = action_ids.shape
+        if candidate_ids.ndim != 2 or candidate_ids.shape[0] != batch:
+            raise ValueError("candidate_ids must be [batch, candidates]")
+        device = action_ids.device
+        pair_positions = torch.arange(action_capacity, device=device)[None].expand(batch, -1)
+        valid_pairs = pair_positions < pair_counts[:, None]
+        pair_index = action_ids.new_full((batch, NUM_ACTIONS), -1)
+        pair_index.scatter_(
+            1,
+            action_ids.to(device=device, dtype=torch.long),
+            torch.where(valid_pairs, pair_positions, action_ids.new_full((), -1)),
+        )
+        candidate_positions = pair_index.gather(1, candidate_ids.to(device=device, dtype=torch.long))
+        valid = candidate_positions >= 0
+        safe = candidate_positions.clamp(min=0)
+        rows = torch.arange(batch, device=device)[:, None].expand_as(candidate_ids)
+        hidden = action_hiddens[rows, safe].detach()
+        critic = critic_hidden[:, None, :].expand(batch, candidate_ids.shape[1], -1)
+        scores = self.q_scorer(torch.cat((critic, hidden), dim=-1)).squeeze(-1).float()
+        return torch.where(valid, scores, scores.new_full((), float("-inf")))

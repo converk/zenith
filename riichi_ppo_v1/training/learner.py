@@ -42,6 +42,60 @@ _SCHEMA_METADATA_KEYS = {
 }
 
 
+def select_top3_candidates(
+    policy_logits: torch.Tensor,
+    legal_mask: torch.Tensor,
+    behavior_actions: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Top-3 Q-boosting 的候选集(契约 reward-v16.md §4)。
+
+    - boost 候选 = 合法动作中的 Top-3;
+    - 训练候选 = Top-3 ∪ 实际 rollout 行为动作(最多 4 个,去重)。
+    返回 ``(boost_ids [B,3], training_ids [B,4])``,右侧以 -1 补齐。
+    """
+    batch = policy_logits.shape[0]
+    if policy_logits.ndim != 2 or legal_mask.shape != policy_logits.shape:
+        raise ValueError("policy_logits and legal_mask must be [batch, actions]")
+    if behavior_actions.shape != (batch,):
+        raise ValueError("behavior_actions must be [batch]")
+    masked = policy_logits.masked_fill(~legal_mask, float("-inf"))
+    top_count = min(3, int(legal_mask.sum(dim=1).min()))
+    top3 = masked.topk(top_count, dim=-1).indices
+    boost_ids = top3.new_full((batch, 3), -1)
+    boost_ids[:, :top_count] = top3
+    training_ids = top3.new_full((batch, 4), -1)
+    training_ids[:, :top_count] = top3
+    training_ids[:, top_count] = behavior_actions
+    cleaned = top3.new_full((batch, 4), -1)
+    for row in range(batch):
+        unique: list[int] = []
+        seen: set[int] = set()
+        for value in training_ids[row].tolist():
+            if int(value) < 0 or int(value) in seen:
+                continue
+            seen.add(int(value))
+            unique.append(int(value))
+        cleaned[row, :len(unique)] = top3.new_tensor(unique)
+    return boost_ids, cleaned
+
+
+def candidate_q_loss(
+    q_scores: torch.Tensor,
+    q_targets: torch.Tensor,
+    candidate_valid: torch.Tensor,
+) -> torch.Tensor:
+    """训练候选的 Q 回归(Huber);无效候选不参与。"""
+    if q_scores.shape != q_targets.shape or q_scores.shape != candidate_valid.shape:
+        raise ValueError("q_scores/q_targets/candidate_valid shapes differ")
+    if not bool(candidate_valid.any()):
+        return q_scores.new_zeros(())
+    return F.huber_loss(
+        q_scores[candidate_valid],
+        q_targets[candidate_valid],
+        reduction="mean",
+    )
+
+
 def validate_fresh_model_checkpoint_contract(payload: dict[str, Any]) -> None:
     """Validate a checkpoint used only for fresh PPO model initialization."""
     if payload.get("sft_contract_version") == SFT_CONTRACT_VERSION and not (

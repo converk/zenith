@@ -16,16 +16,74 @@ except ImportError:  # imported lazily by the command line program
     ray = None
 
 from ..model.bridge import NUM_PLAYERS, BatchedStateBridge, Decision
+from .grp.reward import combined_reward, rank_utility
 from .metrics import SemanticMetrics
 from .profiling import StageProfiler
 from .rewards import (
     DecisionAnalysisBatch,
     EfficiencyAnalyzer,
     PublicStateTracker,
-    terminal_hanchan_rank_rewards,
     terminal_kyoku_reward,
 )
 from .trajectory import Transition, finish_kyoku_qboost
+
+
+class V16GrpBoundaryTracker:
+    """小局边界 GRP 推理与奖励装配(SC-011)。
+
+    GRP 只在每个小局边界执行一次,调用次数等于边界数、不随动作数增长;
+    半庄结束用真实最终排名 utility 覆盖 GRP 预测。
+    """
+
+    def __init__(self, sigma_grp: float, sigma_score: float) -> None:
+        if float(sigma_grp) <= 0.0 or float(sigma_score) <= 0.0:
+            raise ValueError("GRP normalization stats must be positive")
+        self.sigma_grp = float(sigma_grp)
+        self.sigma_score = float(sigma_score)
+        self.grp_calls = 0
+        self._previous_v: dict[tuple[int, int], float] = {}
+        self._previous_score: dict[tuple[int, int], int] = {}
+
+    def register_start(
+        self, env_index: int, seat: int, grp_value: float, score: int,
+    ) -> None:
+        """首个小局边界:登记 V_0 与初始点数(不计入 GRP 调用)。"""
+        key = (int(env_index), int(seat))
+        self._previous_v[key] = float(grp_value)
+        self._previous_score[key] = int(score)
+
+    def boundary_reward(
+        self, env_index: int, seat: int, grp_value: float, score: int,
+    ) -> float:
+        """小局边界执行一次 GRP 推理并产出该小局的 70/30 组合奖励。"""
+        key = (int(env_index), int(seat))
+        self.grp_calls += 1
+        previous_v = self._previous_v.get(key)
+        previous_score = self._previous_score.get(key)
+        if previous_v is None or previous_score is None:
+            self.register_start(env_index, seat, grp_value, score)
+            return 0.0
+        delta = float(grp_value) - float(previous_v)
+        reward = combined_reward(
+            delta, int(score) - int(previous_score), self.sigma_grp, self.sigma_score,
+        )
+        self._previous_v[key] = float(grp_value)
+        self._previous_score[key] = int(score)
+        return reward
+
+    def terminal_reward(
+        self, env_index: int, seat: int, rank: int, score: int,
+    ) -> float:
+        """半庄结束:V_terminal = U(真实排名),不再使用 GRP 预测。"""
+        key = (int(env_index), int(seat))
+        previous_v = self._previous_v.get(key)
+        previous_score = self._previous_score.get(key)
+        if previous_v is None or previous_score is None:
+            return float(rank_utility(rank))
+        delta = float(rank_utility(rank)) - float(previous_v)
+        return combined_reward(
+            delta, int(score) - int(previous_score), self.sigma_grp, self.sigma_score,
+        )
 
 
 def active_decisions(
@@ -515,10 +573,6 @@ if ray is not None:
                     ended_kyoku_indices.append(env_index)
                     self.match_kyoku_counts[env_index] += 1
                     scores = [int(x) for x in scores_by_env[env_index]]
-                    rank_rewards = (
-                        terminal_hanchan_rank_rewards(scores)
-                        if done[env_index] else (0.0, 0.0, 0.0, 0.0)
-                    )
                     current_seats = [
                         seat for seat, policy in enumerate(self.lineups[env_index])
                         if policy == "current"
@@ -535,14 +589,12 @@ if ray is not None:
                             scores[seat] - self.start_scores[env_index][seat],
                             self.kyoku_reward_clip_points,
                         )
-                        rank_reward = float(rank_rewards[seat])
-                        reward = kyoku_reward + rank_reward
+                        reward = kyoku_reward
                         pending = self.pending[env_index][seat]
                         if self.lineups[env_index][seat] == "current":
                             with self.profiler.stage("rollout/finish_kyoku_qboost"):
                                 if pending:
                                     pending[-1].kyoku_reward = kyoku_reward
-                                    pending[-1].hanchan_rank_reward = rank_reward
                                     pending[-1].reward += reward
                                 completed.extend(finish_kyoku_qboost(
                                     pending, float(self.config["gamma"]),
