@@ -204,7 +204,7 @@ def prepare_grp_dataset(
     remainders: tuple[int, ...] = (0, 1),
     kyokus_per_shard: int = 512,
 ) -> dict:
-    """构造 4 视角 GRP 数据集并固化 σ_Score。"""
+    """按 game_id 聚合完整半庄后构造 4 视角 GRP 数据集并固化 σ_Score。"""
     if output.exists() and any(output.iterdir()):
         raise FileExistsError(f"output already exists and is non-empty: {output}")
     output.mkdir(parents=True, exist_ok=True)
@@ -215,6 +215,38 @@ def prepare_grp_dataset(
         destination.mkdir()
         buffer: list[dict] = []
         chunk_index = 0
+        game_buffer: dict[str, list[tuple[int, int, str]]] = {}
+        current_game_id: str | None = None
+
+        def flush_game(game_id: str, members: list[tuple[int, int, str]]) -> None:
+            nonlocal chunk_index
+            ordered = sorted(members, key=lambda item: item[1])
+            combined = "\n".join(content for _year, _index, content in ordered)
+            boundaries = parse_hanchan(combined)
+            finals = final_scores(boundaries)
+            year = ordered[0][0]
+            for viewer in range(4):
+                categorical, numeric = encode_view(boundaries, viewer)
+                buffer.append({
+                    "categorical": categorical,
+                    "numeric": numeric,
+                    "final_rank": rank_among(viewer, finals),
+                    "year": year,
+                    "game_id": game_id,
+                    "viewer": viewer,
+                })
+                for boundary in boundaries:
+                    if boundary.previous is not None:
+                        clipped_deltas.extend(
+                            float(np.clip(delta / DELTA_SCALE, -12.0, 12.0))
+                            for delta in boundary.previous.deltas
+                        )
+            counts[f"{split}_hanchans"] += 1
+            if len(buffer) >= kyokus_per_shard:
+                _write_chunk(destination / f"{split}-{chunk_index:05d}.npz", buffer)
+                buffer.clear()
+                chunk_index += 1
+
         for shard in sorted((source / split).glob(f"{split}-*.tar")):
             with tarfile.open(shard, "r") as archive:
                 for member in archive:
@@ -224,29 +256,16 @@ def prepare_grp_dataset(
                     if file is None:
                         raise RuntimeError(f"cannot read {shard}:{member.name}")
                     year, game_id, kyoku_index = _member_metadata(member.name)
-                    boundaries = parse_hanchan(_read_member(file.read()))
-                    finals = final_scores(boundaries)
-                    for viewer in range(4):
-                        categorical, numeric = encode_view(boundaries, viewer)
-                        buffer.append({
-                            "categorical": categorical,
-                            "numeric": numeric,
-                            "final_rank": rank_among(viewer, finals),
-                            "year": year,
-                            "game_id": game_id,
-                            "viewer": viewer,
-                        })
-                        for boundary in boundaries:
-                            if boundary.previous is not None:
-                                clipped_deltas.extend(
-                                    float(np.clip(delta / DELTA_SCALE, -12.0, 12.0))
-                                    for delta in boundary.previous.deltas
-                                )
-                    counts[f"{split}_hanchans"] += 1
-                    if len(buffer) >= kyokus_per_shard:
-                        _write_chunk(destination / f"{split}-{chunk_index:05d}.npz", buffer)
-                        buffer.clear()
-                        chunk_index += 1
+                    if current_game_id is not None and game_id != current_game_id:
+                        flush_game(current_game_id, game_buffer.pop(current_game_id, []))
+                    current_game_id = game_id
+                    game_buffer.setdefault(game_id, []).append((
+                        year, kyoku_index, _read_member(file.read()),
+                    ))
+        if current_game_id is not None and current_game_id in game_buffer:
+            flush_game(current_game_id, game_buffer.pop(current_game_id))
+        if game_buffer:
+            raise RuntimeError(f"{split} 残留未闭合 game 缓冲: {sorted(game_buffer)}")
         if buffer:
             _write_chunk(destination / f"{split}-{chunk_index:05d}.npz", buffer)
         counts[f"{split}_samples"] = counts[f"{split}_hanchans"] * 4

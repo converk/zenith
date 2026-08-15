@@ -79,13 +79,27 @@ def evaluate(
 ) -> tuple[float, float]:
     model.eval()
     total = correct = 0
+    buffer: list[tuple[np.ndarray, np.ndarray, int]] = []
     with torch.no_grad():
-        for categorical, numeric, rank in iter_grp_samples(dataset, split):
-            batch = collate([(categorical, numeric, rank)], device)
+        for row in iter_grp_samples(dataset, split):
+            buffer.append(row)
+            if len(buffer) < 64:
+                continue
+            batch = collate(buffer, device)
             logits = model(batch["categorical"], batch["numeric"], batch["lengths"])
-            predicted = logits[0, -1].argmax().item()
-            correct += int(predicted == rank)
-            total += 1
+            ends = batch["lengths"] - 1
+            predicted = logits[torch.arange(logits.shape[0], device=device), ends].argmax(dim=1)
+            ranks = batch["ranks"]
+            correct += int((predicted == ranks).sum())
+            total += len(buffer)
+            buffer.clear()
+        if buffer:
+            batch = collate(buffer, device)
+            logits = model(batch["categorical"], batch["numeric"], batch["lengths"])
+            ends = batch["lengths"] - 1
+            predicted = logits[torch.arange(logits.shape[0], device=device), ends].argmax(dim=1)
+            correct += int((predicted == batch["ranks"]).sum())
+            total += len(buffer)
     return correct / max(total, 1), float(total)
 
 
@@ -96,13 +110,26 @@ def _sigma_grp(
     deltas: list[float] = []
     utility = torch.tensor(GRP_UTILITY, device=device)
     model.eval()
+    buffer: list[tuple[np.ndarray, np.ndarray, int]] = []
+
+    def consume(rows: list[tuple[np.ndarray, np.ndarray, int]]) -> None:
+        batch = collate(rows, device)
+        logits = model(batch["categorical"], batch["numeric"], batch["lengths"])
+        values = torch.softmax(logits, dim=-1) @ utility
+        for row in range(values.shape[0]):
+            length = int(batch["lengths"][row])
+            if length > 1:
+                deltas.extend((values[row, 1:length] - values[row, :length - 1]).cpu().tolist())
+
     with torch.no_grad():
-        for categorical, numeric, _rank in iter_grp_samples(dataset, split):
-            batch = collate([(categorical, numeric, _rank)], device)
-            logits = model(batch["categorical"], batch["numeric"], batch["lengths"])
-            values = torch.softmax(logits[0], dim=-1) @ utility
-            if values.numel() > 1:
-                deltas.extend((values[1:] - values[:-1]).cpu().tolist())
+        for row in iter_grp_samples(dataset, split):
+            buffer.append(row)
+            if len(buffer) < 64:
+                continue
+            consume(buffer)
+            buffer.clear()
+        if buffer:
+            consume(buffer)
     return float(np.std(np.asarray(deltas, dtype=np.float32))) if deltas else 1.0
 
 
@@ -123,19 +150,28 @@ def train_grp(dataset: Path, config: dict) -> None:
     best_accuracy = 0.0
     buffer: list[tuple[np.ndarray, np.ndarray, int]] = []
     rng = random.Random(int(config["seed"]))
+    batch_size = max(1, int(config["batch_size"]))
+    buffer_capacity = max(int(config["shuffle_buffer_samples"]), batch_size)
+
+    def drain(*, flush: bool) -> None:
+        nonlocal step
+        rng.shuffle(buffer)
+        usable = len(buffer) if flush else len(buffer) - len(buffer) % batch_size
+        for start in range(0, usable, batch_size):
+            _train_step(model, optimizer, buffer[start:start + batch_size], device, config)
+            step += 1
+            if step % int(config["log_interval_steps"]) == 0:
+                print(f"grp step={step}", flush=True)
+        del buffer[:usable]
+
     for epoch in range(int(config["epochs"])):
         for categorical, numeric, rank in iter_grp_samples(dataset, "train"):
             buffer.append((categorical, numeric, rank))
-            if len(buffer) < int(config["shuffle_buffer_samples"]):
+            if len(buffer) < buffer_capacity:
                 continue
-            chosen = rng.randrange(len(buffer))
-            yield_step = buffer.pop(chosen)
-            _train_step(model, optimizer, [yield_step], device, config)
-            step += 1
-        while buffer:
-            yield_step = buffer.pop(rng.randrange(len(buffer)))
-            _train_step(model, optimizer, [yield_step], device, config)
-            step += 1
+            drain(flush=False)
+        drain(flush=False)
+    drain(flush=True)
     accuracy, total = evaluate(model, dataset, "validation", device)
     print(json.dumps({"validation/rank_accuracy": accuracy, "validation/samples": total}), flush=True)
     if accuracy <= 0.25:

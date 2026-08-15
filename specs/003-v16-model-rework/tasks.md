@@ -132,7 +132,7 @@ oracle 100% 一致。
   `logs/v16/`);节奏键不得复制(沿用 sft.yaml 单点定义)
 - [X] T023 [P] [US2] 修改 `riichi_ppo_v1/sft/train.py`:接入 V16 输入与 checkpoint
   路径,延续 3000 steps 节奏并输出 train/validation top3(Recall@3)
-- [ ] T024 [US2] 跑 canary 编码(quickstart 场景 2,`datasets/tenhou_sft_canary_v16`):
+- [X] T024 [US2] 跑 canary 编码(quickstart 场景 2,`datasets/tenhou_sft_canary_v16`):
   审计每个合法/专家动作组非零、数值越界为 0、manifest 契约正确,通过后删除 canary
 - [ ] T025 [US2] 跑 40% 全量编码到
   `datasets/tenhou_sft_2024_2025_encoded_40pct_v16`(quickstart 场景 3):
