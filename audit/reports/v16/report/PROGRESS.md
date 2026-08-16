@@ -142,3 +142,22 @@
   rust-core → rust-state-machine → snapshot → action_query → 语义测试 →
   audit 骨架 → spec-kit 三件套 → T017-T019 网络 → T015 bridge → T020-T023 SFT
   → T027-T031 GRP → T033-T037/T040 PPO 算法 → T042 文档。
+
+### V16 SFT/PPO 数据语义审计(2026-08-16 续)
+
+- 完成一次抽样深度审计,详见 `report/V16_data_semantics_audit.md`;新增可复现
+  脚本位于 `audit/reports/v16/scripts/`(static / sft_dataset / semantic_oracle /
+  ppo_bridge),未修改训练代码、checkpoint 或数据集。
+- 结果:全量 6,486 chunk、93,943,903 train + 959,045 validation 结构扫描零异常;
+  140 局(8,880 决策、74,945 query 对)重编码与存量数据一致;独立语义 oracle
+  通过;40 局 PPO 离线桥接(2,419 决策、20,848 action_id 解码)与 SFT 编码逐决策
+  一致。
+- 待处理发现 F1:`source_seat` 在 chi/pon/daiminkan/ron 恒为 N/A
+  (`Observation.last_discard` 只返回牌 id,`_source_seat` 按 (seat, tile) 解包);
+  该字段当前不进入 QueryEmbedding,不影响模型输入/训练数值,但需决定修复或明确
+  定义为可选审计字段。
+- 追加「独立逐 token 解码」扩展审计:`audit_v16_token_decoder.py` 从原始 MJAI
+  事件独立重算 history/state/snapshot/query 因子,分层抽样 27 个 shard、27 局、
+  1,974 决策,reach/chi/pon/daiminkan/ankan/kakan/dora/hora/ryukyoku 均覆盖,
+  逐 token 与 `prepare_v16` 完全一致(0 mismatch)。已把结果补入
+  `V16_data_semantics_audit.md` §5.1。
