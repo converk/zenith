@@ -1,4 +1,10 @@
-"""同步 Ray PPO 训练的命令行入口。"""
+"""同步 Ray PPO 训练的命令行入口(V16)。
+
+Ray 闭环:worker.collect → 驱动侧 learner.update → inference.update_weights;
+每 30 updates 按 ``evaluation/mechanism.py`` 的固定 1v3 机制(10 进程 × 160 =
+1600 半庄)评测一次。learner 持有模型 + optimizer(``cuda:0``),推理 actor 只
+持有 eval 模型并在每个 update 后接收最新权重。
+"""
 
 from __future__ import annotations
 
@@ -10,14 +16,11 @@ import os
 from pathlib import Path
 import random
 import shutil
-import socket
 import time
 from typing import Any
 
-# Keep the user-facing project convention while using CUDA's standard
-# visibility variable.  This must run before importing torch (and before Ray
-# launches workers) so ``CUDA_DEVICE=0,1`` exposes those physical GPUs while
-# each Ray GPU actor still sees its assigned device as ``cuda:0``.
+# 保持项目自定义 CUDA_DEVICE 约定,同时在启动 torch(以及 Ray 拉起子进程)前
+# 映射为 CUDA 标准的 CUDA_VISIBLE_DEVICES,使每个 Ray GPU actor 仍看到 cuda:0。
 if os.environ.get("CUDA_DEVICE") and not os.environ.get("CUDA_VISIBLE_DEVICES"):
     os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["CUDA_DEVICE"]
 
@@ -30,7 +33,7 @@ from .profiling import GpuSampler, append_jsonl
 from .metrics import RollingKyokuMetrics, append_metric_jsonl, metric_counters
 from .tensorboard import learner_peak_allocated_mb, write_curated_scalars
 from ..model.schema import TOKEN_SCHEMA_VERSION
-from .learner import validate_fresh_model_checkpoint_contract
+from .learner import PPOLearner, validate_fresh_model_checkpoint_contract
 from ..evaluation.head_to_head_1v3_shards import (
     run_sharded_1v3,
     validate_1v3_shard_plan,
@@ -47,10 +50,7 @@ _CONFIG_GROUPS = ("training", "monitoring")
 
 
 def _progress_md_path(config: dict[str, Any]) -> Path | None:
-    """进度报告路径:`audit/reports/<版本号>/report/PROGRESS.md`。
-
-    `eval1v3_output_dir` 缺省时返回 ``None``,跳过进度写入。
-    """
+    """进度报告路径:`audit/reports/<版本号>/report/PROGRESS.md`。"""
     output_value = config.get("eval1v3_output_dir")
     if not output_value:
         return None
@@ -66,9 +66,7 @@ def _update_progress_md(
 ) -> None:
     """Append the required per-60-update progress entry to PROGRESS.md."""
     progress = _progress_md_path(config)
-    if progress is None:
-        return
-    if not progress.is_file():
+    if progress is None or not progress.is_file():
         return
     interval = max(1, int(config.get("progress_update_interval_updates", 60)))
     if int(update) <= 0 or int(update) % interval != 0:
@@ -88,15 +86,16 @@ def _update_progress_md(
         f"## {datetime.date.today().isoformat()} update={update}",
         "",
         f"- reward_mean={value('rollout/reward_mean')} "
+        f"value_loss={value('ppo/value_loss')} "
         f"q_loss={value('ppo/q_loss')} "
-        f"sft_reference_kl={value('ppo/sft_reference_kl')} "
+        f"entropy={value('ppo/entropy')} "
         f"actor_grad_norm={value('ppo/grad_norm_actor')} "
         f"critic_grad_norm={value('ppo/grad_norm_critic')} "
         f"shared_grad_norm={value('ppo/grad_norm_shared')}",
         f"- rollout_wall_s={value('rollout/wall_s')} "
         f"update_wall_s={value('update/wall_s')} "
         f"sps={value('iteration/sps')} "
-        f"history_seats={value('rollout/opponent_mix/history_seats')} "
+        f"grp_calls={value('rollout/grp_calls')} "
         f"history_pool_size={value('rollout/opponent_mix/history_pool_size')}",
     ]
     if eval_summary is not None:
@@ -129,11 +128,7 @@ def _packaged_config_path(group: str) -> str:
 def load_config(
     path: str | None = None,
 ) -> dict[str, Any]:
-    """加载自包含版本配置或打包的当前默认配置。
-
-    传入 ``path`` 时该文件必须是自包含的完整版本配置,直接加载、不叠加打包
-    默认;未传时合并打包的 ``training`` 与 ``monitoring`` 两组当前默认。
-    """
+    """加载自包含版本配置或打包的当前默认配置(不叠加)。"""
     if path is not None:
         return _load_config_file(path)
     config: dict[str, Any] = {}
@@ -143,11 +138,7 @@ def load_config(
 
 
 def configure_ray_stderr_logging() -> None:
-    """让 Ray 与子进程日志流向标准错误。
-
-    运行脚本以 `exec > >(tee logs/<版本号>/...) 2>&1` 捕获 stdout/stderr,由此
-    把 Ray/子进程运行时日志统一收敛到 `logs/<版本号>/`,避免散落他处。
-    """
+    """让 Ray 与子进程日志流向标准错误,由脚本统一收敛到 ``logs/<版本号>/``。"""
     os.environ.setdefault("RAY_LOG_TO_STDERR", "1")
 
 
@@ -167,13 +158,6 @@ def partition_worker_indices(num_workers: int, num_learners: int) -> list[list[i
     return [list(range(rank, num_workers, num_learners)) for rank in range(num_learners)]
 
 
-def local_distributed_init_method() -> str:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    return f"tcp://127.0.0.1:{port}"
-
-
 def summarize_worker_rollout(
     results: list[tuple[list[Any], dict[str, float]]],
 ) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
@@ -181,51 +165,56 @@ def summarize_worker_rollout(
     stats_list = [stats for _transitions, stats in results]
     metrics: dict[str, float] = {}
     for name in {name for stats in stats_list for name in stats}:
-        values = [float(stats[name]) for stats in stats_list if name in stats and np.isfinite(stats[name])]
-        if values:
-            # Semantic metric tags are already public TensorBoard paths.  Keep
-            # them out of the legacy ``rollout/`` namespace and sum explicit
-            # event counts across workers.
-            target = name if name.startswith(("train/", "reward_schedule/")) else f"rollout/{name}"
-            if name.endswith("/count") or name.endswith("_count"):
-                metrics[target] = float(np.sum(values))
-            elif name.startswith("train/kyoku/"):
-                # Per-kyoku rates, points and lengths must be weighted by the
-                # number of settled kyokus each worker actually produced.
-                weighted = [
-                    (float(stats[name]), float(stats.get("train/kyoku/count", 0.0)))
-                    for stats in stats_list if name in stats and np.isfinite(stats[name])
-                ]
-                total_weight = sum(weight for _value, weight in weighted)
-                metrics[target] = (
-                    float(sum(value * weight for value, weight in weighted) / total_weight)
-                    if total_weight else float(np.mean(values))
-                )
-            elif name == "train/action/riichi_opportunity_accept_rate":
-                weighted = [
-                    (float(stats[name]), float(stats.get("train/action/riichi_opportunity_count", 0.0)))
-                    for stats in stats_list if name in stats and np.isfinite(stats[name])
-                ]
-                total_weight = sum(weight for _value, weight in weighted)
-                metrics[target] = (
-                    float(sum(value * weight for value, weight in weighted) / total_weight)
-                    if total_weight else float(np.mean(values))
-                )
-            elif name == "train/action/call_opportunity_accept_rate":
-                weighted = [
-                    (float(stats[name]), float(stats.get("train/action/call_opportunity_count", 0.0)))
-                    for stats in stats_list if name in stats and np.isfinite(stats[name])
-                ]
-                total_weight = sum(weight for _value, weight in weighted)
-                metrics[target] = (
-                    float(sum(value * weight for value, weight in weighted) / total_weight)
-                    if total_weight else float(np.mean(values))
-                )
-            else:
-                metrics[target] = float(np.mean(values))
+        values = [
+            float(stats[name])
+            for stats in stats_list
+            if name in stats and np.isfinite(stats[name])
+        ]
+        if not values:
+            continue
+        target = name if name.startswith(("train/", "reward_schedule/")) else f"rollout/{name}"
+        if name.endswith("/count") or name.endswith("_count"):
+            metrics[target] = float(np.sum(values))
+        elif name.startswith("train/kyoku/"):
+            weighted = [
+                (float(stats[name]), float(stats.get("train/kyoku/count", 0.0)))
+                for stats in stats_list if name in stats and np.isfinite(stats[name])
+            ]
+            total_weight = sum(weight for _value, weight in weighted)
+            metrics[target] = (
+                float(sum(value * weight for value, weight in weighted) / total_weight)
+                if total_weight else float(np.mean(values))
+            )
+        elif name == "train/action/riichi_opportunity_accept_rate":
+            weighted = [
+                (float(stats[name]), float(stats.get("train/action/riichi_opportunity_count", 0.0)))
+                for stats in stats_list if name in stats and np.isfinite(stats[name])
+            ]
+            total_weight = sum(weight for _value, weight in weighted)
+            metrics[target] = (
+                float(sum(value * weight for value, weight in weighted) / total_weight)
+                if total_weight else float(np.mean(values))
+            )
+        elif name == "train/action/call_opportunity_accept_rate":
+            weighted = [
+                (float(stats[name]), float(stats.get("train/action/call_opportunity_count", 0.0)))
+                for stats in stats_list if name in stats and np.isfinite(stats[name])
+            ]
+            total_weight = sum(weight for _value, weight in weighted)
+            metrics[target] = (
+                float(sum(value * weight for value, weight in weighted) / total_weight)
+                if total_weight else float(np.mean(values))
+            )
+        else:
+            metrics[target] = float(np.mean(values))
 
     rows: dict[str, dict[str, float]] = {}
-    for total_name in sorted(name for stats in stats_list for name in stats if name.startswith("timing/") and name.endswith("/total_s")):
+    for total_name in sorted(
+        name
+        for stats in stats_list
+        for name in stats
+        if name.startswith("timing/") and name.endswith("/total_s")
+    ):
         stage = total_name.removeprefix("timing/").removesuffix("/total_s")
         totals = [float(stats[total_name]) for stats in stats_list if total_name in stats]
         count_name = total_name.removesuffix("/total_s") + "/count"
@@ -243,7 +232,7 @@ def summarize_worker_rollout(
 
 
 def aggregate_actor_profiles(profiles: list[dict[str, float]]) -> dict[str, float]:
-    """Sum per-rank inference/update counters for a single iteration summary."""
+    """Sum per-rank inference counters for a single iteration summary."""
     result: dict[str, float] = {}
     for profile in profiles:
         for name, value in profile.items():
@@ -290,40 +279,35 @@ def run(config: dict[str, Any]) -> None:
             validate_fresh_model_checkpoint_contract(init_payload)
         except RuntimeError as exc:
             raise RuntimeError(f"cannot initialize from incompatible checkpoint: {exc}") from exc
-    device = str(config["device"])
-    if device.startswith("cuda") and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but PyTorch cannot see a CUDA device")
+    else:
+        raise ValueError("V16 PPO requires --init-model or a resume checkpoint")
+    if not torch.cuda.is_available():
+        raise RuntimeError("V16 PPO requires CUDA")
     learner_gpus = int(config.get("learner_gpus", 1))
-    if learner_gpus > 1 and not device.startswith("cuda"):
-        raise ValueError("learner_gpus > 1 requires --device cuda")
+    if learner_gpus < 1:
+        raise ValueError("learner_gpus must be positive")
     partitions = partition_worker_indices(int(config["num_workers"]), learner_gpus)
-    init_method = local_distributed_init_method() if learner_gpus > 1 else None
     configure_ray_stderr_logging()
     ray.init(ignore_reinit_error=True)
-    # 可见卡少于 learner 数时按比例请求小数 GPU,允许多个 rank 共驻同一张卡;
-    # 可见卡充足时仍为 1.0,保持每个 rank 独占一张卡。
-    visible_gpus = torch.cuda.device_count()
-    actor_gpu_request = min(1.0, visible_gpus / max(1, learner_gpus))
-    # NCCL 不允许两个 rank 落在同一张卡上;共驻单卡时改用 gloo 后端。
-    dist_backend = "gloo" if visible_gpus < learner_gpus else "nccl"
+
+    learner_hp = {
+        key: value
+        for key, value in config.items()
+        if key not in {"model_size", "device"}
+    }
+    learner = PPOLearner("v16", "cuda:0", **learner_hp)
+    if config.get("resume"):
+        learner.load(config["resume"])
+    elif config.get("init_model"):
+        learner.load_model_weights(config["init_model"])
+
     inference_actors = []
     for rank, worker_ids in enumerate(partitions):
         actor_config = dict(config)
         actor_config["inference_actor_num_workers"] = len(worker_ids)
         inference_actors.append(
-            RolloutInferenceActor.options(num_gpus=actor_gpu_request).remote(
-                actor_config, rank, learner_gpus, init_method, dist_backend,
-            )
+            RolloutInferenceActor.options(num_gpus=1).remote(actor_config)
         )
-    inference = inference_actors[0]
-    saved_actor_rng = resume_payload.get("extra_state", {}).get("actor_rng_states", [])
-    if saved_actor_rng:
-        if len(saved_actor_rng) != len(inference_actors):
-            raise RuntimeError("checkpoint learner rank count differs from current learner_gpus")
-        ray.get([
-            actor.load_rng_state.remote(state)
-            for actor, state in zip(inference_actors, saved_actor_rng, strict=True)
-        ])
     worker_to_rank = {
         worker_id: rank
         for rank, worker_ids in enumerate(partitions)
@@ -336,6 +320,8 @@ def run(config: dict[str, Any]) -> None:
         + ",".join(f"rank{rank}:{worker_ids}" for rank, worker_ids in enumerate(partitions)),
         flush=True,
     )
+    # 先推送初始权重再创建 worker,保证第一个 rollout 从 SFT/resume 权重采样。
+    ray.get([actor.update_weights.remote(learner.weights()) for actor in inference_actors])
     workers = [
         RolloutWorker.remote(
             index,
@@ -345,10 +331,15 @@ def run(config: dict[str, Any]) -> None:
         for index in range(int(config["num_workers"]))
     ]
     writer = SummaryWriter(str(Path(config["checkpoint_dir"]) / "tensorboard"))
-    semantic_path = Path(config["checkpoint_dir"]) / str(config.get("semantic_metrics_jsonl", "metrics.jsonl"))
+    semantic_path = Path(config["checkpoint_dir"]) / str(
+        config.get("semantic_metrics_jsonl", "metrics.jsonl")
+    )
     global_decisions, global_kyokus = metric_counters(semantic_path)
     rolling_kyokus = RollingKyokuMetrics(int(config.get("metrics_rolling_kyokus", 1000)))
-    gpu_sampler = GpuSampler(bool(config.get("gpu_monitor", True)) and device.startswith("cuda"), float(config.get("gpu_sample_interval_s", 0.25)))
+    gpu_sampler = GpuSampler(
+        bool(config.get("gpu_monitor", True)),
+        float(config.get("gpu_sample_interval_s", 0.25)),
+    )
     gpu_sampler.start()
 
     def checkpoint_extra_state() -> dict[str, Any]:
@@ -358,6 +349,15 @@ def run(config: dict[str, Any]) -> None:
                 actor.rng_state.remote() for actor in inference_actors
             ]),
         }
+
+    saved_actor_rng = resume_payload.get("extra_state", {}).get("actor_rng_states", [])
+    if saved_actor_rng:
+        if len(saved_actor_rng) != len(inference_actors):
+            raise RuntimeError("checkpoint inference actor count differs from learner_gpus")
+        ray.get([
+            actor.load_rng_state.remote(state)
+            for actor, state in zip(inference_actors, saved_actor_rng, strict=True)
+        ])
 
     def run_1v3_evaluation(update: int) -> dict[str, Any] | None:
         """阻塞执行固定 1600 半庄的 1v3 对抗评测。"""
@@ -392,10 +392,7 @@ def run(config: dict[str, Any]) -> None:
         hanchans_per_process = int(
             config.get("eval1v3_hanchans_per_process", DEFAULT_1V3_HANCHANS_PER_PROCESS)
         )
-        seed_value = config.get("eval1v3_seed_base")
-        if seed_value is None:
-            raise RuntimeError("eval1v3_seed_base is required when 1v3 evaluation is enabled")
-        seed_base = int(seed_value)
+        seed_base = int(config["eval1v3_seed_base"])
         parallel_hanchans = int(
             config.get("eval1v3_parallel_hanchans", hanchans_per_process)
         )
@@ -417,8 +414,7 @@ def run(config: dict[str, Any]) -> None:
                 hanchans_per_process=hanchans_per_process,
                 parallel_hanchans=parallel_hanchans,
                 devices=tuple(
-                    str(device)
-                    for device in config.get("eval1v3_devices", ("0", "1"))
+                    str(device) for device in config.get("eval1v3_devices", ("0", "1"))
                 ),
                 seed_base=seed_base,
                 output_dir=output_dir,
@@ -440,47 +436,56 @@ def run(config: dict[str, Any]) -> None:
         return summary
 
     try:
-        start_iteration = ray.get(inference.iteration.remote())
         eval1v3_summary: dict[str, Any] | None = None
-        for iteration in range(start_iteration, int(config["iterations"])):
+        for iteration in range(learner.iteration, int(config["iterations"])):
             update_number = iteration + 1
             gpu_cursor = gpu_sampler.checkpoint()
             algorithm_started = time.perf_counter()
             begin_rollout_started = time.perf_counter()
-            ray.get([actor.begin_rollout.remote(
-                iteration, split_policy_inference=False,
-            )
-                     for actor in inference_actors])
+            ray.get([actor.begin_rollout.remote(update_number) for actor in inference_actors])
             begin_rollout_s = time.perf_counter() - begin_rollout_started
             rollout_started = time.perf_counter()
             results = ray.get([
-                worker.collect.remote(
-                    update_number,
-                )
+                worker.collect.remote(update_number)
                 for worker in workers
             ])
             rollout_wall_s = time.perf_counter() - rollout_started
             profile_summary_started = time.perf_counter()
-            actor_profiles = ray.get([actor.profile_summary.remote() for actor in inference_actors])
+            actor_profiles = ray.get([
+                actor.profile_summary.remote() for actor in inference_actors
+            ])
             actor_profile = aggregate_actor_profiles(actor_profiles)
             profile_summary_s = time.perf_counter() - profile_summary_started
             transition_assembly_started = time.perf_counter()
-            transitions = [transition for worker_transitions, _ in results for transition in worker_transitions]
+            transitions = [
+                transition
+                for worker_transitions, _stats in results
+                for transition in worker_transitions
+            ]
             transition_assembly_s = time.perf_counter() - transition_assembly_started
             update_started = time.perf_counter()
             update_seed = int(config["seed"]) + (iteration + 1) * 1_000_003
-            update_results = ray.get([actor.update.remote(transitions, update_seed) for actor in inference_actors])
-            metrics = update_results[0]
+            metrics = learner.update(transitions, shuffle_seed=update_seed)
+            ray.get([
+                actor.update_weights.remote(learner.weights())
+                for actor in inference_actors
+            ])
             update_wall_s = time.perf_counter() - update_started
             algorithm_wall_s = time.perf_counter() - algorithm_started
             gpu_metrics = gpu_sampler.summary(gpu_cursor)
-            rollout_reward = float(np.nanmean([stats["reward_mean"] for _, stats in results]))
-            rollout_kyokus = sum(stats["kyokus"] for _, stats in results)
-            rollout_tps = float(np.nanmean([stats.get("transitions_per_s", float("nan")) for _, stats in results]))
-            model_decisions = sum(stats.get("model_decisions", 0.0) for _, stats in results)
-            recorded_decisions = sum(stats.get("recorded_decisions", 0.0) for _, stats in results)
+            rollout_reward = float(np.nanmean([stats["reward_mean"] for _t, stats in results]))
+            rollout_kyokus = sum(stats["kyokus"] for _t, stats in results)
+            rollout_tps = float(np.nanmean([
+                stats.get("transitions_per_s", float("nan"))
+                for _t, stats in results
+            ]))
+            model_decisions = sum(stats.get("model_decisions", 0.0) for _t, stats in results)
+            recorded_decisions = sum(stats.get("recorded_decisions", 0.0) for _t, stats in results)
             rollout_metrics, worker_timing = summarize_worker_rollout(results)
-            actor_metrics = {f"rollout/inference_actor/{name}": float(value) for name, value in actor_profile.items()}
+            actor_metrics = {
+                f"rollout/inference_actor/{name}": float(value)
+                for name, value in actor_profile.items()
+            }
             rollout_metrics.update(actor_metrics)
             for rank, profile in enumerate(actor_profiles):
                 rollout_metrics.update({
@@ -508,16 +513,41 @@ def run(config: dict[str, Any]) -> None:
                 rollout_metrics.update(rolling_kyokus.update(
                     [float(rollout_metrics["train/kyoku/point_delta_mean"])] * point_count
                 ))
-            env_step_s = float(worker_timing.get("env/step_batch_native", {}).get("worker_mean_total_s", 0.0))
+            env_step_s = float(
+                worker_timing.get("env/step_batch_native", {}).get("worker_mean_total_s", 0.0)
+            )
             update_forward_s = float(metrics.get("timing/update/model_forward/total_s", 0.0))
             inference_rows = float(actor_profile.get("inference/full_forward_rows_mean", 0.0))
             inference_dispatch_rows = float(actor_profile.get("inference/dispatch_rows_mean", 0.0))
-            print(f"iteration={iteration + 1} transitions={len(transitions)} model_decisions={model_decisions:.0f} recorded_decisions={recorded_decisions:.0f} kyokus={rollout_kyokus:.0f} reward={rollout_reward:.4f} worker_transitions_per_s={rollout_tps:.2f} algorithm_wall_s={algorithm_wall_s:.3f} sps={recorded_decisions / max(algorithm_wall_s, 1e-9):.2f} model_forward_sps={model_decisions / max(algorithm_wall_s, 1e-9):.2f} rollout_wall_s={rollout_wall_s:.3f} begin_rollout_s={begin_rollout_s:.3f} profile_summary_s={profile_summary_s:.3f} transition_assembly_s={transition_assembly_s:.3f} env_step_s={env_step_s:.3f} inference_rows_per_forward={inference_rows:.2f} inference_rows_per_dispatch={inference_dispatch_rows:.2f} update_wall_s={update_wall_s:.3f} update_forward_s={update_forward_s:.3f} epochs={metrics['update/epochs_completed']:.0f}/{metrics['update/configured_epochs']:.0f} minibatches={metrics['update/executed_minibatches']:.0f}/{metrics['update/planned_minibatches']:.0f} early_stop={bool(metrics['update/early_stop'])} executed_samples={metrics['update/executed_transition_samples']:.0f} tokens_mean={metrics['update/executed_transition_tokens_mean']:.2f} input_tokens_mean={metrics['update/executed_transition_input_tokens_mean']:.2f} " + " ".join(f"{key}={value:.5f}" for key, value in metrics.items() if key in {"loss", "policy_loss", "q_loss", "entropy", "approx_kl", "clipfrac", "grad_norm"}), flush=True)
+            print(
+                f"iteration={iteration + 1} transitions={len(transitions)} "
+                f"model_decisions={model_decisions:.0f} recorded_decisions={recorded_decisions:.0f} "
+                f"kyokus={rollout_kyokus:.0f} reward={rollout_reward:.4f} "
+                f"worker_transitions_per_s={rollout_tps:.2f} "
+                f"algorithm_wall_s={algorithm_wall_s:.3f} "
+                f"sps={recorded_decisions / max(algorithm_wall_s, 1e-9):.2f} "
+                f"rollout_wall_s={rollout_wall_s:.3f} "
+                f"env_step_s={env_step_s:.3f} "
+                f"inference_rows_per_forward={inference_rows:.2f} "
+                f"inference_rows_per_dispatch={inference_dispatch_rows:.2f} "
+                f"update_wall_s={update_wall_s:.3f} update_forward_s={update_forward_s:.3f} "
+                f"epochs={metrics['update/epochs_completed']:.0f}/{metrics['update/configured_epochs']:.0f} "
+                f"minibatches={metrics['update/executed_minibatches']:.0f}/{metrics['update/planned_minibatches']:.0f} "
+                f"early_stop={bool(metrics['update/early_stop'])} "
+                f"executed_samples={metrics['update/executed_transition_samples']:.0f} "
+                f"tokens_mean={metrics['update/executed_transition_tokens_mean']:.2f} "
+                + " ".join(
+                    f"{key}={value:.5f}"
+                    for key, value in metrics.items()
+                    if key in {"loss", "policy_loss", "value_loss", "q_loss", "entropy", "approx_kl", "clipfrac", "grad_norm"}
+                ),
+                flush=True,
+            )
             tensorboard_metrics = {
                 **rollout_metrics,
                 **{f"ppo/{name}": float(value) for name, value in metrics.items()},
             }
-            learner_peak_mb = learner_peak_allocated_mb(update_results)
+            learner_peak_mb = learner_peak_allocated_mb([metrics])
             if learner_peak_mb is not None:
                 tensorboard_metrics["system/learner_gpu_peak_allocated_mb"] = learner_peak_mb
             write_curated_scalars(writer, tensorboard_metrics, iteration + 1)
@@ -527,8 +557,9 @@ def run(config: dict[str, Any]) -> None:
                 writer.add_histogram("diagnostics/qboost_advantage", np.asarray([item.advantage for item in transitions], dtype=np.float32), iteration + 1)
                 writer.add_histogram("diagnostics/q_taken", np.asarray([item.q_taken for item in transitions], dtype=np.float32), iteration + 1)
                 writer.add_histogram("diagnostics/expected_q", np.asarray([item.expected_q for item in transitions], dtype=np.float32), iteration + 1)
+                writer.add_histogram("diagnostics/value", np.asarray([item.value for item in transitions], dtype=np.float32), iteration + 1)
                 writer.add_histogram("diagnostics/legal_action_count", np.asarray([item.legal_mask.sum() for item in transitions], dtype=np.int16), iteration + 1)
-                writer.add_histogram("diagnostics/token_length", np.asarray([item.token_length for item in transitions], dtype=np.int16), iteration + 1)
+                writer.add_histogram("diagnostics/sequence_length", np.asarray([item.history_length + item.snapshot_length + 2 * item.query_pair_counts for item in transitions], dtype=np.int16), iteration + 1)
             append_jsonl(Path(config["checkpoint_dir"]) / "performance.jsonl", {
                 "iteration": iteration + 1,
                 "timestamp": time.time(),
@@ -540,28 +571,40 @@ def run(config: dict[str, Any]) -> None:
                 **gpu_metrics,
             })
             if bool(config.get("semantic_metrics_enabled", True)):
-                semantic_values = {**{name: value for name, value in rollout_metrics.items() if name.startswith(("train/", "reward_schedule/"))},
-                                   **{f"ppo/{name}": value for name, value in metrics.items()}, **gpu_metrics}
-                append_metric_jsonl(semantic_path, update=iteration + 1, global_decisions=global_decisions,
-                                    global_kyokus=global_kyokus, source="train", metrics=semantic_values,
-                                    metadata={
-                                        "game_mode": config["game_mode"],
-                                        "opponent_mix": "current_self_play_all_seats",
-                                    })
-            checkpoint_interval = max(1, int(config.get("checkpoint_interval_updates", 50)))
+                semantic_values = {
+                    **{
+                        name: value
+                        for name, value in rollout_metrics.items()
+                        if name.startswith(("train/", "reward_schedule/"))
+                    },
+                    **{f"ppo/{name}": value for name, value in metrics.items()},
+                    **gpu_metrics,
+                }
+                append_metric_jsonl(
+                    semantic_path,
+                    update=iteration + 1,
+                    global_decisions=global_decisions,
+                    global_kyokus=global_kyokus,
+                    source="train",
+                    metrics=semantic_values,
+                    metadata={
+                        "game_mode": config["game_mode"],
+                        "opponent_mix": "current_self_play_all_seats",
+                    },
+                )
+            checkpoint_interval = max(1, int(config.get("checkpoint_interval_updates", 30)))
             if update_number % checkpoint_interval == 0:
                 checkpoint_path = Path(config["checkpoint_dir"]) / f"checkpoint_{update_number:05d}.pt"
-                ray.get(inference.save.remote(
-                    str(checkpoint_path), config, checkpoint_extra_state(),
-                ))
+                learner.save(str(checkpoint_path), config, checkpoint_extra_state())
                 eval1v3_summary = run_1v3_evaluation(update_number)
             _update_progress_md(
                 config, update_number, rollout_metrics, metrics, eval1v3_summary,
             )
-        final_update = ray.get(inference.iteration.remote())
-        ray.get(inference.save.remote(
-            str(Path(config["checkpoint_dir"]) / "latest.pt"), config, checkpoint_extra_state(),
-        ))
+        learner.save(
+            str(Path(config["checkpoint_dir"]) / "latest.pt"),
+            config,
+            checkpoint_extra_state(),
+        )
     finally:
         if "inference_actors" in locals():
             try:
@@ -589,7 +632,7 @@ def _parser(smoke: bool = False) -> argparse.ArgumentParser:
         parser.add_argument("--minibatch-size", type=int, default=None)
         parser.add_argument(
             "--update-batch-mode",
-            choices=("streaming", "prefetch", "gpu_cache", "auto"),
+            choices=("streaming", "auto"),
             default=None,
         )
         parser.add_argument("--inference-batch-wait-ms", type=float, default=None)
@@ -639,7 +682,19 @@ def main() -> None:
 def smoke_main() -> None:
     args = _parser(smoke=True).parse_args()
     config = load_config(args.config)
-    config.update({"device": args.device or "cpu", "num_workers": 1, "learner_gpus": 1, "envs_per_worker": 1, "kyokus_per_worker": args.kyokus, "iterations": 1, "update_epochs": 4, "target_kl": 0.0, "minibatch_size": 32, "update_batch_mode": "auto", "checkpoint_dir": "checkpoints/riichi_ppo_v1_smoke"})
+    config.update({
+        "device": args.device or "cuda",
+        "num_workers": 1,
+        "learner_gpus": 1,
+        "envs_per_worker": 1,
+        "kyokus_per_worker": args.kyokus,
+        "iterations": 1,
+        "update_epochs": 4,
+        "target_kl": 0.0,
+        "minibatch_size": 32,
+        "update_batch_mode": "streaming",
+        "checkpoint_dir": "checkpoints/riichi_ppo_v1_smoke",
+    })
     if args.iterations is not None:
         config["iterations"] = args.iterations
     if args.checkpoint_dir:

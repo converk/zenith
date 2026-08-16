@@ -122,6 +122,12 @@ def evaluate_1v3(
     model_b_path = str(Path(model_b_path).resolve())
     adapter_a = load_policy_adapter(model_a_path, device=device_a)
     adapter_b = load_policy_adapter(model_b_path, device=device_b)
+    # V16 编码不需要 v13 的逐动作派生分析;只有任一策略走 v13 契约时才构建,
+    # 避免 1600 半庄评测承担无谓的 shanten/ukeire 分析开销。
+    needs_analysis = bool(
+        getattr(adapter_a, "requires_decision_analysis", True)
+        or getattr(adapter_b, "requires_decision_analysis", True)
+    )
     metric_a = SemanticMetrics()
     metric_b = SemanticMetrics()
 
@@ -169,7 +175,7 @@ def evaluate_1v3(
                 DecisionAnalysisBatch.build(
                     decisions, analyzer=analyzer, public=public,
                 )
-                if decisions
+                if decisions and needs_analysis
                 else None
             )
             for policy_name, adapter in (("a", adapter_a), ("b", adapter_b)):

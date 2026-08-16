@@ -38,6 +38,7 @@ update_batch_mode: streaming
 entropy_start: 0.01
 entropy_end: 0.001
 value_coef: 0.5
+q_coef: 1.0
 value_loss: huber
 value_target_normalization: batch_std
 value_target_std_floor: 0.01
@@ -71,7 +72,8 @@ opponent_mix:
 eval1v3_enabled: true
 eval1v3_model_b: checkpoints/train_riichi_v16/sft/best.pt
 eval1v3_seed_base: 20260816
-eval1v3_devices: ["0", "1"]
+# 本次 V16 运行仅用物理 GPU 0:10 个评测分片子进程全部落在 cuda:0。
+eval1v3_devices: ["0", "0"]
 eval1v3_output_dir: audit/reports/v16/eval
 
 progress_update_interval_updates: 60
