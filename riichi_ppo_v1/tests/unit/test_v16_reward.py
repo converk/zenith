@@ -22,9 +22,9 @@ from riichi_ppo_v1.training.grp.reward import (
 from riichi_ppo_v1.training.worker import V16GrpBoundaryTracker
 
 
-def test_rank_utility_is_zero_sum() -> None:
-    assert [rank_utility(rank) for rank in range(4)] == [24.0, 8.0, -12.0, -20.0]
-    assert sum(rank_utility(rank) for rank in range(4)) == 0.0
+def test_rank_utility_matches_contract() -> None:
+    assert [rank_utility(rank) for rank in range(4)] == [24.0, 8.0, -12.0, -24.0]
+    assert sum(rank_utility(rank) for rank in range(4)) == -4.0
 
 
 def test_grp_expected_value_and_boundary_delta() -> None:

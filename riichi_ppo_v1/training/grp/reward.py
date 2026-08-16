@@ -1,6 +1,6 @@
 """V16 PPO 奖励:70% 归一化 GRP delta + 30% 归一化小局分差。
 
-utility [24,8,-12,-20];σ_GRP/σ_Score 离线固化后训练期只读;终局(半庄结束)使用
+utility [24,8,-12,-24];σ_GRP/σ_Score 离线固化后训练期只读;终局(半庄结束)使用
 真实最终排名的 utility,不再叠加独立半庄排名奖励分量。
 """
 
@@ -26,7 +26,7 @@ SCORE_DELTA_SCALE = 1_000.0
 
 
 def rank_utility(rank: int) -> float:
-    """排名 utility(rank 0..3 → 24/8/-12/-20)。"""
+    """排名 utility(rank 0..3 → 24/8/-12/-24)。"""
     if not 0 <= int(rank) < 4:
         raise ValueError("rank must be 0..3")
     return RANK_UTILITY[int(rank)]
