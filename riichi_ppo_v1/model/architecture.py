@@ -693,8 +693,27 @@ class KyokuTransformerActorCritic(nn.Module):
         history = self.token_embedding(history_factors, history_numeric)
         snapshot = self.snapshot_embeddings(snapshot_kinds, snapshot_cat, snapshot_num)
         queries = self.query_embedding(query_rows)
-        tokens = torch.cat((history, snapshot, queries), dim=1)
         total_lengths = history_lengths + snapshot_lengths + 2 * pair_counts
+        # 三个段必须按每行自身长度左对齐打包成一条序列。直接把整段 padding
+        # 的 tensor cat 起来,会让短行的 snapshot/query 落在 padding 空隙里、
+        # 真实内容反而超出 valid 区间,导致同一行的输出随 batchmates 变化
+        # (rollout 与 update 重算的 logprob 因此不一致)。
+        capacity = int(total_lengths.max().item())
+        tokens = history.new_zeros((batch, capacity, self.config.d_model))
+        rows = torch.arange(batch, device=device)
+
+        def scatter(segment: Tensor, start: Tensor, count: Tensor) -> None:
+            local = torch.arange(segment.shape[1], device=device)[None, :]
+            valid = local < count[:, None]
+            destination = start[:, None] + local
+            rows_expanded = rows[:, None].expand_as(destination)
+            tokens[rows_expanded[valid], destination[valid]] = segment[valid].to(
+                tokens.dtype
+            )
+
+        scatter(history, torch.zeros(batch, device=device, dtype=torch.long), history_lengths)
+        scatter(snapshot, history_lengths, snapshot_lengths)
+        scatter(queries, history_lengths + snapshot_lengths, 2 * pair_counts)
         attention_mask, valid = _attention_layout(total_lengths, tokens.shape[1])
         position_ids = torch.arange(tokens.shape[1], device=device)[None].expand(batch, -1)
         shared = self.public_backbone(
@@ -711,8 +730,14 @@ class KyokuTransformerActorCritic(nn.Module):
         rows = torch.arange(batch, device=device)
         pair_offsets = torch.arange(action_capacity, device=device)[None].expand(batch, -1)
         public_prefix = (history_lengths + snapshot_lengths)[:, None]
-        offense_positions = public_prefix + 2 * pair_offsets
-        defense_positions = offense_positions + 1
+        # 打包后序列容量 = 本 batch 最大 total_lengths;padding pair 的位置可能
+        # 超出容量,先 clamp,其取值随后被 pair_valid 丢弃。
+        offense_positions = torch.clamp(
+            public_prefix + 2 * pair_offsets, max=tokens.shape[1] - 1,
+        )
+        defense_positions = torch.clamp(
+            public_prefix + 2 * pair_offsets + 1, max=tokens.shape[1] - 1,
+        )
         pair_valid = pair_offsets < pair_counts[:, None]
         offense_hidden = actor[rows[:, None], offense_positions]
         defense_hidden = actor[rows[:, None], defense_positions]

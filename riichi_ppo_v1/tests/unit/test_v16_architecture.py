@@ -177,3 +177,41 @@ def test_v16_critic_private_inputs_do_not_change_policy_logits() -> None:
         )
     torch.testing.assert_close(first["raw_policy_logits"], second["raw_policy_logits"])
     assert not torch.allclose(first["value"], second["value"])
+
+
+def test_v16_forward_is_invariant_to_batchmates_and_padding() -> None:
+    """同一行的策略 logits 不得随 batchmates 或 padding 宽度变化。
+
+    回归测试:forward_v16 曾把三个整段 padding 的 tensor 直接 cat,导致短行的
+    snapshot/query 落到 padding 空隙、真实内容被 valid mask 屏蔽,同一行的
+    输出随 batch 组成改变,进而使 rollout 与 update 重算的 logprob 不一致。
+    """
+    torch.manual_seed(11)
+    model = KyokuTransformerActorCritic(_v16_config(context_tokens=256)).eval()
+    single = _v16_inputs(batch=1, action_ids=(0, 5))
+
+    # 第二条是更长的历史 + 更多动作对,迫使第一条被 padding。
+    paired = _v16_inputs(batch=2, action_ids=(0, 5))
+    history_factors = torch.zeros(2, 10, 10, dtype=torch.long)
+    history_numeric = torch.zeros(2, 10, 8)
+    history_factors[:, :3] = paired["history_factors"]
+    history_numeric[:, :3] = paired["history_numeric"]
+    history_factors[1, 3:] = 1
+    paired["history_factors"] = history_factors
+    paired["history_numeric"] = history_numeric
+    paired["history_lengths"][1] = 10
+    with torch.no_grad():
+        alone = model.forward_v16(**single)
+        together = model.forward_v16(**paired)
+    torch.testing.assert_close(
+        alone["policy_logits"][0],
+        together["policy_logits"][0],
+        rtol=1e-4,
+        atol=1e-4,
+    )
+    torch.testing.assert_close(
+        alone["raw_policy_logits"][0],
+        together["raw_policy_logits"][0],
+        rtol=1e-4,
+        atol=1e-4,
+    )
