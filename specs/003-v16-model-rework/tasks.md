@@ -137,7 +137,7 @@ oracle 100% 一致。
 - [X] T025 [US2] 跑 40% 全量编码到
   `datasets/tenhou_sft_2024_2025_encoded_40pct_v16`(quickstart 场景 3):
   train/validation 决策计数与独立统计一致,manifest 哈希稳定
-- [ ] T026 [US2] 跑 V16 SFT 冒烟训练(quickstart 场景 4),验证集 Recall@3 ≥ 98%
+- [X] T026 [US2] 跑 V16 SFT 冒烟训练(quickstart 场景 4),验证集 Recall@3 ≥ 98%
   作为进入 PPO 的前置检查,实际值写入 `audit/reports/v16/report/PROGRESS.md`
 
 **Checkpoint**: US1+US2 可组合交付(新输入 + 新网络 + 新 SFT 权重)

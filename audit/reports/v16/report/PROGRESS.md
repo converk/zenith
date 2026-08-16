@@ -89,7 +89,11 @@
 ## 关键指标
 
 - 语义正确性:待记录(20 slot 独立 oracle 比对)
-- SFT 验证集 Recall@3:**97.55%@60k steps(GPU 0)**,≥98% 门槛待续训
+- SFT 验证集 Recall@3:**98.02%@完整 epoch(183,485 steps,GPU 0)**,≥98% 门槛
+  达标;最终 top1 81.66%、policy_ce 0.4754,checkpoint 在
+  `checkpoints/train_riichi_v16/sft/{best,latest}.pt`。
+- 奖励契约更新:utility `[24,8,-12,-24]`(末位 -24 非零和)、σ_GRP=2.7112/
+  σ_Score=4.2656 固化值不变、外层 clip ±10、内层分差 clip ±24 千点。
 - PPO 性能基线(后两轮):待记录
 - 宪法修订:待记录(预期 1.3.0→1.4.0 MINOR)
 - V16 网络:总参数 7,811,587 / Actor 5,525,761(含 Top-3 Q scorer)
