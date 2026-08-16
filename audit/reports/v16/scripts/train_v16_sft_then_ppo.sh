@@ -12,8 +12,13 @@
 #   bash audit/reports/v16/scripts/train_v16_sft_then_ppo.sh
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 cd "$REPO_ROOT"
+
+if [[ ! -f "riichi_ppo_v1/configs/v16_sft.yaml" ]]; then
+    echo "错误:无法定位仓库根目录,请从仓库内运行本脚本" >&2
+    exit 1
+fi
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 SFT_CONFIG="riichi_ppo_v1/configs/v16_sft.yaml"
@@ -25,8 +30,6 @@ GRP_DATASET="datasets/tenhou_grp_2024_2025_v16"
 SFT_LOG="logs/v16/v16_sft_from_scratch.log"
 PPO_LOG="logs/v16/v16_ppo_from_scratch.log"
 
-mkdir -p logs/v16 "$SFT_DIR" "$PPO_DIR"
-
 echo "==> 前置检查"
 for path in "$GRP_CKPT" "$GRP_DATASET"; do
     if [[ ! -e "$path" ]]; then
@@ -34,6 +37,8 @@ for path in "$GRP_CKPT" "$GRP_DATASET"; do
         exit 1
     fi
 done
+
+mkdir -p logs/v16 "$SFT_DIR" "$PPO_DIR"
 
 echo "==> [1/2] V16 SFT 从头训练(修复后的 forward_v16;单卡 GPU 0、learner_gpus=1)"
 env RAY_LOG_TO_STDERR=0 CUDA_DEVICE=0 PYTHONUNBUFFERED=1 \
