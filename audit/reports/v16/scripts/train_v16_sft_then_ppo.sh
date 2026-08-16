@@ -35,8 +35,8 @@ for path in "$GRP_CKPT" "$GRP_DATASET"; do
     fi
 done
 
-echo "==> [1/2] V16 SFT 从头训练(修复后的 forward_v16;双卡 learner_gpus=2)"
-env RAY_LOG_TO_STDERR=0 CUDA_DEVICE=0,1 PYTHONUNBUFFERED=1 \
+echo "==> [1/2] V16 SFT 从头训练(修复后的 forward_v16;单卡 GPU 0、learner_gpus=1)"
+env RAY_LOG_TO_STDERR=0 CUDA_DEVICE=0 PYTHONUNBUFFERED=1 \
     "$PYTHON_BIN" -m riichi_ppo_v1.sft.train --config "$SFT_CONFIG" \
     2>&1 | tee "$SFT_LOG"
 

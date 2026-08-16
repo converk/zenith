@@ -6,7 +6,7 @@
 # (Phase 6)落地后开启。
 seed: 1
 device: cuda
-learner_gpus: 2
+learner_gpus: 1
 model_size: v16
 context_tokens: 4096
 policy_head_type: symmetric_action_query
