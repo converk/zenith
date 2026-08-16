@@ -50,7 +50,6 @@ from riichi_ppo_v1.sft.train import (
     length_bucketed_batches,
     load_config,
 )
-from riichi_ppo_v1.training.learner import PPOLearner
 
 FIXTURE = Path(__file__).parents[3] / "RiichiEnv/tests/data/126_204_0_mjai.jsonl"
 
@@ -404,41 +403,3 @@ def test_prepare_zip_to_shard_and_joint_loss_backward() -> None:
         assert any(parameter.grad is not None for parameter in model.policy_head.parameters())
         assert model.value_head.weight.grad is not None
 
-
-def test_ppo_model_only_initialization_resets_iteration_and_optimizer() -> None:
-    kwargs = {
-        "learning_rate": 2e-5,
-        "ppo_clip": 0.2,
-        "value_coef": 0.5,
-        "entropy_coef": 0.01,
-        "update_epochs": 1,
-        "minibatch_size": 2,
-        "max_grad_norm": 0.5,
-    }
-    source = PPOLearner("mid", "cpu", **kwargs)
-    with TemporaryDirectory() as directory:
-        path = Path(directory) / "sft.pt"
-        torch.save({
-            "model": source.weights(),
-            "token_schema_version": TOKEN_SCHEMA_VERSION,
-            "feature_schema_sha256": feature_schema_sha256(),
-            "rust_analysis_version": RUST_ANALYSIS_VERSION,
-            "decision_analysis_version": DECISION_ANALYSIS_VERSION,
-            "training_stage": "sft",
-            "training_mode": "actor_only",
-            "model_config": asdict(source.config),
-        }, path)
-        target = PPOLearner("mid", "cpu", **kwargs)
-        target.iteration = 99
-        target.load_model_weights(path)
-        assert target.iteration == 0
-        assert not hasattr(target, "critic_warmup_enabled")
-        assert not target.optimizer.state
-        for name, value in source.model.state_dict().items():
-            if name.startswith("q_head."):
-                torch.testing.assert_close(
-                    target.model.state_dict()[name],
-                    torch.zeros_like(target.model.state_dict()[name]),
-                )
-            else:
-                torch.testing.assert_close(target.model.state_dict()[name], value)

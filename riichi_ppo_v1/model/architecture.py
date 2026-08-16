@@ -803,14 +803,18 @@ class KyokuTransformerActorCritic(nn.Module):
         device = action_ids.device
         pair_positions = torch.arange(action_capacity, device=device)[None].expand(batch, -1)
         valid_pairs = pair_positions < pair_counts[:, None]
+        # action→pair 索引必须用高级索引只写有效 pair。scatter_ 会把 padding 的
+        # action_id(编码阶段以 0 补齐)重复写进 action 0 所在列,污染候选索引。
         pair_index = action_ids.new_full((batch, NUM_ACTIONS), -1)
-        pair_index.scatter_(
-            1,
-            action_ids.to(device=device, dtype=torch.long),
-            torch.where(valid_pairs, pair_positions, action_ids.new_full((), -1)),
-        )
-        candidate_positions = pair_index.gather(1, candidate_ids.to(device=device, dtype=torch.long))
-        valid = candidate_positions >= 0
+        rows = torch.arange(batch, device=device)[:, None].expand_as(action_ids)
+        pair_index[
+            rows[valid_pairs], action_ids.to(device=device, dtype=torch.long)[valid_pairs]
+        ] = pair_positions[valid_pairs].to(pair_index.dtype)
+        # -1 补齐的候选不能直接进 gather(负数索引越界);先 clamp 后按原始 id
+        # 判定有效性,无效候选统一返回 -inf。
+        safe_ids = candidate_ids.clamp(min=0)
+        candidate_positions = pair_index.gather(1, safe_ids.to(device=device, dtype=torch.long))
+        valid = (candidate_ids >= 0) & (candidate_positions >= 0)
         safe = candidate_positions.clamp(min=0)
         rows = torch.arange(batch, device=device)[:, None].expand_as(candidate_ids)
         hidden = action_hiddens[rows, safe].detach()

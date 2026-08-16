@@ -62,3 +62,29 @@ def test_q_scorer_shape_is_512_to_256_to_one() -> None:
     assert first.in_features == 2 * model.config.d_model
     assert first.out_features == model.config.d_model
     assert model.q_scorer[-1].out_features == 1
+
+
+def test_q_scorer_action_to_pair_index_ignores_padded_action_ids() -> None:
+    model = KyokuTransformerActorCritic(_v16_config())
+    critic_hidden = torch.zeros(1, 32)
+    # 有效 pair 是位置 0(action 0)与位置 1(action 5);位置 2 是编码 padding,
+    # action_id 以 0 补齐。修复前 scatter 会把 padding 行写进 action 0 的列,
+    # 使候选 0 错误地指向 padding 位置;高级索引赋值只写有效 pair。
+    action_ids = torch.tensor([[0, 5, 0]])
+    pair_counts = torch.tensor([2])
+    candidates = torch.tensor([[0, 5]])
+
+    def score_with_padding(padding_value: float) -> float:
+        action_hiddens = torch.stack((
+            torch.full((32,), 1.0),
+            torch.full((32,), 2.0),
+            torch.full((32,), padding_value),
+        ))[None]
+        scores = model.q_scores_v16(
+            critic_hidden, action_hiddens, action_ids, pair_counts, candidates,
+        )
+        assert torch.isfinite(scores).all()
+        return float(scores[0, 0])
+
+    # 候选 0 必须始终映射到 pair 0;padding 行取值变化不得影响其得分。
+    assert score_with_padding(-100.0) == score_with_padding(100.0)
