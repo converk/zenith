@@ -1156,7 +1156,7 @@ def resolve_output(config: dict[str, Any], override: Path | None) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", type=Path, required=True)
+    parser.add_argument("--dataset", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--config",
@@ -1201,6 +1201,8 @@ def main() -> None:
             output=args.output if args.output is not None else None,
         )
         return
+    if args.dataset is None:
+        parser.error("--dataset is required for v13 SFT training")
     config = load_config(args.config)
     if args.resume:
         config["resume"] = str(args.resume)

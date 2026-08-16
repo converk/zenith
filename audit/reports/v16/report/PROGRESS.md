@@ -73,14 +73,23 @@
   2.7112 写回 dataset.json,模型冻结并保存
   `checkpoints/train_riichi_v16/grp/best.pt`。
 - T025 40% 全量编码进行中:目标 1,538,630 局(1,523,056 train + 15,574
-  validation),16 进程;本记录时约 24%。
+  validation),16 进程;**已完成**:train 93,943,903 决策、validation 959,045
+  决策,query answer/snapshot 数值越界均为 0,manifest 契约与动作覆盖率正确。
 - v16 SFT 训练循环已在 GPU 0 小数据集冒烟通过(12 steps,checkpoint/metrics/
   tensorboard 落盘),修复了 v16 配置加载与输出变量遮蔽两处缺陷。
+- T026 V16 SFT 训练(GPU 0,单卡,60,000 steps ≈ 3,070 万决策):训练 top1/top3
+  80.24%/97.60%,**验证集 Recall@3 = 97.55%(top1 80.09%)**;吞吐约 4,620 样本/
+  秒。98% 门槛尚未达到(距 0.45 个百分点),checkpoint 保存于
+  `checkpoints/train_riichi_v16/sft/{best,latest}.pt`(可直接载入 v16 模型,
+  0 missing/0 unexpected),续训即可逼近门槛。
+- 编码期修复:杠/副露手牌形状按「3×副露数 + 杠 4-copy」归一化、离线回放同类
+  牌物理 id 归一化、reach/dahai 摸牌回退(修复真实数据 5 类崩溃);GRP 按
+  game_id 聚合完整半庄(修复逐局误编码)。
 
 ## 关键指标
 
 - 语义正确性:待记录(20 slot 独立 oracle 比对)
-- SFT 验证集 Recall@3:待记录(≥98% 为 PPO 前置)
+- SFT 验证集 Recall@3:**97.55%@60k steps(GPU 0)**,≥98% 门槛待续训
 - PPO 性能基线(后两轮):待记录
 - 宪法修订:待记录(预期 1.3.0→1.4.0 MINOR)
 - V16 网络:总参数 7,811,587 / Actor 5,525,761(含 Top-3 Q scorer)

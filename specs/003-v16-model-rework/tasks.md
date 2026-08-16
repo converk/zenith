@@ -134,7 +134,7 @@ oracle 100% 一致。
   路径,延续 3000 steps 节奏并输出 train/validation top3(Recall@3)
 - [X] T024 [US2] 跑 canary 编码(quickstart 场景 2,`datasets/tenhou_sft_canary_v16`):
   审计每个合法/专家动作组非零、数值越界为 0、manifest 契约正确,通过后删除 canary
-- [ ] T025 [US2] 跑 40% 全量编码到
+- [X] T025 [US2] 跑 40% 全量编码到
   `datasets/tenhou_sft_2024_2025_encoded_40pct_v16`(quickstart 场景 3):
   train/validation 决策计数与独立统计一致,manifest 哈希稳定
 - [ ] T026 [US2] 跑 V16 SFT 冒烟训练(quickstart 场景 4),验证集 Recall@3 ≥ 98%
