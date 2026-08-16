@@ -19,7 +19,8 @@ from riichi_ppo_v1.training.grp.reward import (
     normalized_score_reward,
     rank_utility,
 )
-from riichi_ppo_v1.training.worker import V16GrpBoundaryTracker
+from riichi_ppo_v1.training.grp.prepare import Boundary
+from riichi_ppo_v1.training.worker import GrpRollout
 
 
 def test_rank_utility_matches_contract() -> None:
@@ -62,19 +63,36 @@ def test_normalization_stats_load_from_dataset_json() -> None:
 
 
 def test_grp_boundary_calls_equal_boundary_count_not_action_count() -> None:
-    tracker = V16GrpBoundaryTracker(sigma_grp=2.0, sigma_score=3.0)
-    tracker.register_start(0, 0, grp_value=4.0, score=25_000)
-    # 每小局(任意多动作)只调用一次 GRP;调用数 = 边界数。
+    class StubGRP:
+        """固定 logits 的 GRP 桩:均匀分布 → V = mean(utility) = -1。"""
+
+        def __call__(self, categorical: torch.Tensor, numeric: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+            del numeric, lengths
+            return torch.zeros((categorical.shape[0], categorical.shape[1], 4))
+
+    tracker = GrpRollout(StubGRP(), sigma_grp=2.0, sigma_score=3.0)
+    tracker.start_match(0, Boundary(0, 0, 0, 0, 0, (25_000, 25_000, 25_000, 25_000), None))
+    # 首局边界 ×4 视角;此后每小局边界再 ×4,任意多动作不增加 GRP 调用。
     for _action in range(50):
         pass
-    tracker.boundary_reward(0, 0, grp_value=6.0, score=26_000)
-    tracker.boundary_reward(0, 0, grp_value=2.0, score=25_500)
-    assert tracker.grp_calls == 2
+    tracker.boundary_reward(
+        0, Boundary(0, 0, 0, 0, 0, (26_000, 25_000, 24_000, 25_000), None),
+    )
+    tracker.boundary_reward(
+        0, Boundary(0, 0, 0, 0, 0, (25_500, 25_000, 25_500, 24_000), None),
+    )
+    assert tracker.calls == 3 * 4
     # 半庄结束用真实排名 utility 计算终局 delta。
-    terminal = tracker.terminal_reward(0, 0, rank=0, score=31_000)
-    expected_grp = np.clip((rank_utility(0) - 2.0) / 2.0, -REWARD_CLIP, REWARD_CLIP)
+    terminal = tracker.boundary_reward(
+        0,
+        Boundary(0, 0, 0, 0, 0, (31_000, 25_000, 22_000, 22_000), None),
+        terminal_ranks={0: 0, 1: 1, 2: 3, 3: 2},
+    )[0]
+    expected_grp = np.clip((rank_utility(0) - (-1.0)) / 2.0, -REWARD_CLIP, REWARD_CLIP)
     expected_score = np.clip(
         np.clip((31_000 - 25_500) / 1000.0, -SCORE_DELTA_CLIP, SCORE_DELTA_CLIP) / 3.0,
         -REWARD_CLIP, REWARD_CLIP,
     )
     assert abs(terminal - (0.7 * expected_grp + 0.3 * expected_score)) < 1e-6
+    # 终局使用真实排名,不再执行 GRP 推理。
+    assert tracker.calls == 3 * 4

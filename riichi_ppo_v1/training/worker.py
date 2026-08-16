@@ -1,7 +1,8 @@
-"""Ray rollout actors.  Workers own environments and Rust state-machine slots."""
+"""Ray rollout actors:V16 编码装配、GRP 边界奖励与 Top-3 Q 推理。"""
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from pathlib import Path
 import re
@@ -9,6 +10,7 @@ import time
 from typing import Any
 
 import numpy as np
+import torch
 
 try:
     import ray
@@ -16,74 +18,14 @@ except ImportError:  # imported lazily by the command line program
     ray = None
 
 from ..model.bridge import NUM_PLAYERS, BatchedStateBridge, Decision
-from .grp.reward import combined_reward, rank_utility
+from ..model.grp import GRPModel
+from .grp.prepare import Boundary, KyokuResult, encode_view, rank_among
+from .grp.reward import combined_reward, load_normalization, rank_utility
 from .metrics import SemanticMetrics
 from .profiling import StageProfiler
-from .rewards import (
-    DecisionAnalysisBatch,
-    EfficiencyAnalyzer,
-    PublicStateTracker,
-    terminal_kyoku_reward,
-)
 from .trajectory import Transition, finish_kyoku_qboost
 
-
-class V16GrpBoundaryTracker:
-    """小局边界 GRP 推理与奖励装配(SC-011)。
-
-    GRP 只在每个小局边界执行一次,调用次数等于边界数、不随动作数增长;
-    半庄结束用真实最终排名 utility 覆盖 GRP 预测。
-    """
-
-    def __init__(self, sigma_grp: float, sigma_score: float) -> None:
-        if float(sigma_grp) <= 0.0 or float(sigma_score) <= 0.0:
-            raise ValueError("GRP normalization stats must be positive")
-        self.sigma_grp = float(sigma_grp)
-        self.sigma_score = float(sigma_score)
-        self.grp_calls = 0
-        self._previous_v: dict[tuple[int, int], float] = {}
-        self._previous_score: dict[tuple[int, int], int] = {}
-
-    def register_start(
-        self, env_index: int, seat: int, grp_value: float, score: int,
-    ) -> None:
-        """首个小局边界:登记 V_0 与初始点数(不计入 GRP 调用)。"""
-        key = (int(env_index), int(seat))
-        self._previous_v[key] = float(grp_value)
-        self._previous_score[key] = int(score)
-
-    def boundary_reward(
-        self, env_index: int, seat: int, grp_value: float, score: int,
-    ) -> float:
-        """小局边界执行一次 GRP 推理并产出该小局的 70/30 组合奖励。"""
-        key = (int(env_index), int(seat))
-        self.grp_calls += 1
-        previous_v = self._previous_v.get(key)
-        previous_score = self._previous_score.get(key)
-        if previous_v is None or previous_score is None:
-            self.register_start(env_index, seat, grp_value, score)
-            return 0.0
-        delta = float(grp_value) - float(previous_v)
-        reward = combined_reward(
-            delta, int(score) - int(previous_score), self.sigma_grp, self.sigma_score,
-        )
-        self._previous_v[key] = float(grp_value)
-        self._previous_score[key] = int(score)
-        return reward
-
-    def terminal_reward(
-        self, env_index: int, seat: int, rank: int, score: int,
-    ) -> float:
-        """半庄结束:V_terminal = U(真实排名),不再使用 GRP 预测。"""
-        key = (int(env_index), int(seat))
-        previous_v = self._previous_v.get(key)
-        previous_score = self._previous_score.get(key)
-        if previous_v is None or previous_score is None:
-            return float(rank_utility(rank))
-        delta = float(rank_utility(rank)) - float(previous_v)
-        return combined_reward(
-            delta, int(score) - int(previous_score), self.sigma_grp, self.sigma_score,
-        )
+RESULT_CODES = {"ron": 1, "tsumo": 2, "ryukyoku": 3, "abort": 4}
 
 
 def active_decisions(
@@ -166,7 +108,7 @@ def resolve_opponent_fractions(
     random_frac: float,
     history_pool: list[int],
 ) -> tuple[float, float, float, float]:
-    """Drop the historical share and renormalize 70/30 when the pool is empty."""
+    """Drop the historical share and renormalize when the pool is empty."""
     if float(historical_frac) > 0.0 and not history_pool:
         sft_frac = max(0.0, 1.0 - float(current_frac))
         historical_frac = 0.0
@@ -231,6 +173,137 @@ def build_rollout_lineups(
     ]
 
 
+class GrpRollout:
+    """每个小局边界执行一次 GRP 的奖励装配(SC-011:调用数 = 边界数 × 4)。
+
+    半庄按 4 个 viewer 视角各自维护一条 prefix 序列;每个非终局边界对每个视角
+    执行一次 GRU 前向(共 4 次),动作数量不影响调用次数。终局(半庄结束)使用
+    真实最终排名 utility,不再执行 GRP 推理。
+    """
+
+    def __init__(self, model: Any, sigma_grp: float, sigma_score: float) -> None:
+        if float(sigma_grp) <= 0.0 or float(sigma_score) <= 0.0:
+            raise ValueError("GRP normalization stats must be positive")
+        self.model = model
+        self.sigma_grp = float(sigma_grp)
+        self.sigma_score = float(sigma_score)
+        self.calls = 0
+        # env -> [seat -> (categorical rows, numeric rows)];行按边界追加。
+        self._sequences: dict[int, list[tuple[list[np.ndarray], list[np.ndarray]]]] = {}
+        self._previous_v: dict[tuple[int, int], float] = {}
+        self._previous_score: dict[tuple[int, int], int] = {}
+
+    def _value(self, env_index: int, seat: int) -> float:
+        """对某个视角的完整 prefix 跑一次 GRU,取末步期望 utility。"""
+        categorical, numeric = self._sequences[int(env_index)][int(seat)]
+        with torch.no_grad():
+            logits = self.model(
+                torch.as_tensor(np.stack(categorical)[None]),
+                torch.as_tensor(np.stack(numeric)[None]),
+                torch.as_tensor([len(categorical)]),
+            )
+        probabilities = torch.softmax(logits[0, -1], dim=-1)
+        utility = logits.new_tensor([24.0, 8.0, -12.0, -24.0])
+        self.calls += 1
+        return float((probabilities @ utility).item())
+
+    def _append_boundary(self, env_index: int, boundary: Boundary) -> None:
+        sequences = self._sequences[int(env_index)]
+        for seat in range(NUM_PLAYERS):
+            categorical, numeric = encode_view([boundary], seat)
+            sequences[seat][0].append(categorical[0])
+            sequences[seat][1].append(numeric[0])
+
+    def start_match(self, env_index: int, boundary: Boundary) -> None:
+        """登记首局边界并计算 4 个视角的 V_0(4 次 GRP 调用)。"""
+        self._sequences[int(env_index)] = [([], []) for _seat in range(NUM_PLAYERS)]
+        self._append_boundary(env_index, boundary)
+        for seat in range(NUM_PLAYERS):
+            key = (int(env_index), seat)
+            self._previous_v[key] = self._value(env_index, seat)
+            self._previous_score[key] = int(boundary.scores[seat])
+
+    def boundary_reward(
+        self,
+        env_index: int,
+        boundary: Boundary,
+        *,
+        terminal_ranks: dict[int, int] | None = None,
+    ) -> dict[int, float]:
+        """小局边界结算:非终局跑 4 次 GRP,终局用真实排名 utility。"""
+        self._append_boundary(env_index, boundary)
+        rewards: dict[int, float] = {}
+        for seat in range(NUM_PLAYERS):
+            key = (int(env_index), int(seat))
+            previous_v = self._previous_v[key]
+            previous_score = self._previous_score[key]
+            if terminal_ranks is not None:
+                delta = float(rank_utility(int(terminal_ranks[seat])) - previous_v)
+            else:
+                current_v = self._value(env_index, seat)
+                delta = float(current_v - previous_v)
+                self._previous_v[key] = current_v
+            rewards[seat] = combined_reward(
+                delta,
+                int(boundary.scores[seat]) - previous_score,
+                self.sigma_grp,
+                self.sigma_score,
+            )
+            self._previous_score[key] = int(boundary.scores[seat])
+        return rewards
+
+
+def _previous_result(
+    events: list[list[str]],
+    tenpai_flags: dict[int, bool] | None = None,
+) -> KyokuResult | None:
+    """从刚结束小局的事件流解析结果(无结果则为 None)。"""
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for seat_events in events:
+        for raw in seat_events:
+            if raw in seen:
+                continue
+            seen.add(raw)
+            try:
+                rows.append(json.loads(raw))
+            except (TypeError, ValueError):
+                continue
+    horas = [row for row in rows if row.get("type") == "hora"]
+    if horas:
+        first = horas[0]
+        actor = int(first.get("actor", -1))
+        target = int(first.get("target", -1))
+        tsumo = bool(first.get("tsumo", False)) or actor == target
+        deltas = [0, 0, 0, 0]
+        for row in horas:
+            values = row.get("deltas") or []
+            for seat, value in enumerate(values[:4]):
+                deltas[seat] += int(value)
+        return KyokuResult(
+            RESULT_CODES["tsumo"] if tsumo else RESULT_CODES["ron"],
+            actor,
+            None if tsumo else target,
+            0,
+            tuple(deltas),
+        )
+    draws = [row for row in rows if row.get("type") == "ryukyoku"]
+    if draws:
+        first = draws[0]
+        deltas = [0, 0, 0, 0]
+        for row in draws:
+            values = row.get("deltas") or []
+            for seat, value in enumerate(values[:4]):
+                deltas[seat] += int(value)
+        mask = 0
+        if str(first.get("reason", "")) == "exhaustive_draw":
+            for seat, flag in (tenpai_flags or {}).items():
+                if flag:
+                    mask |= 1 << int(seat)
+        return KyokuResult(RESULT_CODES["ryukyoku"], None, None, mask, tuple(deltas))
+    return None
+
+
 if ray is not None:
     @ray.remote
     class RolloutWorker:
@@ -242,14 +315,15 @@ if ray is not None:
         ) -> None:
             try:
                 import riichi
-                from riichienv import BatchedRiichiEnv
+                from riichienv import BatchedRiichiEnv, HandEvaluator
             except ImportError as exc:
                 raise RuntimeError("install local riichi and RiichiEnv extensions before starting workers") from exc
             self.config = config
             self.worker_id = int(worker_id)
             self.inference = inference
-            # Environment workers intentionally never import CUDA or own a
-            # policy model. The single inference actor owns GPU execution.
+            self.hand_evaluator = HandEvaluator
+            # 环境 worker 刻意不 import CUDA、不持有策略模型;唯一推理 actor
+            # 独占 GPU 执行。GRP 是 50–70K 参数的 CPU 小模型,仅小局边界执行。
             self.num_envs = int(config["envs_per_worker"])
             self.envs = BatchedRiichiEnv(
                 self.num_envs,
@@ -259,18 +333,10 @@ if ray is not None:
             )
             self.state_machine = riichi.MjaiKyokuStateMachineManager(self.num_envs)
             self.profiler = StageProfiler(enabled=bool(config.get("profile_enabled", True)))
-            self.bridge = BatchedStateBridge(
-                self.state_machine,
-                self.num_envs,
-                self.profiler,
-                critic_include_public_state=bool(config.get("critic_include_public_state", False)),
-            )
+            self.bridge = BatchedStateBridge(self.state_machine, self.num_envs, self.profiler)
             self.observations = list(self.envs.reset())
             self.walls = list(self.envs.walls())
             self.bridge.sync(self.observations)
-            self.public = PublicStateTracker(self.num_envs)
-            self.public.update(self.bridge.last_events)
-            self.efficiency = EfficiencyAnalyzer(int(config.get("reward_cache_capacity", 131_072)))
             self.start_scores = [[int(x) for x in scores] for scores in self.envs.scores()]
             self.match_kyoku_counts = [0] * self.num_envs
             self.pending: list[list[list[Transition]]] = [
@@ -278,33 +344,32 @@ if ray is not None:
             ]
             self.model_decisions = 0
             self.recorded_decisions = 0
-            self.kyoku_reward_clip_points = int(
-                config.get("kyoku_reward_clip_points", 32_000)
-            )
-            if self.kyoku_reward_clip_points <= 0:
-                raise ValueError("kyoku_reward_clip_points must be positive")
-            self.deferred_reset_indices: set[int] = set()
             self.semantic = SemanticMetrics()
-            self.lineups: list[tuple[str, str, str, str]] = [("current",) * NUM_PLAYERS for _ in range(self.num_envs)]
+            self.lineups: list[tuple[str, str, str, str]] = [
+                ("current",) * NUM_PLAYERS for _ in range(self.num_envs)
+            ]
             self.history_pool: list[int] = []
             self._opponent_rng = np.random.default_rng(
                 int(config["seed"]) * 1_000_003 + self.worker_id * 131
             )
+            self._pending_tenpai: dict[int, dict[int, bool]] = {}
+            self.deferred_reset_indices: set[int] = set()
+            # GRP:CPU 小模型,只在小局边界执行;σ 从数据集 JSON 离线固化读取。
+            grp_payload = torch.load(
+                config["grp_checkpoint"], map_location="cpu", weights_only=False,
+            )
+            grp_model = GRPModel()
+            grp_model.load_state_dict(grp_payload["model"], strict=True)
+            grp_model.eval()
+            sigma_grp, sigma_score = load_normalization(Path(config["grp_dataset"]))
+            self.grp = GrpRollout(grp_model, sigma_grp, sigma_score)
+            for env_index in range(self.num_envs):
+                self.grp.start_match(
+                    env_index, self._boundary_from_observations(env_index, None)
+                )
 
-        def set_rollout_context(
-            self,
-            update: int,
-        ) -> None:
-            """Install the config-driven rollout lineup.
-
-            Default remains all-current self-play. With ``opponent_mix.enabled``
-            (V14/E2), a fraction of envs replace exactly one seat with a frozen
-            SFT policy (``sft``, greedy), a frozen historical PPO checkpoint
-            (``history:uNNN``, greedy) and/or a uniform-random policy
-            (``random``). Rewards/transitions are only recorded for ``current``
-            seats.  When the historical pool is empty the historical share is
-            renormalized onto current/SFT (70/30 relative).
-            """
+        def set_rollout_context(self, update: int) -> None:
+            """Install the config-driven rollout lineup."""
             mix = self.config.get("opponent_mix") or {}
             if not bool(mix.get("enabled", False)):
                 self.lineups = [("current",) * NUM_PLAYERS for _ in range(self.num_envs)]
@@ -313,22 +378,18 @@ if ray is not None:
             sft_frac = float(mix.get("sft_frac", 0.2))
             historical_frac = float(mix.get("historical_frac", 0.0))
             random_frac = float(mix.get("random_frac", 0.0))
-            min_update = int(mix.get("historical_min_update", 0))
-            lag_updates = int(mix.get("historical_lag_updates", 0))
             pool = eligible_history_updates(
                 parse_checkpoint_updates(str(self.config["checkpoint_dir"])),
                 current_update=int(update),
-                min_update=min_update,
-                lag_updates=lag_updates,
+                min_update=int(mix.get("historical_min_update", 0)),
+                lag_updates=int(mix.get("historical_lag_updates", 0)),
             )
-            current_frac, sft_frac, historical_frac, random_frac = (
-                resolve_opponent_fractions(
-                    current_frac=current_frac,
-                    sft_frac=sft_frac,
-                    historical_frac=historical_frac,
-                    random_frac=random_frac,
-                    history_pool=pool,
-                )
+            fractions = resolve_opponent_fractions(
+                current_frac=current_frac,
+                sft_frac=sft_frac,
+                historical_frac=historical_frac,
+                random_frac=random_frac,
+                history_pool=pool,
             )
             rng = np.random.default_rng(
                 int(self.config["seed"]) * 1_000_003
@@ -338,117 +399,155 @@ if ray is not None:
             self.lineups = build_rollout_lineups(
                 num_envs=self.num_envs,
                 rng=rng,
-                current_frac=current_frac,
-                sft_frac=sft_frac,
-                historical_frac=historical_frac,
-                random_frac=random_frac,
+                current_frac=fractions[0],
+                sft_frac=fractions[1],
+                historical_frac=fractions[2],
+                random_frac=fractions[3],
                 history_pool=pool,
             )
             self.history_pool = pool
+
+        def _boundary_from_observations(
+            self, env_index: int, previous: KyokuResult | None,
+        ) -> Boundary:
+            observation = self.observations[env_index][0]
+            return Boundary(
+                round_wind=0 if int(observation.round_wind) == 0 else 1,
+                kyoku_index=min(max(int(observation.kyoku_index), 0), 7),
+                dealer=int(observation.oya),
+                honba=int(observation.honba),
+                sticks=int(observation.riichi_sticks),
+                scores=tuple(int(value) for value in self.envs.scores()[env_index]),
+                previous=previous,
+            )
+
+        def _final_tenpai_flags(
+            self, env_index: int, actions_by_env: dict[int, Any],
+        ) -> dict[int, bool]:
+            """牌山耗尽前计算各座位听牌,供流局 exhaustive_draw 构造 tenpai 掩码。"""
+            flags: dict[int, bool] = {}
+            observations = self.observations[env_index]
+            for seat in range(NUM_PLAYERS):
+                obs = observations[seat]
+                hands = getattr(obs, "hands", None)
+                melds = getattr(obs, "melds", None)
+                if hands is None or melds is None:
+                    continue
+                hand = list(hands[seat])
+                meld_list = list(melds[seat])
+                tile_count = len(hand) + 3 * len(meld_list)
+                if tile_count == 13:
+                    flags[seat] = self.hand_evaluator(hand, meld_list).is_tenpai()
+                elif tile_count == 14:
+                    action = actions_by_env.get(seat)
+                    tile = getattr(action, "tile", None)
+                    if tile is not None and int(tile) in hand:
+                        remaining = list(hand)
+                        remaining.remove(int(tile))
+                        flags[seat] = self.hand_evaluator(remaining, meld_list).is_tenpai()
+            return flags
 
         def _submit_model_actions(
             self,
             decisions: list[Decision],
             namespace: str,
             greedy: bool,
-            analysis_batch: DecisionAnalysisBatch | None = None,
-        ) -> tuple[Any, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+        ) -> tuple[Any, dict[str, np.ndarray]]:
             with self.profiler.stage("rollout/model_state_prepare"):
-                (
-                    token_factors,
-                    token_numeric,
-                    token_lengths,
-                    legal,
-                    _history_generations,
-                    critic_factors,
-                    critic_lengths,
-            ) = self.bridge.prepare(decisions, analysis_batch, walls=self.walls)
+                batch = self.bridge.prepare_v16(decisions, walls=self.walls)
             request = self.inference.infer.remote(
                 worker_id=self.worker_id,
                 namespace=namespace,
-                batch_indices=[decision.batch_index for decision in decisions],
-                token_factors=token_factors,
-                token_numeric=token_numeric,
-                critic_factors=critic_factors,
-                critic_lengths=critic_lengths,
-                legal_mask=legal,
-                token_lengths=token_lengths,
+                batch_indices=np.asarray(
+                    [decision.batch_index for decision in decisions], dtype=np.int64,
+                ),
+                history_factors=batch.history_factors,
+                history_numeric=batch.history_numeric,
+                history_lengths=batch.history_lengths,
+                snapshot_kinds=batch.snapshot_kinds,
+                snapshot_cat=batch.snapshot_cat,
+                snapshot_num=batch.snapshot_num,
+                snapshot_lengths=batch.snapshot_lengths,
+                query_rows=batch.query_rows,
+                query_action_ids=batch.query_action_ids,
+                query_pair_counts=batch.query_pair_counts,
+                legal_mask=batch.legal_mask,
+                critic_factors=batch.critic_factors,
+                critic_lengths=batch.critic_lengths,
                 greedy=greedy,
             )
-            return request, (token_factors, token_numeric, token_lengths, legal, critic_factors, critic_lengths)
+            return request, {
+                "history_factors": batch.history_factors,
+                "history_numeric": batch.history_numeric,
+                "history_lengths": batch.history_lengths,
+                "snapshot_kinds": batch.snapshot_kinds,
+                "snapshot_cat": batch.snapshot_cat,
+                "snapshot_num": batch.snapshot_num,
+                "snapshot_lengths": batch.snapshot_lengths,
+                "query_rows": batch.query_rows,
+                "query_action_ids": batch.query_action_ids,
+                "query_pair_counts": batch.query_pair_counts,
+                "legal_mask": batch.legal_mask,
+                "critic_factors": batch.critic_factors,
+                "critic_lengths": batch.critic_lengths,
+            }
 
         def _model_actions(
             self,
             decisions: list[Decision],
-            prepared: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+            prepared: dict[str, np.ndarray],
             result: dict[str, Any],
             record: bool,
-            analysis_batch: DecisionAnalysisBatch | None = None,
         ) -> tuple[list[Any], list[Transition | None]]:
-            token_factors, token_numeric, token_lengths, legal, critic_factors, critic_lengths = prepared
             action_ids = [int(value) for value in result["action_ids"]]
             logprobs = [float(value) for value in result["logprobs"]]
+            values = [float(value) for value in result["values"]]
             q_taken = [float(value) for value in result["q_taken"]]
             expected_q = [float(value) for value in result["expected_q"]]
+            top3_ids = [np.asarray(value, dtype=np.int32) for value in result["top3_ids"]]
             with self.profiler.stage("rollout/model_action_decode"):
                 actions = self.bridge.decode(decisions, action_ids)
             self.model_decisions += len(decisions)
             transitions: list[Transition | None] = [None] * len(decisions)
             if record:
                 with self.profiler.stage("rollout/transition_materialize"):
-                    for row, action_id in enumerate(action_ids):
-                        decision = decisions[row]
-                        analysis_row = analysis_batch.for_decision(decision) if analysis_batch is not None else None
-                        transition = Transition(
-                            token_factors[row, : token_lengths[row]].copy(),
-                            token_numeric[row, : token_lengths[row]].copy(), int(token_lengths[row]),
-                            legal[row].copy(), action_id, logprobs[row], q_taken[row],
+                    for row, decision in enumerate(decisions):
+                        history_length = int(prepared["history_lengths"][row])
+                        snapshot_length = int(prepared["snapshot_lengths"][row])
+                        pair_count = int(prepared["query_pair_counts"][row])
+                        critic_length = int(prepared["critic_lengths"][row])
+                        transitions[row] = Transition(
+                            prepared["history_factors"][row, :history_length].copy(),
+                            prepared["history_numeric"][row, :history_length].copy(),
+                            history_length,
+                            prepared["snapshot_kinds"][row, :snapshot_length].copy(),
+                            prepared["snapshot_cat"][row, :snapshot_length].copy(),
+                            prepared["snapshot_num"][row, :snapshot_length].copy(),
+                            snapshot_length,
+                            prepared["query_rows"][row, : 2 * pair_count].copy(),
+                            prepared["query_action_ids"][row, :pair_count].copy(),
+                            pair_count,
+                            prepared["legal_mask"][row].copy(),
+                            action_ids[row],
+                            logprobs[row],
+                            q_taken[row],
+                            values[row],
                             expected_q=expected_q[row],
-                            critic_factors=critic_factors[row, : critic_lengths[row]].copy(),
-                            critic_length=int(critic_lengths[row]),
+                            critic_factors=(
+                                prepared["critic_factors"][row, :critic_length].copy()
+                                if critic_length else None
+                            ),
+                            critic_length=critic_length,
+                            top3_ids=top3_ids[row],
                         )
-                        transitions[row] = transition
-                        threat = self.public.has_riichi_threat(decision.env_index, decision.seat_id)
-                        tile = getattr(actions[row], "tile", None)
-                        tile_type = int(tile) // 4 if tile is not None else -1
                         self.semantic.record_decision(
-                            action_id, legal[row], threat=threat,
-                            genbutsu_to_all=(tile_type >= 0 and self.public.is_genbutsu_to_all_riichi(decision.env_index, tile_type)),
-                            genbutsu_count=(self.public.genbutsu_coverage(decision.env_index, tile_type) if tile_type >= 0 else 0),
+                            action_ids[row], prepared["legal_mask"][row],
                         )
-                        if analysis_row is not None:
-                            chosen = actions[row]
-                            candidate = analysis_row.candidate_for(chosen)
-                            if candidate is not None and analysis_row.best_rank is not None:
-                                shanten_gap = int(candidate.structural_shanten) - int(analysis_row.best_rank[0])
-                                best_ukeire = max(
-                                    (item.ukeire for item in analysis_row.candidates
-                                     if item.structural_shanten == analysis_row.best_rank[0]),
-                                    default=0,
-                                )
-                                ukeire_loss = (
-                                    max(0, best_ukeire - int(candidate.ukeire)) / max(best_ukeire, 1)
-                                    if shanten_gap == 0 else 1.0
-                                )
-                                self.semantic.record_efficiency(
-                                    reward=0.0,
-                                    shanten_gap=shanten_gap,
-                                    ukeire_loss=ukeire_loss,
-                                )
-                                self.semantic.record_rule_quality(
-                                    candidate,
-                                    accepted_call=76 <= action_id <= 170,
-                                    bad_call=False,
-                                    best_rank=analysis_row.best_rank,
-                                    alternatives=analysis_row.candidates,
-                                )
                         self.recorded_decisions += 1
             return actions, transitions
 
         def _finish_games(self, done_indices: list[int]) -> None:
             """Discard all four completed-seat trajectories before reset."""
-            if not done_indices:
-                return
             for env_index in done_indices:
                 self.pending[env_index] = [[] for _ in range(NUM_PLAYERS)]
 
@@ -461,11 +560,14 @@ if ray is not None:
                 self.walls = list(self.envs.walls())
             with self.profiler.stage("rollout/event_sync_after_reset"):
                 self.bridge.sync(self.observations)
-            with self.profiler.stage("rollout/public_state_update"):
-                self.public.update(self.bridge.last_events)
             scores_by_env = self.envs.scores()
             for env_index in done_indices:
-                self.start_scores[env_index] = [int(x) for x in scores_by_env[env_index]]
+                self.grp.start_match(
+                    env_index, self._boundary_from_observations(env_index, None)
+                )
+                self.start_scores[env_index] = [
+                    int(value) for value in scores_by_env[env_index]
+                ]
                 self.match_kyoku_counts[env_index] = 0
 
         def _advance_once(
@@ -479,134 +581,139 @@ if ray is not None:
             with self.profiler.stage("rollout/scan_observations_and_legal_actions"):
                 decisions = active_decisions(self.observations, active)
             if decisions:
-                by_policy: dict[str, list[Any]] = {}
+                by_policy: dict[str, list[Decision]] = {}
                 for decision in decisions:
                     policy = self.lineups[decision.env_index][decision.seat_id]
                     by_policy.setdefault(policy, []).append(decision)
                 pending_model_requests: list[
-                    tuple[
-                        str,
-                        list[Decision],
-                        DecisionAnalysisBatch,
-                        Any,
-                        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
-                    ]
+                    tuple[str, list[Decision], Any, dict[str, np.ndarray]]
                 ] = []
                 for policy, policy_decisions in by_policy.items():
                     if policy == "random":
-                        actions = []
-                        transitions = [None] * len(policy_decisions)
                         for decision in policy_decisions:
                             legal_actions = list(decision.observation.legal_actions())
                             if not legal_actions:
                                 raise RuntimeError("random opponent seat has no legal action")
-                            actions.append(legal_actions[
-                                int(self._opponent_rng.integers(0, len(legal_actions)))
-                            ])
-                        for decision, action, transition in zip(
-                            policy_decisions, actions, transitions, strict=True,
-                        ):
-                            actions_by_env[decision.env_index][decision.seat_id] = action
-                            if transition is not None:
-                                self.pending[decision.env_index][decision.seat_id].append(transition)
+                            actions_by_env[decision.env_index][decision.seat_id] = (
+                                legal_actions[
+                                    int(self._opponent_rng.integers(0, len(legal_actions)))
+                                ]
+                            )
                         continue
-                    with self.profiler.stage("rollout/reward_analysis"):
-                        analysis_batch = DecisionAnalysisBatch.build(
-                            policy_decisions, analyzer=self.efficiency, public=self.public,
-                            profiler=self.profiler,
-                        )
-                    # ``policy`` is "rollout"/"sft" for the built-in models and
-                    # "history:uNNN" for frozen historical checkpoints; the
-                    # inference actor dispatches on the namespace itself.
+                    # ``policy`` 为 "current"/"sft"/"history:uNNN";推理 actor 按
+                    # namespace 自行分发。
                     namespace = "rollout" if policy == "current" else str(policy)
                     greedy = policy != "current"
                     request, prepared = self._submit_model_actions(
-                        policy_decisions, namespace, greedy, analysis_batch,
+                        policy_decisions, namespace, greedy,
                     )
-                    pending_model_requests.append((
-                        policy, policy_decisions, analysis_batch, request, prepared,
-                    ))
+                    pending_model_requests.append((policy, policy_decisions, request, prepared))
 
-                # Submit every policy namespace before blocking.  This lets the
-                # inference actor overlap the first request with preparation of
-                # the remaining namespaces and exposes more requests to its
-                # cross-worker batcher at the same time.
+                # 先把全部 namespace 请求都提交,再阻塞等待;推理 actor 得以在
+                # 其余请求编码期间并行服务首批请求。
                 if pending_model_requests:
                     with self.profiler.stage("inference/rpc_wait"):
                         model_results = ray.get([
                             request
-                            for _policy, _decisions, _analysis, request, _prepared
+                            for _policy, _decisions, request, _prepared
                             in pending_model_requests
                         ])
                 else:
                     model_results = []
                 for (
-                    policy, policy_decisions, analysis_batch, _request, prepared,
+                    policy, policy_decisions, _request, prepared,
                 ), result in zip(pending_model_requests, model_results, strict=True):
-                    record_policy = should_record_transition(policy)
+                    record = should_record_transition(policy)
                     actions, transitions = self._model_actions(
-                        policy_decisions, prepared, result, record_policy, analysis_batch,
+                        policy_decisions, prepared, result, record,
                     )
                     for decision, action, transition in zip(
                         policy_decisions, actions, transitions, strict=True,
                     ):
                         actions_by_env[decision.env_index][decision.seat_id] = action
                         if transition is not None:
-                            self.pending[decision.env_index][decision.seat_id].append(transition)
+                            self.pending[decision.env_index][decision.seat_id].append(
+                                transition
+                            )
 
+            # 牌山耗尽前先记录各座位听牌,供流局边界构造 tenpai 掩码。
+            self._pending_tenpai.clear()
+            for env_index in active:
+                tiles_left = min(
+                    int(getattr(obs, "tiles_left", 1))
+                    for obs in self.observations[env_index].values()
+                )
+                if tiles_left <= 0:
+                    self._pending_tenpai[env_index] = self._final_tenpai_flags(
+                        env_index, actions_by_env[env_index]
+                    )
             with self.profiler.stage("env/step_batch_native"):
                 self.observations = list(self.envs.step_batch(actions_by_env))
             with self.profiler.stage("env/walls_refresh_after_step"):
                 self.walls = list(self.envs.walls())
             with self.profiler.stage("rollout/event_sync_after_step"):
                 end_kyoku, _end_game = self.bridge.sync(self.observations)
-            with self.profiler.stage("rollout/public_state_update"):
-                self.public.update(self.bridge.last_events)
             scores_by_env = self.envs.scores()
             done = self.envs.done()
-            done_indices = [index for index, value in enumerate(done) if value and index in active]
+            done_indices = [
+                index for index, value in enumerate(done) if value and index in active
+            ]
             completed_kyokus = 0
             ended_kyoku_indices: list[int] = []
             for env_index in range(self.num_envs):
-                if env_index in active and end_kyoku[env_index]:
-                    completed_kyokus += 1
-                    ended_kyoku_indices.append(env_index)
-                    self.match_kyoku_counts[env_index] += 1
-                    scores = [int(x) for x in scores_by_env[env_index]]
-                    current_seats = [
-                        seat for seat, policy in enumerate(self.lineups[env_index])
-                        if policy == "current"
-                    ]
-                    self.semantic.record_kyoku(
-                        current_seats,
-                        [scores[seat] - self.start_scores[env_index][seat] for seat in range(NUM_PLAYERS)],
-                        self.bridge.last_events[env_index],
-                        discard_count=int(self.public.completed_discard_counts[env_index]),
-                        open_meld_count=int(self.public.completed_open_meld_counts[env_index]),
-                    )
-                    for seat in range(NUM_PLAYERS):
-                        kyoku_reward = terminal_kyoku_reward(
-                            scores[seat] - self.start_scores[env_index][seat],
-                            self.kyoku_reward_clip_points,
-                        )
-                        reward = kyoku_reward
-                        pending = self.pending[env_index][seat]
-                        if self.lineups[env_index][seat] == "current":
-                            with self.profiler.stage("rollout/finish_kyoku_qboost"):
-                                if pending:
-                                    pending[-1].kyoku_reward = kyoku_reward
-                                    pending[-1].reward += reward
-                                completed.extend(finish_kyoku_qboost(
-                                    pending, float(self.config["gamma"]),
-                                    float(self.config["qboost_lambda"]),
-                                ))
-                        rewards.append(reward)
-                        self.pending[env_index][seat] = []
-                    self.start_scores[env_index] = scores
-                    if done[env_index]:
-                        # Self-play is symmetric: record the physical hanchan
-                        # once, rather than duplicating its length for four seats.
-                        self.semantic.record_match_length(self.match_kyoku_counts[env_index])
+                if env_index not in active or not end_kyoku[env_index]:
+                    continue
+                completed_kyokus += 1
+                ended_kyoku_indices.append(env_index)
+                self.match_kyoku_counts[env_index] += 1
+                previous = _previous_result(
+                    self.bridge.last_events[env_index],
+                    self._pending_tenpai.get(env_index),
+                )
+                boundary = self._boundary_from_observations(env_index, previous)
+                terminal_ranks = None
+                if done[env_index]:
+                    scores = tuple(int(value) for value in scores_by_env[env_index])
+                    terminal_ranks = {
+                        seat: rank_among(seat, scores) for seat in range(NUM_PLAYERS)
+                    }
+                seat_rewards = self.grp.boundary_reward(
+                    env_index, boundary, terminal_ranks=terminal_ranks,
+                )
+                current_seats = [
+                    seat
+                    for seat, policy in enumerate(self.lineups[env_index])
+                    if policy == "current"
+                ]
+                self.semantic.record_kyoku(
+                    current_seats,
+                    [
+                        int(scores_by_env[env_index][seat])
+                        - self.start_scores[env_index][seat]
+                        for seat in range(NUM_PLAYERS)
+                    ],
+                    self.bridge.last_events[env_index],
+                )
+                for seat in range(NUM_PLAYERS):
+                    reward = float(seat_rewards[seat])
+                    pending = self.pending[env_index][seat]
+                    if self.lineups[env_index][seat] == "current":
+                        with self.profiler.stage("rollout/finish_kyoku_qboost"):
+                            if pending:
+                                pending[-1].reward += reward
+                                pending[-1].kyoku_reward = reward
+                            completed.extend(finish_kyoku_qboost(
+                                pending,
+                                float(self.config["gamma"]),
+                                float(self.config["qboost_lambda"]),
+                            ))
+                    rewards.append(reward)
+                    self.pending[env_index][seat] = []
+                self.start_scores[env_index] = [
+                    int(value) for value in scores_by_env[env_index]
+                ]
+                if done[env_index]:
+                    self.semantic.record_match_length(self.match_kyoku_counts[env_index])
             if done_indices:
                 self._finish_games(done_indices)
             return completed, rewards, completed_kyokus, ended_kyoku_indices, done_indices
@@ -617,10 +724,8 @@ if ray is not None:
         ) -> tuple[list[Transition], dict[str, float]]:
             if update is not None:
                 self.set_rollout_context(int(update))
-            # ``kyokus_per_worker`` is the worker-level rollout drain target.
-            # The native environment advances tables in parallel, so a worker
-            # can exceed it by one in-flight completion wave; that bounded
-            # overshoot is preferred to discarding partial kyoku trajectories.
+            # ``kyokus_per_worker`` 是 worker 级 rollout 排空目标;原生环境并行
+            # 推进各桌,可因一波在途结算而小幅超额,这一有界超额优于丢弃半局。
             target = int(self.config["kyokus_per_worker"])
             transitions: list[Transition] = []
             rewards: list[float] = []
@@ -632,10 +737,13 @@ if ray is not None:
             self.profiler.reset()
             self.semantic = SemanticMetrics()
             for lineup in self.lineups:
-                current_seats = [seat for seat, policy in enumerate(lineup) if policy == "current"]
+                current_seats = [
+                    seat for seat, policy in enumerate(lineup) if policy == "current"
+                ]
                 self.semantic.record_lineup(lineup, current_seats)
             self.model_decisions = 0
             self.recorded_decisions = 0
+            grp_calls_start = self.grp.calls
             if self.deferred_reset_indices:
                 self._reset_games(sorted(self.deferred_reset_indices))
                 self.deferred_reset_indices.clear()
@@ -644,8 +752,8 @@ if ray is not None:
                 lineup_counts.update(lineup)
             started = time.perf_counter()
             while active_envs:
-                step, new_rewards, new_kyokus, ended_kyokus, done_indices = self._advance_once(
-                    active_envs=active_envs,
+                step, new_rewards, new_kyokus, ended_kyokus, done_indices = (
+                    self._advance_once(active_envs=active_envs)
                 )
                 transitions.extend(step)
                 rewards.extend(new_rewards)
@@ -653,8 +761,7 @@ if ray is not None:
                 if not draining and kyokus >= target:
                     draining = True
                 if draining:
-                    # A table is frozen immediately after its in-flight kyoku
-                    # closes, so it cannot start collecting an extra kyoku.
+                    # 小局收口或整局结束的桌子立即冻结,不再多收一个小局。
                     frozen = set(ended_kyokus) | set(done_indices)
                     drain_kyokus += new_kyokus
                     drain_steps += 1
@@ -666,11 +773,12 @@ if ray is not None:
             stats = {
                 "kyokus": float(kyokus),
                 "sampled_rewards": float(len(rewards)),
-                "reward_mean": float(np.mean(rewards)),
+                "reward_mean": float(np.mean(rewards)) if rewards else 0.0,
                 "rollout_s": elapsed,
                 "transitions_per_s": float(len(transitions) / max(elapsed, 1e-9)),
                 "model_decisions": float(self.model_decisions),
                 "recorded_decisions": float(self.recorded_decisions),
+                "grp_calls": float(self.grp.calls - grp_calls_start),
                 "sampled_seats_per_game": float(
                     sum(policy == "current" for lineup in self.lineups for policy in lineup)
                     / max(self.num_envs, 1)
@@ -686,13 +794,10 @@ if ray is not None:
                 ),
                 "opponent_mix/random_seats": float(lineup_counts["random"]),
                 "opponent_mix/history_pool_size": float(len(self.history_pool)),
-                "reward_schedule/kyoku_weight": 1.0,
                 "drain_kyokus": float(drain_kyokus),
                 "drain_steps": float(drain_steps),
             }
             stats.update(self.profiler.delta({}, prefix="timing"))
-            stats.update(self.efficiency.metrics())
-            stats.update(self.public.metrics())
             for transition in transitions:
                 self.semantic.record_transition_reward(transition)
             stats.update(self.semantic.summary())
