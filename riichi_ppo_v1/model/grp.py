@@ -19,8 +19,8 @@ GRP_LAYERS = 2
 GRP_EMBED_DIM = 4
 GRP_HEAD_HIDDEN = 32
 
-# 排名 utility(契约 reward-v16.md §1,和为 0)。
-GRP_UTILITY: tuple[float, float, float, float] = (12.0, 4.0, -6.0, -10.0)
+# 排名 utility(契约 reward-v16.md §1,和为 0;V16 奖励范围放大后取 ×2)。
+GRP_UTILITY: tuple[float, float, float, float] = (24.0, 8.0, -12.0, -20.0)
 
 
 def expected_value(rank_logits: Tensor) -> Tensor:
