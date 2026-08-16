@@ -265,22 +265,24 @@ def materialize_host_batch(
         if source_advantages.shape != (batch,):
             raise ValueError("advantages must have one value per transition")
         for row, item in enumerate(transitions):
-            history_factors[row, : item.history_length] = torch.as_tensor(item.history_factors)
-            history_numeric[row, : item.history_length] = torch.as_tensor(item.history_numeric)
+            # Ray 反序列化出的 numpy 数组只读,torch.as_tensor 会零拷贝包装并
+            # 触发非可写警告;torch.tensor 总是拷贝,统一走这条安全路径。
+            history_factors[row, : item.history_length] = torch.tensor(item.history_factors)
+            history_numeric[row, : item.history_length] = torch.tensor(item.history_numeric)
             history_lengths[row] = int(item.history_length)
-            snapshot_kinds[row, : item.snapshot_length] = torch.as_tensor(item.snapshot_kinds)
-            snapshot_cat[row, : item.snapshot_length] = torch.as_tensor(item.snapshot_cat)
-            snapshot_num[row, : item.snapshot_length] = torch.as_tensor(item.snapshot_num)
+            snapshot_kinds[row, : item.snapshot_length] = torch.tensor(item.snapshot_kinds)
+            snapshot_cat[row, : item.snapshot_length] = torch.tensor(item.snapshot_cat)
+            snapshot_num[row, : item.snapshot_length] = torch.tensor(item.snapshot_num)
             snapshot_lengths[row] = int(item.snapshot_length)
-            query_rows[row, : item.query_rows.shape[0]] = torch.as_tensor(item.query_rows)
-            query_action_ids[row, : item.query_pair_counts] = torch.as_tensor(item.query_action_ids)
+            query_rows[row, : item.query_rows.shape[0]] = torch.tensor(item.query_rows)
+            query_action_ids[row, : item.query_pair_counts] = torch.tensor(item.query_action_ids)
             query_pair_counts[row] = int(item.query_pair_counts)
-            legal[row] = torch.as_tensor(item.legal_mask)
+            legal[row] = torch.tensor(item.legal_mask)
             critic_length = int(item.critic_length)
             if critic_length:
                 if item.critic_factors is None:
                     raise ValueError("critic transition length requires critic arrays")
-                critic_factors[row, :critic_length] = torch.as_tensor(item.critic_factors[:critic_length])
+                critic_factors[row, :critic_length] = torch.tensor(item.critic_factors[:critic_length])
             critic_lengths[row] = critic_length
             actions[row] = int(item.action)
             old_logprobs[row] = float(item.logprob)
