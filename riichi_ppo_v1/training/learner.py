@@ -108,6 +108,27 @@ def scheduled_entropy_coefficient(start: float, end: float, update: int, total_u
     return float(start) + (float(end) - float(start)) * progress
 
 
+def scheduled_u_coefficient(
+    start: float,
+    middle: float,
+    end: float,
+    update: int,
+    total_updates: int,
+    middle_fraction: float = 0.5,
+) -> float:
+    """分段线性 U 形调度,精确锚定 start/middle/end。"""
+    if not 0.0 < float(middle_fraction) < 1.0:
+        raise ValueError("middle_fraction must be in (0, 1)")
+    total = max(1, int(total_updates))
+    step = min(max(int(update), 1), total)
+    middle_update = min(total, max(1, round(total * float(middle_fraction))))
+    if step <= middle_update:
+        local = (step - 1) / max(middle_update - 1, 1)
+        return float(start) + (float(middle) - float(start)) * local
+    local = (step - middle_update) / max(total - middle_update, 1)
+    return float(middle) + (float(end) - float(middle)) * local
+
+
 def value_loss_values(predicted: torch.Tensor, returns: torch.Tensor, loss_name: str) -> torch.Tensor:
     """按样本返回配置的 PPO value 目标损失。"""
     normalized = str(loss_name).lower()
@@ -179,6 +200,20 @@ def approximate_kl_values(new_logprob: torch.Tensor, old_logprob: torch.Tensor) 
     log_ratio = new_logprob - old_logprob
     ratio = log_ratio.exp()
     return (ratio - 1.0) - log_ratio
+
+
+def categorical_kl_values(
+    policy_logits: torch.Tensor,
+    reference_logits: torch.Tensor,
+) -> torch.Tensor:
+    """返回 KL(policy || 冻结 SFT reference),非法 -inf 位置按 0 处理。"""
+    policy_logprob = F.log_softmax(policy_logits.float(), dim=-1)
+    reference_logprob = F.log_softmax(reference_logits.float(), dim=-1)
+    finite = torch.isfinite(policy_logprob) & torch.isfinite(reference_logprob)
+    probability = torch.where(finite, policy_logprob.exp(), torch.zeros_like(policy_logprob))
+    safe_policy = torch.where(finite, policy_logprob, torch.zeros_like(policy_logprob))
+    safe_reference = torch.where(finite, reference_logprob, torch.zeros_like(reference_logprob))
+    return (probability * (safe_policy - safe_reference)).sum(-1)
 
 
 def transition_length_metrics(transitions: list[Transition], prefix: str = "update/buffer") -> dict[str, float]:
@@ -389,6 +424,7 @@ class PPOLearner:
             weight_decay=float(hyperparameters.get("weight_decay", 0.01)),
             fused=self.use_bf16,
         )
+        self.reference_model: KyokuTransformerActorCritic | None = None
         self.iteration = 0
         self.profiler = StageProfiler(enabled=bool(hyperparameters.get("profile_enabled", True)))
         self.profile_cuda_sync = bool(hyperparameters.get("profile_cuda_sync", False))
@@ -478,28 +514,67 @@ class PPOLearner:
         planned_minibatches_per_epoch = (count + minibatch_size - 1) // minibatch_size
         update_number = self.iteration + 1
         total_updates = int(self.hp.get("total_updates", self.hp.get("iterations", 1)))
+        bootstrap_updates = max(0, int(self.hp.get("critic_bootstrap_updates", 0)))
+        critic_bootstrap = update_number <= bootstrap_updates
+        policy_update_number = max(0, update_number - bootstrap_updates)
+        total_policy_updates = max(1, total_updates - bootstrap_updates)
         branch_bases = {
             "actor": float(self.hp.get("actor_learning_rate", self.hp["learning_rate"])),
             "shared": float(self.hp.get("shared_learning_rate", self.hp["learning_rate"])),
             "critic": float(self.hp.get("critic_learning_rate", self.hp["learning_rate"])),
         }
-        branch_learning_rates = {
-            branch: scheduled_learning_rate(
-                base,
-                update_number,
-                total_updates,
-                float(self.hp.get("warmup_fraction", 0.0)),
-            )
-            for branch, base in branch_bases.items()
-        }
+        if critic_bootstrap:
+            # critic 预热:先冻结 Actor/shared,只让 value + Q scorer 在特权
+            # 输入上收敛,避免随机初始化的 Q 自举目标扰动策略。
+            branch_learning_rates = {
+                "actor": 0.0,
+                "shared": 0.0,
+                "critic": float(
+                    self.hp.get(
+                        "critic_bootstrap_learning_rate",
+                        self.hp.get("critic_learning_rate", self.hp["learning_rate"]),
+                    )
+                ),
+            }
+        else:
+            branch_learning_rates = {
+                branch: scheduled_learning_rate(
+                    base,
+                    policy_update_number,
+                    total_policy_updates,
+                    float(self.hp.get("warmup_fraction", 0.0)),
+                )
+                for branch, base in branch_bases.items()
+            }
         for group in self.optimizer.param_groups:
             group["lr"] = branch_learning_rates[str(group["branch"])]
-        entropy_coef = scheduled_entropy_coefficient(
-            float(self.hp.get("entropy_start", self.hp.get("entropy_coef", 0.0))),
-            float(self.hp.get("entropy_end", self.hp.get("entropy_coef", 0.0))),
-            update_number,
-            total_updates,
-        )
+        if critic_bootstrap:
+            entropy_coef = 0.0
+        else:
+            entropy_coef = scheduled_entropy_coefficient(
+                float(self.hp.get("entropy_start", self.hp.get("entropy_coef", 0.0))),
+                float(self.hp.get("entropy_end", self.hp.get("entropy_coef", 0.0))),
+                policy_update_number,
+                total_policy_updates,
+            )
+        if critic_bootstrap:
+            sft_kl_coef = 0.0
+        elif "sft_kl_coef_middle" in self.hp:
+            sft_kl_coef = scheduled_u_coefficient(
+                float(self.hp.get("sft_kl_coef_start", 0.0)),
+                float(self.hp["sft_kl_coef_middle"]),
+                float(self.hp.get("sft_kl_coef_end", 0.0)),
+                policy_update_number,
+                total_policy_updates,
+                float(self.hp.get("sft_kl_middle_fraction", 0.5)),
+            )
+        else:
+            sft_kl_coef = 0.0
+        if sft_kl_coef > 0.0 and self.reference_model is None:
+            raise RuntimeError(
+                "SFT KL anchor is enabled but no frozen reference model was loaded; "
+                "start PPO with --init-model or resume an anchored PPO checkpoint"
+            )
         value_coef = float(self.hp.get("value_coef", 0.5))
         q_coef = float(self.hp.get("q_coef", 1.0))
 
@@ -556,8 +631,27 @@ class PPOLearner:
                             legal_mask,
                             critic_factors=batch["critic_factors"],
                             critic_lengths=batch["critic_lengths"],
+                            detach_critic_public=critic_bootstrap,
                             critic_public_grad_scale=self.critic_public_grad_scale,
                         )
+                        reference_output = None
+                        if sft_kl_coef > 0.0:
+                            assert self.reference_model is not None
+                            with torch.no_grad():
+                                reference_output = self.reference_model.forward_v16(
+                                    batch["history_factors"],
+                                    batch["history_numeric"],
+                                    batch["history_lengths"],
+                                    batch["snapshot_kinds"],
+                                    batch["snapshot_cat"],
+                                    batch["snapshot_num"],
+                                    batch["snapshot_lengths"],
+                                    batch["query_rows"],
+                                    batch["query_action_ids"],
+                                    batch["query_pair_counts"],
+                                    legal_mask,
+                                    policy_only=True,
+                                )
                         # Q scorer 的输入 critic_hidden/action_hiddens 仍为 BF16,
                         # 必须在 autocast 内执行;其余 PPO 数值路径离开模型前已
                         # 提升为 FP32。
@@ -621,18 +715,35 @@ class PPOLearner:
                     q_prediction = torch.zeros(len(selected), device=self.device)
                     matched_rows = behavior_match.any(dim=1)
                     q_prediction[matched_rows] = candidate_q[behavior_match]
-                    loss = (
-                        policy_loss_values.mean()
-                        + value_coef * value_loss_values_.mean()
-                        + q_coef * q_loss
-                        - entropy_coef * entropy_values.mean()
-                    )
+                    if reference_output is None:
+                        sft_reference_kl_values = torch.zeros_like(policy_loss_values)
+                    else:
+                        sft_reference_kl_values = categorical_kl_values(
+                            output["policy_logits"],
+                            reference_output["policy_logits"],
+                        )
+                    if critic_bootstrap:
+                        # 预热期只训 critic/Q:policy/entropy/KL 不进入损失,
+                        # actor/shared 学习率同时为 0。
+                        loss = (
+                            value_coef * value_loss_values_.mean()
+                            + q_coef * q_loss
+                        )
+                    else:
+                        loss = (
+                            policy_loss_values.mean()
+                            + value_coef * value_loss_values_.mean()
+                            + q_coef * q_loss
+                            - entropy_coef * entropy_values.mean()
+                            + sft_kl_coef * sft_reference_kl_values.mean()
+                        )
                     if not torch.isfinite(loss):
                         raise RuntimeError(
                             "non-finite PPO loss: "
                             f"policy={float(policy_loss_values.mean())} "
                             f"value={float(value_loss_values_.mean())} "
-                            f"q={float(q_loss)} entropy={float(entropy_values.mean())}"
+                            f"q={float(q_loss)} entropy={float(entropy_values.mean())} "
+                            f"sft_kl={float(sft_reference_kl_values.mean())}"
                         )
                 with self._gpu_stage("update/zero_grad"):
                     self.optimizer.zero_grad(set_to_none=True)
@@ -660,12 +771,20 @@ class PPOLearner:
                                 epoch_kl_sum.add_(kl_sum.detach())
                             epoch_kl_count += len(selected)
                 for name, values in (
-                    ("loss", (
-                        policy_loss_values
-                        + value_coef * value_loss_values_
-                        + q_coef * q_loss
-                        - entropy_coef * entropy_values
-                    )),
+                    (
+                        "loss",
+                        (
+                            value_coef * value_loss_values_ + q_coef * q_loss
+                            if critic_bootstrap
+                            else (
+                                policy_loss_values
+                                + value_coef * value_loss_values_
+                                + q_coef * q_loss
+                                - entropy_coef * entropy_values
+                                + sft_kl_coef * sft_reference_kl_values
+                            )
+                        ),
+                    ),
                     ("policy_loss", policy_loss_values),
                     ("value_loss", value_loss_values_),
                     ("value_loss_raw", raw_value_loss),
@@ -674,6 +793,7 @@ class PPOLearner:
                     ("q_prediction", q_prediction),
                     ("entropy", entropy_values),
                     ("entropy_normalized", normalized_entropy_values),
+                    ("sft_reference_kl", sft_reference_kl_values),
                     ("approx_kl", kl_values),
                     ("clipfrac", clipfrac_values),
                     ("ratio", ratio),
@@ -734,7 +854,12 @@ class PPOLearner:
             "system/shared_learning_rate": float(branch_learning_rates["shared"]),
             "system/critic_learning_rate": float(branch_learning_rates["critic"]),
             "system/entropy_coef": float(entropy_coef),
-            "training/policy_update": float(update_number),
+            "system/sft_kl_coef": float(sft_kl_coef),
+            "system/critic_public_grad_scale": float(
+                0.0 if critic_bootstrap else self.critic_public_grad_scale
+            ),
+            "training/critic_bootstrap": float(critic_bootstrap),
+            "training/policy_update": float(policy_update_number),
         })
         sample_count_tensor = torch.tensor(float(metric_sample_count), device=self.device)
         sample_names = tuple(metric_sample_sums)
@@ -787,6 +912,11 @@ class PPOLearner:
             "numpy_rng": np.random.get_state(),
             "extra_state": dict(extra_state or {}),
         }
+        if self.reference_model is not None:
+            payload["sft_reference_model"] = {
+                name: value.detach().cpu()
+                for name, value in self.reference_model.state_dict().items()
+            }
         destination = Path(path)
         temporary = destination.with_suffix(destination.suffix + ".tmp")
         torch.save(payload, temporary)
@@ -820,6 +950,17 @@ class PPOLearner:
         self.model.load_state_dict(payload["model"], strict=True)
         self.optimizer.load_state_dict(payload["optimizer"])
         self.iteration = int(payload["iteration"])
+        reference_state = payload.get("sft_reference_model")
+        if reference_state is not None:
+            self.reference_model = KyokuTransformerActorCritic(self.config).to(self.device)
+            self.reference_model.load_state_dict(reference_state, strict=True)
+            self.reference_model.requires_grad_(False)
+            self.reference_model.eval()
+        elif float(self.hp.get("sft_kl_coef_start", 0.0)) > 0.0:
+            raise RuntimeError(
+                "PPO checkpoint does not contain the frozen SFT reference required "
+                "by the configured KL anchor"
+            )
         torch.set_rng_state(payload["torch_rng"].cpu())
         random.setstate(payload["python_rng"])
         np.random.set_state(payload["numpy_rng"])
@@ -836,4 +977,8 @@ class PPOLearner:
                 "V16 SFT checkpoint model_config differs from the active PPO topology"
             )
         self.model.load_state_dict(payload["model"], strict=True)
+        self.reference_model = KyokuTransformerActorCritic(self.config).to(self.device)
+        self.reference_model.load_state_dict(self.model.state_dict(), strict=True)
+        self.reference_model.requires_grad_(False)
+        self.reference_model.eval()
         self.iteration = 0

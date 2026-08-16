@@ -16,6 +16,7 @@ from riichi_ppo_v1.training.learner import (
     PPOLearner,
     approximate_kl_values,
     branch_grad_norms,
+    categorical_kl_values,
     collate,
     discounted_empirical_returns,
     length_bucketed_minibatches,
@@ -23,6 +24,7 @@ from riichi_ppo_v1.training.learner import (
     normalize_value_targets,
     scheduled_entropy_coefficient,
     scheduled_learning_rate,
+    scheduled_u_coefficient,
     transition_length_metrics,
     transfer_batch_to_device,
     value_loss_values,
@@ -109,6 +111,12 @@ def test_entropy_schedule_linearly_anneals() -> None:
     assert np.isclose(scheduled_entropy_coefficient(0.01, 0.001, update=100, total_updates=100), 0.001)
 
 
+def test_u_shaped_sft_kl_schedule_has_exact_joint_training_anchors() -> None:
+    assert scheduled_u_coefficient(0.010, 0.002, 0.005, 1, 760) == 0.010
+    assert scheduled_u_coefficient(0.010, 0.002, 0.005, 380, 760) == 0.002
+    assert scheduled_u_coefficient(0.010, 0.002, 0.005, 760, 760) == 0.005
+
+
 def test_value_loss_supports_huber_and_mse() -> None:
     predicted = torch.tensor([0.0, 3.0])
     returns = torch.tensor([0.0, 0.0])
@@ -144,6 +152,22 @@ def test_approximate_kl_matches_exp_formula() -> None:
     log_ratio = new_logprob - old_logprob
     expected = (log_ratio.exp() - 1.0) - log_ratio
     torch.testing.assert_close(approximate_kl_values(new_logprob, old_logprob), expected)
+
+
+def test_categorical_kl_masks_illegal_logits_and_is_zero_at_reference() -> None:
+    policy = torch.tensor([[1.0, 0.0, float("-inf")]])
+    reference = torch.tensor([[0.0, 1.0, float("-inf")]])
+    actual = categorical_kl_values(policy, reference)
+    probability = torch.softmax(policy[:, :2], dim=-1)
+    expected = (
+        probability
+        * (
+            torch.log_softmax(policy[:, :2], dim=-1)
+            - torch.log_softmax(reference[:, :2], dim=-1)
+        )
+    ).sum(-1)
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(categorical_kl_values(policy, policy), torch.zeros(1))
 
 
 def test_transition_length_metrics_report_v16_sequence_tokens() -> None:
@@ -322,3 +346,75 @@ def test_branch_grad_norms_include_every_v16_branch() -> None:
     assert set(norms) == {"actor", "critic", "shared"}
     for value in norms.values():
         assert float(value) > 0.0
+
+
+def test_critic_bootstrap_freezes_actor_and_only_trains_critic() -> None:
+    learner = PPOLearner(
+        "v16",
+        "cpu",
+        **learner_kwargs(
+            critic_bootstrap_updates=1,
+            critic_bootstrap_learning_rate=1e-4,
+            update_epochs=1,
+            minibatch_size=2,
+        ),
+    )
+    actor_before = learner.model.action_fusion[0].weight.detach().clone()
+    shared_before = learner.model.token_embedding.table.weight.detach().clone()
+    critic_before = learner.model.q_scorer[0].weight.detach().clone()
+    rows = [transition(1.0), transition(-1.0)]
+    metrics = learner.update(rows, shuffle_seed=3)
+    assert metrics["training/critic_bootstrap"] == 1.0
+    assert metrics["training/policy_update"] == 0.0
+    assert metrics["system/actor_learning_rate"] == 0.0
+    assert metrics["system/shared_learning_rate"] == 0.0
+    assert metrics["system/critic_learning_rate"] == 1e-4
+    assert metrics["system/entropy_coef"] == 0.0
+    assert metrics["system/critic_public_grad_scale"] == 0.0
+    torch.testing.assert_close(learner.model.action_fusion[0].weight, actor_before)
+    torch.testing.assert_close(learner.model.token_embedding.table.weight, shared_before)
+    assert not torch.equal(learner.model.q_scorer[0].weight, critic_before)
+    joint = learner.update(rows, shuffle_seed=4)
+    assert joint["training/critic_bootstrap"] == 0.0
+    assert joint["training/policy_update"] == 1.0
+    assert joint["system/actor_learning_rate"] > 0.0
+    assert not torch.equal(learner.model.action_fusion[0].weight, actor_before)
+
+
+def test_sft_kl_anchor_loads_frozen_reference_and_restores_through_checkpoint() -> None:
+    kwargs = learner_kwargs(
+        sft_kl_coef_start=0.005,
+        sft_kl_coef_middle=0.0005,
+        sft_kl_coef_end=0.002,
+        update_epochs=1,
+        minibatch_size=2,
+    )
+    source = PPOLearner("v16", "cpu", **kwargs)
+    with TemporaryDirectory() as directory:
+        sft_path = Path(directory) / "sft.pt"
+        torch.save({
+            "model": source.weights(),
+            "model_config": asdict(source.config),
+            "training_stage": "sft",
+            "training_mode": "actor_only",
+        }, sft_path)
+        learner = PPOLearner("v16", "cpu", **kwargs)
+        learner.load_model_weights(sft_path)
+        assert learner.reference_model is not None
+        assert not any(
+            parameter.requires_grad
+            for parameter in learner.reference_model.parameters()
+        )
+        rows = [transition(0.2), transition(-0.1)]
+        metrics = learner.update(rows, shuffle_seed=3)
+        assert metrics["system/sft_kl_coef"] > 0.0
+        assert np.isfinite(metrics["sft_reference_kl"])
+        checkpoint_path = Path(directory) / "ppo.pt"
+        learner.save(checkpoint_path, {"seed": 1})
+        restored = PPOLearner("v16", "cpu", **kwargs)
+        restored.load(checkpoint_path)
+        assert restored.reference_model is not None
+        for name, value in learner.reference_model.state_dict().items():
+            torch.testing.assert_close(
+                restored.reference_model.state_dict()[name], value,
+            )

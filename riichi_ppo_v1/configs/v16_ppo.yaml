@@ -55,15 +55,26 @@ adam_beta2: 0.999
 adam_epsilon: 0.00001
 weight_decay: 0.01
 
+# 稳定性:V16 SFT 只训了 Actor,value/Q scorer 为随机初始化。前 40 updates
+# 冻结 Actor/shared、只训 critic + Q,再联合训练;Q loss 经共享表示的梯度
+# 缩放到 0.25,并用 U 形 KL 锚把策略约束在冻结 SFT reference 附近。
+critic_bootstrap_updates: 40
+critic_bootstrap_learning_rate: 0.00002
+critic_public_grad_scale: 0.25
+sft_kl_coef_start: 0.005
+sft_kl_coef_middle: 0.0005
+sft_kl_coef_end: 0.002
+sft_kl_middle_fraction: 0.5
+
 checkpoint_interval_updates: 30
 checkpoint_dir: checkpoints/train_riichi_v16/ppo
 resume: null
 
 opponent_mix:
   enabled: true
-  current_frac: 0.7
-  sft_frac: 0.2
-  historical_frac: 0.1
+  current_frac: 1.0
+  sft_frac: 0.0
+  historical_frac: 0.0
   random_frac: 0.0
   historical_min_update: 60
   historical_lag_updates: 60
