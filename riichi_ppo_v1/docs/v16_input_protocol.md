@@ -44,8 +44,11 @@ Features(v13 的 hand/value/placement/threat 摘要与候选 query 编码)删除
 
 ```text
 E_q = E_action + E_queryType + Σ_i E_{type,i}(answer_i)
-    → LayerNorm / Projection → d_model = 256
+    → LayerNorm / Projection → d_model(V16-small 隐藏层 = 192)
 ```
+
+> d_model 属于网络隐藏层配置,不属于输入协议字段;V16-small 将隐藏层从 256
+> 降到 192,输入行宽、slot 基数与编码语义均不变,现有 V16 编码数据可直接复用。
 
 存储行宽 `QUERY_ROW_WIDTH=15`,行字段下标为 `encoding_protocol.py` 的
 `QUERY_ROW_*` 常量。

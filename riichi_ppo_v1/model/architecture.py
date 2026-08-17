@@ -80,15 +80,16 @@ class ModelConfig:
         configs = {
             "mid": cls(),
             "large": cls(d_model=384, query_heads=12, kv_heads=3, head_dim=32, ffn_dim=1152),
+            # V16-small:版本命名保持 V16,只调整隐藏层容量,输入/输出协议不变。
             "v16": cls(
-                layers=5,
-                shared_layers=4,
+                layers=4,
+                shared_layers=3,
                 critic_layers=2,
-                d_model=256,
-                query_heads=16,
-                kv_heads=4,
+                d_model=192,
+                query_heads=12,
+                kv_heads=3,
                 head_dim=16,
-                ffn_dim=1088,
+                ffn_dim=576,
                 policy_head_type="symmetric_action_query",
             ),
         }
@@ -414,7 +415,7 @@ class KyokuTransformerActorCritic(nn.Module):
         self.critic_backbone = Decoder(self.config, layers=self.config.critic_layers)
         self.register_parameter("query", None)
         if self.config.policy_head_type == "symmetric_action_query":
-            # V16:Offense/Defense 对称融合(concat 512→256→SiLU→Policy MLP),
+            # V16:Offense/Defense 对称融合(concat 384→192→SiLU→Policy MLP),
             # 普通初始化、无 zero-init 分支、无 241 维 Q head。
             self.snapshot_embeddings = SnapshotEmbedding(self.config.d_model)
             self.query_embedding = QueryEmbedding(self.config.d_model)
@@ -431,7 +432,7 @@ class KyokuTransformerActorCritic(nn.Module):
             self.offense_projection = None
             self.q_head = None
             self.value_head = nn.Linear(self.config.d_model, 1)
-            # Top-3 Q scorer:输入 [z_critic; detach(h_a)] →512→256→SiLU→1。
+            # Top-3 Q scorer:输入 [z_critic; detach(h_a)] →384→192→SiLU→1。
             self.q_scorer = nn.Sequential(
                 nn.Linear(2 * self.config.d_model, self.config.d_model),
                 nn.SiLU(),
@@ -818,7 +819,7 @@ class KyokuTransformerActorCritic(nn.Module):
         candidate_ids: Tensor,
     ) -> Tensor:
         """对候选动作输出原始优势评分 u:输入 [z_critic; detach(h_a)] →
-        512→256→SiLU→1。
+        384→192→SiLU→1。
 
         ``action_hiddens`` 在进入 scorer 前强制 detach,保证 Q loss 不会经动作
         表示直接更新 Actor;无效候选(越界/缺失)返回 -inf。这里只输出未做

@@ -11,6 +11,17 @@ bash RiichiEnv/scripts/install_conda_extension.sh
 python -m pip install -e riichi_ppo_v1 --no-deps --no-build-isolation
 ```
 
+## V16-small 当前流程(2026-08-17)
+
+V16 版本命名保持不变,仅把隐藏层调整为 V16-small(总参数约 3.0M):
+`d_model=192`、Q/KV=12/3、head_dim=16、FFN=576、3 Shared + 1 Actor +
+2 Critic。输入/输出协议不变,既有 V16 编码数据可直接复用。
+
+SFT 数据从 40% 扩到 60%:复用
+`datasets/tenhou_sft_2024_2025_encoded_40pct_v16`,仅追加 remainder=2 的
+20% 新编码到 `datasets/tenhou_sft_2024_2025_encoded_60pct_v16`;GRP 模型与
+奖励契约不修改。
+
 ## 当前训练流程
 
 准备数据并训练一轮 actor-only SFT：
@@ -75,7 +86,8 @@ SFT 的固定启发式评测独立于 PPO reward，使用轮换座位的效率/�
   放 `eval/`;这些固定类型子目录中的 design/report/scripts 进版本控制。
 - checkpoint 固定保存在 `checkpoints/train_riichi_<版本号>/<阶段>`;现行数据集为
   `datasets/tenhou_sft_2024_2025` 与
-  `datasets/tenhou_sft_2024_2025_encoded_40pct_v13_v16`。
+  `datasets/tenhou_sft_2024_2025_encoded_40pct_v13_v16`(V16 现行 60% 编码为
+  `datasets/tenhou_sft_2024_2025_encoded_60pct_v16`)。
 
 最小 CPU 检查：
 

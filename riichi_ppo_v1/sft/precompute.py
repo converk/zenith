@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 from queue import Empty
 import random
+import shutil
 import tarfile
 import time
 from typing import Any, Iterator
@@ -37,6 +38,7 @@ from .contract import (
     SFT_CONTRACT_VERSION,
     V16_ACTOR_INPUT_CONTRACT_SHA256,
     validate_v13_manifest,
+    validate_v16_manifest,
 )
 
 
@@ -676,8 +678,9 @@ def _precompute_source_shard_v16(
     kyokus_per_shard: int,
     game_sample_denominator: int,
     game_sample_remainder: int,
-    progress_queue: Any | None,
-    progress_every_kyokus: int,
+    chunk_name_suffix: str | None = None,
+    progress_queue: Any | None = None,
+    progress_every_kyokus: int = 32,
 ) -> tuple[str, int, int, int, dict[str, list[int]]]:
     """独立进程内编码一个源 tar 为 V16 chunk。"""
     shard = Path(source_shard)
@@ -714,11 +717,17 @@ def _precompute_source_shard_v16(
             decisions += len(samples)
             report_progress()
             if kyokus % kyokus_per_shard == 0:
-                _write_chunk_v16(target_dir / f"{shard.stem}-{chunk_index:03d}.npz", buffered)
+                name = f"{shard.stem}-{chunk_index:03d}.npz"
+                if chunk_name_suffix:
+                    name = f"{shard.stem}-{chunk_name_suffix}-{chunk_index:03d}.npz"
+                _write_chunk_v16(target_dir / name, buffered)
                 buffered.clear()
                 chunk_index += 1
     if buffered:
-        _write_chunk_v16(target_dir / f"{shard.stem}-{chunk_index:03d}.npz", buffered)
+        name = f"{shard.stem}-{chunk_index:03d}.npz"
+        if chunk_name_suffix:
+            name = f"{shard.stem}-{chunk_name_suffix}-{chunk_index:03d}.npz"
+        _write_chunk_v16(target_dir / name, buffered)
         chunk_index += 1
     report_progress(force=True)
     return split, kyokus, decisions, chunk_index, {
@@ -738,42 +747,126 @@ def precompute_v16(
     game_sample_denominator: int = 1,
     game_sample_remainder: int = 0,
     require_complete_action_coverage: bool = False,
+    base_encoded: Path | None = None,
 ) -> None:
-    """V16 40% 子集的确定性重编码(单一协议版本 manifest)。"""
+    """V16 子集的确定性重编码(单一协议版本 manifest)。
+
+    传 ``base_encoded`` 时复用已有 V16 编码缓存,只追加新 remainder 对应的
+    子集,并合并计数与字段统计,避免重新编码已存在的数据。
+    """
     remainders = tuple(sorted(set(remainders)))
     if denominator <= 0 or not remainders or any(not 0 <= value < denominator for value in remainders):
         raise ValueError("subset remainder must be in [0, subset denominator)")
     if output.exists() and any(output.iterdir()):
         raise FileExistsError(f"output already exists and is non-empty: {output}")
+    if base_encoded is not None and base_encoded.resolve() == output.resolve():
+        raise ValueError("base_encoded must not be the same directory as output")
     if workers <= 0:
         raise ValueError("workers must be positive")
     if game_sample_denominator <= 0 or not 0 <= game_sample_remainder < game_sample_denominator:
         raise ValueError("game sample remainder must be in [0, game sample denominator)")
+    source_manifest_sha256 = hashlib.sha256((source / "manifest.json").read_bytes()).hexdigest()
+    reused_manifest: dict[str, Any] | None = None
+    if base_encoded is not None:
+        manifest_path = base_encoded / "manifest.json"
+        if not manifest_path.is_file():
+            raise FileNotFoundError(f"reuse base encoded manifest does not exist: {manifest_path}")
+        reused_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        validate_v16_manifest(reused_manifest)
+        if int(reused_manifest.get("subset_denominator", -1)) != denominator:
+            raise ValueError("base_encoded subset_denominator differs from requested denominator")
+        if (
+            int(reused_manifest.get("game_sample_denominator", 1)) != game_sample_denominator
+            or int(reused_manifest.get("game_sample_remainder", 0)) != game_sample_remainder
+        ):
+            raise ValueError("base_encoded game sample selection differs from requested selection")
+        if reused_manifest.get("source_manifest_sha256") != source_manifest_sha256:
+            raise ValueError("base_encoded source manifest differs from --source")
+        base_remainders = set(reused_manifest.get("subset_remainders", ()))
+        remaining = tuple(sorted(set(remainders) - base_remainders))
+        if not remaining:
+            raise ValueError("base_encoded already covers all requested remainders")
+    else:
+        remaining = remainders
     output.mkdir(parents=True, exist_ok=True)
-    print(f"preflight: counting denominator={denominator} remainders={remainders}...", flush=True)
+    print(
+        f"preflight: counting denominator={denominator} remainders={remainders} "
+        f"reuse={base_encoded is not None} remaining={remaining}...", flush=True,
+    )
     total_kyokus, selection_manifest_sha256 = _count_selected_kyokus(
         source, denominator, remainders, game_sample_denominator, game_sample_remainder,
     )
     total = sum(total_kyokus.values())
     if total == 0:
         raise RuntimeError("target subset contains no kyokus")
+    if base_encoded is not None:
+        assert reused_manifest is not None
+        base_preflight = reused_manifest.get("preflight_target_kyokus")
+        if not isinstance(base_preflight, dict):
+            raise RuntimeError("base_encoded manifest lacks preflight_target_kyokus")
+        remaining_kyokus = {
+            split: int(total_kyokus[split]) - int(base_preflight[split])
+            for split in ("train", "validation")
+        }
+        if any(value < 0 for value in remaining_kyokus.values()):
+            raise RuntimeError("base_encoded preflight counts exceed requested subset")
+        encode_total = sum(remaining_kyokus.values())
+    else:
+        remaining_kyokus = total_kyokus
+        encode_total = total
     print(
-        f"preflight: target_kyokus={total} train={total_kyokus['train']} "
-        f"validation={total_kyokus['validation']}", flush=True,
+        f"preflight: target_kyokus={total} encode_kyokus={encode_total} "
+        f"train={remaining_kyokus['train']} validation={remaining_kyokus['validation']}", flush=True,
     )
+    field_statistics = _empty_v16_field_statistics()
     counts: dict[str, int] = {
         "train_kyokus": 0, "validation_kyokus": 0,
         "train_decisions": 0, "validation_decisions": 0,
     }
-    field_statistics = _empty_v16_field_statistics()
+    if base_encoded is not None:
+        assert reused_manifest is not None
+        base_counts = reused_manifest.get("counts")
+        if not isinstance(base_counts, dict):
+            raise RuntimeError("base_encoded manifest lacks counts")
+        for key in counts:
+            if key not in base_counts:
+                raise RuntimeError(f"base_encoded manifest lacks counts.{key}")
+            counts[key] = int(base_counts[key])
+        base_statistics = reused_manifest.get("field_statistics")
+        if not isinstance(base_statistics, dict):
+            raise RuntimeError("base_encoded manifest lacks field_statistics")
+        manifest_key = {
+            "legal_actions": "legal_action_id_counts",
+            "expert_actions": "expert_action_id_counts",
+        }
+        for name in field_statistics:
+            source_name = manifest_key.get(name, name)
+            if source_name not in base_statistics:
+                raise RuntimeError(f"base_encoded manifest lacks field_statistics.{source_name}")
+            value = base_statistics[source_name]
+            if name in {"query_answer_out_of_range", "snapshot_numeric_out_of_range"}:
+                field_statistics[name] = np.asarray([value], dtype=np.int64)
+            else:
+                field_statistics[name] = np.asarray(value, dtype=np.int64)
+        for split in ("train", "validation"):
+            destination = output / split
+            destination.mkdir(parents=True, exist_ok=True)
+            for path in sorted((base_encoded / split).glob(f"{split}-*.npz")):
+                if path.name.endswith(".tmp.npz"):
+                    continue
+                shutil.copy2(path, destination / path.name)
     tasks: list[tuple[Any, ...]] = []
     for split in ("train", "validation"):
         destination = output / split
-        destination.mkdir()
+        destination.mkdir(exist_ok=True)
+        chunk_suffix = None
+        if base_encoded is not None:
+            chunk_suffix = f"r{'-'.join(str(value) for value in remaining)}"
         for shard in sorted((source / split).glob(f"{split}-*.tar")):
             tasks.append((
-                split, str(shard), str(destination), denominator, remainders,
+                split, str(shard), str(destination), denominator, remaining,
                 kyokus_per_shard, game_sample_denominator, game_sample_remainder,
+                chunk_suffix,
             ))
     completed = processed_kyokus = processed_decisions = 0
     started = time.monotonic()
@@ -795,10 +888,10 @@ def precompute_v16(
                     processed_kyokus += int(kyoku_delta)
                     processed_decisions += int(decision_delta)
                     elapsed = max(time.monotonic() - started, 1e-6)
-                    remaining = total - processed_kyokus
+                    remaining = encode_total - processed_kyokus
                     rate = processed_kyokus / elapsed if elapsed else 0.0
                     print(
-                        f"progress kyokus={processed_kyokus}/{total} remaining={remaining} "
+                        f"progress kyokus={processed_kyokus}/{encode_total} remaining={remaining} "
                         f"decisions={processed_decisions} rate={rate:.2f} kyokus/s "
                         f"eta={_format_eta(remaining / rate if rate else float('inf'))}",
                         flush=True,
@@ -821,11 +914,17 @@ def precompute_v16(
         raise RuntimeError("v16 encoding produced out-of-range query answers")
     if int(field_statistics["snapshot_numeric_out_of_range"][0]) != 0:
         raise RuntimeError("v16 encoding produced out-of-range snapshot numerics")
+    for split in ("train", "validation"):
+        if int(counts[f"{split}_kyokus"]) != int(total_kyokus[split]):
+            raise RuntimeError(
+                f"{split} kyoku count {counts[f'{split}_kyokus']} != "
+                f"preflight {total_kyokus[split]}"
+            )
     manifest = {
         "format": V16_ENCODED_FORMAT,
         "encoding_protocol_version": ENCODING_PROTOCOL_VERSION,
         "encoding_contract_sha256": V16_ACTOR_INPUT_CONTRACT_SHA256,
-        "source_manifest_sha256": hashlib.sha256((source / "manifest.json").read_bytes()).hexdigest(),
+        "source_manifest_sha256": source_manifest_sha256,
         "subset_denominator": denominator,
         "subset_remainders": list(remainders),
         "game_sample_denominator": game_sample_denominator,
@@ -838,6 +937,8 @@ def precompute_v16(
         "preflight_target_kyokus": total_kyokus,
         "counts": counts,
         "selection_manifest_sha256": selection_manifest_sha256,
+        **({"reused_encoded_cache": str(base_encoded), "reused_counts": dict(reused_manifest["counts"])}
+           if base_encoded is not None and reused_manifest is not None else {}),
         "field_statistics": {
             "query_answer_out_of_range": int(field_statistics["query_answer_out_of_range"][0]),
             "snapshot_numeric_out_of_range": int(field_statistics["snapshot_numeric_out_of_range"][0]),
@@ -943,6 +1044,10 @@ def main() -> None:
         "--subset-remainders", type=str, default=None,
         help="comma-separated remainders, e.g. 0,1 for the v16 40%% subset",
     )
+    parser.add_argument(
+        "--reuse-encoded", type=Path, default=None,
+        help="复用已有 V16 编码缓存(如 40%%),只追加本次 remainders 的新数据",
+    )
     parser.add_argument("--kyokus-per-shard", type=int, default=256)
     parser.add_argument("--workers", type=int, default=8, help="independent tar-shard encoder processes")
     parser.add_argument("--progress-every-kyokus", type=int, default=32, help="worker progress update interval")
@@ -967,6 +1072,7 @@ def main() -> None:
         game_sample_denominator=args.game_sample_denominator,
         game_sample_remainder=args.game_sample_remainder,
         require_complete_action_coverage=args.require_complete_action_coverage,
+        base_encoded=args.reuse_encoded,
     )
 
 

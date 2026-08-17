@@ -1,4 +1,5 @@
-# V16 PPO:从 V16 SFT 初始化、Top-3 Q-boosting、70% GRP + 30% 分差奖励。
+# V16-small PPO:从 V16-small SFT 初始化、Top-3 Q-boosting、
+# 70% GRP + 30% 分差奖励。
 # 自包含完整配置,不与打包默认叠加;1v3 机制节奏键(10 进程 × 160 半庄、每
 # 30 updates)不在本文件复制,由 evaluation/mechanism.py 单一来源提供。
 seed: 1
@@ -12,7 +13,7 @@ critic_layers: 2
 inference_dtype: bf16
 game_mode: 4p-red-half
 
-# V16 前置产物:SFT 权重、冻结 GRP 与离线归一化统计量。
+# V16-small 前置产物:SFT 权重、冻结 GRP 与离线归一化统计量。
 init_model: checkpoints/train_riichi_v16/sft/best.pt
 grp_checkpoint: checkpoints/train_riichi_v16/grp/best.pt
 grp_dataset: datasets/tenhou_grp_2024_2025_v16

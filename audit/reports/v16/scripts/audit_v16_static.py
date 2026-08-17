@@ -98,11 +98,17 @@ def main() -> None:
         "encoding_protocol.py" in protocol_doc and "QUERY_ROW_WIDTH=15" in protocol_doc,
     )
 
-    # 当前编码数据集的 manifest 必须是 v16 单版本契约。
-    dataset_manifest = ROOT / "datasets/tenhou_sft_2024_2025_encoded_40pct_v16/manifest.json"
+    # 当前编码数据集的 manifest 必须是 v16 单版本契约(60% 就绪后优先校验)。
+    dataset_manifest = (
+        ROOT / "datasets/tenhou_sft_2024_2025_encoded_60pct_v16/manifest.json"
+    )
+    if not dataset_manifest.is_file():
+        dataset_manifest = (
+            ROOT / "datasets/tenhou_sft_2024_2025_encoded_40pct_v16/manifest.json"
+        )
     manifest = json.loads(dataset_manifest.read_text(encoding="utf-8"))
     check(
-        "当前 V16 数据集 manifest 协议版本与哈希一致",
+        f"当前 V16 数据集 manifest 协议版本与哈希一致({dataset_manifest.parent.name})",
         manifest.get("format") == protocol.ENCODED_FORMAT
         and manifest.get("encoding_protocol_version") == 16
         and manifest.get("encoding_contract_sha256") == V16_ACTOR_INPUT_CONTRACT_SHA256,

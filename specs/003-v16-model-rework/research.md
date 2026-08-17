@@ -1,5 +1,10 @@
 # Research: V16 模型重构与训练
 
+> **2026-08-17 修订**:V16 版本命名保持,隐藏层改为 V16-small
+> (d_model=192/12Q/3KV/FFN=576/3 shared+1 actor+2 critic,总参数约 3.0M);
+> SFT 数据 40%→60%(复用 40% 缓存,追加 remainder=2)。下方 R3 为原始设计决策,
+> 当前以 `spec.md` 的 Amendment 与设计文档 §0 为准。
+
 ## 现状盘点(代码库事实)
 
 - 模型:`model/architecture.py` 的 `ModelConfig` 现为 mid(d192/8Q/2KV/24hd/576FFN/
@@ -92,4 +97,3 @@
 在 spec.md Assumptions 拍板。以下仅为实现期需固定并登记契约常量的内部值:
 协议契约 sha256、GRP 归一化统计量、GRP checkpoint 目录布局
 (`checkpoints/train_riichi_v16/grp`)。
-

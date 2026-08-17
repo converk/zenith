@@ -31,6 +31,14 @@ commit,checkpoint 与数据集不删,v11 权重/v14 资产冷存储);②新增�
 - Q: 新的信息编码协议用哪个单一版本号? → A: v16(与 V16 实验代对齐;输入编码收敛
   为单一协议版本,废弃 `v14_v16` 之类的组合命名与多版本拆分)
 
+### Amendment 2026-08-17(V16-small + 60% 数据)
+
+- 版本命名保持 V16,输入/输出协议不变;隐藏层下调为 V16-small:
+  `d_model=192`、Q/KV=12/3、head_dim=16、FFN=576、3 Shared + 1 Actor +
+  2 Critic,总参数约 3.0M(含 Top-3 Q scorer)。
+- SFT 编码数据从 40% 扩到 60%:复用 `..._encoded_40pct_v16`,仅追加
+  remainder=2 的 20%,输出 `..._encoded_60pct_v16`;GRP 模型与奖励契约不修改。
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - 统一 Action Query 输入契约与语义落地 (Priority: P1)
@@ -63,8 +71,9 @@ categorical 因子取值均在 cardinality 范围内,越界样本数为 0。
 
 作为模型训练维护者,我希望 Actor-Critic 扩容到设计目标(d_model=256、16/4 GQA、
 FFN=1088、4 Shared + 1 Actor、4 Shared + 2 Critic,总参数约 7.5–7.8M、Actor 推理
-约 5.3M),策略头由 Offense/Defense 对称融合输出且无 zero-init,并能以重编码数据集
-从头完成 SFT。
+约 5.3M)调整为 V16-small(d_model=192、12/3 GQA、FFN=576、3 Shared + 1 Actor +
+2 Critic,总参数约 3.0M、Actor 推理约 2.0M),策略头由 Offense/Defense 对称融合
+输出且无 zero-init,并能以 60% 重编码数据集从头完成 SFT。
 
 **Why this priority**: 容量提升与攻守对称是 V16 的核心设计意图;输入 Schema、
 hidden 大小、Transformer 深度、查询融合全部改变后,旧 SFT 参数不可继承,必须从头
@@ -75,8 +84,8 @@ hidden 大小、Transformer 深度、查询融合全部改变后,旧 SFT 参数�
 
 **Acceptance Scenarios**:
 
-1. **Given** V16 网络配置, **When** 统计参数, **Then** 总参数在 7.5–7.8M 容差
-范围、Actor 推理参数约 5.3M,不采用 288/320 等更大 hidden。
+1. **Given** V16-small 网络配置, **When** 统计参数, **Then** 总参数在约 3.0M
+容差范围(±0.3M)、Actor 推理参数约 2.0M。
 2. **Given** 任一合法动作的 Offense/Defense 表示, **When** 前向传播, **Then**
 二者经对称融合(concat→Linear 512→256→SiLU→Policy MLP)输出唯一 logit,且不存在
 zero-init 分支。

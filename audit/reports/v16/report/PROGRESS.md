@@ -86,6 +86,21 @@
   牌物理 id 归一化、reach/dahai 摸牌回退(修复真实数据 5 类崩溃);GRP 按
   game_id 聚合完整半庄(修复逐局误编码)。
 
+## 2026-08-17 V16-small 与 60% 数据修订
+
+- 版本命名保持 V16,输入/输出协议不变;隐藏层调整为 V16-small:
+  `d_model=192`、Q/KV=12/3、head_dim=16、FFN=576、3 Shared + 1 Actor +
+  2 Critic;实测总参数 **3,081,603**(含 Top-3 Q scorer)、Actor 推理
+  **2,043,073**。旧大模型参数不兼容,已按只归档移动原则迁移。
+- SFT 数据扩到 60%:复用 `datasets/tenhou_sft_2024_2025_encoded_40pct_v16`
+  (remainders 0,1),`precompute_v16 --reuse-encoded` 只追加 remainder=2 的
+  20% 新编码,输出 `datasets/tenhou_sft_2024_2025_encoded_60pct_v16`;
+  manifest 记录 `reused_encoded_cache`/`reused_counts`。
+- GRP 模型、奖励契约、1v3/SFT 节奏键均不修改。
+- 归档:旧 V16 大模型 SFT/PPO checkpoint、日志与 1v3 评测结果已移动到
+  `checkpoints/train_riichi_v16/archive_20260817/`、
+  `logs/v16/archive_20260817/` 与 `audit/reports/v16/eval/archive_20260817/`。
+
 ## 关键指标
 
 - 语义正确性:待记录(20 slot 独立 oracle 比对)
@@ -96,7 +111,7 @@
   σ_Score=4.2656 固化值不变、外层 clip ±10、内层分差 clip ±24 千点。
 - PPO 性能基线(后两轮):待记录
 - 宪法修订:待记录(预期 1.3.0→1.4.0 MINOR)
-- V16 网络:总参数 7,811,587 / Actor 5,525,761(含 Top-3 Q scorer)
+- V16-small 网络:总参数 3,081,603 / Actor 2,043,073(含 Top-3 Q scorer)
 
 ## 接续指引(新会话交接)
 

@@ -9,12 +9,13 @@
 
 按设计文档重构 V16:输入编码收敛为单一新协议 v16(Objective Facts + Compact
 Snapshot + 每合法动作一对 10-slot Offense/Defense Query,删除全部 Derived
-Features 与牌河/副露重复表示);网络扩容为 d_model=256/16Q/4KV/FFN=1088/4
-shared+1 actor+2 critic(总参数 7.5–7.8M),策略头 Offense/Defense 对称融合、删除
-zero-init;Critic 保留特权输入(三家手牌 + 后 5 张牌山);PPO 奖励改为 70% 归一化
-GRP delta + 30% 归一化小局分差(utility [12,4,-6,-10],σ 离线固定),冻结轻量 GRP
+Features 与牌河/副露重复表示);网络按 **2026-08-17 V16-small 修订** 为
+d_model=192/12Q/3KV/FFN=576/3 shared+1 actor+2 critic(总参数约 3.0M,版本命名
+保持 V16),策略头 Offense/Defense 对称融合、删除 zero-init;Critic 保留特权输入
+(三家手牌 + 后 5 张牌山);PPO 奖励改为 70% 归一化
+GRP delta + 30% 归一化小局分差(utility [24,8,-12,-24],σ 离线固定),冻结轻量 GRP
 (50–70K)并采用 Top-3 Q-boosting(训练候选 Top-3∪行为动作 ≤4、动作表示 detach);
-V16 SFT 从头重编码训练(Recall@3 前置检查);同步完成协议文档、宪法 Principle II
+V16 SFT 从 40% 扩到 60% 数据后从头重训练(Recall@3 前置检查);同步完成协议文档、宪法 Principle II
 修订、旧代码零引用清理与产物治理。
 
 ## Technical Context

@@ -14,14 +14,14 @@ from riichi_ppo_v1.model import KyokuTransformerActorCritic, ModelConfig
 def _v16_config(*, context_tokens: int = 128) -> ModelConfig:
     """真实 v16 preset 的小容量替身参数也必须满足结构不变量。"""
     return ModelConfig(
-        layers=5,
-        shared_layers=4,
+        layers=4,
+        shared_layers=3,
         critic_layers=2,
-        d_model=256,
-        query_heads=16,
-        kv_heads=4,
+        d_model=192,
+        query_heads=12,
+        kv_heads=3,
         head_dim=16,
-        ffn_dim=1088,
+        ffn_dim=576,
         context_tokens=context_tokens,
         policy_head_type="symmetric_action_query",
     )
@@ -76,12 +76,12 @@ def _v16_inputs(batch: int = 1, action_ids: tuple[int, ...] = (0, 5)) -> dict:
 
 def test_v16_preset_matches_design_table() -> None:
     config = ModelConfig.preset("v16")
-    assert config.d_model == 256
-    assert config.query_heads == 16
-    assert config.kv_heads == 4
+    assert config.d_model == 192
+    assert config.query_heads == 12
+    assert config.kv_heads == 3
     assert config.head_dim == 16
-    assert config.ffn_dim == 1088
-    assert config.shared_layers == 4
+    assert config.ffn_dim == 576
+    assert config.shared_layers == 3
     assert config.layers - config.shared_layers == 1
     assert config.critic_layers == 2
     assert config.policy_head_type == "symmetric_action_query"
@@ -89,7 +89,7 @@ def test_v16_preset_matches_design_table() -> None:
 
 
 def test_d_model_must_equal_heads_times_head_dim() -> None:
-    assert ModelConfig.preset("v16").d_model == 16 * 16
+    assert ModelConfig.preset("v16").d_model == 12 * 16
     try:
         ModelConfig(d_model=257, query_heads=16, kv_heads=4, head_dim=16)
     except ValueError as error:
@@ -111,14 +111,14 @@ def test_v16_parameter_budget() -> None:
         model.policy_mlp,
     )
     actor = sum(parameter.numel() for module in actor_modules for parameter in module.parameters())
-    # 设计钦定 7.5–7.8M 总参数 / 约 5.3M Actor 推理,容差 ±0.3M。
-    assert 7_200_000 <= total <= 8_100_000, f"total={total}"
-    assert 5_000_000 <= actor <= 5_600_000, f"actor={actor}"
+    # V16-small 设计目标约 3.0M 总参数(含 Top-3 Q scorer),容差 ±0.3M。
+    assert 2_700_000 <= total <= 3_300_000, f"total={total}"
+    assert 1_900_000 <= actor <= 2_500_000, f"actor={actor}"
 
 
 def test_offense_defense_symmetric_fusion_without_zero_init() -> None:
     model = KyokuTransformerActorCritic(ModelConfig.preset("v16"))
-    # 对称融合:concat 512→256 的单一 Linear,两分支共用,不存在独立 offense 投影。
+    # 对称融合:concat 384→192 的单一 Linear,两分支共用,不存在独立 offense 投影。
     assert not hasattr(model, "offense_projection") or model.offense_projection is None
     fusion_linear = model.action_fusion[0]
     assert isinstance(fusion_linear, torch.nn.Linear)

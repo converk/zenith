@@ -1180,7 +1180,7 @@ def main() -> None:
         dataset = (
             args.dataset
             if args.dataset is not None
-            else Path(str(config.get("dataset", "datasets/tenhou_sft_2024_2025_encoded_40pct_v16")))
+            else Path(str(config.get("dataset", "datasets/tenhou_sft_2024_2025_encoded_60pct_v16")))
         )
         if args.resume:
             config["resume"] = str(args.resume)

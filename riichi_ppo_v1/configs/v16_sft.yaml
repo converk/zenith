@@ -1,6 +1,6 @@
-# V16 SFT 从零训练:自包含完整配置,不与打包默认叠加。
+# V16-small SFT 从零训练:自包含完整配置,不与打包默认叠加。
 # 输入为 V16 编码(Objective Facts + Compact Snapshot + 每动作一对 Query),
-# 网络为 symmetric_action_query(v16 preset);checkpoint 与日志固定到 v16 产物。
+# 网络为 symmetric_action_query(v16-small preset);checkpoint 与日志固定到 v16 产物。
 # 节奏键(每 3000 steps 验证/保存、最终 96 半庄)不在本文件复制,由
 # sft/contract.py 的机制常量单一来源提供;V16 启发式评测待 V16 PPO 推理路径
 # (Phase 6)落地后开启。
@@ -10,7 +10,7 @@ learner_gpus: 1
 model_size: v16
 context_tokens: 4096
 policy_head_type: symmetric_action_query
-dataset: datasets/tenhou_sft_2024_2025_encoded_40pct_v16
+dataset: datasets/tenhou_sft_2024_2025_encoded_60pct_v16
 epochs: 1
 train_critic: false
 train_public_value: false

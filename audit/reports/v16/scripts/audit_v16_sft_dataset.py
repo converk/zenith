@@ -1,6 +1,6 @@
 """V16 SFT 数据语义审计:全量结构扫描 + 抽样重编码与存量 chunk 比对。
 
-全量扫描只读取 `datasets/tenhou_sft_2024_2025_encoded_40pct_v16`,不重新编码;
+全量扫描只读取目标 V16 编码缓存(默认 60%),不重新编码;
 抽样部分从原始 `datasets/tenhou_sft_2024_2025` 按 V16 子集规则选取成员,重跑
 `encode_kyoku_v16`,再与同 game_id/kyoku 的存量样本逐字段比对。
 """
@@ -36,12 +36,12 @@ from riichi_ppo_v1.sft.precompute import selected_any
 
 ROOT = Path(__file__).resolve().parents[4]
 RAW_ROOT = ROOT / "datasets/tenhou_sft_2024_2025"
-ENCODED_ROOT = ROOT / "datasets/tenhou_sft_2024_2025_encoded_40pct_v16"
+ENCODED_ROOT = ROOT / "datasets/tenhou_sft_2024_2025_encoded_60pct_v16"
 NUM_ACTIONS = 241
 CONTEXT_LIMIT = 4096
 KYOKUS_PER_CHUNK = 256
 SUBSET_DENOMINATOR = 5
-SUBSET_REMAINDERS = (0, 1)
+SUBSET_REMAINDERS = (0, 1, 2)
 AUDIT_SEED = "v16-data-semantics-audit-v1"
 
 
@@ -319,21 +319,28 @@ def _read_member(shard: Path, name: str) -> str:
 
 
 def _stored_samples_for_member(encoded_root: Path, split: str, shard: Path, member_name: str) -> tuple[np.ndarray, np.ndarray]:
-    """定位成员对应的编码 chunk,并返回该 game_id/kyoku 的全部样本数组。"""
-    selected = _selected_members_for_shard(shard)
-    ordinal = selected.index(member_name)
-    chunk_index = ordinal // KYOKUS_PER_CHUNK
-    path = encoded_root / split / f"{shard.stem}-{chunk_index:03d}.npz"
-    _require(path.is_file(), f"编码 chunk 缺失: {path}")
-    data = np.load(path, allow_pickle=False)
+    """在编码缓存中搜索该 game_id/kyoku 的全部样本数组(兼容 40%+追加命名)。"""
     year, game_id, kyoku_index = _member_metadata(member_name)
-    game_ids = np.asarray(data["game_ids"])
-    kyoku_indices = np.asarray(data["kyoku_indices"])
-    rows = np.flatnonzero(
-        (game_ids == game_id) & (kyoku_indices == kyoku_index)
-    )
+    data = None
+    rows = None
+    for path in sorted((encoded_root / split).glob(f"{split}-*.npz")):
+        candidate = np.load(path, allow_pickle=False)
+        game_ids = np.asarray(candidate["game_ids"])
+        kyoku_indices = np.asarray(candidate["kyoku_indices"])
+        found = np.flatnonzero(
+            (game_ids == game_id) & (kyoku_indices == kyoku_index)
+        )
+        if len(found):
+            if data is not None:
+                candidate.close()
+                _fail(f"{member_name} 在多个编码 chunk 中重复: {path}")
+            data = candidate
+            rows = found
+        else:
+            candidate.close()
+    _require(data is not None and rows is not None, f"{member_name} 未找到匹配样本")
+    assert data is not None and rows is not None
     if not len(rows):
-        data.close()
         _fail(f"{member_name} 在 {path} 中找不到匹配样本")
     return data, rows
 
@@ -455,12 +462,21 @@ def run_sample_audit(train_count: int, validation_count: int) -> dict[str, objec
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--dataset", type=Path, default=ENCODED_ROOT,
+        help="目标 V16 编码缓存目录(默认 60% 数据集)",
+    )
     parser.add_argument("--skip-scan", action="store_true", help="跳过全量结构扫描")
     parser.add_argument("--skip-sample", action="store_true", help="跳过抽样重编码比对")
     parser.add_argument("--train-count", type=int, default=120)
     parser.add_argument("--validation-count", type=int, default=20)
     parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args()
+    globals()["ENCODED_ROOT"] = args.dataset
+    manifest = json.loads((ENCODED_ROOT / "manifest.json").read_text(encoding="utf-8"))
+    globals()["SUBSET_REMAINDERS"] = tuple(
+        int(value) for value in manifest["subset_remainders"]
+    )
 
     scan_result = None
     if not args.skip_scan:

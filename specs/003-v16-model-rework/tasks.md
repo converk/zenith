@@ -335,3 +335,13 @@ Task: "state-machine analysis.rs(D0–D9、对手摘要)"
 - 提交遵循「每主题一个 commit、测试通过、可独立回滚」
 - 冒烟测试结束必须删除其日志与结果文件
 - 禁止在实验配置复制评测机制节奏键;机制改动必须走宪法修订
+
+## 2026-08-17 V16-small 追加需求(用户直接需求)
+
+- [x] 隐藏层调整为 V16-small(d_model=192、Q/KV=12/3、head_dim=16、FFN=576、
+  Shared=3+Actor=1+Critic=2,总参数约 3.0M);版本命名保持 V16,输入/输出协议
+  不变。
+- [x] `precompute_v16` 支持 `--reuse-encoded`,复用 40% 编码缓存并只追加
+  remainder=2 的 20%;配置指向 60% 数据集。
+- [ ] 运行 60% 数据预处理并核对 manifest/全量审计。
+- [ ] 用 V16-small 从头重训 SFT,验证集 Recall@3 ≥ 98% 后进入 PPO。

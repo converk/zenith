@@ -30,17 +30,19 @@ conda run -n Mahjong-AI python -m riichi_ppo_v1.sft.precompute \
 `encoding_protocol_version=16` 与契约 sha256;每个合法/专家动作组非零、数值越界
 计数为 0。验证后删除 canary 目录。
 
-## 场景 3:40% 全量重编码
+## 场景 3:60% 全量重编码(复用既有 40%)
 
 ```bash
 conda run -n Mahjong-AI python -m riichi_ppo_v1.sft.precompute \
   --source datasets/tenhou_sft_2024_2025 \
-  --output datasets/tenhou_sft_2024_2025_encoded_40pct_v16 \
-  --subset-denominator 5 --subset-remainders 0,1 --workers 16
+  --output datasets/tenhou_sft_2024_2025_encoded_60pct_v16 \
+  --subset-denominator 5 --subset-remainders 0,1,2 --workers 16 \
+  --reuse-encoded datasets/tenhou_sft_2024_2025_encoded_40pct_v16
 ```
 
-预期:train/validation 决策数与独立统计一致;manifest 哈希稳定;契约版本字段唯一。
-训练前与 canary/audit 报告核对后再启动。
+预期:只编码新增的 remainder=2(约 20%),复用 40% chunk;manifest 的
+`subset_remainders=[0,1,2]`、`reused_encoded_cache` 指向 40% 缓存,计数为
+40%+20% 之和;全量结构审计零异常。训练前与 canary/audit 报告核对后再启动。
 
 ## 场景 4:V16 SFT 从头训练
 
@@ -95,4 +97,3 @@ git diff -- riichi_ppo_v1/evaluation/mechanism.py configs/sft.yaml
 文档(`docs/v16_input_protocol.md`、`KyokuEventTupleProtocol.md`)与实现差异为 0;
 宪法 Principle II 已修订为「信息编码协议 v16」并记录 Sync Impact Report;
 README/docs/AGENTS 路径与产物一致。
-

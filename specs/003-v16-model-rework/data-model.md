@@ -29,11 +29,12 @@
 
 ### 4. V16ActorCritic(网络)
 
-- 字段:`ModelConfig(d_model=256, query_heads=16, kv_heads=4, head_dim=16,
-  ffn_dim=1088, shared_layers=4, actor_layers=1, critic_layers=2)`;策略融合头
-  (concat 512→256→SiLU→MLP);Top-3 Q scorer(512→256→SiLU→1);Value head。
-- 校验:d_model == Q×head_dim;Q 可被 KV 整除;总参数 7.5–7.8M、Actor 推理约
-  5.3M(±0.3M);不存在 zero-init offense 分支与 241 维 Q head。
+- 字段:`ModelConfig(d_model=192, query_heads=12, kv_heads=3, head_dim=16,
+  ffn_dim=576, shared_layers=3, actor_layers=1, critic_layers=2)`(V16-small,
+  版本命名保持 V16);策略融合头(concat 384→192→SiLU→MLP);Top-3 Q scorer
+  (384→192→SiLU→1);Value head。
+- 校验:d_model == Q×head_dim;Q 可被 KV 整除;V16-small 总参数约 3.0M、Actor
+  推理约 2.0M(±0.3M);不存在 zero-init offense 分支与 241 维 Q head。
 
 ### 5. GRP 模型与样本
 
@@ -51,8 +52,9 @@
 
 ### 7. V16 数据集
 
-- SFT:`datasets/tenhou_sft_2024_2025_encoded_40pct_v16`(train/validation,
-  manifest 契约见 `contracts/sft-dataset-v16.md`)。
+- SFT:`datasets/tenhou_sft_2024_2025_encoded_60pct_v16`(train/validation,
+  复用 40% 缓存 + 追加 remainder=2 的 20%;manifest 契约见
+  `contracts/sft-dataset-v16.md`)。
 - GRP:`datasets/tenhou_grp_2024_2025_v16`(视角样本 + 归一化统计量 JSON)。
 - 校验:manifest 的协议版本/契约 sha256/计数与独立统计一致;旧数据集不删除。
 
@@ -61,4 +63,3 @@
 - Actor 契约(category 3)不得引用 Critic 特权字段(对手手牌、后续牌山)。
 - 奖励(6)只消费冻结 GRP(5)输出与终局点数,训练期不更新 GRP 参数。
 - 网络(4)与契约(1)的版本必须经宪法 Principle II 登记后生效。
-
