@@ -151,6 +151,26 @@ def test_v16_forward_masks_illegal_actions_and_backpropagates() -> None:
     assert model.value_head.weight.grad is not None
 
 
+def test_v16_forward_dispatches_through_call() -> None:
+    """``model(**v16_inputs)`` 必须与 ``forward_v16`` 等价。
+
+    回归:SFT 双卡 DDP 包装后没有 ``forward_v16`` 方法,训练前向统一走
+    ``__call__`` 分发,才能由 DistributedDataParallel 触发梯度同步。
+    """
+    model = KyokuTransformerActorCritic(ModelConfig.preset("v16"))
+    inputs = _v16_inputs(batch=1, action_ids=(0, 5))
+    direct = model.forward_v16(**inputs)
+    via_call = model(**inputs)
+    torch.testing.assert_close(
+        direct["raw_policy_logits"], via_call["raw_policy_logits"],
+    )
+    torch.testing.assert_close(
+        direct["policy_logits"], via_call["policy_logits"],
+    )
+    via_call["policy_logits"][:, 0].sum().backward()
+    assert model.policy_mlp[1].weight.grad is not None
+
+
 def test_v16_policy_only_forward_skips_critic() -> None:
     model = KyokuTransformerActorCritic(ModelConfig.preset("v16"))
     output = model.forward_v16(**_v16_inputs(batch=1, action_ids=(7,)), policy_only=True)

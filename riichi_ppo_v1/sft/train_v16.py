@@ -210,12 +210,21 @@ def length_bucketed_batches_v16(
 
 
 def _v16_forward(model: nn.Module, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    return model.forward_v16(
-        batch["history_factors"], batch["history_numeric"], batch["history_lengths"],
-        batch["snapshot_kinds"], batch["snapshot_cat"], batch["snapshot_num"],
-        batch["snapshot_lengths"],
-        batch["query_rows"], batch["action_ids"], batch["pair_counts"],
-        batch["legal_mask"], policy_only=True,
+    # 统一走 __call__/forward 分发,使 DistributedDataParallel 也能正确触发
+    # 梯度同步;DDP 包装后没有 forward_v16 方法。
+    return model(
+        history_factors=batch["history_factors"],
+        history_numeric=batch["history_numeric"],
+        history_lengths=batch["history_lengths"],
+        snapshot_kinds=batch["snapshot_kinds"],
+        snapshot_cat=batch["snapshot_cat"],
+        snapshot_num=batch["snapshot_num"],
+        snapshot_lengths=batch["snapshot_lengths"],
+        query_rows=batch["query_rows"],
+        query_action_ids=batch["action_ids"],
+        query_pair_counts=batch["pair_counts"],
+        legal_mask=batch["legal_mask"],
+        policy_only=True,
     )
 
 

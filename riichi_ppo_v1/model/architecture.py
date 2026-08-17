@@ -520,7 +520,15 @@ class KyokuTransformerActorCritic(nn.Module):
         raw, logits = self._isolated_logits(actor, defense_ids, legal_mask)
         return {"raw_policy_logits": raw, "policy_logits": logits}
 
-    def forward(
+    def forward(self, *args, **kwargs):
+        """入口分发:V16 关键字输入走 ``forward_v16``,其余走 legacy 路径。"""
+        if "history_factors" in kwargs or "query_rows" in kwargs:
+            if args:
+                raise TypeError("V16 forward only accepts keyword arguments")
+            return self.forward_v16(**kwargs)
+        return self._forward_legacy(*args, **kwargs)
+
+    def _forward_legacy(
         self,
         token_factors: Tensor,
         token_numeric: Tensor,
