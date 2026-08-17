@@ -15,6 +15,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
+from ..model.architecture import dueling_candidate_q
 from ..model.schema import NUM_ACTIONS, TOKEN_SCHEMA_VERSION
 from .metrics import ppo_buffer_metrics
 from .profiling import StageProfiler
@@ -69,7 +70,11 @@ def candidate_q_loss(
     q_targets: torch.Tensor,
     candidate_valid: torch.Tensor,
 ) -> torch.Tensor:
-    """训练候选的 Q 回归(Huber);无效候选不参与。"""
+    """行为动作的 Q 回归(Huber);仅对被实际执行的动作计算目标。
+
+    未执行的 Top-3 候选不构造虚假 Q target:它们只通过 Dueling 基线与
+    p_boost 蒸馏间接参与训练。
+    """
     if q_scores.shape != q_targets.shape or q_scores.shape != candidate_valid.shape:
         raise ValueError("q_scores/q_targets/candidate_valid shapes differ")
     if not bool(candidate_valid.any()):
@@ -79,6 +84,39 @@ def candidate_q_loss(
         q_targets[candidate_valid],
         reduction="mean",
     )
+
+
+def boosted_top3_probabilities(
+    candidate_probs: torch.Tensor,
+    advantages: torch.Tensor,
+    *,
+    lambda_q: float,
+    temperature: float,
+) -> torch.Tensor:
+    """Top-3 Q-boosting 概率重分配:p_boost ∝ p_i·exp(λ_q·A_i/T)。
+
+    只在有效候选内重分配,并整体缩放回原始 Top-3 总概率质量,保证
+    ``sum(p_boost) = sum(p_i)``;无效位置输出 0。
+    """
+    if candidate_probs.shape != advantages.shape:
+        raise ValueError("candidate_probs and advantages must share the same shape")
+    if temperature <= 0:
+        raise ValueError("temperature must be positive")
+    valid = torch.isfinite(advantages) & (candidate_probs >= 0)
+    safe_probs = torch.where(
+        valid, candidate_probs, torch.zeros_like(candidate_probs)
+    )
+    safe_advantages = torch.where(
+        valid, advantages, torch.zeros_like(advantages)
+    )
+    weights = safe_probs * torch.exp(
+        (float(lambda_q) / float(temperature)) * safe_advantages
+    )
+    total = weights.sum(dim=-1, keepdim=True)
+    boosted = weights / total.clamp_min(1e-12)
+    original_mass = safe_probs.sum(dim=-1, keepdim=True)
+    boosted = boosted * original_mass
+    return torch.where(valid, boosted, torch.zeros_like(boosted))
 
 
 def validate_fresh_model_checkpoint_contract(payload: dict[str, Any]) -> None:
@@ -442,6 +480,16 @@ class PPOLearner:
         self.critic_public_grad_scale = float(hyperparameters.get("critic_public_grad_scale", 1.0))
         if not 0.0 <= self.critic_public_grad_scale <= 1.0:
             raise ValueError("critic_public_grad_scale must be in [0, 1]")
+        # Top-3 Q-boosting 蒸馏:q_boost_coef 是辅助 loss 权重,q_boost_lambda
+        # 与 q_temperature 控制 p_boost ∝ p_i·exp(λ_q·A_i/T);与资格迹衰减
+        # 超参 qboost_lambda 相互独立。
+        self.q_boost_coef = float(hyperparameters.get("q_boost_coef", 0.1))
+        self.q_boost_lambda = float(hyperparameters.get("q_boost_lambda", 1.0))
+        self.q_temperature = float(hyperparameters.get("q_temperature", 1.0))
+        if self.q_boost_coef < 0:
+            raise ValueError("q_boost_coef must be non-negative")
+        if self.q_temperature <= 0:
+            raise ValueError("q_temperature must be positive")
 
     def _sync_cuda(self) -> None:
         if self.profile_cuda_sync and self.device.type == "cuda":
@@ -604,7 +652,6 @@ class PPOLearner:
                 actions = batch["actions"]
                 old_logprobs = batch["old_logprobs"]
                 adv = batch["advantages"]
-                q_targets = batch["q_targets"]
                 batch_returns = torch.as_tensor(returns[indices], device=self.device)
                 executed_samples += len(selected)
                 executed_tokens += sum(transition_sequence_length(item) for item in selected)
@@ -655,29 +702,80 @@ class PPOLearner:
                         # Q scorer 的输入 critic_hidden/action_hiddens 仍为 BF16,
                         # 必须在 autocast 内执行;其余 PPO 数值路径离开模型前已
                         # 提升为 FP32。
-                        _boost_ids, training_ids = select_top3_candidates(
-                            output["policy_logits"].float(), legal_mask, actions,
+                        logits = output["policy_logits"].float()
+                        logprobabilities = F.log_softmax(logits, dim=-1)
+                        probabilities = logprobabilities.exp()
+                        boost_ids, training_ids = select_top3_candidates(
+                            logits, legal_mask, actions,
                         )
-                        candidate_q = self.model.q_scores_v16(
+                        # 训练候选 Top3 ∪ {a_t}:评分与集合内重归一化概率。
+                        candidate_prob = probabilities.gather(
+                            1, training_ids.clamp(min=0).long(),
+                        )
+                        candidate_raw = self.model.q_scores_v16(
                             output["critic_hidden"],
                             output["action_hiddens"],
                             batch["query_action_ids"],
                             batch["query_pair_counts"],
                             training_ids.long(),
                         )
-                        q_valid = training_ids.ge(0) & torch.isfinite(candidate_q)
-                        q_loss = candidate_q_loss(
-                            candidate_q,
-                            q_targets.float()[:, None].expand_as(candidate_q),
-                            q_valid,
+                        candidate_valid = training_ids.ge(0) & torch.isfinite(
+                            candidate_raw
                         )
+                        candidate_prob = candidate_prob.masked_fill(
+                            ~candidate_valid, 0.0
+                        )
+                        _candidate_adv, candidate_q = dueling_candidate_q(
+                            candidate_raw,
+                            candidate_prob,
+                            output["value"].float(),
+                            detach_value=True,
+                        )
+                        # 只有行为动作拥有 return 目标;未执行的候选不构造
+                        # 虚假 Q target,只经 Dueling 基线间接参与训练。
+                        behavior_valid = candidate_valid & (
+                            training_ids == actions[:, None]
+                        )
+                        # 仅用 Actor Top-3 构造 boosting 蒸馏目标。
+                        boost_prob = probabilities.gather(
+                            1, boost_ids.clamp(min=0).long(),
+                        )
+                        boost_raw = self.model.q_scores_v16(
+                            output["critic_hidden"],
+                            output["action_hiddens"],
+                            batch["query_action_ids"],
+                            batch["query_pair_counts"],
+                            boost_ids.long(),
+                        )
+                        boost_valid = boost_ids.ge(0) & torch.isfinite(boost_raw)
+                        boost_prob = boost_prob.masked_fill(~boost_valid, 0.0)
+                        boost_adv, _boost_q = dueling_candidate_q(
+                            boost_raw,
+                            boost_prob,
+                            output["value"].float(),
+                            detach_value=True,
+                        )
+                        p_boost = boosted_top3_probabilities(
+                            boost_prob.detach(),
+                            boost_adv.detach(),
+                            lambda_q=self.q_boost_lambda,
+                            temperature=self.q_temperature,
+                        )
+                        boost_logprob = logprobabilities.gather(
+                            1, boost_ids.clamp(min=0).long(),
+                        )
+                        boost_logprob = torch.where(
+                            boost_valid,
+                            boost_logprob,
+                            torch.zeros_like(boost_logprob),
+                        )
+                        q_boost_loss_values = -(
+                            p_boost * boost_logprob
+                        ).sum(dim=-1)
                 with self._gpu_stage("update/distribution_and_loss"):
-                    logits = output["policy_logits"].float()
-                    logprobabilities = F.log_softmax(logits, dim=-1)
                     logprob = logprobabilities.gather(1, actions[:, None]).squeeze(1)
                     old_logprobs = old_logprobs.float()
                     adv = adv.float()
-                    q_targets = q_targets.float()
                     ratio = (logprob - old_logprobs).exp()
                     clipped = ratio.clamp(
                         1 - float(self.hp["ppo_clip"]), 1 + float(self.hp["ppo_clip"]),
@@ -698,10 +796,16 @@ class PPOLearner:
                     raw_value_loss = value_loss_values(
                         value, batch_returns, str(self.hp.get("value_loss", "huber")),
                     )
+                    # 行为动作的 Q 目标与 Value 使用同一 rollout return 目标;
+                    # normalized_returns 在归一化模式下与 value loss 同空间。
+                    q_loss = candidate_q_loss(
+                        candidate_q,
+                        normalized_returns[:, None].expand_as(candidate_q),
+                        behavior_valid,
+                    )
                     # 非法动作 logits 为 -inf:必须在乘法前把 log_prob 与概率
                     # 都替换为 0。仅在乘积上 masked_fill 只救前向,反向仍会因
                     # -inf × 0 回传 NaN 梯度。
-                    probabilities = logprobabilities.exp()
                     safe_logprobabilities = torch.where(
                         legal_mask, logprobabilities, torch.zeros_like(logprobabilities),
                     )
@@ -734,6 +838,7 @@ class PPOLearner:
                             policy_loss_values.mean()
                             + value_coef * value_loss_values_.mean()
                             + q_coef * q_loss
+                            + self.q_boost_coef * q_boost_loss_values.mean()
                             - entropy_coef * entropy_values.mean()
                             + sft_kl_coef * sft_reference_kl_values.mean()
                         )
@@ -742,7 +847,8 @@ class PPOLearner:
                             "non-finite PPO loss: "
                             f"policy={float(policy_loss_values.mean())} "
                             f"value={float(value_loss_values_.mean())} "
-                            f"q={float(q_loss)} entropy={float(entropy_values.mean())} "
+                            f"q={float(q_loss)} q_boost={float(q_boost_loss_values.mean())} "
+                            f"entropy={float(entropy_values.mean())} "
                             f"sft_kl={float(sft_reference_kl_values.mean())}"
                         )
                 with self._gpu_stage("update/zero_grad"):
@@ -780,6 +886,7 @@ class PPOLearner:
                                 policy_loss_values
                                 + value_coef * value_loss_values_
                                 + q_coef * q_loss
+                                + self.q_boost_coef * q_boost_loss_values
                                 - entropy_coef * entropy_values
                                 + sft_kl_coef * sft_reference_kl_values
                             )
@@ -791,6 +898,7 @@ class PPOLearner:
                     ("value_prediction", value),
                     ("q_loss", q_loss.expand(len(selected))),
                     ("q_prediction", q_prediction),
+                    ("q_boost_loss", q_boost_loss_values),
                     ("entropy", entropy_values),
                     ("entropy_normalized", normalized_entropy_values),
                     ("sft_reference_kl", sft_reference_kl_values),
@@ -855,6 +963,9 @@ class PPOLearner:
             "system/critic_learning_rate": float(branch_learning_rates["critic"]),
             "system/entropy_coef": float(entropy_coef),
             "system/sft_kl_coef": float(sft_kl_coef),
+            "system/q_boost_coef": float(
+                0.0 if critic_bootstrap else self.q_boost_coef
+            ),
             "system/critic_public_grad_scale": float(
                 0.0 if critic_bootstrap else self.critic_public_grad_scale
             ),

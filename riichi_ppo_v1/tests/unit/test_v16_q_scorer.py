@@ -5,7 +5,9 @@ from __future__ import annotations
 import torch
 
 from riichi_ppo_v1.model import KyokuTransformerActorCritic, ModelConfig
+from riichi_ppo_v1.model.architecture import dueling_candidate_q
 from riichi_ppo_v1.training.learner import (
+    boosted_top3_probabilities,
     candidate_q_loss,
     select_top3_candidates,
 )
@@ -88,3 +90,78 @@ def test_q_scorer_action_to_pair_index_ignores_padded_action_ids() -> None:
 
     # 候选 0 必须始终映射到 pair 0;padding 行取值变化不得影响其得分。
     assert score_with_padding(-100.0) == score_with_padding(100.0)
+
+
+def test_dueling_q_preserves_probability_weighted_value_identity() -> None:
+    """Σ p_i·Q_i = V(s) 必须由构造恒成立。"""
+    raw = torch.tensor([[1.0, 3.0, 2.0], [4.0, -1.0, 2.0]])
+    probs = torch.tensor([[0.2, 0.3, 0.5], [0.1, 0.6, 0.3]])
+    value = torch.tensor([7.0, -3.0])
+    advantages, q_values = dueling_candidate_q(raw, probs, value)
+    normalized = probs / probs.sum(dim=-1, keepdim=True)
+    expected_advantages = raw - (normalized * raw).sum(dim=-1, keepdim=True)
+    torch.testing.assert_close(advantages, expected_advantages)
+    torch.testing.assert_close(q_values, value[:, None] + advantages)
+    torch.testing.assert_close(
+        (normalized * q_values).sum(dim=-1), value,
+    )
+    torch.testing.assert_close(
+        (normalized * advantages).sum(dim=-1), torch.zeros(2),
+    )
+
+
+def test_dueling_q_excludes_invalid_candidates_from_baseline() -> None:
+    """无效候选(-inf)不参与重归一化,其 Q 保持 -inf。"""
+    raw = torch.tensor([[1.0, float("-inf"), 3.0]])
+    probs = torch.tensor([[0.4, 0.1, 0.5]])
+    value = torch.tensor([2.0])
+    _advantages, q_values = dueling_candidate_q(raw, probs, value)
+    valid_probs = torch.tensor([[0.4, 0.5]]) / 0.9
+    valid = q_values[:, 0] * valid_probs[0, 0] + q_values[:, 2] * valid_probs[0, 1]
+    torch.testing.assert_close(valid, value)
+    assert torch.isneginf(q_values[:, 1]).all()
+
+
+def test_dueling_q_detaches_value_for_q_loss_path() -> None:
+    """Q loss 不得向 value_head 回传梯度:Value 由独立 return loss 训练。"""
+    raw = torch.randn(2, 3, requires_grad=True)
+    probs = torch.tensor([[0.2, 0.3, 0.5], [0.4, 0.4, 0.2]])
+    value = torch.randn(2, requires_grad=True)
+    _advantages, q_values = dueling_candidate_q(
+        raw, probs, value, detach_value=True,
+    )
+    q_values.sum().backward()
+    assert value.grad is None
+    assert raw.grad is not None
+
+
+def test_boosted_top3_probabilities_reweights_within_fixed_mass() -> None:
+    """p_boost 保持 Top-3 总质量不变,且向优势更大的候选倾斜。"""
+    probs = torch.tensor([[0.1, 0.2, 0.3]])
+    advantages = torch.tensor([[0.0, 1.0, -1.0]])
+    boosted = boosted_top3_probabilities(
+        probs, advantages, lambda_q=1.0, temperature=1.0,
+    )
+    torch.testing.assert_close(boosted.sum(dim=-1), probs.sum(dim=-1))
+    # 相对质量应向优势更高的候选倾斜,低优势候选的相对质量下降。
+    assert float(boosted[0, 1]) > float(boosted[0, 0])
+    assert float(boosted[0, 1]) > float(boosted[0, 2])
+    assert (
+        float(boosted[0, 1] / boosted[0, 0])
+        > float(probs[0, 1] / probs[0, 0])
+    )
+    assert (
+        float(boosted[0, 2] / boosted[0, 0])
+        < float(probs[0, 2] / probs[0, 0])
+    )
+
+
+def test_boosted_top3_probabilities_masks_invalid_slots() -> None:
+    """padding/无效位置输出 0,不参与质量守恒。"""
+    probs = torch.tensor([[0.5, 0.5, 0.0]])
+    advantages = torch.tensor([[0.5, -0.5, float("-inf")]])
+    boosted = boosted_top3_probabilities(
+        probs, advantages, lambda_q=1.0, temperature=1.0,
+    )
+    torch.testing.assert_close(boosted[0, 2], torch.zeros(()))
+    torch.testing.assert_close(boosted[0, :2].sum(), torch.tensor(1.0))

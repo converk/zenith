@@ -817,10 +817,12 @@ class KyokuTransformerActorCritic(nn.Module):
         pair_counts: Tensor,
         candidate_ids: Tensor,
     ) -> Tensor:
-        """对候选动作评分:输入 [z_critic; detach(h_a)] →512→256→SiLU→1。
+        """对候选动作输出原始优势评分 u:输入 [z_critic; detach(h_a)] →
+        512→256→SiLU→1。
 
         ``action_hiddens`` 在进入 scorer 前强制 detach,保证 Q loss 不会经动作
-        表示直接更新 Actor;无效候选(越界/缺失)返回 -inf。
+        表示直接更新 Actor;无效候选(越界/缺失)返回 -inf。这里只输出未做
+        Dueling 约束的原始评分,最终 Q 由 ``dueling_candidate_q`` 合成。
         """
         batch, action_capacity = action_ids.shape
         if candidate_ids.ndim != 2 or candidate_ids.shape[0] != batch:
@@ -846,3 +848,43 @@ class KyokuTransformerActorCritic(nn.Module):
         critic = critic_hidden[:, None, :].expand(batch, candidate_ids.shape[1], -1)
         scores = self.q_scorer(torch.cat((critic, hidden), dim=-1)).squeeze(-1).float()
         return torch.where(valid, scores, scores.new_full((), float("-inf")))
+
+
+def dueling_candidate_q(
+    raw_scores: Tensor,
+    candidate_probs: Tensor,
+    value: Tensor,
+    *,
+    detach_value: bool = False,
+) -> tuple[Tensor, Tensor]:
+    """Dueling-style 候选 Q 合成:u_i → A_i、Q_i = V(s) + A_i。
+
+    对候选集合内的概率重新归一化得到 p_i,再计算均值基线
+    ``A_i = u_i - sum(p_j * u_j)``,最终 ``Q_i = V(s) + A_i``。由构造恒有
+    ``sum(p_i * Q_i) = V(s)``:Value 只负责绝对局面价值,Top-3 Q 只编码候选
+    之间的相对差异。无效候选(评分为 -inf 或 padding 位置)不参与归一化,
+    对应 Q 保持 -inf。
+
+    ``detach_value=True`` 时 Q loss 不向 ``value_head`` 回传梯度,Value 仍由
+    独立的 return-target loss 训练。
+    """
+    if raw_scores.shape != candidate_probs.shape:
+        raise ValueError("raw_scores and candidate_probs must share the same shape")
+    if value.ndim != 1 or value.shape[0] != raw_scores.shape[0]:
+        raise ValueError("value must be [batch]")
+    valid = torch.isfinite(raw_scores) & (candidate_probs >= 0)
+    safe_scores = torch.where(valid, raw_scores, torch.zeros_like(raw_scores))
+    safe_probs = torch.where(
+        valid, candidate_probs, torch.zeros_like(candidate_probs)
+    )
+    total = safe_probs.sum(dim=-1, keepdim=True)
+    normalized = safe_probs / total.clamp_min(1e-12)
+    baseline = (normalized * safe_scores).sum(dim=-1, keepdim=True)
+    advantages = torch.where(
+        valid, safe_scores - baseline, torch.zeros_like(safe_scores)
+    )
+    value_term = value.detach() if detach_value else value
+    q_values = value_term.unsqueeze(-1) + advantages
+    return advantages, torch.where(
+        valid, q_values, q_values.new_full((), float("-inf"))
+    )

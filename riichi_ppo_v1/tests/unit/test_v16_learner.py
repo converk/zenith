@@ -269,9 +269,13 @@ def test_cpu_update_completes_epochs_and_keeps_finite_metrics() -> None:
     assert metrics["update/epochs_completed"] == 2.0
     assert metrics["update/executed_minibatches"] == 4.0
     assert metrics["update/executed_transition_samples"] == 6.0
-    for name in ("loss", "policy_loss", "value_loss", "q_loss", "entropy"):
+    for name in (
+        "loss", "policy_loss", "value_loss", "q_loss", "q_boost_loss",
+        "entropy",
+    ):
         assert np.isfinite(metrics[name]), name
     assert metrics["q_loss"] >= 0.0
+    assert metrics["q_boost_loss"] >= 0.0
     assert metrics["value_loss"] >= 0.0
     assert metrics["grad_norm_post_clip"] <= learner.hp["max_grad_norm"]
     assert {"grad_norm_actor", "grad_norm_critic", "grad_norm_shared"}.issubset(metrics)
@@ -378,6 +382,8 @@ def test_critic_bootstrap_freezes_actor_and_only_trains_critic() -> None:
     assert joint["training/critic_bootstrap"] == 0.0
     assert joint["training/policy_update"] == 1.0
     assert joint["system/actor_learning_rate"] > 0.0
+    assert joint["system/q_boost_coef"] == 0.1
+    assert np.isfinite(joint["q_boost_loss"])
     assert not torch.equal(learner.model.action_fusion[0].weight, actor_before)
 
 

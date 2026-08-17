@@ -39,6 +39,14 @@ entropy_start: 0.01
 entropy_end: 0.001
 value_coef: 0.5
 q_coef: 1.0
+# Dueling Q-boosting:Q_i = V(s) + A_i,A_i 是候选集合内以重归一化概率
+# 为基线的相对优势;只有行为动作回归到与 Value 相同的 return 目标。
+# p_boost ∝ p_i·exp(q_boost_lambda·A_i/q_temperature) 作为 detach 蒸馏
+# 目标,q_boost_coef 是其辅助 loss 权重。qboost_lambda(上方 0.95)是
+# Expected-SARSA 资格迹衰减,两者独立。
+q_boost_coef: 0.1
+q_boost_lambda: 1.0
+q_temperature: 1.0
 value_loss: huber
 value_target_normalization: batch_std
 value_target_std_floor: 0.01

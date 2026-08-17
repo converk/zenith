@@ -18,6 +18,7 @@ except ImportError:
     ray = None
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
+from ..model.architecture import dueling_candidate_q
 from ..model.schema import NUM_ACTIONS
 from .learner import select_top3_candidates
 from .profiling import StageProfiler
@@ -563,33 +564,35 @@ if ray is not None:
                         .gather(1, chosen[:, None])
                         .squeeze(1)
                     )
-                    boost_ids, _training_ids = select_top3_candidates(
+                    boost_ids, union_ids = select_top3_candidates(
                         logits, device_tensors["legal"], chosen,
                     )
-                    boost_valid = boost_ids.ge(0)
-                    top3_q = model.q_scores_v16(
-                        output["critic_hidden"],
-                        output["action_hiddens"],
-                        device_tensors["query_action_ids"],
-                        device_tensors["pair_counts"],
-                        boost_ids.clamp(min=0).long(),
-                    )
-                    top3_q = top3_q.masked_fill(~boost_valid, 0.0)
-                    top3_prob = probabilities.gather(1, boost_ids.clamp(min=0).long())
-                    top3_prob = top3_prob.masked_fill(~boost_valid, 0.0)
-                    expected_q = (top3_prob * top3_q).sum(dim=-1)
-                    behavior_q = model.q_scores_v16(
-                        output["critic_hidden"],
-                        output["action_hiddens"],
-                        device_tensors["query_action_ids"],
-                        device_tensors["pair_counts"],
-                        chosen[:, None].long(),
-                    ).squeeze(-1)
                     values = output["value"].float()
+                    # Dueling 约束:行为动作的 Q 在 Top3 ∪ {a_t} 候选集合上合成,
+                    # 概率只在该集合内重新归一化;由恒等式 sum(p_i·Q_i)=V(s),
+                    # expected_q 直接取 Value。
+                    union_valid = union_ids.ge(0)
+                    union_raw = model.q_scores_v16(
+                        output["critic_hidden"],
+                        output["action_hiddens"],
+                        device_tensors["query_action_ids"],
+                        device_tensors["pair_counts"],
+                        union_ids.clamp(min=0).long(),
+                    )
+                    union_prob = probabilities.gather(
+                        1, union_ids.clamp(min=0).long(),
+                    )
+                    union_prob = union_prob.masked_fill(~union_valid, 0.0)
+                    _union_advantages, union_q = dueling_candidate_q(
+                        union_raw, union_prob, values,
+                    )
+                    # select_top3_candidates 去重后每行恰好命中一次行为动作。
+                    q_taken = union_q[union_ids == chosen[:, None]]
+                    expected_q = values
                 chosen_cpu = chosen.cpu().numpy().astype(np.int64).tolist()
                 logprob_cpu = logprob.cpu().numpy().astype(np.float32).tolist()
                 values_cpu = values.cpu().numpy().astype(np.float32).tolist()
-                q_taken_cpu = behavior_q.cpu().numpy().astype(np.float32).tolist()
+                q_taken_cpu = q_taken.cpu().numpy().astype(np.float32).tolist()
                 expected_q_cpu = expected_q.cpu().numpy().astype(np.float32).tolist()
                 boost_ids_cpu = boost_ids.cpu().numpy().astype(np.int32)
             if end_event is not None and start_event is not None:

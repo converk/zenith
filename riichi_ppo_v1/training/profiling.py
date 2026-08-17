@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from collections import defaultdict
 from contextlib import contextmanager
+import ctypes
 from dataclasses import dataclass
 import os
 from pathlib import Path
-import subprocess
 import threading
 import time
 from typing import Iterator
@@ -68,8 +68,36 @@ class StageProfiler:
         return result
 
 
+class _NvmlUtilization(ctypes.Structure):
+    """nvmlUtilization_t:GPU 与显存利用率百分比。"""
+
+    _fields_ = [
+        ("gpu", ctypes.c_uint),
+        ("memory", ctypes.c_uint),
+    ]
+
+
+class _NvmlMemory(ctypes.Structure):
+    """nvmlMemory_t:显存总量、空闲量与已用量(字节)。"""
+
+    _fields_ = [
+        ("total", ctypes.c_ulonglong),
+        ("free", ctypes.c_ulonglong),
+        ("used", ctypes.c_ulonglong),
+    ]
+
+
+# NVML 枚举常量:温度传感器与时钟域类型。
+_NVML_TEMPERATURE_GPU = 0
+_NVML_CLOCK_SM = 1
+
+
 class GpuSampler:
-    """Daemon `nvidia-smi` sampler; unavailable telemetry never stops training."""
+    """Daemon NVML 采样器;遥测不可用时不会中断训练。
+
+    使用 NVML 而非每轮 fork ``nvidia-smi``,避免后台子进程与 OpenBLAS/OpenMP
+    并行计算竞争导致死锁。
+    """
 
     FIELDS = ("utilization.gpu", "utilization.memory", "memory.used", "memory.total", "power.draw", "temperature.gpu", "clocks.sm")
 
@@ -80,8 +108,16 @@ class GpuSampler:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._nvml_lib: ctypes.CDLL | None = None
+        self._nvml_device: ctypes.c_void_p | None = None
+        self._nvml_unavailable = False
         visible = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("CUDA_DEVICE") or "0"
         self.device = visible.split(",", 1)[0].strip()
+        try:
+            self._device_index = int(self.device)
+        except ValueError:
+            # 非数字设备标识(如 UUID)无法直接映射到 NVML 索引,按不可用处理。
+            self._device_index = -1
 
     def start(self) -> None:
         if not self.enabled or self._thread is not None:
@@ -93,6 +129,14 @@ class GpuSampler:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=self.interval_s * 3 + 1.0)
+        if (
+            self._thread is not None
+            and self._thread.is_alive()
+        ):
+            return
+        if self._nvml_device is not None and self._nvml_lib is not None:
+            self._nvml_lib.nvmlShutdown()
+            self._nvml_device = None
 
     def checkpoint(self) -> int:
         with self._lock:
@@ -123,18 +167,104 @@ class GpuSampler:
                         del self.samples[:10_000]
             self._stop.wait(max(0.0, self.interval_s - (time.monotonic() - started)))
 
-    def _sample_once(self) -> dict[str, float] | None:
+    def _ensure_nvml(self) -> bool:
+        """惰性初始化 NVML 并缓存设备句柄;失败后不再反复尝试。"""
+        if self._nvml_device is not None:
+            return True
+        if self._nvml_unavailable or self._device_index < 0:
+            return False
         try:
-            result = subprocess.run(
-                ["nvidia-smi", "-i", self.device, f"--query-gpu={','.join(self.FIELDS)}", "--format=csv,noheader,nounits"],
-                check=True, capture_output=True, text=True, timeout=max(1.0, self.interval_s * 3),
-            )
-            values = [value.strip() for value in result.stdout.strip().splitlines()[0].split(",")]
-            if len(values) != len(self.FIELDS):
-                return None
-            return {field: float(value) for field, value in zip(self.FIELDS, values) if value not in {"N/A", "[Not Supported]"}}
-        except (FileNotFoundError, IndexError, subprocess.SubprocessError, ValueError):
+            lib = ctypes.CDLL("libnvidia-ml.so.1")
+            lib.nvmlInit_v2.argtypes = []
+            lib.nvmlInit_v2.restype = ctypes.c_int
+            if lib.nvmlInit_v2() != 0:
+                self._nvml_unavailable = True
+                return False
+            lib.nvmlDeviceGetHandleByIndex_v2.argtypes = [
+                ctypes.c_uint,
+                ctypes.POINTER(ctypes.c_void_p),
+            ]
+            lib.nvmlDeviceGetHandleByIndex_v2.restype = ctypes.c_int
+            lib.nvmlShutdown.argtypes = []
+            lib.nvmlShutdown.restype = ctypes.c_int
+            handle = ctypes.c_void_p()
+            if lib.nvmlDeviceGetHandleByIndex_v2(
+                self._device_index, ctypes.byref(handle)
+            ) != 0:
+                lib.nvmlShutdown()
+                self._nvml_unavailable = True
+                return False
+
+            lib.nvmlDeviceGetUtilizationRates.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(_NvmlUtilization),
+            ]
+            lib.nvmlDeviceGetUtilizationRates.restype = ctypes.c_int
+            lib.nvmlDeviceGetMemoryInfo.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(_NvmlMemory),
+            ]
+            lib.nvmlDeviceGetMemoryInfo.restype = ctypes.c_int
+            lib.nvmlDeviceGetPowerUsage.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_uint),
+            ]
+            lib.nvmlDeviceGetPowerUsage.restype = ctypes.c_int
+            lib.nvmlDeviceGetTemperature.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_uint,
+                ctypes.POINTER(ctypes.c_uint),
+            ]
+            lib.nvmlDeviceGetTemperature.restype = ctypes.c_int
+            lib.nvmlDeviceGetClockInfo.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_uint,
+                ctypes.POINTER(ctypes.c_uint),
+            ]
+            lib.nvmlDeviceGetClockInfo.restype = ctypes.c_int
+
+            self._nvml_lib = lib
+            self._nvml_device = handle
+            return True
+        except (AttributeError, OSError, ctypes.ArgumentError):
+            self._nvml_unavailable = True
+            return False
+
+    def _sample_once(self) -> dict[str, float] | None:
+        if not self._ensure_nvml():
             return None
+        lib = self._nvml_lib
+        device = self._nvml_device
+        if lib is None or device is None:
+            return None
+        result: dict[str, float] = {}
+        try:
+            utilization = _NvmlUtilization()
+            if lib.nvmlDeviceGetUtilizationRates(device, ctypes.byref(utilization)) == 0:
+                result["utilization.gpu"] = float(utilization.gpu)
+                result["utilization.memory"] = float(utilization.memory)
+            memory = _NvmlMemory()
+            if lib.nvmlDeviceGetMemoryInfo(device, ctypes.byref(memory)) == 0:
+                # NVML 返回字节,与原有 nvidia-smi 的 MiB 口径保持一致。
+                result["memory.used"] = float(memory.used) / (1024.0 * 1024.0)
+                result["memory.total"] = float(memory.total) / (1024.0 * 1024.0)
+            power = ctypes.c_uint()
+            if lib.nvmlDeviceGetPowerUsage(device, ctypes.byref(power)) == 0:
+                # NVML 返回毫瓦,统一为瓦特。
+                result["power.draw"] = float(power.value) / 1000.0
+            temperature = ctypes.c_uint()
+            if lib.nvmlDeviceGetTemperature(
+                device, _NVML_TEMPERATURE_GPU, ctypes.byref(temperature)
+            ) == 0:
+                result["temperature.gpu"] = float(temperature.value)
+            clock = ctypes.c_uint()
+            if lib.nvmlDeviceGetClockInfo(
+                device, _NVML_CLOCK_SM, ctypes.byref(clock)
+            ) == 0:
+                result["clocks.sm"] = float(clock.value)
+        except (OSError, ctypes.ArgumentError):
+            return None
+        return result or None
 
 
 def append_jsonl(path: str | Path, row: dict[str, float | int]) -> None:

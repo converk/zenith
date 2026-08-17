@@ -246,11 +246,17 @@ kyokus_per_worker=16)跑通短训练;检查 Q scorer 训练候选 = Top-3 ∪ �
 #### Top-3 Q-boosting
 
 - **FR-017**: Actor MUST 先生成全部合法动作概率 π(a|s) 并取 Top-1/2/3;Critic Q
-  scorer 只评估这三个候选,输入为 [z_critic; h_a],其中动作表示 h_a MUST detach,
-  避免 Q loss 经动作表示直接更新 Actor;scorer 结构为 256+256→512→Linear
-  512→256→SiLU→Linear 256→1,输出 Q1/Q2/Q3。
-- **FR-018**: Critic 训练候选 MUST 为 Top-3 ∪ 实际 rollout 行为动作(最多计算 4 个
-  Q);真正对 Actor boosting 的候选 MUST 为 Top-3。
+  scorer 只评估候选,输入为 [z_critic; h_a],其中动作表示 h_a MUST detach,避免
+  Q loss 经动作表示直接更新 Actor;scorer 结构为 256+256→512→Linear
+  512→256→SiLU→Linear 256→1,输出原始优势评分 u_i。
+- **FR-018**: Dueling 约束 MUST 为:候选集合内把 Actor 概率重新归一化为 p_i,
+  `A_i = u_i - Σ p_j·u_j`,`Q_i = V(s) + A_i`,由构造恒有 `Σ p_i·Q_i = V(s)`;
+  Value 只负责绝对局面价值,Top-3 Q 只编码候选间的相对差异。
+- **FR-019**: Critic 训练候选 MUST 为 Top-3 ∪ 实际 rollout 行为动作(最多 4 个
+  Q);只有行为动作的 Q(s,a_t) 回归到与 Value 相同的 rollout return 目标,未执行
+  的候选 MUST NOT 构造虚假 Q target。真正对 Actor boosting 的候选 MUST 为 Top-3:
+  `p_boost ∝ p_i·exp(λ_q·A_i/T)` 且保持 Top-3 原始总概率质量不变,`p_boost.detach()`
+  作为 Top-3 交叉熵辅助蒸馏目标(权重 q_boost_coef),MUST NOT 替代 PPO policy loss。
 
 #### GRP 奖励与归一化
 
