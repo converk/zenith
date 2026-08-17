@@ -1,4 +1,9 @@
-"""V16 PPO 优化器:V16 批 collate、PPO clip + value Huber + Top-3 Q loss。"""
+"""V16 PPO 优化器:V16 批 collate、PPO clip + value Huber + Top-3 Q loss。
+
+``PPOLearner`` 同时支持单卡(默认)与双卡 DDP:传 ``rank``/``world_size``
+后模型由 ``DistributedDataParallel`` 包装,update 内所有梯度 collective 与
+early-stop/KL 判定都在进程组内同步。
+"""
 
 from __future__ import annotations
 
@@ -11,8 +16,10 @@ from typing import Any
 
 import numpy as np
 import torch
+import torch.distributed as dist
 from torch import nn
 from torch.nn import functional as F
+from torch.nn.parallel import DistributedDataParallel
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
 from ..model.architecture import dueling_candidate_q
@@ -233,6 +240,27 @@ def discounted_empirical_returns(transitions: list[Transition], gamma: float) ->
     return returns
 
 
+def rollout_update_targets(
+    transitions: list[Transition],
+    gamma: float,
+) -> tuple[np.ndarray, np.ndarray, float, float]:
+    """完整 rollout 的 advantage 归一化与 empirical returns(供 DDP 分片复用)。"""
+    source_advantages = np.asarray(
+        [item.advantage for item in transitions], dtype=np.float32,
+    )
+    advantages = (
+        (source_advantages - source_advantages.mean(dtype=np.float64))
+        / (source_advantages.std(dtype=np.float64) + 1e-8)
+    ).astype(np.float32)
+    returns = discounted_empirical_returns(transitions, float(gamma))
+    return (
+        advantages,
+        returns,
+        float(returns.mean(dtype=np.float64)),
+        float(returns.std(dtype=np.float64)),
+    )
+
+
 def approximate_kl_values(new_logprob: torch.Tensor, old_logprob: torch.Tensor) -> torch.Tensor:
     """返回每条样本的 PPO 近似 KL 估计。"""
     log_ratio = new_logprob - old_logprob
@@ -272,6 +300,28 @@ def transition_length_metrics(transitions: list[Transition], prefix: str = "upda
             (global_padded_input_tokens - effective_input_tokens) / max(global_padded_input_tokens, 1)
         ),
     }
+
+
+def rollout_target_metrics(transitions: list[Transition]) -> dict[str, float]:
+    """全量 rollout 的序列长度与 Q/advantage 统计(host 侧,供 learner 与汇总共用)。"""
+    length_metrics = transition_length_metrics(transitions)
+    length_metrics.update(ppo_buffer_metrics(transitions))
+    raw_q_targets = np.asarray([item.q_target for item in transitions], dtype=np.float64)
+    raw_q_taken = np.asarray([item.q_taken for item in transitions], dtype=np.float64)
+    raw_expected_q = np.asarray([item.expected_q for item in transitions], dtype=np.float64)
+    raw_advantages = np.asarray([item.advantage for item in transitions], dtype=np.float64)
+    length_metrics.update({
+        "q_target_mean": float(raw_q_targets.mean()),
+        "q_target_std": float(raw_q_targets.std()),
+        "q_taken_mean": float(raw_q_taken.mean()),
+        "q_taken_std": float(raw_q_taken.std()),
+        "expected_q_mean": float(raw_expected_q.mean()),
+        "expected_q_std": float(raw_expected_q.std()),
+        "qboost_advantage_mean": float(raw_advantages.mean()),
+        "qboost_advantage_std": float(raw_advantages.std()),
+        "q_explained_variance": float(length_metrics["q_explained_variance"]),
+    })
+    return length_metrics
 
 
 def length_bucketed_minibatches(
@@ -409,12 +459,31 @@ def collate(
 
 
 class PPOLearner:
-    """V16 Actor-Critic 的单卡 PPO 优化器。"""
+    """V16 Actor-Critic 的 PPO 优化器(单卡或双卡 DDP)。"""
 
-    def __init__(self, model_size: str, device: str, **hyperparameters: Any) -> None:
+    def __init__(
+        self,
+        model_size: str,
+        device: str,
+        *,
+        rank: int | None = None,
+        world_size: int | None = None,
+        **hyperparameters: Any,
+    ) -> None:
         if model_size != "v16":
             raise ValueError("PPOLearner only supports model_size='v16'")
         self.device = torch.device(device)
+        self.rank = rank
+        self.world_size = int(world_size) if world_size is not None else 1
+        if self.world_size < 1:
+            raise ValueError("world_size must be positive")
+        if self.world_size > 1:
+            if self.rank is None:
+                raise ValueError("rank is required when world_size > 1")
+            if self.device.type != "cuda":
+                raise ValueError("distributed PPO learner requires a CUDA device")
+        if self.device.type == "cuda":
+            torch.cuda.set_device(self.device)
         self.hp = hyperparameters
         preset = ModelConfig.preset("v16")
         self.config = replace(
@@ -462,6 +531,16 @@ class PPOLearner:
             weight_decay=float(hyperparameters.get("weight_decay", 0.01)),
             fused=self.use_bf16,
         )
+        self.model_ddp: DistributedDataParallel | None = (
+            DistributedDataParallel(
+                self.model,
+                device_ids=[self.device.index],
+                broadcast_buffers=False,
+                find_unused_parameters=False,
+            )
+            if self.world_size > 1
+            else None
+        )
         self.reference_model: KyokuTransformerActorCritic | None = None
         self.iteration = 0
         self.profiler = StageProfiler(enabled=bool(hyperparameters.get("profile_enabled", True)))
@@ -507,49 +586,81 @@ class PPOLearner:
     def weights(self) -> dict[str, torch.Tensor]:
         return {key: value.detach().cpu() for key, value in self.model.state_dict().items()}
 
+    def rng_state(self) -> dict[str, Any]:
+        """当前 rank 的 Python/numpy/torch/CUDA RNG 状态(供 checkpoint 保存)。"""
+        return {
+            "torch": torch.get_rng_state(),
+            "cuda": (
+                torch.cuda.get_rng_state(self.device)
+                if self.device.type == "cuda" and torch.cuda.is_available()
+                else None
+            ),
+            "numpy": np.random.get_state(),
+            "python": random.getstate(),
+        }
+
+    def shutdown(self) -> None:
+        """单卡 learner 无需额外清理(与双卡 LearnerDDP 的接口对齐)。"""
+
+    def _model_forward(
+        self,
+        batch: dict[str, torch.Tensor],
+        *,
+        critic_bootstrap: bool,
+    ) -> dict[str, torch.Tensor]:
+        """统一走 ``__call__`` 分发,DDP 包装后 forward 才能触发梯度同步。"""
+        model = self.model_ddp if self.model_ddp is not None else self.model
+        return model(
+            history_factors=batch["history_factors"],
+            history_numeric=batch["history_numeric"],
+            history_lengths=batch["history_lengths"],
+            snapshot_kinds=batch["snapshot_kinds"],
+            snapshot_cat=batch["snapshot_cat"],
+            snapshot_num=batch["snapshot_num"],
+            snapshot_lengths=batch["snapshot_lengths"],
+            query_rows=batch["query_rows"],
+            query_action_ids=batch["query_action_ids"],
+            query_pair_counts=batch["query_pair_counts"],
+            legal_mask=batch["legal_mask"],
+            critic_factors=batch["critic_factors"],
+            critic_lengths=batch["critic_lengths"],
+            detach_critic_public=critic_bootstrap,
+            critic_public_grad_scale=self.critic_public_grad_scale,
+        )
+
     def update(
         self,
         transitions: list[Transition],
         *,
         shuffle_seed: int | None = None,
+        advantages: np.ndarray | None = None,
+        returns: np.ndarray | None = None,
     ) -> dict[str, float]:
         if not transitions:
             raise ValueError("cannot update from an empty rollout")
         self.profiler.reset()
-        length_metrics = transition_length_metrics(transitions)
-        length_metrics.update(ppo_buffer_metrics(transitions))
-        raw_q_targets = np.asarray([item.q_target for item in transitions], dtype=np.float64)
-        raw_q_taken = np.asarray([item.q_taken for item in transitions], dtype=np.float64)
-        raw_expected_q = np.asarray([item.expected_q for item in transitions], dtype=np.float64)
-        raw_advantages = np.asarray([item.advantage for item in transitions], dtype=np.float64)
-        q_target_mean = float(raw_q_targets.mean())
-        q_target_std = float(raw_q_targets.std())
-        length_metrics.update({
-            "q_target_mean": q_target_mean,
-            "q_target_std": q_target_std,
-            "q_taken_mean": float(raw_q_taken.mean()),
-            "q_taken_std": float(raw_q_taken.std()),
-            "expected_q_mean": float(raw_expected_q.mean()),
-            "expected_q_std": float(raw_expected_q.std()),
-            "qboost_advantage_mean": float(raw_advantages.mean()),
-            "qboost_advantage_std": float(raw_advantages.std()),
-            "q_explained_variance": float(length_metrics["q_explained_variance"]),
-        })
+        length_metrics = rollout_target_metrics(transitions)
         if self.device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(self.device)
-        source_advantages = np.asarray(
-            [item.advantage for item in transitions], dtype=np.float32,
-        )
-        with self.profiler.stage("update/advantage_normalize"):
-            advantages = (
-                (source_advantages - source_advantages.mean(dtype=np.float64))
-                / (source_advantages.std(dtype=np.float64) + 1e-8)
-            ).astype(np.float32)
-        returns = discounted_empirical_returns(
-            transitions, float(self.hp.get("gamma", 1.0)),
-        )
-        return_mean = float(returns.mean(dtype=np.float64))
-        return_std = float(returns.std(dtype=np.float64))
+        if advantages is None or returns is None:
+            if (advantages is None) != (returns is None):
+                raise ValueError("advantages and returns must be provided together")
+            with self.profiler.stage("update/advantage_normalize"):
+                advantages, returns, return_mean, return_std = rollout_update_targets(
+                    transitions, float(self.hp.get("gamma", 1.0)),
+                )
+        else:
+            advantages = np.asarray(advantages, dtype=np.float32)
+            returns = np.asarray(returns, dtype=np.float32)
+            if (
+                advantages.shape != (len(transitions),)
+                or returns.shape != (len(transitions),)
+            ):
+                raise ValueError(
+                    "provided advantages/returns must have one value per transition"
+                )
+            return_mean = float(returns.mean(dtype=np.float64))
+            return_std = float(returns.std(dtype=np.float64))
 
         metric_sample_sums: dict[str, torch.Tensor] = {}
         metric_sample_count = 0
@@ -664,22 +775,8 @@ class PPOLearner:
                         dtype=torch.bfloat16,
                         enabled=self.use_bf16,
                     ):
-                        output = self.model.forward_v16(
-                            batch["history_factors"],
-                            batch["history_numeric"],
-                            batch["history_lengths"],
-                            batch["snapshot_kinds"],
-                            batch["snapshot_cat"],
-                            batch["snapshot_num"],
-                            batch["snapshot_lengths"],
-                            batch["query_rows"],
-                            batch["query_action_ids"],
-                            batch["query_pair_counts"],
-                            legal_mask,
-                            critic_factors=batch["critic_factors"],
-                            critic_lengths=batch["critic_lengths"],
-                            detach_critic_public=critic_bootstrap,
-                            critic_public_grad_scale=self.critic_public_grad_scale,
+                        output = self._model_forward(
+                            batch, critic_bootstrap=critic_bootstrap,
                         )
                         reference_output = None
                         if sft_kl_coef > 0.0:
@@ -842,19 +939,32 @@ class PPOLearner:
                             - entropy_coef * entropy_values.mean()
                             + sft_kl_coef * sft_reference_kl_values.mean()
                         )
-                    if not torch.isfinite(loss):
-                        raise RuntimeError(
-                            "non-finite PPO loss: "
-                            f"policy={float(policy_loss_values.mean())} "
-                            f"value={float(value_loss_values_.mean())} "
-                            f"q={float(q_loss)} q_boost={float(q_boost_loss_values.mean())} "
-                            f"entropy={float(entropy_values.mean())} "
-                            f"sft_kl={float(sft_reference_kl_values.mean())}"
-                        )
+                    loss_is_finite = torch.isfinite(loss)
+                    loss_detail = (
+                        f"policy={float(policy_loss_values.mean())} "
+                        f"value={float(value_loss_values_.mean())} "
+                        f"q={float(q_loss)} q_boost={float(q_boost_loss_values.mean())} "
+                        f"entropy={float(entropy_values.mean())} "
+                        f"sft_kl={float(sft_reference_kl_values.mean())}"
+                    )
+                    if self.world_size == 1 and not loss_is_finite:
+                        raise RuntimeError("non-finite PPO loss: " + loss_detail)
                 with self._gpu_stage("update/zero_grad"):
                     self.optimizer.zero_grad(set_to_none=True)
                 with self._gpu_stage("update/backward"):
                     loss.backward()
+                if self.world_size > 1:
+                    # 必须等所有 rank 完成 backward 后再做全局有限性判定,
+                    # 避免单 rank 提前异常导致 NCCL collective 失配。
+                    finite = torch.tensor(
+                        float(loss_is_finite), device=self.device,
+                    )
+                    dist.all_reduce(finite, op=dist.ReduceOp.MIN)
+                    if finite.item() == 0.0:
+                        raise RuntimeError(
+                            "non-finite PPO loss on one of the DDP ranks: "
+                            + loss_detail
+                        )
                 with self._gpu_stage("update/gradient_clip"):
                     branch_norms = branch_grad_norms(self.model)
                     grad_norm = nn.utils.clip_grad_norm_(
@@ -933,7 +1043,16 @@ class PPOLearner:
                 updates += 1
             epochs_completed += 1
             if float(self.hp["target_kl"]) > 0 and epoch_kl_sum is not None:
-                epoch_kl = epoch_kl_sum / max(epoch_kl_count, 1)
+                if self.world_size > 1:
+                    # 两 rank 各自在本地分片上累计 KL;全局求和后再判定,
+                    # 保证 early stop 在两个 rank 上同时触发。
+                    kl_total = epoch_kl_sum.detach().clone()
+                    kl_count = torch.tensor(float(epoch_kl_count), device=self.device)
+                    dist.all_reduce(kl_total, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(kl_count, op=dist.ReduceOp.SUM)
+                    epoch_kl = kl_total / kl_count.clamp_min(1.0)
+                else:
+                    epoch_kl = epoch_kl_sum / max(epoch_kl_count, 1)
                 if float(epoch_kl) > float(self.hp["target_kl"]):
                     stop_early = True
                     break
@@ -1009,6 +1128,9 @@ class PPOLearner:
     ) -> None:
         """原子写 checkpoint:model + optimizer + model_config(+ RNG/iteration)。"""
         Path(path).parent.mkdir(parents=True, exist_ok=True)
+        merged_extra = dict(extra_state or {})
+        # 单卡路径也保存 rank_rng_states,使旧格式与双卡 resume 共享同一入口。
+        merged_extra.setdefault("rank_rng_states", [self.rng_state()])
         payload = {
             "ppo_format_version": 3,
             "model": self.weights(),
@@ -1021,7 +1143,7 @@ class PPOLearner:
             "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
             "python_rng": random.getstate(),
             "numpy_rng": np.random.get_state(),
-            "extra_state": dict(extra_state or {}),
+            "extra_state": merged_extra,
         }
         if self.reference_model is not None:
             payload["sft_reference_model"] = {
@@ -1072,11 +1194,29 @@ class PPOLearner:
                 "PPO checkpoint does not contain the frozen SFT reference required "
                 "by the configured KL anchor"
             )
-        torch.set_rng_state(payload["torch_rng"].cpu())
-        random.setstate(payload["python_rng"])
-        np.random.set_state(payload["numpy_rng"])
-        if payload["cuda_rng"] is not None and torch.cuda.is_available():
-            torch.cuda.set_rng_state_all([state.cpu() for state in payload["cuda_rng"]])
+        rank_states = (payload.get("extra_state") or {}).get("rank_rng_states")
+        if (
+            self.rank is not None
+            and isinstance(rank_states, list)
+            and len(rank_states) == self.world_size
+            and all(isinstance(item, dict) for item in rank_states)
+        ):
+            # 双卡 checkpoint:每个 rank 恢复自己的 RNG。
+            state = rank_states[self.rank]
+            torch.set_rng_state(state["torch"].cpu())
+            random.setstate(state["python"])
+            np.random.set_state(state["numpy"])
+            if state.get("cuda") is not None and torch.cuda.is_available():
+                torch.cuda.set_rng_state(state["cuda"].cpu(), device=self.device)
+        else:
+            # 旧格式单卡 checkpoint:两个 rank 都恢复同一份 RNG(继续作为双卡训练)。
+            torch.set_rng_state(payload["torch_rng"].cpu())
+            random.setstate(payload["python_rng"])
+            np.random.set_state(payload["numpy_rng"])
+            if payload["cuda_rng"] is not None and torch.cuda.is_available():
+                torch.cuda.set_rng_state_all([
+                    state.cpu() for state in payload["cuda_rng"]
+                ])
 
     def load_model_weights(self, path: str | Path) -> None:
         """从 v16 SFT checkpoint 初始化全新 PPO(iteration 归零、optimizer 全新)。"""

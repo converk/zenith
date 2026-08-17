@@ -1,9 +1,11 @@
 """同步 Ray PPO 训练的命令行入口(V16)。
 
-Ray 闭环:worker.collect → 驱动侧 learner.update → inference.update_weights;
-每 30 updates 按 ``evaluation/mechanism.py`` 的固定 1v3 机制(10 进程 × 160 =
-1600 半庄)评测一次。learner 持有模型 + optimizer(``cuda:0``),推理 actor 只
-持有 eval 模型并在每个 update 后接收最新权重。
+Ray 闭环:worker.collect → learner.update → inference.update_weights;每 30
+updates 按 ``evaluation/mechanism.py`` 的固定 1v3 机制(10 进程 × 160 =
+1600 半庄)评测一次。``learner_gpus=1`` 时 learner 在 driver 进程单卡更新;
+``learner_gpus=2`` 时由两个常驻 worker 进程做双卡 DDP 更新(各持一份模型,
+NCCL 平均梯度),driver 只负责分片、汇总与 checkpoint 落盘。推理 actor 只在
+每个 update 后接收最新权重。
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ from .metrics import RollingKyokuMetrics, append_metric_jsonl, metric_counters
 from .tensorboard import learner_peak_allocated_mb, write_curated_scalars
 from ..model.schema import TOKEN_SCHEMA_VERSION
 from .learner import PPOLearner, validate_fresh_model_checkpoint_contract
+from .learner_ddp import LearnerDDP
 from ..evaluation.head_to_head_1v3_shards import (
     run_sharded_1v3,
     validate_1v3_shard_plan,
@@ -290,16 +293,26 @@ def run(config: dict[str, Any]) -> None:
     configure_ray_stderr_logging()
     ray.init(ignore_reinit_error=True)
 
-    learner_hp = {
-        key: value
-        for key, value in config.items()
-        if key not in {"model_size", "device"}
-    }
-    learner = PPOLearner("v16", "cuda:0", **learner_hp)
-    if config.get("resume"):
-        learner.load(config["resume"])
-    elif config.get("init_model"):
-        learner.load_model_weights(config["init_model"])
+    if learner_gpus > 1:
+        learner = LearnerDDP(
+            "v16",
+            "cuda",
+            learner_gpus,
+            config=config,
+            resume=config.get("resume"),
+            init_model=config.get("init_model"),
+        )
+    else:
+        learner_hp = {
+            key: value
+            for key, value in config.items()
+            if key not in {"model_size", "device"}
+        }
+        learner = PPOLearner("v16", "cuda:0", **learner_hp)
+        if config.get("resume"):
+            learner.load(config["resume"])
+        elif config.get("init_model"):
+            learner.load_model_weights(config["init_model"])
 
     inference_actors = []
     for rank, worker_ids in enumerate(partitions):
@@ -465,7 +478,12 @@ def run(config: dict[str, Any]) -> None:
             transition_assembly_s = time.perf_counter() - transition_assembly_started
             update_started = time.perf_counter()
             update_seed = int(config["seed"]) + (iteration + 1) * 1_000_003
-            metrics = learner.update(transitions, shuffle_seed=update_seed)
+            update_result = learner.update(transitions, shuffle_seed=update_seed)
+            if learner_gpus > 1:
+                metrics, metrics_by_rank = update_result
+            else:
+                metrics = update_result
+                metrics_by_rank = [update_result]
             ray.get([
                 actor.update_weights.remote(learner.weights())
                 for actor in inference_actors
@@ -547,7 +565,7 @@ def run(config: dict[str, Any]) -> None:
                 **rollout_metrics,
                 **{f"ppo/{name}": float(value) for name, value in metrics.items()},
             }
-            learner_peak_mb = learner_peak_allocated_mb([metrics])
+            learner_peak_mb = learner_peak_allocated_mb(metrics_by_rank)
             if learner_peak_mb is not None:
                 tensorboard_metrics["system/learner_gpu_peak_allocated_mb"] = learner_peak_mb
             write_curated_scalars(writer, tensorboard_metrics, iteration + 1)
@@ -606,6 +624,11 @@ def run(config: dict[str, Any]) -> None:
             checkpoint_extra_state(),
         )
     finally:
+        if "learner" in locals():
+            try:
+                learner.shutdown()
+            except Exception:
+                pass
         if "inference_actors" in locals():
             try:
                 ray.get([actor.shutdown.remote() for actor in inference_actors])
@@ -640,6 +663,10 @@ def _parser(smoke: bool = False) -> argparse.ArgumentParser:
         parser.add_argument("--profile-cuda-sync", action=argparse.BooleanOptionalAction, default=None)
     if smoke:
         parser.add_argument("--kyokus", type=int, default=1)
+        parser.add_argument("--num-workers", type=int, default=None)
+        parser.add_argument("--learner-gpus", type=int, default=None)
+        parser.add_argument("--envs-per-worker", type=int, default=None)
+        parser.add_argument("--minibatch-size", type=int, default=None)
     return parser
 
 
@@ -699,6 +726,8 @@ def smoke_main() -> None:
         config["iterations"] = args.iterations
     if args.checkpoint_dir:
         config["checkpoint_dir"] = args.checkpoint_dir
+    if args.init_model:
+        config["init_model"] = args.init_model
     apply_cli_overrides(config, args)
     smoke_dir = Path(config["checkpoint_dir"])
     preexisting = smoke_dir.exists()

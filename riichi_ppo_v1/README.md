@@ -60,7 +60,16 @@ CUDA_DEVICE=0,1 conda run -n Mahjong-AI riichi-ppo-train \
   --init-model checkpoints/train_riichi_v13/sft/best_heuristic.pt
 ```
 
+`learner_gpus` 同时决定 PPO update 的并行方式:`1` 时 driver 进程在单卡完成
+update;`2` 时 driver 拉起两个常驻 learner 进程(各持一份模型),经 NCCL 做
+双卡 DDP——rollout 在两个 rank 间轮询分片并补齐到一致的本地 minibatch 数,
+advantage/returns 在完整 rollout 上先算好再随分片下发,每步梯度跨卡平均后
+同步执行优化器 step。两个推理 actor 仍各占一张卡,每次 update 后由 rank 0
+把最新权重推送给它们。
+
 `resume` 仅恢复新格式 PPO checkpoint（包含 `ppo_format_version: 2`）。旧 PPO checkpoint 不能恢复优化器或旧课程状态，但可通过 `--init-model` 仅加载模型权重。
+新 checkpoint 在 `extra_state.rank_rng_states` 中保存逐 rank RNG,双卡
+`resume` 会精确恢复每个 rank 的训练随机状态。
 
 PPO 唯一评测机制是固定 1v3 对抗:每 30 个 update 一次、10 个进程各 160 半庄
 (共 1600 半庄),候选策略对阵由 `eval1v3_model_b` 指定的对手模型。对手模型、

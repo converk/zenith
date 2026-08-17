@@ -176,3 +176,33 @@
   1,974 决策,reach/chi/pon/daiminkan/ankan/kakan/dora/hora/ryukyoku 均覆盖,
   逐 token 与 `prepare_v16` 完全一致(0 mismatch)。已把结果补入
   `V16_data_semantics_audit.md` §5.1。
+
+### V16 PPO 双卡运行归档(2026-08-17 晚)
+
+- 运行至 update 59 停止(未见异常 traceback,疑似外部中断),已整体归档到
+  `archive_20260817_run2`:checkpoint/metrics/performance/tensorboard 在
+  `checkpoints/train_riichi_v16/archive_20260817_run2/ppo/`,运行日志在
+  `logs/v16/archive_20260817_run2/ppo/v16_ppo_from_scratch.log`,1v3 评测在
+  `audit/reports/v16/eval/archive_20260817_run2/`。
+- update=30 1v3 vs SFT:first_place_rate=0.2556,top2_rate=0.4994,
+  mean_rank=2.493,point_diff_mean=130.42,ci95=[-841.27, 1050.09]。
+- 后续恢复使用 `riichi_ppo_v1/configs/v16_ppo_resume.yaml`(自包含副本,
+  resume 指向归档 checkpoint_00030.pt)。
+
+## 2026-08-17 update=60
+
+- reward_mean=0.0020253 value_loss=0.25878 q_loss=0.35978 entropy=0.22854 actor_grad_norm=0.33176 critic_grad_norm=0.71245 shared_grad_norm=0.51978
+- rollout_wall_s=12.613 update_wall_s=23.664 sps=916.86 grp_calls=182.67 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.2831 top2_rate=0.5162 mean_rank=2.453 point_diff_mean=+1563.0 ci95=[536.6541666666668, 2513.16875]
+
+## 2026-08-17 update=120
+
+- reward_mean=0.010544 value_loss=0.18352 q_loss=0.30773 entropy=0.065727 actor_grad_norm=0.45288 critic_grad_norm=0.66405 shared_grad_norm=0.7105
+- rollout_wall_s=13.162 update_wall_s=23.144 sps=911.96 grp_calls=184.67 history_pool_size=1
+- 1v3 vs SFT: first_place_rate=0.2975 top2_rate=0.5581 mean_rank=2.368 point_diff_mean=+2880.1 ci95=[1905.4489583333334, 3785.607291666667]
+
+## 2026-08-17 update=180
+
+- reward_mean=0.0084298 value_loss=0.17579 q_loss=0.34276 entropy=0.047421 actor_grad_norm=0.53939 critic_grad_norm=0.66519 shared_grad_norm=0.81934
+- rollout_wall_s=12.764 update_wall_s=24.008 sps=908.46 grp_calls=185 history_pool_size=3
+- 1v3 vs SFT: first_place_rate=0.3013 top2_rate=0.5350 mean_rank=2.417 point_diff_mean=+2334.0 ci95=[1301.04375, 3333.7979166666664]

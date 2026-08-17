@@ -13,7 +13,7 @@
 | `model/` | 模型结构、领域常量单一来源、动作分组与模型/环境转换边界 |
 | `sft/` | SFT 数据准备、预计算、训练、契约与 checkpoint 持久化 |
 | `tools/` | 独立生产 CLI(事件统计、协议验证入口) |
-| `training/` | PPO 训练循环、rollout、learner、奖励与对手机制 |
+| `training/` | PPO 训练循环、rollout、单/双卡 learner(DDP)、奖励与对手机制 |
 | `tests/` | 单元/集成/协议测试,不含任何生产入口 |
 
 ## riichi_lab_bot(在线 bot)
