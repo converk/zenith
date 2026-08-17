@@ -399,7 +399,12 @@ def _train_v16_worker_impl(
         writer = SummaryWriter(str(output / str(config.get("tensorboard_dirname", "tensorboard"))))
         writers.append(writer)
     if distributed:
-        model = DistributedDataParallel(model, device_ids=[rank], broadcast_buffers=False)
+        # SFT 只训练 Actor,value/Q scorer 等 Critic 参数不参与前向/loss;
+        # 必须允许未使用参数,否则 DDP 会在第二次迭代报 reduction 失败。
+        model = DistributedDataParallel(
+            model, device_ids=[rank], broadcast_buffers=False,
+            find_unused_parameters=True,
+        )
     local_batch = max(1, int(config["batch_size"]) // world_size)
     use_bf16 = bool(
         str(config.get("inference_dtype", "bf16")).lower() == "bf16"
