@@ -1,6 +1,7 @@
 # Quickstart: V16 验证场景
 
-环境:Conda `Mahjong-AI`,默认 `CUDA_DEVICE=0,1`、`learner_gpus=2`。命令在仓库根
+环境:Conda `Mahjong-AI`。V16 实际训练/评测运行使用 `CUDA_DEVICE=0,3`(物理
+GPU 0 与 4)、`learner_gpus=2`。命令在仓库根
 `/mnt/disk1/hubowen/zenith` 执行。契约细节见
 [contracts/](contracts/actor-input-v16.md);数据模型见
 [data-model.md](data-model.md)。
@@ -47,9 +48,10 @@ conda run -n Mahjong-AI python -m riichi_ppo_v1.sft.precompute \
 ## 场景 4:V16 SFT 从头训练
 
 ```bash
-env -C /mnt/disk1/hubowen/zenith CUDA_DEVICE=0,1 PYTHONUNBUFFERED=1 \
+env -C /mnt/disk1/hubowen/zenith CUDA_DEVICE=0,3 PYTHONUNBUFFERED=1 \
   conda run -n Mahjong-AI python -m riichi_ppo_v1.sft.train \
-  --config configs/v16_sft.yaml 2>&1 | tee logs/v16/v16_sft.log
+  --config configs/v16_sft.yaml --device cuda --learner-gpus 2 \
+  2>&1 | tee logs/v16/v16_sft.log
 ```
 
 预期:每 3000 steps 验证/启发式评测/保存一次;tensorboard 输出
@@ -73,7 +75,7 @@ JSON;GRP 参数 50–70K;验证集排名预测显著优于均匀随机;训练后
 ## 场景 6:PPO 性能基线(3 轮,首轮预热)
 
 ```bash
-env -C /mnt/disk1/hubowen/zenith RAY_LOG_TO_STDERR=0 CUDA_DEVICE=0,1 \
+env -C /mnt/disk1/hubowen/zenith RAY_LOG_TO_STDERR=0 CUDA_DEVICE=0,3 \
   PYTHONUNBUFFERED=1 conda run -n Mahjong-AI python -m riichi_ppo_v1.training.train \
   --config configs/v16_ppo.yaml --device cuda --learner-gpus 2 \
   --target-kl 0.0 --update-epochs 4 --kyokus-per-worker 16 \

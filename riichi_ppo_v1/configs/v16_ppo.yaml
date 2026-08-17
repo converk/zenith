@@ -1,4 +1,4 @@
-# V16-small PPO:从 V16-small SFT 初始化、Top-3 Q-boosting、
+# V16-small PPO(双卡 CUDA_DEVICE=0,3):从 V16-small SFT 初始化、Top-3 Q-boosting、
 # 70% GRP + 30% 分差奖励。
 # 自包含完整配置,不与打包默认叠加;1v3 机制节奏键(10 进程 × 160 半庄、每
 # 30 updates)不在本文件复制,由 evaluation/mechanism.py 单一来源提供。
@@ -92,8 +92,8 @@ opponent_mix:
 eval1v3_enabled: true
 eval1v3_model_b: checkpoints/train_riichi_v16/sft/best.pt
 eval1v3_seed_base: 20260816
-# 本次 V16 运行仅用物理 GPU 0:10 个评测分片子进程全部落在 cuda:0。
-eval1v3_devices: ["0", "0"]
+# CUDA_DEVICE=0 与 3(物理 GPU 0 与 4):10 个评测分片子进程按 5/5 分摊到两张卡。
+eval1v3_devices: ["0", "3"]
 eval1v3_output_dir: audit/reports/v16/eval
 
 progress_update_interval_updates: 60
