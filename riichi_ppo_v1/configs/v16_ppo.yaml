@@ -36,8 +36,11 @@ ppo_clip: 0.2
 update_epochs: 4
 minibatch_size: 512
 update_batch_mode: streaming
-entropy_start: 0.01
-entropy_end: 0.001
+# 熵退火:u60 目标 normalized entropy ≈0.15+,u90~u180 稳定在 0.10~0.18。
+# 上一轮 u40≈0.229→u60≈0.110→u90≈0.050→u180≈0.025 的坍缩表明 0.01 起始
+# 强度压不住策略变尖,本轮把起始强度提升到 0.02、下限提到 0.01。
+entropy_start: 0.02
+entropy_end: 0.01
 value_coef: 0.5
 q_coef: 1.0
 # Dueling Q-boosting:Q_i = V(s) + A_i,A_i 是候选集合内以重归一化概率
@@ -45,9 +48,12 @@ q_coef: 1.0
 # p_boost ∝ p_i·exp(q_boost_lambda·A_i/q_temperature) 作为 detach 蒸馏
 # 目标,q_boost_coef 是其辅助 loss 权重。qboost_lambda(上方 0.95)是
 # Expected-SARSA 资格迹衰减,两者独立。
-q_boost_coef: 0.1
+# 上轮 u090 时 Q-Boosting 压力 ≈3.7× 熵压力且 Q explained variance 仅
+# ~0.22,critic 尚未可靠到可让 Q 强拉 Actor;本轮把 q_boost_coef 0.1→0.05、
+# q_temperature 1.0→1.5(更软的 boosted target)双重削弱 Q-Boosting。
+q_boost_coef: 0.05
 q_boost_lambda: 1.0
-q_temperature: 1.0
+q_temperature: 1.5
 value_loss: huber
 value_target_normalization: batch_std
 value_target_std_floor: 0.01
@@ -70,20 +76,26 @@ weight_decay: 0.01
 critic_bootstrap_updates: 40
 critic_bootstrap_learning_rate: 0.00002
 critic_public_grad_scale: 0.25
+# U 形 KL 锚:上轮 KLSFT 在 u090 达 0.203 后继续漂到 0.26→0.29→0.31 却无
+# 外部能力提升;本轮取消中期过度放松(middle 0.0005→0.002),end 0.002→0.003,
+# 目标把 KL 控制在 0.15~0.25 区间而不是锁死 SFT。
 sft_kl_coef_start: 0.005
-sft_kl_coef_middle: 0.0005
-sft_kl_coef_end: 0.002
+sft_kl_coef_middle: 0.002
+sft_kl_coef_end: 0.003
 sft_kl_middle_fraction: 0.5
 
 checkpoint_interval_updates: 30
 checkpoint_dir: checkpoints/train_riichi_v16/ppo
 resume: null
 
+# 对手混合:70% current self-play + 20% SFT + 10% historical(滞后 60 updates
+# 的旧策略)。上一轮 current_frac=1.0 即纯自博弈,是熵坍缩的放大器;引入
+# 固定 SFT 与历史对手为策略提供外部锚,抑制自博弈循环。
 opponent_mix:
   enabled: true
-  current_frac: 1.0
-  sft_frac: 0.0
-  historical_frac: 0.0
+  current_frac: 0.70
+  sft_frac: 0.20
+  historical_frac: 0.10
   random_frac: 0.0
   historical_min_update: 60
   historical_lag_updates: 60
