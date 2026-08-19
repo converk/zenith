@@ -149,24 +149,24 @@ def test_current_datasets_present_and_obsolete_absent() -> None:
 
 
 def test_1v3_mechanism_constants() -> None:
-    """1v3 机制常量(10/160/1600/30)在 mechanism.py 单一来源。"""
+    """1v3 机制常量(10/400/4000/5)在 mechanism.py 单一来源。"""
     from riichi_ppo_v1.evaluation import mechanism
 
     assert mechanism.REQUIRED_1V3_PROCESSES == 10
-    assert mechanism.DEFAULT_1V3_HANCHANS_PER_PROCESS == 160
-    assert mechanism.TOTAL_1V3_HANCHANS == 1600
-    assert mechanism.DEFAULT_1V3_INTERVAL_UPDATES == 30
+    assert mechanism.DEFAULT_1V3_HANCHANS_PER_PROCESS == 400
+    assert mechanism.TOTAL_1V3_HANCHANS == 4000
+    assert mechanism.DEFAULT_1V3_INTERVAL_UPDATES == 5
 
 
 def test_head_to_head_cli_defaults_align_with_mechanism() -> None:
-    """独立 1v3 CLI 默认值必须与固定机制一致(1600/160/seed 0)。"""
+    """独立 1v3 CLI 默认值必须与固定机制一致(4000/400/seed 0)。"""
     from riichi_ppo_v1.evaluation.head_to_head_1v3 import _parser
 
     args = _parser().parse_args(
         ["--model-a", "a", "--model-b", "b", "--output", "out"]
     )
-    assert args.hanchans == 1600
-    assert args.parallel_hanchans == 160
+    assert args.hanchans == 4000
+    assert args.parallel_hanchans == 400
     assert args.seed_base == 0
 
 

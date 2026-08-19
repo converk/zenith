@@ -373,7 +373,7 @@ def run(config: dict[str, Any]) -> None:
         ])
 
     def run_1v3_evaluation(update: int) -> dict[str, Any] | None:
-        """阻塞执行固定 1600 半庄的 1v3 对抗评测。"""
+        """阻塞执行固定 4000 半庄(10 进程 × 400)的 1v3 对抗评测。"""
         if not bool(config.get("eval1v3_enabled", False)):
             return None
         interval = max(
@@ -450,6 +450,7 @@ def run(config: dict[str, Any]) -> None:
 
     try:
         eval1v3_summary: dict[str, Any] | None = None
+        games_per_update = max(1, int(config.get("games_per_update", 512)))
         for iteration in range(learner.iteration, int(config["iterations"])):
             update_number = iteration + 1
             gpu_cursor = gpu_sampler.checkpoint()
@@ -493,6 +494,7 @@ def run(config: dict[str, Any]) -> None:
             gpu_metrics = gpu_sampler.summary(gpu_cursor)
             rollout_reward = float(np.nanmean([stats["reward_mean"] for _t, stats in results]))
             rollout_kyokus = sum(stats["kyokus"] for _t, stats in results)
+            rollout_games = sum(stats.get("games", 0.0) for _t, stats in results)
             rollout_tps = float(np.nanmean([
                 stats.get("transitions_per_s", float("nan"))
                 for _t, stats in results
@@ -516,6 +518,8 @@ def run(config: dict[str, Any]) -> None:
                 "rollout/transition_assembly_s": transition_assembly_s,
                 "rollout/wall_s": rollout_wall_s,
                 "update/wall_s": update_wall_s,
+                "rollout/games": float(rollout_games),
+                "rollout/kyokus": float(rollout_kyokus),
                 "iteration/algorithm_wall_s": algorithm_wall_s,
                 "iteration/sps": float(recorded_decisions / max(algorithm_wall_s, 1e-9)),
                 "iteration/model_forward_sps": float(model_decisions / max(algorithm_wall_s, 1e-9)),
@@ -540,7 +544,8 @@ def run(config: dict[str, Any]) -> None:
             print(
                 f"iteration={iteration + 1} transitions={len(transitions)} "
                 f"model_decisions={model_decisions:.0f} recorded_decisions={recorded_decisions:.0f} "
-                f"kyokus={rollout_kyokus:.0f} reward={rollout_reward:.4f} "
+                f"kyokus={rollout_kyokus:.0f} games={rollout_games:.0f} "
+                f"reward={rollout_reward:.4f} "
                 f"worker_transitions_per_s={rollout_tps:.2f} "
                 f"algorithm_wall_s={algorithm_wall_s:.3f} "
                 f"sps={recorded_decisions / max(algorithm_wall_s, 1e-9):.2f} "
@@ -714,7 +719,7 @@ def smoke_main() -> None:
         "num_workers": 1,
         "learner_gpus": 1,
         "envs_per_worker": 1,
-        "kyokus_per_worker": args.kyokus,
+        "games_per_update": args.kyokus,
         "iterations": 1,
         "update_epochs": 4,
         "target_kl": 0.0,

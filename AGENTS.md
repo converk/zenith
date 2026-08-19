@@ -14,9 +14,9 @@
   模块名保持 `riichi`,且不依赖 `riichienv`。
 - `riichi_ppo_v1/` 是本项目的主训练代码框架。
 - 无需与 `evaluations/` 兼容;该组件将被整体重写。
-- 默认的性能与训练测试必须显式使用 `target_kl=0.0`、`update_epochs=4` 和
-  `kyokus_per_worker=16`。该测试基线与长期训练的默认值相互独立,后者的
-  `kyokus_per_worker` 保持为 16。
+- 默认的性能与训练测试必须显式使用 `target_kl=0.0`、`update_epochs=4`;V16 及
+  以前使用 `kyokus_per_worker=16`,自 V17 起改为每 update 收集 512 个完整半庄
+  (`games_per_update=512`)。该测试基线与长期训练的默认值相互独立。
 - 运行测试时默认打印耗时监控和所有相关性能指标。默认运行三轮;将第一轮视为
   潜在预热,并单独报告后续轮次的性能统计。
 
@@ -97,10 +97,10 @@
 
 # 评测与验证机制
 
-- PPO 唯一评测机制为 1v3 对抗:固定 10 进程 × 160 = 1600 hanchan,每 30 updates
-  一次;对手模型、种子基数、设备与输出目录由版本配置提供,不得硬编码具体版本;
-  输出到 `audit/reports/<版本号>/eval`,进度与失败记录写
-  `audit/reports/<版本号>/report/PROGRESS.md`。
+- PPO 唯一评测机制为 1v3 对抗:固定 10 进程 × 400 = 4000 hanchan,每 5 updates
+  一次(自 V17 起,2026-08-19 宪法修订);对手模型、种子基数、设备与输出目录由
+  版本配置提供,不得硬编码具体版本;输出到 `audit/reports/<版本号>/eval`,进度与
+  失败记录写 `audit/reports/<版本号>/report/PROGRESS.md`。
 - SFT 的验证、启发式评测与 checkpoint 保存统一固定为每 3000 steps 一次,最终
   评估 96 hanchan。
 - 评测机制的任何改动必须走宪法修订,不得在单个实验配置里悄悄修改。

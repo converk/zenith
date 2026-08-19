@@ -569,6 +569,11 @@ class PPOLearner:
             raise ValueError("q_boost_coef must be non-negative")
         if self.q_temperature <= 0:
             raise ValueError("q_temperature must be positive")
+        self.gradient_accumulation_steps = max(
+            1, int(hyperparameters.get("gradient_accumulation_steps", 1))
+        )
+        if self.gradient_accumulation_steps < 1:
+            raise ValueError("gradient_accumulation_steps must be positive")
 
     def _sync_cuda(self) -> None:
         if self.profile_cuda_sync and self.device.type == "cuda":
@@ -751,7 +756,7 @@ class PPOLearner:
             epoch_kl_count = 0
             with self.profiler.stage("update/length_bucket"):
                 minibatches = length_bucketed_minibatches(transitions, minibatch_size, rng=rng)
-            for indices in minibatches:
+            for batch_number, indices in enumerate(minibatches, start=1):
                 selected = [transitions[int(index)] for index in indices]
                 batch = collate(
                     selected,
@@ -939,20 +944,41 @@ class PPOLearner:
                             - entropy_coef * entropy_values.mean()
                             + sft_kl_coef * sft_reference_kl_values.mean()
                         )
-                    loss_is_finite = torch.isfinite(loss)
-                    loss_detail = (
-                        f"policy={float(policy_loss_values.mean())} "
-                        f"value={float(value_loss_values_.mean())} "
-                        f"q={float(q_loss)} q_boost={float(q_boost_loss_values.mean())} "
-                        f"entropy={float(entropy_values.mean())} "
-                        f"sft_kl={float(sft_reference_kl_values.mean())}"
-                    )
-                    if self.world_size == 1 and not loss_is_finite:
-                        raise RuntimeError("non-finite PPO loss: " + loss_detail)
-                with self._gpu_stage("update/zero_grad"):
-                    self.optimizer.zero_grad(set_to_none=True)
+                    evaluated_loss = loss
+                loss_is_finite = torch.isfinite(evaluated_loss)
+                loss_detail = (
+                    f"policy={float(policy_loss_values.mean())} "
+                    f"value={float(value_loss_values_.mean())} "
+                    f"q={float(q_loss)} q_boost={float(q_boost_loss_values.mean())} "
+                    f"entropy={float(entropy_values.mean())} "
+                    f"sft_kl={float(sft_reference_kl_values.mean())}"
+                )
+                if self.world_size == 1 and not loss_is_finite:
+                    raise RuntimeError("non-finite PPO loss: " + loss_detail)
                 with self._gpu_stage("update/backward"):
-                    loss.backward()
+                    # Gradient accumulation:配置 >1 时,loss 除以累积步数后
+                    # 反向,只在最后一累积步执行梯度裁剪 + optimizer.step,
+                    # 保持 global effective batch ≈ minibatch_size × 累积步数。
+                    accumulation_steps = self.gradient_accumulation_steps
+                    scaled_loss = evaluated_loss / float(accumulation_steps)
+                    scaled_loss.backward()
+                    # ``updates`` 为累计已处理 minibatch 数(从 0 开始),
+                    # 每组 accumulation_steps 的最后一步才 step;最后一个
+                    # minibatch 无论是否整组都强制 step,避免挂起梯度丢失。
+                    step_within_group = (
+                        (updates + 1) % accumulation_steps == 0
+                        if accumulation_steps > 1
+                        else True
+                    )
+                    planned_minibatches = (
+                        configured_epochs * planned_minibatches_per_epoch
+                    )
+                    is_last_batch = updates + 1 == planned_minibatches
+                    should_step = (
+                        accumulation_steps <= 1
+                        or step_within_group
+                        or is_last_batch
+                    )
                 if self.world_size > 1:
                     # 必须等所有 rank 完成 backward 后再做全局有限性判定,
                     # 避免单 rank 提前异常导致 NCCL collective 失配。
@@ -971,8 +997,10 @@ class PPOLearner:
                         self.model.parameters(), float(self.hp["max_grad_norm"]),
                     )
                     grad_norm_post_clip = grad_norm.clamp(max=float(self.hp["max_grad_norm"]))
-                with self._gpu_stage("update/optimizer_step"):
-                    self.optimizer.step()
+                if should_step:
+                    with self._gpu_stage("update/optimizer_step"):
+                        self.optimizer.step()
+                        self.optimizer.zero_grad(set_to_none=True)
                 with self._gpu_stage("update/diagnostic_metrics"):
                     with torch.no_grad():
                         kl_values = approximate_kl_values(logprob, old_logprobs)

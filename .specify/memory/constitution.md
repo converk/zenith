@@ -23,6 +23,12 @@ Sync Impact Report
   active-contract declaration: single information-encoding protocol v16
   (replacing the token-schema/feature-schema multi-version split), active
   experiment generation v16.
+- Amendment 2026-08-19: 1.4.0 -> 1.5.0 (MINOR). Updated Principle II
+  (active experiment generation v16 -> v17; encoding protocol remains
+  v16); redefined Principle IV (PPO 1v3 mechanism: 1600 hanchan / 30
+  updates -> 4000 hanchan / 5 updates, keep 10 processes); Principle V
+  (rollout baseline: complete-hanchan count replaces kyokus_per_worker
+  for V17 training tests).
 -->
 # Zenith Constitution
 
@@ -41,7 +47,8 @@ Sync Impact Report
 ### II. 单一现行版本契约(Single Active Contract)
 
 - 现行信息编码协议为 v16(单一版本,取代 token schema / feature schema 等多版本
-  拆分);v16 是当前活跃实验代。
+  拆分),token schema 仍为 13;v16 是当前活跃实验代,v17 为下一实验代(经
+  2026-08-19 宪法修订登记,PPO 采用 Mortal 式 GRP 纯奖励方案)。
 - 彻底放弃 v11 checkpoint 兼容(2026-08-15 决策):移除 `legacy/v11` 适配器、
   `legacy_fixed` 模型头、`build_legacy_v11` 及相关测试;v11 权重仅作冷存储保留。
 - v14 实验资产保留为冷存储,不再被当前代码引用,也不恢复其训练。
@@ -59,7 +66,7 @@ Sync Impact Report
   checkpoint 内部保存配置快照以便追溯。
 - 现行数据集为 `tenhou_sft_2024_2025_encoded_40pct_v13_v16` 与原始
   `tenhou_sft_2024_2025`;`80pct_v11` 与 `tenhou-to-mjai` 中间产物删除
-  (2026-08-15 决策)。
+  (2026-08-15 决策)。GRP 数据集按代际命名:`tenhou_grp_2024_2025_v17`。
 - 所有运行日志(json、txt、log 等运行时信息)必须写入 `logs/<版本号>/`,禁止在
   `logs/` 根目录或他处单独生成日志文件。
 - `audit/reports/<版本号>/` 是每个版本的初始设计文档、实验报告、测试与验证脚本
@@ -69,9 +76,10 @@ Sync Impact Report
 
 ### IV. 固定训练评测机制(Fixed Evaluation Mechanisms)
 
-- PPO 唯一评测机制为 1v3 对抗:固定 1600 hanchan(10 进程 × 160),每 30 updates
-  一次;对手模型由配置或命令行参数指定,不得硬编码任何具体版本;输出到
-  `audit/reports/<run>/eval`。
+- PPO 唯一评测机制为 1v3 对抗:固定 10 进程 × 400 = 4000 hanchan(每进程 400),
+  每 5 updates 一次;对手模型(如 V16 SFT)由配置或命令行参数指定,不得硬编码
+  任何具体版本;输出到 `audit/reports/<run>/eval`。进程数(10)是机制常量,
+  单进程半庄数与间隔(400/5)按宪法登记,修改须走本原则修订。
 - 旧 `evaluation_*` 机制与相关配置、代码移除,消除双轨。
 - SFT 的验证、启发式评测与 checkpoint 保存统一固定为每 3000 steps 一次;最终评估
   保持 96 hanchan;参数只在一处定义,禁止在实验配置中复制。
@@ -79,8 +87,10 @@ Sync Impact Report
 
 ### V. 测试基线与可观测性(Test Baseline & Observability)
 
-- 性能与训练测试固定 `target_kl=0.0`、`update_epochs=4`、`kyokus_per_worker=16`;
-  该基线独立于长期训练默认(其 `kyokus_per_worker` 保持 16)。
+- 性能与训练测试固定 `target_kl=0.0`、`update_epochs=4`;rollout 基线在 V16 及
+  以前为 `kyokus_per_worker=16`,自 V17 起改为「每 update 收集 512 个完整半庄」
+  (rollout 停止条件为完整半庄数,不再使用 `kyokus_per_worker`);该基线独立于
+  长期训练默认。
 - 默认使用 `CUDA_DEVICE=0,1` 与 `learner_gpus=2`;仅显式要求单卡时才用
   `CUDA_DEVICE=0`。
 - 测试默认跑 3 轮,首轮视为预热,性能统计只对后两轮单独报告。

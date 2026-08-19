@@ -1,4 +1,4 @@
-"""Shard merge consistency: 10x160 synthetic shards == one 1600 aggregate."""
+"""Shard merge consistency: 10x400 synthetic shards == one 4000 aggregate."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from riichi_ppo_v1.evaluation.head_to_head_1v3_shards import (
 
 def synthetic_shard(index: int, *, seed_base: int = 20260812) -> dict:
     rng = np.random.default_rng(seed_base + index)
-    hanchans = 160
+    hanchans = 400
     point_diffs = rng.normal(loc=5.0 - 0.2 * index, scale=40.0, size=hanchans)
     first_places = int(np.count_nonzero(point_diffs > 0))
     top2 = int(np.count_nonzero(point_diffs > -5))
@@ -59,7 +59,7 @@ def synthetic_shard(index: int, *, seed_base: int = 20260812) -> dict:
     }
 
 
-def test_merged_1600_hanchans_match_direct_aggregation() -> None:
+def test_merged_4000_hanchans_match_direct_aggregation() -> None:
     seed_base = 20260812
     shards = [synthetic_shard(index, seed_base=seed_base) for index in range(10)]
     samples = np.concatenate([
@@ -67,16 +67,16 @@ def test_merged_1600_hanchans_match_direct_aggregation() -> None:
         for shard in shards
     ])
 
-    merged = merge_1v3_shards(shards, seed_base=seed_base, update=30)
+    merged = merge_1v3_shards(shards, seed_base=seed_base, update=5)
     model_a = merged["model_a"]
 
-    assert merged["hanchan_count"] == 1600
-    assert merged["update"] == 30
+    assert merged["hanchan_count"] == 4000
+    assert merged["update"] == 5
     assert model_a["first_place_count"] == sum(
         shard["model_a"]["first_place_count"] for shard in shards
     )
     assert model_a["first_place_rate"] == pytest.approx(
-        model_a["first_place_count"] / 1600
+        model_a["first_place_count"] / 4000
     )
     assert model_a["top2_count"] == sum(
         shard["model_a"]["top2_count"] for shard in shards
@@ -88,13 +88,13 @@ def test_merged_1600_hanchans_match_direct_aggregation() -> None:
         sum(
             shard["model_a"]["mean_rank"] * shard["hanchan_count"]
             for shard in shards
-        ) / 1600
+        ) / 4000
     )
     assert model_a["point_diff_mean"] == pytest.approx(float(samples.mean()))
     assert model_a["point_diff_bootstrap_ci95"] == pytest.approx(
         pooled_bootstrap_ci(samples, seed_base)
     )
-    assert len(model_a["point_diff_samples"]) == 1600
+    assert len(model_a["point_diff_samples"]) == 4000
     assert model_a["point_diff_samples"] == pytest.approx(samples.tolist())
 
 
@@ -122,14 +122,14 @@ def test_merge_rejects_mismatched_point_diff_samples() -> None:
         "point_diff_samples"
     ][:-1]
     with pytest.raises(RuntimeError, match="point-diff samples total"):
-        merge_1v3_shards(shards, seed_base=20260812, update=30)
+        merge_1v3_shards(shards, seed_base=20260812, update=5)
 
 
 def test_shard_seed_ranges_are_disjoint_and_overlap_is_rejected() -> None:
     shards = [synthetic_shard(index) for index in range(10)]
     validate_non_overlapping_seed_ranges(shards)
     assert [shard["seed_base"] for shard in shards] == [
-        20260812 + index * 160 for index in range(10)
+        20260812 + index * 400 for index in range(10)
     ]
     shards[1]["seed_base"] = shards[0]["seed_base"] + 1
     with pytest.raises(RuntimeError, match="seed ranges overlap"):
@@ -139,7 +139,7 @@ def test_shard_seed_ranges_are_disjoint_and_overlap_is_rejected() -> None:
 def test_project_1v3_protocol_requires_ten_exact_disjoint_shards() -> None:
     shards = [synthetic_shard(index) for index in range(10)]
     validate_1v3_shard_plan(
-        shards, seed_base=20260812, hanchans_per_process=160,
+        shards, seed_base=20260812, hanchans_per_process=400,
     )
     with pytest.raises(RuntimeError, match="exactly 10 shards"):
         validate_1v3_shard_plan(

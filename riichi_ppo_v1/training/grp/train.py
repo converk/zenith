@@ -1,4 +1,8 @@
-"""V16 GRP 离线训练入口:prefix→最终排名 CE、冻结与 σ_GRP 固化。"""
+"""V17 GRP 离线训练入口(Mortal 方案):24 类排列 CE、validation-loss best。
+
+每半庄的全部 prefix 独立监督最终排列标签;批次 512、AdamW、lr=1e-5;
+validation loss 最低的 checkpoint 才落盘(best.pt),训练完成后完全冻结。
+"""
 
 from __future__ import annotations
 
@@ -17,7 +21,7 @@ from torch import nn
 from torch.nn import functional as F
 import yaml
 
-from ...model.grp import GRPModel, GRP_CATEGORIES, GRP_NUMERIC_FEATURES, GRP_UTILITY, expected_value
+from ...model.grp import GRPModel, GRP_INPUT_SIZE, GRP_NUM_CLASSES, GRP_UTILITY
 from .prepare import iter_grp_samples
 
 
@@ -25,13 +29,14 @@ DEFAULT_CONFIG = {
     "seed": 1,
     "device": "cuda",
     "epochs": 30,
-    "batch_size": 64,
-    "learning_rate": 0.001,
+    "batch_size": 512,
+    "learning_rate": 1e-5,
     "weight_decay": 0.0,
     "max_grad_norm": 1.0,
     "shuffle_buffer_samples": 65536,
     "log_interval_steps": 100,
-    "checkpoint_dir": "checkpoints/train_riichi_v16/grp",
+    "val_interval_steps": 500,
+    "checkpoint_dir": "checkpoints/train_riichi_v17/grp",
 }
 
 
@@ -46,91 +51,58 @@ def load_config(path: Path | None) -> dict:
     return config
 
 
-def collate(rows: list[tuple[np.ndarray, np.ndarray, int]], device: torch.device) -> dict:
-    maximum = max(len(categorical) for categorical, _numeric, _rank in rows)
-    categorical = torch.zeros((len(rows), maximum, len(GRP_CATEGORIES)), dtype=torch.long)
-    numeric = torch.zeros((len(rows), maximum, GRP_NUMERIC_FEATURES))
+def collate(rows: list[tuple[np.ndarray, np.ndarray]], device: torch.device) -> dict:
+    maximum = max(len(features) for features, _ranks in rows)
+    features = torch.zeros((len(rows), maximum, GRP_INPUT_SIZE), dtype=torch.float32)
     lengths = torch.empty(len(rows), dtype=torch.long)
-    ranks = torch.empty(len(rows), dtype=torch.long)
-    for index, (cat, num, rank) in enumerate(rows):
-        length = len(cat)
-        categorical[index, :length] = torch.from_numpy(cat)
-        numeric[index, :length] = torch.from_numpy(num)
+    rank_by_player = torch.empty((len(rows), 4), dtype=torch.long)
+    for index, (features_seq, ranks) in enumerate(rows):
+        length = len(features_seq)
+        features[index, :length] = torch.from_numpy(features_seq)
         lengths[index] = length
-        ranks[index] = rank
+        rank_by_player[index] = torch.from_numpy(ranks)
     return {
-        "categorical": categorical.to(device),
-        "numeric": numeric.to(device),
+        "features": features.to(device),
         "lengths": lengths.to(device),
-        "ranks": ranks.to(device),
+        "rank_by_player": rank_by_player.to(device),
     }
 
 
-def prefix_loss(logits: torch.Tensor, ranks: torch.Tensor) -> torch.Tensor:
-    """对每个 prefix 独立监督最终排名:L=(1/K)Σ CE(P(s_{0:k}), rank_final)。"""
-    return F.cross_entropy(
-        logits.transpose(1, 2),
-        ranks[:, None].expand_as(logits[..., 0]),
-    )
+def prefix_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    """24 类排列 CE:每个训练样本(单个 prefix)独立监督最终排列。"""
+    return F.cross_entropy(logits, labels)
 
 
-def evaluate(
+def evaluate_validation_loss(
     model: GRPModel, dataset: Path, split: str, device: torch.device,
 ) -> tuple[float, float]:
+    """验证集平均 CE loss 与样本数(上限 val_samples 可控制耗时)。"""
     model.eval()
-    total = correct = 0
-    buffer: list[tuple[np.ndarray, np.ndarray, int]] = []
-    with torch.no_grad():
-        for row in iter_grp_samples(dataset, split):
-            buffer.append(row)
-            if len(buffer) < 64:
-                continue
-            batch = collate(buffer, device)
-            logits = model(batch["categorical"], batch["numeric"], batch["lengths"])
-            ends = batch["lengths"] - 1
-            predicted = logits[torch.arange(logits.shape[0], device=device), ends].argmax(dim=1)
-            ranks = batch["ranks"]
-            correct += int((predicted == ranks).sum())
-            total += len(buffer)
-            buffer.clear()
-        if buffer:
-            batch = collate(buffer, device)
-            logits = model(batch["categorical"], batch["numeric"], batch["lengths"])
-            ends = batch["lengths"] - 1
-            predicted = logits[torch.arange(logits.shape[0], device=device), ends].argmax(dim=1)
-            correct += int((predicted == batch["ranks"]).sum())
-            total += len(buffer)
-    return correct / max(total, 1), float(total)
+    total_loss = 0.0
+    total = 0
+    buffer: list[tuple[np.ndarray, np.ndarray]] = []
 
-
-def _sigma_grp(
-    model: GRPModel, dataset: Path, split: str, device: torch.device,
-) -> float:
-    """在验证数据上离线统计 GRP 小局 delta 的标准差(训练期只读)。"""
-    deltas: list[float] = []
-    utility = torch.tensor(GRP_UTILITY, device=device)
-    model.eval()
-    buffer: list[tuple[np.ndarray, np.ndarray, int]] = []
-
-    def consume(rows: list[tuple[np.ndarray, np.ndarray, int]]) -> None:
+    def consume(rows: list[tuple[np.ndarray, np.ndarray]]) -> None:
+        nonlocal total_loss, total
+        if not rows:
+            return
         batch = collate(rows, device)
-        logits = model(batch["categorical"], batch["numeric"], batch["lengths"])
-        values = torch.softmax(logits, dim=-1) @ utility
-        for row in range(values.shape[0]):
-            length = int(batch["lengths"][row])
-            if length > 1:
-                deltas.extend((values[row, 1:length] - values[row, :length - 1]).cpu().tolist())
+        labels = model.get_label(batch["rank_by_player"])
+        logits = model(batch["features"], batch["lengths"])
+        loss = F.cross_entropy(logits, labels, reduction="sum")
+        total_loss += float(loss.detach().item())
+        total += len(rows)
 
     with torch.no_grad():
         for row in iter_grp_samples(dataset, split):
             buffer.append(row)
-            if len(buffer) < 64:
+            if len(buffer) < int(DEFAULT_CONFIG["batch_size"]):
                 continue
             consume(buffer)
             buffer.clear()
-        if buffer:
-            consume(buffer)
-    return float(np.std(np.asarray(deltas, dtype=np.float32))) if deltas else 1.0
+        consume(buffer)
+    model.train()
+    return (total_loss / max(total, 1), float(total))
 
 
 def train_grp(dataset: Path, config: dict) -> None:
@@ -147,14 +119,15 @@ def train_grp(dataset: Path, config: dict) -> None:
     output = Path(str(config["checkpoint_dir"]))
     output.mkdir(parents=True, exist_ok=True)
     step = 0
-    best_accuracy = 0.0
-    buffer: list[tuple[np.ndarray, np.ndarray, int]] = []
+    best_validation_loss = float("inf")
+    buffer: list[tuple[np.ndarray, np.ndarray]] = []
     rng = random.Random(int(config["seed"]))
     batch_size = max(1, int(config["batch_size"]))
     buffer_capacity = max(int(config["shuffle_buffer_samples"]), batch_size)
+    val_interval = max(1, int(config["val_interval_steps"]))
 
     def drain(*, flush: bool) -> None:
-        nonlocal step
+        nonlocal step, best_validation_loss
         rng.shuffle(buffer)
         usable = len(buffer) if flush else len(buffer) - len(buffer) % batch_size
         for start in range(0, usable, batch_size):
@@ -162,73 +135,147 @@ def train_grp(dataset: Path, config: dict) -> None:
             step += 1
             if step % int(config["log_interval_steps"]) == 0:
                 print(f"grp step={step}", flush=True)
+            if step % val_interval == 0:
+                val_loss, val_samples = evaluate_validation_loss(
+                    model, dataset, "validation", device,
+                )
+                print(
+                    json.dumps({
+                        "step": step,
+                        "validation/loss": float(val_loss),
+                        "validation/samples": float(val_samples),
+                    }),
+                    flush=True,
+                )
+                if _maybe_save_best(
+                    model, config, output,
+                    step, val_loss, best_validation_loss,
+                ):
+                    best_validation_loss = float(val_loss)
         del buffer[:usable]
 
     for epoch in range(int(config["epochs"])):
-        for categorical, numeric, rank in iter_grp_samples(dataset, "train"):
-            buffer.append((categorical, numeric, rank))
+        for features_seq, ranks in iter_grp_samples(dataset, "train"):
+            buffer.append((features_seq, ranks))
             if len(buffer) < buffer_capacity:
                 continue
             drain(flush=False)
         drain(flush=False)
     drain(flush=True)
-    accuracy, total = evaluate(model, dataset, "validation", device)
-    print(json.dumps({"validation/rank_accuracy": accuracy, "validation/samples": total}), flush=True)
-    if accuracy <= 0.25:
-        raise RuntimeError(
-            f"GRP validation accuracy {accuracy:.4f} is not better than uniform random 0.25"
-        )
+
+    val_loss, val_samples = evaluate_validation_loss(model, dataset, "validation", device)
+    print(json.dumps({
+        "validation/loss": float(val_loss),
+        "validation/samples": float(val_samples),
+    }), flush=True)
+    saved = _maybe_save_best(
+        model, config, output, step, val_loss, best_validation_loss,
+    )
+    if not saved and _latest_best_validation_loss(output) is None:
+        # 极小数据集无中间验证时,至少保证有一个产物。
+        _maybe_save_best(model, config, output, step, val_loss, float("inf"))
+    # 训练全部结束:产出完全冻结的 GRP(PPO 阶段只读);冻结后重写 best.pt,
+    # 使落盘 checkpoint 的权重参数带 requires_grad=False 的状态快照。
     model.freeze()
-    sigma_grp = _sigma_grp(model, dataset, "validation", device)
-    _write_normalization(dataset, sigma_grp)
+    frozen_loss = float(_latest_best_validation_loss(output) or val_loss)
+    _write_best_checkpoint(model, config, output, step, frozen_loss)
+    (output / "config_snapshot.json").write_text(
+        json.dumps({
+            "model_config": {
+                "input_size": GRP_INPUT_SIZE,
+                "hidden": 64,
+                "layers": 2,
+                "num_classes": GRP_NUM_CLASSES,
+                "utility": list(GRP_UTILITY),
+            },
+            "config": config,
+        }, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(json.dumps({
+        "checkpoint": str(output / "best.pt"),
+        "best_validation_loss": float(frozen_loss),
+    }), flush=True)
+
+
+def _write_best_checkpoint(
+    model: GRPModel,
+    config: dict,
+    output: Path,
+    step: int,
+    validation_loss: float,
+) -> None:
+    """写 best.pt(不修改 best_loss.json);用于训练结束冻结后的重写。"""
     payload = {
         "model": model.state_dict(),
         "config": config,
         "model_config": {
-            "categories": list(GRP_CATEGORIES),
-            "numeric_features": GRP_NUMERIC_FEATURES,
+            "input_size": GRP_INPUT_SIZE,
+            "hidden": 64,
+            "layers": 2,
+            "num_classes": GRP_NUM_CLASSES,
+            "utility": list(GRP_UTILITY),
         },
         "training_stage": "grp",
-        "global_step": step,
-        "sigma_grp": sigma_grp,
+        "global_step": int(step),
+        "validation_loss": float(validation_loss),
     }
     temporary = output / "best.pt.tmp"
     torch.save(payload, temporary)
     os.replace(temporary, output / "best.pt")
-    (output / "config_snapshot.json").write_text(
-        json.dumps(payload["model_config"] | {"config": config}, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+
+
+def _latest_best_validation_loss(output: Path) -> float | None:
+    """从 ``best_loss.json`` 读取已保存最低 val loss(无则 None)。"""
+    path = output / "best_loss.json"
+    if not path.is_file():
+        return None
+    try:
+        return float(json.loads(path.read_text(encoding="utf-8"))["validation_loss"])
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def _maybe_save_best(
+    model: GRPModel,
+    config: dict,
+    output: Path,
+    step: int,
+    validation_loss: float,
+    best_validation_loss: float,
+) -> bool:
+    """validation loss 更低才覆盖 best.pt;并记录 best_loss.json。"""
+    if float(validation_loss) >= float(best_validation_loss) - 1e-12:
+        return False
+    _write_best_checkpoint(model, config, output, step, validation_loss)
+    (output / "best_loss.json").write_text(
+        json.dumps({"validation_loss": float(validation_loss), "step": int(step)})
+        + "\n", encoding="utf-8",
     )
-    print(json.dumps({"sigma_grp": sigma_grp, "checkpoint": str(output / "best.pt")}), flush=True)
+    return True
 
 
 def _train_step(
     model: GRPModel,
     optimizer: torch.optim.Optimizer,
-    rows: list[tuple[np.ndarray, np.ndarray, int]],
+    rows: list[tuple[np.ndarray, np.ndarray]],
     device: torch.device,
     config: dict,
 ) -> None:
     model.train()
     optimizer.zero_grad(set_to_none=True)
     batch = collate(rows, device)
-    logits = model(batch["categorical"], batch["numeric"], batch["lengths"])
-    loss = prefix_loss(logits, batch["ranks"])
+    logits = model(batch["features"], batch["lengths"])
+    labels = model.get_label(batch["rank_by_player"])
+    loss = prefix_loss(logits, labels)
     loss.backward()
     nn.utils.clip_grad_norm_(model.parameters(), float(config["max_grad_norm"]))
     optimizer.step()
 
 
-def _write_normalization(dataset: Path, sigma_grp: float) -> None:
-    path = dataset / "dataset.json"
-    value = json.loads(path.read_text(encoding="utf-8"))
-    value["normalization"]["sigma_grp"] = sigma_grp
-    path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", type=Path, default=Path("datasets/tenhou_grp_2024_2025_v16"))
+    parser.add_argument("--dataset", type=Path, default=Path("datasets/tenhou_grp_2024_2025_v17"))
     parser.add_argument("--config", type=Path)
     parser.add_argument("--device")
     parser.add_argument("--epochs", type=int)

@@ -1,4 +1,4 @@
-"""Ray rollout actors:V16 编码装配、GRP 边界奖励与 Top-3 Q 推理。"""
+"""Ray rollout actors:V16 编码装配、V17 纯 GRP 边界奖励与 Top-3 Q 推理。"""
 
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ except ImportError:  # imported lazily by the command line program
 
 from ..model.bridge import NUM_PLAYERS, BatchedStateBridge, Decision
 from ..model.grp import GRPModel
-from .grp.prepare import Boundary, KyokuResult, encode_view, rank_among
-from .grp.reward import combined_reward, load_normalization, rank_utility
+from .grp.prepare import Boundary, KyokuResult, features_from_boundaries, rank_among
+from .grp.reward import rank_utility
 from .metrics import SemanticMetrics
 from .profiling import StageProfiler
 from .trajectory import Transition, finish_kyoku_qboost
@@ -174,54 +174,42 @@ def build_rollout_lineups(
 
 
 class GrpRollout:
-    """每个小局边界执行一次 GRP 的奖励装配(SC-011:调用数 = 边界数 × 4)。
+    """每个小局边界执行一次 GRP 的纯奖励装配(Mortal 方案)。
 
-    半庄按 4 个 viewer 视角各自维护一条 prefix 序列;每个非终局边界对每个视角
-    执行一次 GRU 前向(共 4 次),动作数量不影响调用次数。终局(半庄结束)使用
-    真实最终排名 utility,不再执行 GRP 推理。
+    每环境维护 1 条 7 维全局特征前缀序列;每个非终局边界对整条序列执行 1 次
+    GRU 前向(输出 24 类 logits),经 calc_matrix 得到 4 玩家期望 utility 并
+    计算本小局 δ;终局(半庄结束)使用真实最终排名 utility。动作数量不影响
+    GRP 调用次数。reward 为纯 GRP delta,无点差分量、无 σ 归一化。
     """
 
-    def __init__(self, model: Any, sigma_grp: float, sigma_score: float) -> None:
-        if float(sigma_grp) <= 0.0 or float(sigma_score) <= 0.0:
-            raise ValueError("GRP normalization stats must be positive")
+    def __init__(self, model: Any) -> None:
         self.model = model
-        self.sigma_grp = float(sigma_grp)
-        self.sigma_score = float(sigma_score)
         self.calls = 0
-        # env -> [seat -> (categorical rows, numeric rows)];行按边界追加。
-        self._sequences: dict[int, list[tuple[list[np.ndarray], list[np.ndarray]]]] = {}
+        # env -> 7 维特征前缀序列(行按边界追加)。
+        self._sequences: dict[int, np.ndarray] = {}
         self._previous_v: dict[tuple[int, int], float] = {}
-        self._previous_score: dict[tuple[int, int], int] = {}
 
-    def _value(self, env_index: int, seat: int) -> float:
-        """对某个视角的完整 prefix 跑一次 GRU,取末步期望 utility。"""
-        categorical, numeric = self._sequences[int(env_index)][int(seat)]
+    def _expected_utility(self, env_index: int) -> torch.Tensor:
+        """对某环境的完整 prefix 跑一次 GRU,返回 4 玩家期望 utility [4]。"""
+        sequence = np.asarray(self._sequences[int(env_index)], dtype=np.float32)
         with torch.no_grad():
             logits = self.model(
-                torch.as_tensor(np.stack(categorical)[None]),
-                torch.as_tensor(np.stack(numeric)[None]),
-                torch.as_tensor([len(categorical)]),
+                torch.as_tensor(sequence[None]),
+                torch.as_tensor([len(sequence)]),
             )
-        probabilities = torch.softmax(logits[0, -1], dim=-1)
-        utility = logits.new_tensor([24.0, 8.0, -12.0, -24.0])
         self.calls += 1
-        return float((probabilities @ utility).item())
-
-    def _append_boundary(self, env_index: int, boundary: Boundary) -> None:
-        sequences = self._sequences[int(env_index)]
-        for seat in range(NUM_PLAYERS):
-            categorical, numeric = encode_view([boundary], seat)
-            sequences[seat][0].append(categorical[0])
-            sequences[seat][1].append(numeric[0])
+        matrix = self.model.calc_matrix(logits[0:1])[0]  # (4,4) 玩家→排名概率
+        utility = logits.new_tensor([1.0, 1.0 / 3.0, -1.0 / 3.0, -1.0])
+        return matrix @ utility
 
     def start_match(self, env_index: int, boundary: Boundary) -> None:
-        """登记首局边界并计算 4 个视角的 V_0(4 次 GRP 调用)。"""
-        self._sequences[int(env_index)] = [([], []) for _seat in range(NUM_PLAYERS)]
-        self._append_boundary(env_index, boundary)
+        """登记首局边界并计算 V_0(1 次 GRP 调用/环境)。"""
+        self._sequences[int(env_index)] = np.asarray(
+            features_from_boundaries([boundary]), dtype=np.float32,
+        )
+        expected = self._expected_utility(int(env_index))
         for seat in range(NUM_PLAYERS):
-            key = (int(env_index), seat)
-            self._previous_v[key] = self._value(env_index, seat)
-            self._previous_score[key] = int(boundary.scores[seat])
+            self._previous_v[(int(env_index), seat)] = float(expected[seat])
 
     def boundary_reward(
         self,
@@ -230,26 +218,34 @@ class GrpRollout:
         *,
         terminal_ranks: dict[int, int] | None = None,
     ) -> dict[int, float]:
-        """小局边界结算:非终局跑 4 次 GRP,终局用真实排名 utility。"""
-        self._append_boundary(env_index, boundary)
-        rewards: dict[int, float] = {}
+        """小局边界结算:非终局跑 1 次 GRP(全 4 玩家),终局用真实排名 utility。
+
+        返回 {seat: reward}:reward = V(boundary_{k+1}) - V(boundary_k);
+        终局 = 真实最终排名 utility - V(终局前边界)。
+        """
+        if terminal_ranks is None:
+            current_row = np.asarray(
+                features_from_boundaries([boundary]), dtype=np.float32,
+            )[0]
+            self._sequences[int(env_index)] = np.concatenate([
+                self._sequences[int(env_index)], current_row[None, :],
+            ], axis=0)
+            current_expected = self._expected_utility(int(env_index))
+            rewards: dict[int, float] = {}
+            for seat in range(NUM_PLAYERS):
+                key = (int(env_index), int(seat))
+                previous_v = self._previous_v[key]
+                current_v = float(current_expected[seat])
+                rewards[seat] = float(current_v - previous_v)
+                self._previous_v[key] = current_v
+            return rewards
+        # 终局:半庄结束,不再追加边界行,直接用真实排名 utility 计算 δ。
+        rewards = {}
         for seat in range(NUM_PLAYERS):
             key = (int(env_index), int(seat))
-            previous_v = self._previous_v[key]
-            previous_score = self._previous_score[key]
-            if terminal_ranks is not None:
-                delta = float(rank_utility(int(terminal_ranks[seat])) - previous_v)
-            else:
-                current_v = self._value(env_index, seat)
-                delta = float(current_v - previous_v)
-                self._previous_v[key] = current_v
-            rewards[seat] = combined_reward(
-                delta,
-                int(boundary.scores[seat]) - previous_score,
-                self.sigma_grp,
-                self.sigma_score,
+            rewards[seat] = float(
+                rank_utility(int(terminal_ranks[seat])) - self._previous_v[key]
             )
-            self._previous_score[key] = int(boundary.scores[seat])
         return rewards
 
 
@@ -354,15 +350,14 @@ if ray is not None:
             )
             self._pending_tenpai: dict[int, dict[int, bool]] = {}
             self.deferred_reset_indices: set[int] = set()
-            # GRP:CPU 小模型,只在小局边界执行;σ 从数据集 JSON 离线固化读取。
+            # GRP:CPU 小模型,只在小局边界执行;PPO 阶段只读不更新。
             grp_payload = torch.load(
                 config["grp_checkpoint"], map_location="cpu", weights_only=False,
             )
             grp_model = GRPModel()
             grp_model.load_state_dict(grp_payload["model"], strict=True)
-            grp_model.eval()
-            sigma_grp, sigma_score = load_normalization(Path(config["grp_dataset"]))
-            self.grp = GrpRollout(grp_model, sigma_grp, sigma_score)
+            grp_model.freeze()  # PPO 不更新 GRP
+            self.grp = GrpRollout(grp_model)
             for env_index in range(self.num_envs):
                 self.grp.start_match(
                     env_index, self._boundary_from_observations(env_index, None)
@@ -724,12 +719,22 @@ if ray is not None:
         ) -> tuple[list[Transition], dict[str, float]]:
             if update is not None:
                 self.set_rollout_context(int(update))
-            # ``kyokus_per_worker`` 是 worker 级 rollout 排空目标;原生环境并行
-            # 推进各桌,可因一波在途结算而小幅超额,这一有界超额优于丢弃半局。
-            target = int(self.config["kyokus_per_worker"])
+            # V17:rollout 停止条件为「完整半庄数」,不再使用 kyokus_per_worker。
+            # ``games_per_update`` 是全局每 update 完整半庄目标,按 worker 数
+            # 分摊;原生环境并行推进各桌,可因一波在途结算而小幅超额,这一有界
+            # 超额优于丢弃半局。若配置只提供旧的 kyokus_per_worker(历史版本
+            # 兼容路径),则退化为按小局数停止。
+            if "games_per_update" in self.config:
+                games_per_update = max(1, int(self.config["games_per_update"]))
+                num_workers = max(1, int(self.config.get("num_workers", 1)))
+                target = -(-games_per_update // num_workers)
+            else:
+                target = int(self.config.get("kyokus_per_worker", 1))
+            games_target = "games_per_update" in self.config
             transitions: list[Transition] = []
             rewards: list[float] = []
             kyokus = 0
+            games = 0
             drain_kyokus = 0
             drain_steps = 0
             draining = False
@@ -758,7 +763,10 @@ if ray is not None:
                 transitions.extend(step)
                 rewards.extend(new_rewards)
                 kyokus += new_kyokus
-                if not draining and kyokus >= target:
+                games += len(done_indices)
+                if not draining and games_target and games >= target:
+                    draining = True
+                elif not draining and not games_target and kyokus >= target:
                     draining = True
                 if draining:
                     # 小局收口或整局结束的桌子立即冻结,不再多收一个小局。
@@ -771,6 +779,7 @@ if ray is not None:
                     self._reset_games(done_indices)
             elapsed = time.perf_counter() - started
             stats = {
+                "games": float(games),
                 "kyokus": float(kyokus),
                 "sampled_rewards": float(len(rewards)),
                 "reward_mean": float(np.mean(rewards)) if rewards else 0.0,

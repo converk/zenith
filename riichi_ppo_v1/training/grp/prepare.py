@@ -1,9 +1,10 @@
-"""V16 GRP 数据集构造:4 视角旋转、prefix→最终排名、σ_Score 离线固化。
+"""V17 GRP 数据集构造(Mortal 方案):7 维 StartKyoku 状态、24 类排列标签。
 
 从 `datasets/tenhou_sft_2024_2025` 的 tar 半庄记录构造
-`datasets/tenhou_grp_2024_2025_v16`(40% 划分与 train/validation 比例沿用 SFT),
-每个半庄旋转为 4 个 player-relative 视角样本;σ_GRP 在 GRP 训练后由 train.py
-写回数据集 JSON。
+`datasets/tenhou_grp_2024_2025_v17`(40% 划分与 train/validation 比例沿用 SFT);
+每个半庄生成 1 条 7 维全局状态序列 ``[grand_kyoku, honba, kyotaku,
+s0/1e4, s1/1e4, s2/1e4, s3/1e4]``;``iter_grp_samples`` 把每个半庄的所有
+prefix 展开为训练样本(全部监督该半庄的最终排列),不做 4 视角旋转。
 """
 
 from __future__ import annotations
@@ -18,11 +19,9 @@ from pathlib import Path
 
 import numpy as np
 
-from ...model.grp import GRP_CATEGORIES, GRP_NUMERIC_FEATURES, GRP_UTILITY
+from ...model.grp import GRP_INPUT_SIZE, GRP_UTILITY
 from ...sft.data import _member_metadata
 
-SCORE_SCALE = 25_000.0
-DELTA_SCALE = 1_000.0
 RESULT_CODES = {"ron": 1, "tsumo": 2, "ryukyoku": 3, "abort": 4}
 
 
@@ -52,60 +51,28 @@ def rank_among(seat: int, scores: tuple[int, int, int, int]) -> int:
     return order.index(int(seat))
 
 
-def encode_view(
-    boundaries: list[Boundary],
-    viewer: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """把绝对座位边界序列旋转到统一 viewer 视角。
+def rank_by_player(scores: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """player → 最终顺位(0..3),同分按座位号稳定。"""
+    return tuple(rank_among(seat, scores) for seat in range(4))
 
-    返回 categorical [T,9] uint8 与 numeric [T,13] float32;类别字段全部取
-    viewer 相对编码,连续字段在编码期完成固定归一化。
+
+def grand_kyoku(round_wind: int, kyoku_index: int) -> int:
+    """Mortal 的 ``grand_kyoku``:E1=0..E4=3、S1=4..S4=7。"""
+    return min(max(int(round_wind), 0), 1) * 4 + min(max(int(kyoku_index), 0), 3)
+
+
+def features_from_boundaries(boundaries: list[Boundary]) -> np.ndarray:
+    """把绝对座位边界序列编码为 [T, 7] float32 全局特征(Mortal 输入契约)。
+
+    每行 ``[grand_kyoku, honba, kyotaku, s0/1e4, s1/1e4, s2/1e4, s3/1e4]``。
     """
-    categorical = np.zeros((len(boundaries), len(GRP_CATEGORIES)), dtype=np.uint8)
-    numeric = np.zeros((len(boundaries), GRP_NUMERIC_FEATURES), dtype=np.float32)
+    features = np.zeros((len(boundaries), GRP_INPUT_SIZE), dtype=np.float32)
     for row, boundary in enumerate(boundaries):
-        scores = boundary.scores
-        relative = [(viewer + offset) % 4 for offset in (0, 1, 2, 3)]
-        self_rank = rank_among(viewer, scores)
-        pressures = [scores[viewer] - scores[relative[offset]] for offset in (1, 2, 3)]
-        if boundary.previous is None:
-            result_code, winner_code, deal_code, tenpai_mask, renchan = 0, 0, 0, 0, 0
-            deltas = (0, 0, 0, 0)
-        else:
-            previous = boundary.previous
-            result_code = max(0, min(int(previous.result_type), 4))
-            winner_code = (
-                0 if previous.winner is None else (int(previous.winner) - viewer) % 4 + 1
-            )
-            deal_code = (
-                0 if previous.deal_in is None else (int(previous.deal_in) - viewer) % 4 + 1
-            )
-            tenpai_mask = int(previous.tenpai_mask) & 0xF
-            renchan = int(
-                previous.winner is not None and int(previous.winner) == int(boundary.dealer)
-            )
-            deltas = previous.deltas
-        categorical[row] = (
-            self_rank,
-            min(max(int(boundary.round_wind), 0), 1),
-            min(max(int(boundary.kyoku_index), 0), 7),
-            (int(boundary.dealer) - viewer) % 4,
-            result_code,
-            winner_code,
-            deal_code,
-            tenpai_mask,
-            renchan,
-        )
-        numeric[row, :4] = np.clip(np.asarray(scores, dtype=np.float32) / SCORE_SCALE, -5.0, 5.0)
-        numeric[row, 4:7] = np.clip(
-            np.asarray(pressures, dtype=np.float32) / SCORE_SCALE, -5.0, 5.0,
-        )
-        numeric[row, 7] = np.clip(float(boundary.honba) / 10.0, 0.0, 1.0)
-        numeric[row, 8] = np.clip(float(boundary.sticks) / 10.0, 0.0, 1.0)
-        numeric[row, 9:13] = np.clip(
-            np.asarray(deltas, dtype=np.float32) / DELTA_SCALE, -12.0, 12.0,
-        )
-    return categorical, numeric
+        features[row, 0] = float(grand_kyoku(boundary.round_wind, boundary.kyoku_index))
+        features[row, 1] = float(boundary.honba)
+        features[row, 2] = float(boundary.sticks)
+        features[row, 3:7] = np.asarray(boundary.scores, dtype=np.float32) / 10_000.0
+    return features
 
 
 def parse_hanchan(content: str) -> list[Boundary]:
@@ -203,13 +170,18 @@ def prepare_grp_dataset(
     denominator: int = 5,
     remainders: tuple[int, ...] = (0, 1),
     kyokus_per_shard: int = 512,
+    max_shards: int | None = None,
 ) -> dict:
-    """按 game_id 聚合完整半庄后构造 4 视角 GRP 数据集并固化 σ_Score。"""
+    """按 game_id 聚合完整半庄后构造 v17 GRP 数据集并写 dataset.json。
+
+    每个半庄生成 1 条全局特征序列与 rank_by_player;训练时将 prefix 展开。
+    ``max_shards`` 限制每个 split 最多处理的 tar shard 数(默认全部),用于
+    控制数据集规模(如 20w prefix 样本)。
+    """
     if output.exists() and any(output.iterdir()):
         raise FileExistsError(f"output already exists and is non-empty: {output}")
     output.mkdir(parents=True, exist_ok=True)
-    counts = {"train_hanchans": 0, "validation_hanchans": 0, "train_samples": 0, "validation_samples": 0}
-    clipped_deltas: list[float] = []
+    counts = {"train_hanchans": 0, "validation_hanchans": 0}
     for split in ("train", "validation"):
         destination = output / split
         destination.mkdir()
@@ -224,30 +196,23 @@ def prepare_grp_dataset(
             combined = "\n".join(content for _year, _index, content in ordered)
             boundaries = parse_hanchan(combined)
             finals = final_scores(boundaries)
-            year = ordered[0][0]
-            for viewer in range(4):
-                categorical, numeric = encode_view(boundaries, viewer)
-                buffer.append({
-                    "categorical": categorical,
-                    "numeric": numeric,
-                    "final_rank": rank_among(viewer, finals),
-                    "year": year,
-                    "game_id": game_id,
-                    "viewer": viewer,
-                })
-                for boundary in boundaries:
-                    if boundary.previous is not None:
-                        clipped_deltas.extend(
-                            float(np.clip(delta / DELTA_SCALE, -12.0, 12.0))
-                            for delta in boundary.previous.deltas
-                        )
+            features = features_from_boundaries(boundaries)
+            buffer.append({
+                "features": features,
+                "rank_by_player": np.asarray(rank_by_player(finals), dtype=np.uint8),
+                "year": ordered[0][0],
+                "game_id": game_id,
+            })
             counts[f"{split}_hanchans"] += 1
             if len(buffer) >= kyokus_per_shard:
                 _write_chunk(destination / f"{split}-{chunk_index:05d}.npz", buffer)
                 buffer.clear()
                 chunk_index += 1
 
-        for shard in sorted((source / split).glob(f"{split}-*.tar")):
+        shards = sorted((source / split).glob(f"{split}-*.tar"))
+        if max_shards is not None and max_shards > 0:
+            shards = shards[: max_shards]
+        for shard in shards:
             with tarfile.open(shard, "r") as archive:
                 for member in archive:
                     if not member.isfile() or not _selected(member.name, denominator, remainders):
@@ -268,23 +233,14 @@ def prepare_grp_dataset(
             raise RuntimeError(f"{split} 残留未闭合 game 缓冲: {sorted(game_buffer)}")
         if buffer:
             _write_chunk(destination / f"{split}-{chunk_index:05d}.npz", buffer)
-        counts[f"{split}_samples"] = counts[f"{split}_hanchans"] * 4
-    sigma_score = float(np.std(np.asarray(clipped_deltas, dtype=np.float32))) if clipped_deltas else 1.0
     dataset = {
-        "format": "riichi-grp-v16",
-        "encoding_protocol_version": 16,
-        "source_manifest_sha256": _sha256(source / "manifest.json"),
-        "subset_denominator": denominator,
-        "subset_remainders": list(remainders),
+        "format": "riichi-grp-v17",
+        "input_size": GRP_INPUT_SIZE,
+        "num_classes": 24,
         "utility": list(GRP_UTILITY),
+        "subsample": {"denominator": denominator, "remainders": list(remainders)},
+        "max_shards": max_shards,
         "counts": counts,
-        "normalization": {
-            "sigma_score": sigma_score,
-            "sigma_grp": None,  # GRP 训练后由 train.py 写回
-            "delta_clip": 12.0,
-            "reward_clip": 5.0,
-        },
-        "views": ["SELF", "RIGHT", "ACROSS", "LEFT"],
     }
     (output / "dataset.json").write_text(json.dumps(dataset, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(dataset, ensure_ascii=False), flush=True)
@@ -298,36 +254,37 @@ def _sha256(path: Path) -> str:
 
 def _write_chunk(path: Path, samples: list[dict]) -> None:
     offsets = np.zeros(len(samples) + 1, dtype=np.int64)
-    offsets[1:] = np.cumsum([len(sample["categorical"]) for sample in samples], dtype=np.int64)
+    offsets[1:] = np.cumsum([len(sample["features"]) for sample in samples], dtype=np.int64)
     temporary = path.with_suffix(".tmp.npz")
     np.savez_compressed(
         temporary,
         offsets=offsets,
-        categorical=np.concatenate([sample["categorical"] for sample in samples], axis=0),
-        numeric=np.concatenate([sample["numeric"] for sample in samples], axis=0).astype(np.float16),
-        final_ranks=np.asarray([sample["final_rank"] for sample in samples], dtype=np.uint8),
+        features=np.concatenate([sample["features"] for sample in samples], axis=0).astype(np.float32),
+        rank_by_player=np.stack([sample["rank_by_player"] for sample in samples], axis=0),
         years=np.asarray([sample["year"] for sample in samples], dtype=np.int16),
         game_ids=np.asarray([sample["game_id"] for sample in samples], dtype=np.str_),
-        viewers=np.asarray([sample["viewer"] for sample in samples], dtype=np.uint8),
     )
     os.replace(temporary, path)
 
 
 def iter_grp_samples(dataset: Path, split: str):
-    """按文件顺序读取 GRP chunk,产出 (categorical, numeric, final_rank)。"""
+    """读取 GRP chunk,产出每个半庄每个 prefix 的训练样本。
+
+    ``yield (features[:k], rank_by_player)``:``features[:k]`` 为 (k,7) float32
+    前缀,``rank_by_player`` 为该半庄最终 (玩家→顺位) uint8 (4,)。全部 prefix
+    监督同一最终排列标签(与 Mortal ``GrpFileDatasetsIter`` 一致)。
+    """
     for path in sorted((dataset / split).glob(f"{split}-*.npz")):
         with np.load(path, allow_pickle=False) as data:
             offsets = data["offsets"]
-            categorical = data["categorical"]
-            numeric = data["numeric"].astype(np.float32)
-            final_ranks = data["final_ranks"]
-            for row in range(len(final_ranks)):
+            features = data["features"]
+            rank_by_player = data["rank_by_player"]
+            for row in range(len(rank_by_player)):
                 start, end = int(offsets[row]), int(offsets[row + 1])
-                yield (
-                    categorical[start:end].copy(),
-                    numeric[start:end],
-                    int(final_ranks[row]),
-                )
+                sequence = features[start:end]
+                ranks = rank_by_player[row]
+                for prefix_len in range(1, len(sequence) + 1):
+                    yield sequence[:prefix_len].copy(), ranks
 
 
 def main() -> None:
@@ -337,12 +294,14 @@ def main() -> None:
     parser.add_argument("--subset-denominator", type=int, default=5)
     parser.add_argument("--subset-remainders", type=str, default="0,1")
     parser.add_argument("--kyokus-per-shard", type=int, default=512)
+    parser.add_argument("--max-shards", type=int, default=None)
     args = parser.parse_args()
     remainders = tuple(int(value) for value in args.subset_remainders.split(","))
     prepare_grp_dataset(
         args.source, args.output,
         denominator=args.subset_denominator, remainders=remainders,
         kyokus_per_shard=args.kyokus_per_shard,
+        max_shards=args.max_shards,
     )
 
 

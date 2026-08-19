@@ -11,6 +11,26 @@ bash RiichiEnv/scripts/install_conda_extension.sh
 python -m pip install -e riichi_ppo_v1 --no-deps --no-build-isolation
 ```
 
+## V17 流程(2026-08-19,Mortal 式 GRP 纯奖励)
+
+V17 在 V16-small 拓扑基础上引入 Mortal 式 GRP(全局排名预测)作为唯一奖励
+信号:
+
+- GRP 输入为每个 StartKyoku 的 7 维全局状态
+  `[grand_kyoku, honba, kyotaku, s0/1e4, s1/1e4, s2/1e4, s3/1e4]`;每半庄所有
+  prefix 预测最终四人排名的 24 类全排列。
+- 模型:`7 → 2 层 GRU(hidden=64) → concat → Linear(128,128) → ReLU →
+  Linear(128,24)`;离线训练 `batch_size=512`、AdamW、`lr=1e-5`,保存 validation
+  loss 最低的 checkpoint(`checkpoints/train_riichi_v17/grp/best.pt`),
+  训练完成后完全冻结。
+- PPO 奖励 = 纯 GRP delta(排名 utility `[1, 1/3, -1/3, -1]`),删除小局点差
+  分量;每 update 收集 512 个完整半庄,双卡 DDP(每卡 minibatch 1536 →
+  global effective 3072,`update_epochs=2`,显存不足可用 gradient accumulation
+  兜底);对手只使用 current self-play。
+- 每 5 updates 保存 checkpoint 并对 V16 SFT 1v3 评测 4000 半庄(10 进程 ×
+  400);训练结束后按 1V3 表现选择最佳 checkpoint。配置:`v17_grp.yaml` 与
+  `v17_ppo.yaml`,产物落 `train_riichi_v17/`、`logs/v17/`、`audit/reports/v17/`。
+
 ## V16-small 当前流程(2026-08-17)
 
 V16 版本命名保持不变,仅把隐藏层调整为 V16-small(总参数约 3.0M):
@@ -71,12 +91,13 @@ advantage/returns 在完整 rollout 上先算好再随分片下发,每步梯度�
 新 checkpoint 在 `extra_state.rank_rng_states` 中保存逐 rank RNG,双卡
 `resume` 会精确恢复每个 rank 的训练随机状态。
 
-PPO 唯一评测机制是固定 1v3 对抗:每 30 个 update 一次、10 个进程各 160 半庄
-(共 1600 半庄),候选策略对阵由 `eval1v3_model_b` 指定的对手模型。对手模型、
+PPO 唯一评测机制是固定 1v3 对抗:每 5 个 update 一次、10 个进程各 400 半庄
+(共 4000 半庄),候选策略对阵由 `eval1v3_model_b` 指定的对手模型。对手模型、
 种子基数、设备与输出目录都来自版本配置;结果写入 `eval1v3_output_dir`
 (固定为 `audit/reports/<版本号>/eval`),摘要追加到该目录下的
 `eval1v3.jsonl`,进度记录写入 `audit/reports/<版本号>/report/PROGRESS.md`。
-默认配置不含任何版本化对手或目录。
+训练结束后可用 `riichi_ppo_v1/evaluation/select_best_checkpoint` 按 1V3 表现
+选择最佳 checkpoint。默认配置不含任何版本化对手或目录。
 
 SFT 的固定启发式评测独立于 PPO reward，使用轮换座位的效率/防守启发式对手。它记录名次、分差、和牌、放铳、被自摸、流局、立直、副露及座位/阶段分组指标。
 
