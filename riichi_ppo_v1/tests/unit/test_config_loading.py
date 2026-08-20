@@ -24,7 +24,7 @@ class ConfigLoadingTest(unittest.TestCase):
         self.assertEqual(config["checkpoint_dir"], "checkpoints/train_riichi_current")
         self.assertIsNone(config["resume"])
         self.assertEqual(config["update_batch_mode"], "streaming")
-        self.assertEqual(config["qboost_lambda"], 0.95)
+        self.assertEqual(config["gae_lambda"], 0.95)
         self.assertEqual(config["critic_head_type"], "action_value")
         self.assertEqual(config["target_kl"], 0.02)
         self.assertEqual(config["learning_rate"], 0.00002)

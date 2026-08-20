@@ -23,7 +23,7 @@ from .grp.prepare import Boundary, KyokuResult, features_from_boundaries, rank_a
 from .grp.reward import rank_utility
 from .metrics import SemanticMetrics
 from .profiling import StageProfiler
-from .trajectory import Transition, finish_kyoku_qboost
+from .trajectory import Transition, finish_kyoku_gae
 
 RESULT_CODES = {"ron": 1, "tsumo": 2, "ryukyoku": 3, "abort": 4}
 
@@ -497,9 +497,6 @@ if ray is not None:
             action_ids = [int(value) for value in result["action_ids"]]
             logprobs = [float(value) for value in result["logprobs"]]
             values = [float(value) for value in result["values"]]
-            q_taken = [float(value) for value in result["q_taken"]]
-            expected_q = [float(value) for value in result["expected_q"]]
-            top3_ids = [np.asarray(value, dtype=np.int32) for value in result["top3_ids"]]
             with self.profiler.stage("rollout/model_action_decode"):
                 actions = self.bridge.decode(decisions, action_ids)
             self.model_decisions += len(decisions)
@@ -525,15 +522,12 @@ if ray is not None:
                             prepared["legal_mask"][row].copy(),
                             action_ids[row],
                             logprobs[row],
-                            q_taken[row],
                             values[row],
-                            expected_q=expected_q[row],
                             critic_factors=(
                                 prepared["critic_factors"][row, :critic_length].copy()
                                 if critic_length else None
                             ),
                             critic_length=critic_length,
-                            top3_ids=top3_ids[row],
                         )
                         self.semantic.record_decision(
                             action_ids[row], prepared["legal_mask"][row],
@@ -693,14 +687,14 @@ if ray is not None:
                     reward = float(seat_rewards[seat])
                     pending = self.pending[env_index][seat]
                     if self.lineups[env_index][seat] == "current":
-                        with self.profiler.stage("rollout/finish_kyoku_qboost"):
+                        with self.profiler.stage("rollout/finish_kyoku_gae"):
                             if pending:
                                 pending[-1].reward += reward
                                 pending[-1].kyoku_reward = reward
-                            completed.extend(finish_kyoku_qboost(
+                            completed.extend(finish_kyoku_gae(
                                 pending,
                                 float(self.config["gamma"]),
-                                float(self.config["qboost_lambda"]),
+                                float(self.config.get("gae_lambda", 0.95)),
                             ))
                     rewards.append(reward)
                     self.pending[env_index][seat] = []

@@ -143,12 +143,12 @@ def test_project_1v3_protocol_requires_ten_exact_disjoint_shards() -> None:
     )
     with pytest.raises(RuntimeError, match="exactly 10 shards"):
         validate_1v3_shard_plan(
-            shards[:-1], seed_base=20260812, hanchans_per_process=160,
+            shards[:-1], seed_base=20260812, hanchans_per_process=400,
         )
     shards[1]["seed_base"] = shards[0]["seed_base"] + 1
     with pytest.raises(RuntimeError, match="seed plan differs"):
         validate_1v3_shard_plan(
-            shards, seed_base=20260812, hanchans_per_process=160,
+            shards, seed_base=20260812, hanchans_per_process=400,
         )
 
 

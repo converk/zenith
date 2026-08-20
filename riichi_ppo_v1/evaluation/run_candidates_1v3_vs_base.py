@@ -2,7 +2,7 @@
 冻结的 V14 base(checkpoint_00510),所有候选用**同一种子区间与同一候选座位
 轮转**,保证六模型对比公平;并额外执行 V14 base 3v1 baseline(自己打自己)。
 
-可对比性:每个候选以同一个 seed_base 分片(10 进程 × 240),同一片内的种子区间
+可对比性:每个候选以同一个 seed_base 分片(12 进程 × 200),同一片内的种子区间
 逐候选一致,因此同一片/同 env 序号的牌山与候选座位完全一致,六模型之间除了
 策略差异外没有任何随机因素不同。
 
@@ -22,9 +22,10 @@ import json
 from pathlib import Path
 
 from .head_to_head_1v3_shards import REQUIRED_1V3_PROCESSES, run_sharded_1v3
+from .mechanism import DEFAULT_1V3_HANCHANS_PER_PROCESS
 
 # 单进程内并行推进的半庄数(与训练评测一致的节奏)。
-PARALLEL_HANCHANS = 160
+PARALLEL_HANCHANS = DEFAULT_1V3_HANCHANS_PER_PROCESS
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -33,7 +34,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate", action="append", dest="candidates", required=True,
                         help="候选模型路径,可多次传入")
     parser.add_argument("--hanchans", type=int, default=2400,
-                        help="每个候选的半庄总数,需能被 10 整除")
+                        help="每个候选的半庄总数,需能被 12 整除")
     parser.add_argument("--seed-base", type=int, required=True,
                         help="所有候选共享的种子基数(同一牌山与座位轮转)")
     parser.add_argument("--devices", nargs="+", default=("0", "3"),
@@ -56,7 +57,7 @@ def _run_one(
     work_dir: Path,
     key: str,
 ) -> dict:
-    """运行单个 1v3 评测:10 分片 × total/10,种子区间由 seed_base 决定。"""
+    """运行单个 1v3 评测:12 分片 × total/12,种子区间由 seed_base 决定。"""
     per_process = total // REQUIRED_1V3_PROCESSES
     work_dir.mkdir(parents=True, exist_ok=True)
     # 每个候选/实验都使用相同的 seed_base,保证可对比性;update 仅用于区分

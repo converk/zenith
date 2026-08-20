@@ -1,4 +1,4 @@
-"""V16 PPO 优化器:V16 批 collate、PPO clip + value Huber + Top-3 Q loss。
+"""V16 PPO 优化器:V16 批 collate、PPO clip + value Huber + GAE value advantage。
 
 ``PPOLearner`` 同时支持单卡(默认)与双卡 DDP:传 ``rank``/``world_size``
 后模型由 ``DistributedDataParallel`` 包装,update 内所有梯度 collective 与
@@ -22,108 +22,15 @@ from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
-from ..model.architecture import dueling_candidate_q
 from ..model.schema import NUM_ACTIONS, TOKEN_SCHEMA_VERSION
 from .metrics import ppo_buffer_metrics
 from .profiling import StageProfiler
 from .trajectory import Transition, transition_sequence_length
 
-# V16 参数分支:Q loss 只经 critic_hidden 更新 q_scorer/critic,动作表示已在
-# q_scores_v16 内 detach,保证 Q loss 不直接更新 Actor 分支。
+# V16 参数分支:actor/critic/shared 三组独立调度,gradient 按参数根分发。
 ACTOR_ROOTS = {"actor_backbone", "query_embedding", "action_fusion", "policy_mlp"}
 CRITIC_ROOTS = {"critic_embedding", "critic_backbone", "value_head", "value_query", "q_scorer"}
 SHARED_ROOTS = {"token_embedding", "snapshot_embeddings", "public_backbone"}
-
-
-def select_top3_candidates(
-    policy_logits: torch.Tensor,
-    legal_mask: torch.Tensor,
-    behavior_actions: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Top-3 Q-boosting 的候选集(契约 reward-v16.md §4)。
-
-    - boost 候选 = 合法动作中的 Top-3;
-    - 训练候选 = Top-3 ∪ 实际 rollout 行为动作(最多 4 个,去重)。
-    返回 ``(boost_ids [B,3], training_ids [B,4])``,右侧以 -1 补齐。
-    """
-    batch = policy_logits.shape[0]
-    if policy_logits.ndim != 2 or legal_mask.shape != policy_logits.shape:
-        raise ValueError("policy_logits and legal_mask must be [batch, actions]")
-    if behavior_actions.shape != (batch,):
-        raise ValueError("behavior_actions must be [batch]")
-    masked = policy_logits.masked_fill(~legal_mask, float("-inf"))
-    top_count = min(3, int(legal_mask.sum(dim=1).min()))
-    top3 = masked.topk(top_count, dim=-1).indices
-    boost_ids = top3.new_full((batch, 3), -1)
-    boost_ids[:, :top_count] = top3
-    training_ids = top3.new_full((batch, 4), -1)
-    training_ids[:, :top_count] = top3
-    training_ids[:, top_count] = behavior_actions
-    cleaned = top3.new_full((batch, 4), -1)
-    for row in range(batch):
-        unique: list[int] = []
-        seen: set[int] = set()
-        for value in training_ids[row].tolist():
-            if int(value) < 0 or int(value) in seen:
-                continue
-            seen.add(int(value))
-            unique.append(int(value))
-        cleaned[row, : len(unique)] = top3.new_tensor(unique)
-    return boost_ids, cleaned
-
-
-def candidate_q_loss(
-    q_scores: torch.Tensor,
-    q_targets: torch.Tensor,
-    candidate_valid: torch.Tensor,
-) -> torch.Tensor:
-    """行为动作的 Q 回归(Huber);仅对被实际执行的动作计算目标。
-
-    未执行的 Top-3 候选不构造虚假 Q target:它们只通过 Dueling 基线与
-    p_boost 蒸馏间接参与训练。
-    """
-    if q_scores.shape != q_targets.shape or q_scores.shape != candidate_valid.shape:
-        raise ValueError("q_scores/q_targets/candidate_valid shapes differ")
-    if not bool(candidate_valid.any()):
-        return q_scores.new_zeros(())
-    return F.huber_loss(
-        q_scores[candidate_valid],
-        q_targets[candidate_valid],
-        reduction="mean",
-    )
-
-
-def boosted_top3_probabilities(
-    candidate_probs: torch.Tensor,
-    advantages: torch.Tensor,
-    *,
-    lambda_q: float,
-    temperature: float,
-) -> torch.Tensor:
-    """Top-3 Q-boosting 概率重分配:p_boost ∝ p_i·exp(λ_q·A_i/T)。
-
-    只在有效候选内重分配,并整体缩放回原始 Top-3 总概率质量,保证
-    ``sum(p_boost) = sum(p_i)``;无效位置输出 0。
-    """
-    if candidate_probs.shape != advantages.shape:
-        raise ValueError("candidate_probs and advantages must share the same shape")
-    if temperature <= 0:
-        raise ValueError("temperature must be positive")
-    valid = torch.isfinite(advantages) & (candidate_probs >= 0)
-    safe_probs = torch.where(
-        valid, candidate_probs, torch.zeros_like(candidate_probs)
-    )
-    safe_advantages = torch.where(
-        valid, advantages, torch.zeros_like(advantages)
-    )
-    weights = safe_probs * torch.exp(
-        (float(lambda_q) / float(temperature)) * safe_advantages
-    )
-    total = weights.sum(dim=-1, keepdim=True)
-    boosted = weights / total.clamp_min(1e-12)
-    original_mass = safe_probs.sum(dim=-1, keepdim=True)
-    boosted = boosted * original_mass
-    return torch.where(valid, boosted, torch.zeros_like(boosted))
 
 
 def validate_fresh_model_checkpoint_contract(payload: dict[str, Any]) -> None:
@@ -135,15 +42,28 @@ def validate_fresh_model_checkpoint_contract(payload: dict[str, Any]) -> None:
         raise RuntimeError("V16 PPO requires a symmetric_action_query model checkpoint")
 
 
-def scheduled_learning_rate(base: float, update: int, total_updates: int, warmup_fraction: float) -> float:
-    """Exp 风格 warmup 后线性衰减,采用 1-based updates。"""
+def scheduled_learning_rate(
+    base: float,
+    update: int,
+    total_updates: int,
+    warmup_fraction: float,
+    min_lr: float | None = None,
+) -> float:
+    """学习率调度:1-based updates,warmup 线性升到 base,之后线性衰减。
+
+    ``min_lr`` 为 None 时保持历史 Exp 风格(衰减终点约为 base/剩余步数);
+    给定数值时从 base 线性衰减到 min_lr,``min_lr=0.0`` 时终点为 0。
+    """
     total = max(1, int(total_updates))
     step = max(0, int(update))
     warmup = int(total * float(warmup_fraction))
     if warmup > 0 and step <= warmup:
         return float(base) * float(step) / float(warmup)
     decay_updates = max(1, total - warmup)
-    return float(base) * max(0.0, float(total - step + 1) / float(decay_updates))
+    if min_lr is None:
+        return float(base) * max(0.0, float(total - step + 1) / float(decay_updates))
+    progress = min(max(0.0, float(step - warmup) / float(decay_updates)), 1.0)
+    return float(base) - (float(base) - float(min_lr)) * progress
 
 
 def scheduled_entropy_coefficient(start: float, end: float, update: int, total_updates: int) -> float:
@@ -303,23 +223,13 @@ def transition_length_metrics(transitions: list[Transition], prefix: str = "upda
 
 
 def rollout_target_metrics(transitions: list[Transition]) -> dict[str, float]:
-    """全量 rollout 的序列长度与 Q/advantage 统计(host 侧,供 learner 与汇总共用)。"""
+    """全量 rollout 的序列长度与 advantage 统计(host 侧,供 learner 与汇总共用)。"""
     length_metrics = transition_length_metrics(transitions)
     length_metrics.update(ppo_buffer_metrics(transitions))
-    raw_q_targets = np.asarray([item.q_target for item in transitions], dtype=np.float64)
-    raw_q_taken = np.asarray([item.q_taken for item in transitions], dtype=np.float64)
-    raw_expected_q = np.asarray([item.expected_q for item in transitions], dtype=np.float64)
     raw_advantages = np.asarray([item.advantage for item in transitions], dtype=np.float64)
     length_metrics.update({
-        "q_target_mean": float(raw_q_targets.mean()),
-        "q_target_std": float(raw_q_targets.std()),
-        "q_taken_mean": float(raw_q_taken.mean()),
-        "q_taken_std": float(raw_q_taken.std()),
-        "expected_q_mean": float(raw_expected_q.mean()),
-        "expected_q_std": float(raw_expected_q.std()),
-        "qboost_advantage_mean": float(raw_advantages.mean()),
-        "qboost_advantage_std": float(raw_advantages.std()),
-        "q_explained_variance": float(length_metrics["q_explained_variance"]),
+        "advantage_mean": float(raw_advantages.mean()),
+        "advantage_std": float(raw_advantages.std()),
     })
     return length_metrics
 
@@ -377,7 +287,6 @@ def materialize_host_batch(
         critic_lengths = torch.empty(batch, dtype=torch.long)
         actions = torch.empty(batch, dtype=torch.long)
         old_logprobs = torch.empty(batch, dtype=torch.float32)
-        q_targets = torch.empty(batch, dtype=torch.float32)
         advantage_values = torch.empty(batch, dtype=torch.float32)
     with profile.stage("update/collate_host_padding_copy"):
         source_advantages = (
@@ -409,7 +318,6 @@ def materialize_host_batch(
             critic_lengths[row] = critic_length
             actions[row] = int(item.action)
             old_logprobs[row] = float(item.logprob)
-            q_targets[row] = float(item.q_target)
             advantage_values[row] = float(source_advantages[row])
     return {
         "history_factors": history_factors,
@@ -428,7 +336,6 @@ def materialize_host_batch(
         "actions": actions,
         "old_logprobs": old_logprobs,
         "advantages": advantage_values,
-        "q_targets": q_targets,
     }
 
 
@@ -536,7 +443,11 @@ class PPOLearner:
                 self.model,
                 device_ids=[self.device.index],
                 broadcast_buffers=False,
-                find_unused_parameters=False,
+                # 移除 Q 后必须允许未使用参数:bootstrap 期只训 critic(actor/
+                # shared 不进 loss),且保留的 q_scorer 不再参与任何 loss;DDP
+                # 会在每次 backward 额外扫描未使用参数,模型仅约 3M 参数,
+                # 开销可忽略。
+                find_unused_parameters=True,
             )
             if self.world_size > 1
             else None
@@ -559,16 +470,6 @@ class PPOLearner:
         self.critic_public_grad_scale = float(hyperparameters.get("critic_public_grad_scale", 1.0))
         if not 0.0 <= self.critic_public_grad_scale <= 1.0:
             raise ValueError("critic_public_grad_scale must be in [0, 1]")
-        # Top-3 Q-boosting 蒸馏:q_boost_coef 是辅助 loss 权重,q_boost_lambda
-        # 与 q_temperature 控制 p_boost ∝ p_i·exp(λ_q·A_i/T);与资格迹衰减
-        # 超参 qboost_lambda 相互独立。
-        self.q_boost_coef = float(hyperparameters.get("q_boost_coef", 0.1))
-        self.q_boost_lambda = float(hyperparameters.get("q_boost_lambda", 1.0))
-        self.q_temperature = float(hyperparameters.get("q_temperature", 1.0))
-        if self.q_boost_coef < 0:
-            raise ValueError("q_boost_coef must be non-negative")
-        if self.q_temperature <= 0:
-            raise ValueError("q_temperature must be positive")
         self.gradient_accumulation_steps = max(
             1, int(hyperparameters.get("gradient_accumulation_steps", 1))
         )
@@ -667,6 +568,17 @@ class PPOLearner:
             return_mean = float(returns.mean(dtype=np.float64))
             return_std = float(returns.std(dtype=np.float64))
 
+        # value 拟合度:对完整 rollout 的 empirical returns 计算 explained variance。
+        raw_values = np.asarray(
+            [float(item.value) for item in transitions], dtype=np.float64,
+        )
+        returns_var = float(np.var(returns, dtype=np.float64))
+        length_metrics["value_explained_variance"] = (
+            0.0
+            if returns_var <= 1e-12
+            else 1.0 - float(np.var(returns - raw_values, dtype=np.float64)) / returns_var
+        )
+
         metric_sample_sums: dict[str, torch.Tensor] = {}
         metric_sample_count = 0
         step_metric_totals: dict[str, torch.Tensor] = {}
@@ -687,9 +599,15 @@ class PPOLearner:
             "shared": float(self.hp.get("shared_learning_rate", self.hp["learning_rate"])),
             "critic": float(self.hp.get("critic_learning_rate", self.hp["learning_rate"])),
         }
+        # 各参数组可选的 LR 下限;未配置时沿用历史 Exp 风格衰减终点。
+        branch_mins = {
+            "actor": self.hp.get("actor_learning_rate_min"),
+            "shared": self.hp.get("shared_learning_rate_min"),
+            "critic": self.hp.get("critic_learning_rate_min"),
+        }
         if critic_bootstrap:
-            # critic 预热:先冻结 Actor/shared,只让 value + Q scorer 在特权
-            # 输入上收敛,避免随机初始化的 Q 自举目标扰动策略。
+            # critic 预热:先冻结 Actor/shared,只让 value 在特权输入上收敛,
+            # 避免随机初始化的值函数扰动策略。
             branch_learning_rates = {
                 "actor": 0.0,
                 "shared": 0.0,
@@ -707,6 +625,7 @@ class PPOLearner:
                     policy_update_number,
                     total_policy_updates,
                     float(self.hp.get("warmup_fraction", 0.0)),
+                    min_lr=None if branch_mins[branch] is None else float(branch_mins[branch]),
                 )
                 for branch, base in branch_bases.items()
             }
@@ -740,7 +659,6 @@ class PPOLearner:
                 "start PPO with --init-model or resume an anchored PPO checkpoint"
             )
         value_coef = float(self.hp.get("value_coef", 0.5))
-        q_coef = float(self.hp.get("q_coef", 1.0))
 
         self.model.train()
         stop_early = False
@@ -801,79 +719,10 @@ class PPOLearner:
                                     legal_mask,
                                     policy_only=True,
                                 )
-                        # Q scorer 的输入 critic_hidden/action_hiddens 仍为 BF16,
-                        # 必须在 autocast 内执行;其余 PPO 数值路径离开模型前已
-                        # 提升为 FP32。
+                        # PPO 数值路径离开模型前统一提升为 FP32。
                         logits = output["policy_logits"].float()
                         logprobabilities = F.log_softmax(logits, dim=-1)
                         probabilities = logprobabilities.exp()
-                        boost_ids, training_ids = select_top3_candidates(
-                            logits, legal_mask, actions,
-                        )
-                        # 训练候选 Top3 ∪ {a_t}:评分与集合内重归一化概率。
-                        candidate_prob = probabilities.gather(
-                            1, training_ids.clamp(min=0).long(),
-                        )
-                        candidate_raw = self.model.q_scores_v16(
-                            output["critic_hidden"],
-                            output["action_hiddens"],
-                            batch["query_action_ids"],
-                            batch["query_pair_counts"],
-                            training_ids.long(),
-                        )
-                        candidate_valid = training_ids.ge(0) & torch.isfinite(
-                            candidate_raw
-                        )
-                        candidate_prob = candidate_prob.masked_fill(
-                            ~candidate_valid, 0.0
-                        )
-                        _candidate_adv, candidate_q = dueling_candidate_q(
-                            candidate_raw,
-                            candidate_prob,
-                            output["value"].float(),
-                            detach_value=True,
-                        )
-                        # 只有行为动作拥有 return 目标;未执行的候选不构造
-                        # 虚假 Q target,只经 Dueling 基线间接参与训练。
-                        behavior_valid = candidate_valid & (
-                            training_ids == actions[:, None]
-                        )
-                        # 仅用 Actor Top-3 构造 boosting 蒸馏目标。
-                        boost_prob = probabilities.gather(
-                            1, boost_ids.clamp(min=0).long(),
-                        )
-                        boost_raw = self.model.q_scores_v16(
-                            output["critic_hidden"],
-                            output["action_hiddens"],
-                            batch["query_action_ids"],
-                            batch["query_pair_counts"],
-                            boost_ids.long(),
-                        )
-                        boost_valid = boost_ids.ge(0) & torch.isfinite(boost_raw)
-                        boost_prob = boost_prob.masked_fill(~boost_valid, 0.0)
-                        boost_adv, _boost_q = dueling_candidate_q(
-                            boost_raw,
-                            boost_prob,
-                            output["value"].float(),
-                            detach_value=True,
-                        )
-                        p_boost = boosted_top3_probabilities(
-                            boost_prob.detach(),
-                            boost_adv.detach(),
-                            lambda_q=self.q_boost_lambda,
-                            temperature=self.q_temperature,
-                        )
-                        boost_logprob = logprobabilities.gather(
-                            1, boost_ids.clamp(min=0).long(),
-                        )
-                        boost_logprob = torch.where(
-                            boost_valid,
-                            boost_logprob,
-                            torch.zeros_like(boost_logprob),
-                        )
-                        q_boost_loss_values = -(
-                            p_boost * boost_logprob
-                        ).sum(dim=-1)
                 with self._gpu_stage("update/distribution_and_loss"):
                     logprob = logprobabilities.gather(1, actions[:, None]).squeeze(1)
                     old_logprobs = old_logprobs.float()
@@ -898,13 +747,6 @@ class PPOLearner:
                     raw_value_loss = value_loss_values(
                         value, batch_returns, str(self.hp.get("value_loss", "huber")),
                     )
-                    # 行为动作的 Q 目标与 Value 使用同一 rollout return 目标;
-                    # normalized_returns 在归一化模式下与 value loss 同空间。
-                    q_loss = candidate_q_loss(
-                        candidate_q,
-                        normalized_returns[:, None].expand_as(candidate_q),
-                        behavior_valid,
-                    )
                     # 非法动作 logits 为 -inf:必须在乘法前把 log_prob 与概率
                     # 都替换为 0。仅在乘积上 masked_fill 只救前向,反向仍会因
                     # -inf × 0 回传 NaN 梯度。
@@ -917,10 +759,6 @@ class PPOLearner:
                     entropy_values = -(safe_logprobabilities * safe_probabilities).sum(-1)
                     legal_action_counts = legal_mask.sum(-1).float().clamp_min(2.0)
                     normalized_entropy_values = entropy_values / legal_action_counts.log()
-                    behavior_match = training_ids == actions[:, None]
-                    q_prediction = torch.zeros(len(selected), device=self.device)
-                    matched_rows = behavior_match.any(dim=1)
-                    q_prediction[matched_rows] = candidate_q[behavior_match]
                     if reference_output is None:
                         sft_reference_kl_values = torch.zeros_like(policy_loss_values)
                     else:
@@ -929,18 +767,13 @@ class PPOLearner:
                             reference_output["policy_logits"],
                         )
                     if critic_bootstrap:
-                        # 预热期只训 critic/Q:policy/entropy/KL 不进入损失,
+                        # 预热期只训 critic:policy/entropy/KL 不进入损失,
                         # actor/shared 学习率同时为 0。
-                        loss = (
-                            value_coef * value_loss_values_.mean()
-                            + q_coef * q_loss
-                        )
+                        loss = value_coef * value_loss_values_.mean()
                     else:
                         loss = (
                             policy_loss_values.mean()
                             + value_coef * value_loss_values_.mean()
-                            + q_coef * q_loss
-                            + self.q_boost_coef * q_boost_loss_values.mean()
                             - entropy_coef * entropy_values.mean()
                             + sft_kl_coef * sft_reference_kl_values.mean()
                         )
@@ -949,7 +782,6 @@ class PPOLearner:
                 loss_detail = (
                     f"policy={float(policy_loss_values.mean())} "
                     f"value={float(value_loss_values_.mean())} "
-                    f"q={float(q_loss)} q_boost={float(q_boost_loss_values.mean())} "
                     f"entropy={float(entropy_values.mean())} "
                     f"sft_kl={float(sft_reference_kl_values.mean())}"
                 )
@@ -1018,13 +850,11 @@ class PPOLearner:
                     (
                         "loss",
                         (
-                            value_coef * value_loss_values_ + q_coef * q_loss
+                            value_coef * value_loss_values_
                             if critic_bootstrap
                             else (
                                 policy_loss_values
                                 + value_coef * value_loss_values_
-                                + q_coef * q_loss
-                                + self.q_boost_coef * q_boost_loss_values
                                 - entropy_coef * entropy_values
                                 + sft_kl_coef * sft_reference_kl_values
                             )
@@ -1034,9 +864,6 @@ class PPOLearner:
                     ("value_loss", value_loss_values_),
                     ("value_loss_raw", raw_value_loss),
                     ("value_prediction", value),
-                    ("q_loss", q_loss.expand(len(selected))),
-                    ("q_prediction", q_prediction),
-                    ("q_boost_loss", q_boost_loss_values),
                     ("entropy", entropy_values),
                     ("entropy_normalized", normalized_entropy_values),
                     ("sft_reference_kl", sft_reference_kl_values),
@@ -1110,9 +937,6 @@ class PPOLearner:
             "system/critic_learning_rate": float(branch_learning_rates["critic"]),
             "system/entropy_coef": float(entropy_coef),
             "system/sft_kl_coef": float(sft_kl_coef),
-            "system/q_boost_coef": float(
-                0.0 if critic_bootstrap else self.q_boost_coef
-            ),
             "system/critic_public_grad_scale": float(
                 0.0 if critic_bootstrap else self.critic_public_grad_scale
             ),

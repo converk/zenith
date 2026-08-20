@@ -30,7 +30,7 @@
 
 # 治理与版本契约
 
-- 最高治理文档是 `.specify/memory/constitution.md`(当前 v1.3.0)。本文件是运行时
+- 最高治理文档是 `.specify/memory/constitution.md`(当前 v1.7.0)。本文件是运行时
   指导,与其冲突时以宪法为准。
 - 现行版本契约:token schema 为 v13;活跃实验代为 v15。v11 checkpoint 兼容已彻底
   移除(v11 权重仅作冷存储);v14 资产为冷存储,不再被当前代码引用。
@@ -97,9 +97,10 @@
 
 # 评测与验证机制
 
-- PPO 唯一评测机制为 1v3 对抗:固定 10 进程 × 400 = 4000 hanchan,每 5 updates
-  一次(自 V17 起,2026-08-19 宪法修订);对手模型、种子基数、设备与输出目录由
-  版本配置提供,不得硬编码具体版本;输出到 `audit/reports/<版本号>/eval`,进度与
+- PPO 唯一评测机制为 1v3 对抗:固定 10 进程 × 400 = 4000 hanchan(双卡各
+  5 进程),每 5 updates 一次(自 V17 起,2026-08-20 宪法修订 v1.7.0);对手模型、
+  种子基数、设备与输出目录由版本配置提供,不得硬编码具体版本;输出到
+  `audit/reports/<版本号>/eval`,进度与
   失败记录写 `audit/reports/<版本号>/report/PROGRESS.md`。
 - SFT 的验证、启发式评测与 checkpoint 保存统一固定为每 3000 steps 一次,最终
   评估 96 hanchan。

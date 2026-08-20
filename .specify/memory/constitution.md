@@ -29,6 +29,14 @@ Sync Impact Report
   updates -> 4000 hanchan / 5 updates, keep 10 processes); Principle V
   (rollout baseline: complete-hanchan count replaces kyokus_per_worker
   for V17 training tests).
+- Amendment 2026-08-19: 1.5.0 -> 1.6.0 (MINOR). Redefined Principle IV
+  (PPO 1v3 mechanism: 4000 hanchan / 10 processes -> 6000 hanchan / 12
+  processes, 6 per GPU card on two cards, keep 5-update interval).
+- Amendment 2026-08-20: 1.6.0 -> 1.7.0 (MINOR). Redefined Principle IV
+  (PPO 1v3 mechanism: 6000 hanchan / 12 processes -> 4000 hanchan / 10
+  processes, 5 per GPU card on two cards, keep 5-update interval;
+  per-shard internal batch size is an implementation detail supplied by
+  the version config, not a mechanism constant).
 -->
 # Zenith Constitution
 
@@ -76,10 +84,12 @@ Sync Impact Report
 
 ### IV. 固定训练评测机制(Fixed Evaluation Mechanisms)
 
-- PPO 唯一评测机制为 1v3 对抗:固定 10 进程 × 400 = 4000 hanchan(每进程 400),
-  每 5 updates 一次;对手模型(如 V16 SFT)由配置或命令行参数指定,不得硬编码
-  任何具体版本;输出到 `audit/reports/<run>/eval`。进程数(10)是机制常量,
-  单进程半庄数与间隔(400/5)按宪法登记,修改须走本原则修订。
+- PPO 唯一评测机制为 1v3 对抗:固定 10 进程 × 400 = 4000 hanchan(每进程
+  400,双卡各 5 进程),每 5 updates 一次;对手模型(如 V16 SFT)由配置或命令行
+  参数指定,不得硬编码任何具体版本;输出到 `audit/reports/<run>/eval`。进程数
+  (10)与单进程半庄数(400)是机制常量,间隔(5 updates)按宪法登记;分片内部
+  并行度(每批半庄数)属实施细节,由版本配置提供,不属于机制常量。修改须走本
+  原则修订。
 - 旧 `evaluation_*` 机制与相关配置、代码移除,消除双轨。
 - SFT 的验证、启发式评测与 checkpoint 保存统一固定为每 3000 steps 一次;最终评估
   保持 96 hanchan;参数只在一处定义,禁止在实验配置中复制。
@@ -138,4 +148,4 @@ Sync Impact Report
 - 每次清理提交必须对照本宪法做合规检查。
 - AGENTS.md 保留为运行时指导文件,不得与本宪法矛盾。
 
-**Version**: 1.4.0 | **Ratified**: 2026-08-15 | **Last Amended**: 2026-08-16
+**Version**: 1.7.0 | **Ratified**: 2026-08-15 | **Last Amended**: 2026-08-20

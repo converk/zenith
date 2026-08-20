@@ -62,11 +62,8 @@ def transition(value: float, *, action: int = 0, pairs: int = 2) -> Transition:
         action,
         0.0,
         value,
-        0.0,
-        expected_q=value,
     )
     item.advantage = value
-    item.q_target = value
     return item
 
 
@@ -79,7 +76,6 @@ def learner_kwargs(**overrides):
         minibatch_size=1,
         ppo_clip=0.2,
         value_coef=0.5,
-        q_coef=1.0,
         entropy_start=0.01,
         entropy_end=0.001,
         max_grad_norm=0.5,
@@ -103,6 +99,15 @@ def test_exp_style_learning_rate_schedule() -> None:
     assert np.isclose(scheduled_learning_rate(3e-4, update=1, total_updates=100, warmup_fraction=0.02), 1.5e-4)
     assert np.isclose(scheduled_learning_rate(3e-4, update=2, total_updates=100, warmup_fraction=0.02), 3e-4)
     assert np.isclose(scheduled_learning_rate(3e-4, update=100, total_updates=100, warmup_fraction=0.02), 3e-4 / 98)
+
+
+def test_learning_rate_schedule_with_min_decays_to_floor() -> None:
+    # warmup 段仍从 0 线性升到 base。
+    assert np.isclose(scheduled_learning_rate(2e-5, update=1, total_updates=100, warmup_fraction=0.02, min_lr=5e-6), 1e-5)
+    assert np.isclose(scheduled_learning_rate(2e-5, update=2, total_updates=100, warmup_fraction=0.02, min_lr=5e-6), 2e-5)
+    # 无 warmup 时,线性从 base 衰减到 min_lr,中点和终点精确命中。
+    assert np.isclose(scheduled_learning_rate(2e-5, update=50, total_updates=100, warmup_fraction=0.0, min_lr=5e-6), 1.25e-5)
+    assert np.isclose(scheduled_learning_rate(2e-5, update=100, total_updates=100, warmup_fraction=0.0, min_lr=5e-6), 5e-6)
 
 
 def test_entropy_schedule_linearly_anneals() -> None:
@@ -254,6 +259,27 @@ def test_branch_learning_rates_are_scheduled_independently() -> None:
     assert metrics["system/critic_learning_rate"] == 2e-5
 
 
+def test_branch_learning_rate_mins_are_applied() -> None:
+    learner = PPOLearner(
+        "v16",
+        "cpu",
+        **learner_kwargs(
+            actor_learning_rate=2e-5,
+            actor_learning_rate_min=5e-6,
+            shared_learning_rate=5e-6,
+            shared_learning_rate_min=1.25e-6,
+            critic_learning_rate=4e-5,
+            critic_learning_rate_min=1e-5,
+        ),
+    )
+    # 跳到最后一次 update,验证各参数组 LR 精确衰减到 min。
+    learner.iteration = 99
+    metrics = learner.update([transition(0.2), transition(-0.1)], shuffle_seed=3)
+    assert metrics["system/actor_learning_rate"] == pytest.approx(5e-6)
+    assert metrics["system/shared_learning_rate"] == pytest.approx(1.25e-6)
+    assert metrics["system/critic_learning_rate"] == pytest.approx(1e-5)
+
+
 def test_cpu_update_completes_epochs_and_keeps_finite_metrics() -> None:
     learner = PPOLearner(
         "v16",
@@ -270,12 +296,10 @@ def test_cpu_update_completes_epochs_and_keeps_finite_metrics() -> None:
     assert metrics["update/executed_minibatches"] == 4.0
     assert metrics["update/executed_transition_samples"] == 6.0
     for name in (
-        "loss", "policy_loss", "value_loss", "q_loss", "q_boost_loss",
-        "entropy",
+        "loss", "policy_loss", "value_loss", "entropy",
     ):
         assert np.isfinite(metrics[name]), name
-    assert metrics["q_loss"] >= 0.0
-    assert metrics["q_boost_loss"] >= 0.0
+    assert np.isfinite(metrics["value_explained_variance"])
     assert metrics["value_loss"] >= 0.0
     assert metrics["grad_norm_post_clip"] <= learner.hp["max_grad_norm"]
     assert {"grad_norm_actor", "grad_norm_critic", "grad_norm_shared"}.issubset(metrics)
@@ -365,7 +389,7 @@ def test_critic_bootstrap_freezes_actor_and_only_trains_critic() -> None:
     )
     actor_before = learner.model.action_fusion[0].weight.detach().clone()
     shared_before = learner.model.token_embedding.table.weight.detach().clone()
-    critic_before = learner.model.q_scorer[0].weight.detach().clone()
+    critic_before = learner.model.value_head.weight.detach().clone()
     rows = [transition(1.0), transition(-1.0)]
     metrics = learner.update(rows, shuffle_seed=3)
     assert metrics["training/critic_bootstrap"] == 1.0
@@ -377,13 +401,12 @@ def test_critic_bootstrap_freezes_actor_and_only_trains_critic() -> None:
     assert metrics["system/critic_public_grad_scale"] == 0.0
     torch.testing.assert_close(learner.model.action_fusion[0].weight, actor_before)
     torch.testing.assert_close(learner.model.token_embedding.table.weight, shared_before)
-    assert not torch.equal(learner.model.q_scorer[0].weight, critic_before)
+    assert not torch.equal(learner.model.value_head.weight, critic_before)
     joint = learner.update(rows, shuffle_seed=4)
     assert joint["training/critic_bootstrap"] == 0.0
     assert joint["training/policy_update"] == 1.0
     assert joint["system/actor_learning_rate"] > 0.0
-    assert joint["system/q_boost_coef"] == 0.1
-    assert np.isfinite(joint["q_boost_loss"])
+    assert np.isfinite(joint["value_explained_variance"])
     assert not torch.equal(learner.model.action_fusion[0].weight, actor_before)
 
 

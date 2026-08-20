@@ -1,8 +1,8 @@
-"""V16 rollout 记录与小局内 Expected-SARSA(lambda) Top-3 Q-boosting。"""
+"""V16 rollout 记录与小局内 value-based GAE advantage 结算。"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Iterable
 
 import numpy as np
@@ -29,17 +29,13 @@ class Transition:
     legal_mask: np.ndarray
     action: int
     logprob: float
-    q_taken: float
     value: float
-    expected_q: float = 0.0
     reward: float = 0.0
     kyoku_reward: float = 0.0
     done: bool = False
     advantage: float = 0.0
-    q_target: float = 0.0
     critic_factors: np.ndarray | None = None
     critic_length: int = 0
-    top3_ids: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=np.int32))
 
 
 def transition_sequence_length(transition: Transition) -> int:
@@ -51,21 +47,24 @@ def transition_sequence_length(transition: Transition) -> int:
     )
 
 
-def finish_kyoku_qboost(
-    transitions: list[Transition], gamma: float, qboost_lambda: float,
+def finish_kyoku_gae(
+    transitions: list[Transition], gamma: float, gae_lambda: float,
 ) -> list[Transition]:
-    """标记小局终局并按 Expected-SARSA 回溯 Q 目标与优势。"""
+    """标记小局终局并按 GAE(γ, λ) 计算 value-based advantage。
+
+    以 critic 值预测为基线:δ_t = r_t + γV_{t+1} − V_t,小局终局的
+    V_{t+1}=0;A_t = δ_t + γλ·A_{t+1},小局之间互不跨越。
+    """
     if not transitions:
         return []
     transitions[-1].done = True
-    trace = 0.0
+    gae = 0.0
     for index in range(len(transitions) - 1, -1, -1):
         current = transitions[index]
-        next_expected_q = 0.0 if current.done else transitions[index + 1].expected_q
-        delta = current.reward + gamma * next_expected_q - current.q_taken
-        trace = delta + gamma * qboost_lambda * (0.0 if current.done else trace)
-        current.q_target = float(np.float32(current.q_taken + trace))
-        current.advantage = float(np.float32(current.q_target - current.expected_q))
+        next_value = 0.0 if current.done else transitions[index + 1].value
+        delta = current.reward + float(gamma) * float(next_value) - current.value
+        gae = delta + float(gamma) * float(gae_lambda) * (0.0 if current.done else gae)
+        current.advantage = float(np.float32(gae))
     return transitions
 
 

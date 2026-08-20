@@ -89,37 +89,23 @@ def test_batch_output_routing_preserves_request_row_mapping() -> None:
             "action_ids": [0, 0],
             "logprobs": [0.0, 0.0],
             "values": [0.0, 0.0],
-            "q_taken": [0.0, 0.0],
-            "expected_q": [0.0, 0.0],
-            "top3_ids": [np.zeros(3, np.int32), np.zeros(3, np.int32)],
         },
         {
             "action_ids": [0],
             "logprobs": [0.0],
             "values": [0.0],
-            "q_taken": [0.0],
-            "expected_q": [0.0],
-            "top3_ids": [np.zeros(3, np.int32)],
         },
     ]
-    top3 = np.asarray([[1, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=np.int32)
     assign_batch_outputs(
         responses,
         [(0, 1), (1, 0), (0, 0)],
         [101, 202, 203],
         [-1.0, -2.0, -3.0],
         [0.1, 0.2, 0.3],
-        [1.0, 2.0, 3.0],
-        [4.0, 5.0, 6.0],
-        top3,
     )
     assert responses[0]["action_ids"] == [203, 101]
     assert responses[1]["action_ids"] == [202]
-    assert responses[0]["q_taken"] == [3.0, 1.0]
-    assert responses[0]["expected_q"] == [6.0, 4.0]
     assert responses[0]["values"] == [0.3, 0.1]
-    np.testing.assert_array_equal(responses[0]["top3_ids"][1], [1, 2, 3])
-    np.testing.assert_array_equal(responses[1]["top3_ids"][0], [4, 5, 6])
 
 
 def test_dispatch_reason_prefers_full_worker_batch_then_timeout() -> None:

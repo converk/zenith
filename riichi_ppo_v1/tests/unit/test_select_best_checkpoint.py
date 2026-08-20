@@ -13,7 +13,7 @@ from riichi_ppo_v1.evaluation.select_best_checkpoint import select_best_checkpoi
 
 def _write_summary(directory: Path, update: int, point_diff: float, mean_rank: float) -> None:
     (directory / f"vs_sft_u{update:03d}.json").write_text(json.dumps({
-        "hanchan_count": 4000,
+        "hanchan_count": 6000,
         "model_a": {
             "checkpoint": f"checkpoints/train_riichi_v17/ppo/checkpoint_{update:05d}.pt",
             "point_diff_vs_mean_opponent_mean": point_diff,

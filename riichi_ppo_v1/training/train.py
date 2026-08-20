@@ -1,8 +1,8 @@
 """同步 Ray PPO 训练的命令行入口(V16)。
 
-Ray 闭环:worker.collect → learner.update → inference.update_weights;每 30
-updates 按 ``evaluation/mechanism.py`` 的固定 1v3 机制(10 进程 × 160 =
-1600 半庄)评测一次。``learner_gpus=1`` 时 learner 在 driver 进程单卡更新;
+Ray 闭环:worker.collect → learner.update → inference.update_weights;每 5
+updates 按 ``evaluation/mechanism.py`` 的固定 1v3 机制(10 进程 × 400 =
+4000 半庄)评测一次。``learner_gpus=1`` 时 learner 在 driver 进程单卡更新;
 ``learner_gpus=2`` 时由两个常驻 worker 进程做双卡 DDP 更新(各持一份模型,
 NCCL 平均梯度),driver 只负责分片、汇总与 checkpoint 落盘。推理 actor 只在
 每个 update 后接收最新权重。
@@ -18,8 +18,9 @@ import os
 from pathlib import Path
 import random
 import shutil
+import signal
 import time
-from typing import Any
+from typing import Any, NoReturn
 
 # 保持项目自定义 CUDA_DEVICE 约定,同时在启动 torch(以及 Ray 拉起子进程)前
 # 映射为 CUDA 标准的 CUDA_VISIBLE_DEVICES,使每个 Ray GPU actor 仍看到 cuda:0。
@@ -60,6 +61,16 @@ def _progress_md_path(config: dict[str, Any]) -> Path | None:
     return progress_md_path(output_value)
 
 
+def _termination_handler(signum: int, _frame: Any) -> NoReturn:
+    """外部 SIGTERM:转成 SystemExit,让 run() 的 finally 走正常清理路径。
+
+    SIGTERM 默认行为是直接终止进程,finally(learner.shutdown + ray.shutdown)
+    不会执行,双卡 DDP 子进程会变成孤儿继续占用 GPU 显存;改成抛 SystemExit
+    即可复用现有清理逻辑。
+    """
+    raise SystemExit(128 + int(signum))
+
+
 def _update_progress_md(
     config: dict[str, Any],
     update: int,
@@ -90,7 +101,6 @@ def _update_progress_md(
         "",
         f"- reward_mean={value('rollout/reward_mean')} "
         f"value_loss={value('ppo/value_loss')} "
-        f"q_loss={value('ppo/q_loss')} "
         f"entropy={value('ppo/entropy')} "
         f"actor_grad_norm={value('ppo/grad_norm_actor')} "
         f"critic_grad_norm={value('ppo/grad_norm_critic')} "
@@ -373,7 +383,7 @@ def run(config: dict[str, Any]) -> None:
         ])
 
     def run_1v3_evaluation(update: int) -> dict[str, Any] | None:
-        """阻塞执行固定 4000 半庄(10 进程 × 400)的 1v3 对抗评测。"""
+        """阻塞执行固定 4000 半庄(10 进程 × 400,双卡各 5 进程)的 1v3 对抗评测。"""
         if not bool(config.get("eval1v3_enabled", False)):
             return None
         interval = max(
@@ -562,7 +572,7 @@ def run(config: dict[str, Any]) -> None:
                 + " ".join(
                     f"{key}={value:.5f}"
                     for key, value in metrics.items()
-                    if key in {"loss", "policy_loss", "value_loss", "q_loss", "entropy", "approx_kl", "clipfrac", "grad_norm"}
+                    if key in {"loss", "policy_loss", "value_loss", "entropy", "approx_kl", "clipfrac", "grad_norm"}
                 ),
                 flush=True,
             )
@@ -576,10 +586,7 @@ def run(config: dict[str, Any]) -> None:
             write_curated_scalars(writer, tensorboard_metrics, iteration + 1)
             histogram_interval = int(config.get("metrics_histogram_interval", 25))
             if histogram_interval > 0 and (iteration + 1) % histogram_interval == 0 and transitions:
-                writer.add_histogram("diagnostics/q_target", np.asarray([item.q_target for item in transitions], dtype=np.float32), iteration + 1)
-                writer.add_histogram("diagnostics/qboost_advantage", np.asarray([item.advantage for item in transitions], dtype=np.float32), iteration + 1)
-                writer.add_histogram("diagnostics/q_taken", np.asarray([item.q_taken for item in transitions], dtype=np.float32), iteration + 1)
-                writer.add_histogram("diagnostics/expected_q", np.asarray([item.expected_q for item in transitions], dtype=np.float32), iteration + 1)
+                writer.add_histogram("diagnostics/gae_advantage", np.asarray([item.advantage for item in transitions], dtype=np.float32), iteration + 1)
                 writer.add_histogram("diagnostics/value", np.asarray([item.value for item in transitions], dtype=np.float32), iteration + 1)
                 writer.add_histogram("diagnostics/legal_action_count", np.asarray([item.legal_mask.sum() for item in transitions], dtype=np.int16), iteration + 1)
                 writer.add_histogram("diagnostics/sequence_length", np.asarray([item.history_length + item.snapshot_length + 2 * item.query_pair_counts for item in transitions], dtype=np.int16), iteration + 1)
@@ -697,6 +704,8 @@ def cleanup_smoke_artifacts(path: str | Path) -> None:
 
 
 def main() -> None:
+    # SIGTERM 必须走清理路径,防止 DDP 子进程孤儿化后持续占用显存。
+    signal.signal(signal.SIGTERM, _termination_handler)
     args = _parser().parse_args()
     config = load_config(args.config)
     if args.device:

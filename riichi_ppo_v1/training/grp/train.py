@@ -75,6 +75,7 @@ def prefix_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
 
 def evaluate_validation_loss(
     model: GRPModel, dataset: Path, split: str, device: torch.device,
+    batch_size: int,
 ) -> tuple[float, float]:
     """验证集平均 CE loss 与样本数(上限 val_samples 可控制耗时)。"""
     model.eval()
@@ -96,7 +97,7 @@ def evaluate_validation_loss(
     with torch.no_grad():
         for row in iter_grp_samples(dataset, split):
             buffer.append(row)
-            if len(buffer) < int(DEFAULT_CONFIG["batch_size"]):
+            if len(buffer) < batch_size:
                 continue
             consume(buffer)
             buffer.clear()
@@ -137,7 +138,7 @@ def train_grp(dataset: Path, config: dict) -> None:
                 print(f"grp step={step}", flush=True)
             if step % val_interval == 0:
                 val_loss, val_samples = evaluate_validation_loss(
-                    model, dataset, "validation", device,
+                    model, dataset, "validation", device, batch_size,
                 )
                 print(
                     json.dumps({
@@ -163,7 +164,9 @@ def train_grp(dataset: Path, config: dict) -> None:
         drain(flush=False)
     drain(flush=True)
 
-    val_loss, val_samples = evaluate_validation_loss(model, dataset, "validation", device)
+    val_loss, val_samples = evaluate_validation_loss(
+        model, dataset, "validation", device, batch_size,
+    )
     print(json.dumps({
         "validation/loss": float(val_loss),
         "validation/samples": float(val_samples),

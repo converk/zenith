@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import partial
 
 import numpy as np
@@ -26,17 +26,13 @@ class _Item:
     legal_mask: np.ndarray
     action: int
     logprob: float
-    q_taken: float
     value: float
-    expected_q: float = 0.0
     reward: float = 0.0
     kyoku_reward: float = 0.0
     done: bool = False
     advantage: float = 0.0
-    q_target: float = 0.0
     critic_factors: np.ndarray | None = None
     critic_length: int = 0
-    top3_ids: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=np.int32))
 
 
 def _transition(reward: float, action: int = 0) -> _Item:
@@ -56,9 +52,7 @@ def _transition(reward: float, action: int = 0) -> _Item:
         legal_mask=legal,
         action=action,
         logprob=np.log(1.0),
-        q_taken=0.0,
         value=0.0,
-        expected_q=0.0,
         reward=float(reward),
         advantage=float(reward),
     )
@@ -77,10 +71,6 @@ def learner_kwargs(**overrides) -> dict:
         max_grad_norm=5.0,
         warmup_fraction=0.0,
         value_coef=0.5,
-        q_coef=1.0,
-        q_boost_coef=0.0,
-        q_boost_lambda=1.0,
-        q_temperature=1.0,
         entropy_start=0.0,
         entropy_end=0.0,
         sft_kl_coef_start=0.0,

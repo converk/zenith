@@ -27,7 +27,7 @@ kyokus_per_worker: 1
 # 保留高倍满以上的点差信息，同时限制异常/多倍役满样本。
 kyoku_reward_clip_points: 32000
 gamma: 1.0
-qboost_lambda: 0.95
+gae_lambda: 0.95
 ppo_clip: 0.20
 update_epochs: 4
 minibatch_size: 512

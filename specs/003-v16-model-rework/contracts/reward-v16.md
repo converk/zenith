@@ -1,5 +1,9 @@
 # Contract: V16 PPO 奖励与 Top-3 Q-boosting
 
+> V17 修订(2026-08-20):PPO 阶段已完全移除 Q 体系(Q loss 与 Top-3
+> Q-boosting 蒸馏)。Advantage 改为纯 value-based GAE(γ, λ),见 §4;
+> §1–§3 保留为 V16 奖励契约历史记录。
+
 ## 1. 排名 utility
 
 ```text
@@ -34,19 +38,13 @@ R = 0.7·R̂_GRP + 0.3·R̂_Score
 utility 为历史值的 2 倍,σ_GRP 保持历史离线固化值不变(GRP 分量实际翻倍),
 外层归一化 clip 放宽到 ±10、内层分差截断放宽到 ±24 千点。
 
-## 4. Top-3 Q-boosting
+## 4. Value-based GAE advantage(V17 起,取代 Top-3 Q-boosting)
 
-1. Actor 产生 π(a|s),取 Top-1/Top-2/Top-3。
-2. Critic Q scorer 只评估候选:输入 [z_critic; h_a],h_a 为 **detach** 的
-   动作表示;结构 512→256→SiLU→1,输出原始优势评分 u_i(不再有 241 维
-   Action-Q head)。
-3. Dueling 约束:候选集合内把 Actor 概率重新归一化为 p_i,计算
-   `A_i = u_i - Σ p_j·u_j`,`Q_i = V(s) + A_i`,由构造恒有
-   `Σ p_i·Q_i = V(s)`;Value 只负责绝对局面价值,Q 只编码候选间的相对差异。
-4. Critic 训练候选 = Top-3 ∪ 实际 rollout 行为动作(最多 4 个);只有行为
-   动作的 Q(s,a_t) 回归到与 Value 相同的 rollout return 目标,未执行的
-   候选不构造虚假 Q target。
-5. Boosting 只使用 Actor Top-3:`p_boost ∝ p_i·exp(λ_q·A_i/T)`,并在 Top-3
-   内部重新分配且保持原始总概率质量不变;`p_boost.detach()` 作为 Actor 的
-   Top-3 交叉熵辅助蒸馏目标(权重 `q_boost_coef`),不替代 PPO policy loss。
-6. Q loss 与 boosting 蒸馏都不得经动作表示直接更新 Actor(detach 保证)。
+1. 小局(kyoku)内按决策顺序对 transitions 计算 GAE(γ, λ):
+   `δ_t = r_t + γV(s_{t+1}) − V(s_t)`,小局终局的 `V(s_{t+1}) = 0`;
+   `A_t = δ_t + γλ·A_{t+1}`,小局之间互不跨越。
+2. reward 为纯 GRP 小局 delta,只落在该小局最后一个 transition 上;Value
+   由独立 return loss(与 rollout empirical returns 对齐)训练。
+3. PPO policy loss 使用归一化后的 GAE advantage;无 Q scorer、无候选集、
+   无 Dueling 基线、无 boosting 蒸馏。
+4. 模型结构保留 `q_scorer`(checkpoint 契约兼容),但训练与前向均不再使用。

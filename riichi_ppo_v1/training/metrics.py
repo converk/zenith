@@ -465,18 +465,12 @@ class RollingKyokuMetrics:
 
 
 def ppo_buffer_metrics(transitions: Iterable[object]) -> dict[str, float]:
+    """rollout buffer 的 advantage 与 value 统计(host 侧)。"""
     rows = list(transitions)
-    q_taken = np.asarray([float(item.q_taken) for item in rows], dtype=np.float64)
-    expected_q = np.asarray([float(item.expected_q) for item in rows], dtype=np.float64)
-    q_targets = np.asarray([float(item.q_target) for item in rows], dtype=np.float64)
     advantages = np.asarray([float(item.advantage) for item in rows], dtype=np.float64)
-    variance = float(np.var(q_targets))
-    explained = 0.0 if variance <= 1e-12 else 1.0 - float(np.var(q_targets - q_taken)) / variance
-    result = {"q_explained_variance": explained}
-    for name, values_ in (
-        ("q_taken", q_taken), ("expected_q", expected_q),
-        ("q_target", q_targets), ("qboost_advantage", advantages),
-    ):
+    values = np.asarray([float(item.value) for item in rows], dtype=np.float64)
+    result: dict[str, float] = {}
+    for name, values_ in (("advantage", advantages), ("value", values)):
         result[f"buffer/{name}_mean"] = float(values_.mean()) if len(values_) else 0.0
         result[f"buffer/{name}_std"] = float(values_.std()) if len(values_) else 0.0
     return result

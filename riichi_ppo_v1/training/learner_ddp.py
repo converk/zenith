@@ -11,11 +11,14 @@ collective 严格对齐(不依赖 ``model.join``);early-stop 与 loss 有限性�
 
 from __future__ import annotations
 
+import ctypes
 import multiprocessing
 import os
 import queue as _queue
 import random
+import signal
 import socket
+import sys
 import traceback
 from typing import Any
 
@@ -37,10 +40,30 @@ _CMD_RNG_STATE = "rng_state"
 _CMD_SAVE = "save"
 _CMD_SHUTDOWN = "shutdown"
 
+
+def _enable_parent_death_signal() -> None:
+    """Linux 下给 DDP 子进程设置 PDEATHSIG=SIGKILL,作为孤儿兜底。
+
+    driver 进程无论因何退出(包括无法捕获的 SIGKILL/段错误),内核都会立即
+    杀掉本 rank,避免孤儿进程继续占用 GPU 显存;正常路径仍走 _CMD_SHUTDOWN
+    优雅退出,此机制只兜底异常消亡。非 Linux 或 prctl 不可用时静默降级,
+    依赖 driver 侧的 SIGTERM 处理器与 shutdown() 清理。
+    """
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        PR_SET_PDEATHSIG = 1
+        if libc.prctl(PR_SET_PDEATHSIG, signal.SIGKILL) != 0:
+            raise OSError(ctypes.get_errno(), "prctl(PR_SET_PDEATHSIG) failed")
+    except Exception:
+        pass
+
+
 # 按 executed samples 加权平均的指标(每个 rank 处理样本数可能差一个 padding)。
 _SAMPLE_WEIGHTED_KEYS = {
     "loss", "policy_loss", "value_loss", "value_loss_raw", "value_prediction",
-    "q_loss", "q_prediction", "q_boost_loss", "entropy", "entropy_normalized",
+    "entropy", "entropy_normalized",
     "sft_reference_kl", "approx_kl", "clipfrac", "ratio",
     "update/executed_transition_tokens_mean",
     "update/executed_transition_input_tokens_mean",
@@ -63,7 +86,7 @@ _RANK0_KEYS = {
     "update/early_stop",
     "system/learning_rate", "system/actor_learning_rate", "system/shared_learning_rate",
     "system/critic_learning_rate", "system/entropy_coef", "system/sft_kl_coef",
-    "system/q_boost_coef", "system/critic_public_grad_scale",
+    "system/critic_public_grad_scale",
     "training/critic_bootstrap", "training/policy_update",
 }
 
@@ -208,6 +231,8 @@ def _learner_worker(
     result_queue: Any,
 ) -> None:
     """单个 DDP rank 的常驻循环:初始化进程组后按命令执行 update/保存。"""
+    # 父进程(driver)异常退出时由内核兜底清理,避免孤儿进程占用显存。
+    _enable_parent_death_signal()
     try:
         device = torch.device("cuda", rank)
         torch.cuda.set_device(device)

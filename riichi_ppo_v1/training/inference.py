@@ -18,9 +18,7 @@ except ImportError:
     ray = None
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
-from ..model.architecture import dueling_candidate_q
 from ..model.schema import NUM_ACTIONS
-from .learner import select_top3_candidates
 from .profiling import StageProfiler
 
 
@@ -120,23 +118,16 @@ def assign_batch_outputs(
     action_ids: list[int],
     logprobs: list[float],
     values: list[float],
-    q_taken: list[float],
-    expected_q: list[float],
-    top3_ids: np.ndarray,
 ) -> None:
     """Route batched model outputs back to their original RPC and row."""
     if not (
         len(group) == len(action_ids) == len(logprobs) == len(values)
-        == len(q_taken) == len(expected_q)
     ):
         raise ValueError("inference output dimensions differ")
     for index, (request_index, row) in enumerate(group):
         responses[request_index]["action_ids"][row] = int(action_ids[index])
         responses[request_index]["logprobs"][row] = float(logprobs[index])
         responses[request_index]["values"][row] = float(values[index])
-        responses[request_index]["q_taken"][row] = float(q_taken[index])
-        responses[request_index]["expected_q"][row] = float(expected_q[index])
-        responses[request_index]["top3_ids"][row] = top3_ids[index].astype(np.int32)
 
 
 if ray is not None:
@@ -441,11 +432,6 @@ if ray is not None:
                     "action_ids": [0] * len(request["batch_indices"]),
                     "logprobs": [0.0] * len(request["batch_indices"]),
                     "values": [0.0] * len(request["batch_indices"]),
-                    "q_taken": [0.0] * len(request["batch_indices"]),
-                    "expected_q": [0.0] * len(request["batch_indices"]),
-                    "top3_ids": [
-                        np.zeros(3, dtype=np.int32) for _row in request["batch_indices"]
-                    ],
                 }
                 for request in requests
             ]
@@ -564,37 +550,10 @@ if ray is not None:
                         .gather(1, chosen[:, None])
                         .squeeze(1)
                     )
-                    boost_ids, union_ids = select_top3_candidates(
-                        logits, device_tensors["legal"], chosen,
-                    )
                     values = output["value"].float()
-                    # Dueling 约束:行为动作的 Q 在 Top3 ∪ {a_t} 候选集合上合成,
-                    # 概率只在该集合内重新归一化;由恒等式 sum(p_i·Q_i)=V(s),
-                    # expected_q 直接取 Value。
-                    union_valid = union_ids.ge(0)
-                    union_raw = model.q_scores_v16(
-                        output["critic_hidden"],
-                        output["action_hiddens"],
-                        device_tensors["query_action_ids"],
-                        device_tensors["pair_counts"],
-                        union_ids.clamp(min=0).long(),
-                    )
-                    union_prob = probabilities.gather(
-                        1, union_ids.clamp(min=0).long(),
-                    )
-                    union_prob = union_prob.masked_fill(~union_valid, 0.0)
-                    _union_advantages, union_q = dueling_candidate_q(
-                        union_raw, union_prob, values,
-                    )
-                    # select_top3_candidates 去重后每行恰好命中一次行为动作。
-                    q_taken = union_q[union_ids == chosen[:, None]]
-                    expected_q = values
                 chosen_cpu = chosen.cpu().numpy().astype(np.int64).tolist()
                 logprob_cpu = logprob.cpu().numpy().astype(np.float32).tolist()
                 values_cpu = values.cpu().numpy().astype(np.float32).tolist()
-                q_taken_cpu = q_taken.cpu().numpy().astype(np.float32).tolist()
-                expected_q_cpu = expected_q.cpu().numpy().astype(np.float32).tolist()
-                boost_ids_cpu = boost_ids.cpu().numpy().astype(np.int32)
             if end_event is not None and start_event is not None:
                 end_event.record()
                 end_event.synchronize()
@@ -607,7 +566,6 @@ if ray is not None:
             with self._gpu_stage("inference/sample_and_d2h"):
                 assign_batch_outputs(
                     responses, group, chosen_cpu, logprob_cpu, values_cpu,
-                    q_taken_cpu, expected_q_cpu, boost_ids_cpu,
                 )
 else:
     RolloutInferenceActor = None

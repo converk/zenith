@@ -95,6 +95,7 @@ def test_checkpoint_layout_uses_train_riichi_versions() -> None:
         "train_riichi_v14",
         "train_riichi_v15",
         "train_riichi_v16",
+        "train_riichi_v17",
     }
 
 

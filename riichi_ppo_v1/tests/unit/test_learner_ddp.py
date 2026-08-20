@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import ctypes
+import multiprocessing
 import numpy as np
 import pytest
+import signal
+import sys
 
 from riichi_ppo_v1.training.learner_ddp import (
     LearnerDDP,
@@ -12,6 +16,17 @@ from riichi_ppo_v1.training.learner_ddp import (
 )
 
 from .test_v16_learner import transition
+
+
+def _pdeathsig_probe(queue) -> None:
+    """在独立子进程里设置并回读 PDEATHSIG,避免影响 pytest 进程自身。"""
+    from riichi_ppo_v1.training.learner_ddp import _enable_parent_death_signal
+
+    _enable_parent_death_signal()
+    libc = ctypes.CDLL(None, use_errno=True)
+    value = ctypes.c_ulong()
+    ret = libc.prctl(2, ctypes.byref(value))  # PR_GET_PDEATHSIG
+    queue.put((int(ret), int(value.value)))
 
 
 def test_partition_keeps_all_rows_and_equal_batch_counts() -> None:
@@ -87,8 +102,8 @@ def test_aggregate_metrics_weights_samples_and_steps() -> None:
     assert aggregated["timing/update/model_forward/mean_ms"] == pytest.approx(175.0)
     assert aggregated["update/configured_epochs"] == 4.0
     assert aggregated["gpu/torch_memory_peak_allocated_mb"] == 100.0
-    # buffer/Q 统计按完整 rollout 精确重算。
-    assert aggregated["q_target_mean"] == pytest.approx(0.05)
+    # buffer/advantage 统计按完整 rollout 精确重算。
+    assert aggregated["advantage_mean"] == pytest.approx(0.05)
     assert aggregated["update/buffer_transition_tokens_mean"] == 8.0
 
 
@@ -98,3 +113,27 @@ def test_learner_ddp_rejects_non_cuda_or_small_world_size() -> None:
         LearnerDDP("v16", "cuda", 1, config=config)
     with pytest.raises(ValueError, match="CUDA"):
         LearnerDDP("v16", "cpu", 2, config=config)
+
+
+def test_enable_parent_death_signal_sets_pdeathsig() -> None:
+    """DDP 子进程必须设置 PDEATHSIG,driver 异常消亡时由内核兜底清理。"""
+    if not sys.platform.startswith("linux"):
+        pytest.skip("PDEATHSIG 仅 Linux 可用")
+    context = multiprocessing.get_context("spawn")
+    queue = context.Queue()
+    process = context.Process(target=_pdeathsig_probe, args=(queue,))
+    process.start()
+    process.join(timeout=30)
+    assert process.exitcode == 0
+    ret, pdeathsig = queue.get(timeout=10)
+    assert ret == 0
+    assert pdeathsig == signal.SIGKILL
+
+
+def test_termination_handler_raises_system_exit() -> None:
+    """外部 SIGTERM 必须转成 SystemExit,让 run() 的 finally 执行清理。"""
+    from riichi_ppo_v1.training.train import _termination_handler
+
+    with pytest.raises(SystemExit) as excinfo:
+        _termination_handler(signal.SIGTERM, None)
+    assert excinfo.value.code == 128 + signal.SIGTERM

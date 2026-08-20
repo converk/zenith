@@ -58,7 +58,7 @@ def validate_1v3_shard_plan(
     seed_base: int,
     hanchans_per_process: int,
 ) -> None:
-    """Enforce the project-wide 10-process, disjoint-seed 1v3 protocol."""
+    """Enforce the project-wide 12-process, disjoint-seed 1v3 protocol."""
     if len(shards) != REQUIRED_1V3_PROCESSES:
         raise RuntimeError(
             f"1v3 evaluation requires exactly {REQUIRED_1V3_PROCESSES} shards; "
