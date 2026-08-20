@@ -1,13 +1,16 @@
 # RiichiLab 独立对局客户端
 
-这个目录包含一个可独立运行的四人麻将客户端，用 `--checkpoint` 指定的语义
-token 模型(例如 `checkpoints/train_riichi_v15/ppo/checkpoint_00480.pt`)连接
+这个目录包含一个可独立运行的四人麻将客户端，用 `--checkpoint` 指定的 V16/V17
+actor 模型(例如
+`checkpoints/train_riichi_v17/archive_20260819_V1run1/ppo/latest.pt`)连接
 [RiichiLab](https://riichi.dev/)。
 
-它直接复用 `riichi_ppo_v1` 的 V13 模型结构、checkpoint 加载、语义 token
-校验、状态行/候选查询编码和公开牌河/副露特征；本目录只保留单席状态
-bridge、WebSocket 客户端和安全校验。运行时需要本仓库提供的 `riichi`、
-`riichienv` 原生扩展以及 `riichi_ppo_v1` 源码。
+它直接复用 `riichi_ppo_v1` 的 `KyokuTransformerActorCritic`、训练侧
+`BatchedStateBridge.prepare_v16()`、Compact Snapshot 与 Offense/Defense
+Query 编码；本目录只保留单席在线状态 bridge、WebSocket 客户端和安全
+校验。V16 SFT 与 V17 PPO 的 actor 输入和拓扑一致,共用同一套 bot 逻辑。
+运行时需要本仓库提供的 `riichi`、`riichienv` 原生扩展以及
+`riichi_ppo_v1` 源码。
 
 ## 安装
 
@@ -39,7 +42,7 @@ CUDA_DEVICE=0,1 riichi-lab-bot local \
   --seed 20260730 \
   --device cuda:0 \
   --dtype fp32 \
-  --checkpoint checkpoints/train_riichi_v15/ppo/checkpoint_00480.pt
+  --checkpoint checkpoints/train_riichi_v17/archive_20260819_V1run1/ppo/latest.pt
 ```
 
 本地测试会对每份 Observation 先执行 base64 序列化和反序列化，以模拟
@@ -53,7 +56,7 @@ CPU 正确性测试也可直接运行：
 
 ```bash
 riichi-lab-bot local --games 1 --device cpu --dtype fp32 \
-  --checkpoint checkpoints/train_riichi_v15/ppo/checkpoint_00480.pt
+  --checkpoint checkpoints/train_riichi_v16/sft/best.pt
 ```
 
 ## 创建并验证机器人
@@ -74,7 +77,8 @@ export RIICHI_BOT_TOKEN
 CUDA_DEVICE=0,1 riichi-lab-bot validate \
   --device cuda:0 \
   --dtype fp32 \
-  --checkpoint checkpoints/train_riichi_v15/ppo/checkpoint_00480.pt
+  --checkpoint checkpoints/train_riichi_v17/archive_20260819_V1run1/ppo/latest.pt \
+  --jsonl-log logs/v17/bot-validate.jsonl
 ```
 
 默认连接 `wss://game.riichi.dev/ws/validate`。客户端会等待
@@ -98,7 +102,7 @@ CUDA_DEVICE=0,1 riichi-lab-bot validate \
 | `--device` | `auto` | `auto`、`cpu`、`cuda` 或 `cuda:index` |
 | `--dtype` | `auto` | `auto`、`fp32` 或 `bf16` |
 | `CUDA_DEVICE` | 未设置 | 在导入 PyTorch 前映射为 `CUDA_VISIBLE_DEVICES` |
-| `--jsonl-log` | 未设置 | 追加写入结构化运行日志,按规范写 `logs/<版本号>/`(如 `logs/v15/bot-online.jsonl`) |
+| `--jsonl-log` | 未设置 | 追加写入结构化运行日志,按规范写 `logs/<版本号>/`(如 `logs/v17/bot-validate.jsonl`) |
 | `--log-level` | `INFO` | `DEBUG`、`INFO`、`WARNING` 或 `ERROR` |
 | `--url` | RiichiLab 官方 endpoint | 连接本地/自托管服务器时覆盖 |
 
@@ -107,23 +111,24 @@ CUDA_DEVICE=0,1 riichi-lab-bot validate \
 当前进程。
 
 `auto` 在支持 BF16 的 CUDA 上选择 BF16；本任务的验证与本地对局统一显式
-使用 `--dtype fp32`。该模型只支持四人 Observation 和 schema 13
-（`sft_contract_version="riichi-sft-v13-1"`、
-`policy_head_type="isolated_action_query"`）；三人 Observation、错误
-schema、错误 policy head、缺失 `model_config` 或无法严格加载的权重都会
-在连接前报错。
+使用 `--dtype fp32`。bot 只支持 V16/V17 actor 结构,checkpoint 必须提供
+`model_config` 和 `model`,且 `policy_head_type` 必须是
+`symmetric_action_query`;权重按 `model_config` strict load。旧 token schema、
+feature hash、PPO v2 与旧 SFT contract 不再作为 bot 运行时闸门。
 
 ## 协议与安全行为
 
 - 只在 `request_action` 上响应，并始终原样回传当前 `request_id`。
 - 其他 MJAI 事件只作为信息处理；未知事件、未知字段和二进制帧会被忽略。
 - 线上 Observation 缺少 `riichi_accepted`、`riichi_declaration_indices`、
-  `missed_agari_*`、`tiles_left` 等 schema-13 字段时，由客户端事件流重建
-  这些快照字段后再编码模型输入。
+  `missed_agari_*`、`tiles_left`、`tsumogiri_flags`、`last_tedashis`、
+  `riichi_sutehais` 或 `drawn_tile` 等字段时,由客户端事件流重建后再编码
+  V16 输入。
 - 模型动作通过 RiichiEnv 回转后，再与服务器 `possible_actions` 比较
   `type`、`pai`、`consumed` 和服务端提供时的 `tsumogiri`。
-- 每个决策前调用 `assert_actor_token_semantics`，token 布局必须满足查询对
-  后缀、offense/defense 相邻、与 `legal_mask` 一一对应。
+- 每个决策前调用 `assert_v16_actor_input_semantics`,校验 history actor
+  可见性、snapshot kind/宽度/有限值、query offense/defense 成对、
+  `query_action_ids` 与 `legal_mask` 一一对应,且总长度不超过 context。
 - 模型动作无法证明合法时不会用 fallback 顶替；任何 fallback/withheld 都
   是任务失败信号，必须修复根因。
 - 如果本地处理时间已进入 `deadline_ms` 前 250 ms 的安全区，也不会发送
@@ -140,20 +145,13 @@ schema、错误 policy head、缺失 `model_config` 或无法严格加载的权�
 
 ```bash
 /mnt/disk1/hubowen/miniconda3/envs/Mahjong-AI/bin/python -m pytest \
-  -q riichi_ppo_v1/tests riichi_lab_bot/tests RiichiEnv/tests
+  -q riichi_ppo_v1/tests/unit/test_semantic_validation.py \
+  riichi_ppo_v1/tests/integration/test_v16_encoding_bridge.py \
+  riichi_ppo_v1/tests/integration/test_v16_query_semantics.py \
+  riichi_lab_bot/tests
 ```
 
-测试包括 V13 checkpoint 严格加载、语义逐 token 校验、动作签名、红五/
-摸切、mock WebSocket、validation 流程、deadline 不发送、完整本地半庄，
-以及单席 bridge 与训练 bridge 的逐 token 等价检查。
-
-2026-08-07 的 GPU 验收结果（`CUDA_DEVICE=2,3`，FP32）：
-
-| 轮次 | 用途 | 决策数 | 总耗时 | decisions/s | 推理 p50 / p95 / max |
-| --- | --- | ---: | ---: | ---: | ---: |
-| 1 | warm-up | 458 | 3.18 s | 143.98 | 2.65 / 2.87 / 14.82 ms |
-| 2 | measured | 479 | 3.25 s | 147.48 | 2.66 / 2.83 / 3.93 ms |
-| 3 | measured | 470 | 3.19 s | 147.51 | 2.63 / 3.81 / 3.98 ms |
-
-第 2、3 轮合计 949 个决策、6.43 秒、147.49 decisions/s；三轮均为 0
-fallback、0 withheld。CPU 冒烟测试单局 458 决策、3.88 秒通过。
+测试包括 V16/V17 checkpoint strict load、V16 输入语义校验、红五/摸切、
+见逃与立直振听重建、mock WebSocket、validation 流程、deadline 不发送、
+完整本地半庄,以及单席 online bridge 与训练侧 `prepare_v16()` 的逐段等价
+检查。

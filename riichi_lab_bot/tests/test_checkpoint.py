@@ -6,54 +6,54 @@ import random
 import pytest
 import torch
 
-from conftest import default_checkpoint
-from riichi_lab_bot.model import TOKEN_SCHEMA_VERSION
+from conftest import default_checkpoint, v16_sft_checkpoint, v17_ppo_checkpoint
 from riichi_lab_bot.bridge import OnlineStateBridge
 from riichi_lab_bot.policy import PolicyEngine
 
 
-def test_real_checkpoint_loads_strictly_and_warms_up() -> None:
+@pytest.mark.parametrize(
+    ("checkpoint", "checkpoint_format"),
+    [
+        (v16_sft_checkpoint, "sft_v16"),
+        (v17_ppo_checkpoint, "ppo_v3"),
+    ],
+)
+def test_real_v16_v17_checkpoint_loads_strictly_and_warms_up(
+    checkpoint, checkpoint_format: str,
+) -> None:
     engine = PolicyEngine(
-        default_checkpoint(), device="cpu", dtype="fp32"
+        checkpoint(), device="cpu", dtype="fp32"
     )
     assert engine.config.context_tokens == 4096
-    assert engine.metadata["checkpoint_format"] == "ppo_v2"
-    assert engine.metadata["ppo_format_version"] == 2
-    assert engine.metadata["sft_contract_version"] is None
-    assert engine.metadata["token_schema_version"] == 13
-    assert engine.metadata["policy_head_type"] == "isolated_action_query"
+    assert engine.metadata["checkpoint_format"] == checkpoint_format
+    assert engine.metadata["token_schema_version"] == 16
+    assert engine.metadata["policy_head_type"] == "symmetric_action_query"
     assert engine.warmup() >= 0.0
 
 
-def test_incompatible_schema_fails_before_model_load(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+def test_missing_model_config_fails_before_model_load(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
 ) -> None:
     path = tmp_path / "bad.pt"
     path.touch()
-    monkeypatch.setattr(
-        "torch.load",
-        lambda *args, **kwargs: {
-            "token_schema_version": TOKEN_SCHEMA_VERSION - 1
-        },
-    )
-    with pytest.raises(ValueError, match="incompatible token schema"):
+    monkeypatch.setattr("torch.load", lambda *args, **kwargs: {"model": {}})
+    with pytest.raises(ValueError, match="model_config"):
         PolicyEngine(path, device="cpu", dtype="fp32")
 
 
-def test_v13_contract_rejects_non_isolated_policy_head(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+def test_non_symmetric_policy_head_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
 ) -> None:
     path = tmp_path / "bad_head.pt"
     path.touch()
     monkeypatch.setattr(
         "torch.load",
         lambda *args, **kwargs: {
-            "sft_contract_version": "riichi-sft-v13-1",
-            "model_config": {"policy_head_type": "legacy_fixed"},
+            "model_config": {"policy_head_type": "isolated_action_query"},
             "model": {},
         },
     )
-    with pytest.raises(RuntimeError, match="isolated_action_query"):
+    with pytest.raises(RuntimeError, match="symmetric_action_query"):
         PolicyEngine(path, device="cpu", dtype="fp32")
 
 

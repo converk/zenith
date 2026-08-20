@@ -101,6 +101,7 @@ def play_local_game(
                 raise RuntimeError(
                     f"local action was withheld: {safe.reason}"
                 )
+            bridges[int(seat)].record_response(prepared, safe.payload)
             selected = original.select_action_from_mjai(safe.payload)
             if selected is None:
                 raise RuntimeError(

@@ -216,6 +216,7 @@ async def play_connection(
                         reason=safe.reason,
                     )
                     continue
+                bridge.record_response(prepared, safe.payload)
                 await websocket.send(
                     json.dumps(
                         safe.payload,

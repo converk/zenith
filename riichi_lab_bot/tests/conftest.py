@@ -18,9 +18,25 @@ def default_checkpoint() -> Path:
     override = os.environ.get("BOT_TEST_CHECKPOINT")
     if override:
         return Path(override).expanduser().resolve()
+    return v17_ppo_checkpoint()
+
+
+def v16_sft_checkpoint() -> Path:
     return (
         repository_root()
         / "checkpoints"
-        / "train_riichi_v14"
-        / "checkpoint_00510.pt"
+        / "train_riichi_v16"
+        / "sft"
+        / "best.pt"
+    )
+
+
+def v17_ppo_checkpoint() -> Path:
+    return (
+        repository_root()
+        / "checkpoints"
+        / "train_riichi_v17"
+        / "archive_20260819_V1run1"
+        / "ppo"
+        / "latest.pt"
     )
