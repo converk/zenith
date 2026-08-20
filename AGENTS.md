@@ -32,8 +32,8 @@
 
 - 最高治理文档是 `.specify/memory/constitution.md`(当前 v1.7.0)。本文件是运行时
   指导,与其冲突时以宪法为准。
-- 现行版本契约:token schema 为 v13;活跃实验代为 v15。v11 checkpoint 兼容已彻底
-  移除(v11 权重仅作冷存储);v14 资产为冷存储,不再被当前代码引用。
+- 现行版本契约:encoding protocol 为 V16;活跃训练代为 V16/V17。更早实验资产
+  仅作冷存储,不再被当前代码引用。
 
 # 目录与组件职责
 
@@ -49,7 +49,7 @@
 `riichi_ppo_v1/` 包内布局:
 
 - `model/` — 模型、schema 与契约校验
-- `training/` — PPO 训练(含 `rewards/`、`opponents/` 子包)
+- `training/` — PPO 训练(含 `rewards/` 子包)
 - `sft/` — 数据准备、预计算与 SFT 训练
 - `evaluation/` — 评测实现与机制常量(1v3 评测的归属目录)
 - `tools/` — 工具与生产校验入口(如 `validate.py`)
@@ -65,7 +65,7 @@
 # 产物存储与命名约定
 
 - checkpoint 目录固定为 `checkpoints/train_riichi_<版本号>/`,阶段产物放其下子目录
-  (如 `train_riichi_v15/ppo`、`train_riichi_v15/sft/stage_a`);每个 checkpoint 内部
+  (如 `train_riichi_v17/ppo`、`train_riichi_v16/sft`);每个 checkpoint 内部
   保存配置快照以便追溯。现有 checkpoint 一律只归档移动,禁止删除。
 - 所有运行日志(json、txt、log 等)写入 `logs/<版本号>/`,禁止在 `logs/` 根目录或
   他处单独生成日志文件。
@@ -73,7 +73,8 @@
   的唯一存放位置,固定子目录:`design/`(设计文档)、`eval/`(评测输出)、
   `report/`(实验报告与 `PROGRESS.md` 进度记录)、`scripts/`(运行与验证脚本);
   禁止随意命名或散落其他目录。
-- 现行数据集为 `datasets/tenhou_sft_2024_2025_encoded_40pct_v13_v16` 与原始
+- 现行数据集为 `datasets/tenhou_sft_2024_2025_encoded_60pct_v16`、GRP 的
+  `datasets/tenhou_grp_2024_2025_v17` 与原始
   `datasets/tenhou_sft_2024_2025`。
 - 文件名必须自描述,能从名称看出职责与版本;CLI 默认路径与 README/docs 必须与
   实际产物路径一致。
@@ -87,10 +88,10 @@
 - 领域不变常量(如 136 TID、34 类牌、241 维动作空间)必须收敛为单一命名常量、
   单一来源,禁止散落各处。
 - 每个版本的配置必须自包含地写在自己的文件中,禁止 overlay/继承式覆盖;resume
-  类配置同样必须是完整自包含副本(参照 `v14_ppo_resume.yaml` 的做法)。
+  类配置同样必须是完整自包含副本(参照 `v17_ppo_resume.yaml` 的做法)。
 - 评测与验证的节奏参数单点定义:PPO 的 1v3 机制常量在
-  `riichi_ppo_v1/evaluation/mechanism.py`,SFT 的节奏在 `sft.yaml`,禁止在实验
-  配置中复制。
+  `riichi_ppo_v1/evaluation/mechanism.py`,SFT 的节奏在
+  `riichi_ppo_v1/sft/contract.py`,禁止在实验配置中复制。
 - 删除任何模块或文件前必须执行全仓库引用检查(`rg`);零引用且测试通过才允许删除。
 - 重构与清理以"每主题一个 commit、测试通过、可独立回滚"为单位。
 - 冒烟测试结束时必须删除其产生的日志与结果文件。
@@ -102,8 +103,8 @@
   种子基数、设备与输出目录由版本配置提供,不得硬编码具体版本;输出到
   `audit/reports/<版本号>/eval`,进度与
   失败记录写 `audit/reports/<版本号>/report/PROGRESS.md`。
-- SFT 的验证、启发式评测与 checkpoint 保存统一固定为每 3000 steps 一次,最终
-  评估 96 hanchan。
+- SFT 的验证与 checkpoint 保存统一固定为每 3000 steps 一次,最终评估规模为
+  96 hanchan。
 - 评测机制的任何改动必须走宪法修订,不得在单个实验配置里悄悄修改。
 
 # 运行与运维

@@ -16,7 +16,6 @@ from .critic_features import (
     collect_visible_table_state,
     empty_critic_features,
     encode_critic_features,
-    encode_public_summary,
     pad_critic_feature_rows,
 )
 from .snapshot import build_snapshot_facts, encode_snapshot_rows
@@ -208,12 +207,11 @@ class BatchedStateBridge:
         with self.profiler.stage("state/critic_feature_encode"):
             if self.observations_by_env is None:
                 critic_features = [empty_critic_features() for _decision in decisions]
-                public_features = [empty_critic_features() for _decision in decisions]
             else:
                 table_cache = {
                     env_index: collect_visible_table_state(
                         self.observations_by_env[env_index],
-                        include_public_state=True,
+                        include_public_state=self.critic_include_public_state,
                     )
                     for env_index in {decision.env_index for decision in decisions}
                 }
@@ -229,10 +227,6 @@ class BatchedStateBridge:
                     )
                     for decision in decisions
                 ]
-                public_features = [
-                    encode_public_summary(table_cache[decision.env_index], decision.seat_id)
-                    for decision in decisions
-                ]
             critic_factors, critic_lengths = pad_critic_feature_rows(critic_features)
         with self.profiler.stage("state/numpy_array_convert"):
             factors_a = np.asarray(factors, dtype=np.uint8)
@@ -242,64 +236,8 @@ class BatchedStateBridge:
             history_generations_a = np.asarray(history_generations, dtype=np.int64)
             critic_factors_a = np.asarray(critic_factors, dtype=np.uint8)
             critic_lengths_a = np.asarray(critic_lengths, dtype=np.int64)
-        with self.profiler.stage("state/public_summary_append"):
-            new_lengths = token_lengths_a + np.asarray(
-                [feature.length for feature in public_features], dtype=np.int64,
-            )
-            if np.any(new_lengths + 1 > 4096):
-                raise RuntimeError(
-                    f"public-summary tokens overflow context: max={int(new_lengths.max()) + 1} limit=4096"
-                )
-            width = int(new_lengths.max())
-            extended_factors = np.zeros((len(decisions), width, 10), dtype=np.uint8)
-            extended_numeric = np.zeros((len(decisions), width, 8), dtype=np.float32)
-            for row, feature in enumerate(public_features):
-                base = int(token_lengths_a[row])
-                extended_factors[row, :base] = factors_a[row, :base]
-                extended_numeric[row, :base] = numeric_a[row, :base]
-                if feature.length:
-                    extended_factors[row, base : base + feature.length] = feature.factors
-            factors_a = extended_factors
-            numeric_a = extended_numeric
-            token_lengths_a = new_lengths
         if analysis is not None:
-            # v13 requires every non-action row to precede the first query.
-            with self.profiler.stage("state/v13_state_analysis"):
-                state_factors, state_numeric = analysis.state_tokens(decisions)
-            with self.profiler.stage("state/v13_candidate_analysis"):
-                candidate_factors, candidate_numeric = analysis.candidate_tokens(
-                    decisions, mask_a, profiler=self.profiler,
-                )
-            with self.profiler.stage("state/v13_token_assembly"):
-                extras_factors = [
-                    np.concatenate((state, candidate), axis=0)
-                    for state, candidate in zip(state_factors, candidate_factors, strict=True)
-                ]
-                extras_numeric = [
-                    np.concatenate((state, candidate), axis=0)
-                    for state, candidate in zip(state_numeric, candidate_numeric, strict=True)
-                ]
-                new_lengths = token_lengths_a + np.asarray(
-                    [len(row) for row in extras_factors], dtype=np.int64,
-                )
-                if np.any(new_lengths > 4096):
-                    raise RuntimeError(
-                        f"v13 tokens overflow context: max={int(new_lengths.max())} limit=4096"
-                    )
-                width = int(new_lengths.max())
-                extended_factors = np.zeros((len(decisions), width, 10), dtype=np.uint8)
-                extended_numeric = np.zeros((len(decisions), width, 8), dtype=np.float32)
-                for row, (extra_factors, extra_numeric) in enumerate(
-                    zip(extras_factors, extras_numeric, strict=True)
-                ):
-                    base = int(token_lengths_a[row])
-                    extended_factors[row, :base] = factors_a[row, :base]
-                    extended_numeric[row, :base] = numeric_a[row, :base]
-                    extended_factors[row, base : base + len(extra_factors)] = extra_factors
-                    extended_numeric[row, base : base + len(extra_numeric)] = extra_numeric
-                factors_a = extended_factors
-                numeric_a = extended_numeric
-                token_lengths_a = new_lengths
+            raise RuntimeError("decision-analysis augmentation has been removed; use prepare_v16")
         if factors_a.ndim != 3 or factors_a.shape[0] != len(decisions) or factors_a.shape[2] != 10:
             raise RuntimeError(f"invalid token factor shape {factors_a.shape}")
         if numeric_a.shape != (*factors_a.shape[:2], 8):

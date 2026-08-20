@@ -1025,7 +1025,7 @@ class PPOLearner:
                 f"incompatible with required schema {TOKEN_SCHEMA_VERSION}"
             )
         try:
-            checkpoint_config = ModelConfig(**dict(payload["model_config"]))
+            checkpoint_config = ModelConfig.from_mapping(dict(payload["model_config"]))
         except (TypeError, ValueError) as exc:
             raise RuntimeError("PPO checkpoint has an invalid model_config") from exc
         if checkpoint_config != self.config:
@@ -1074,7 +1074,7 @@ class PPOLearner:
         """从 v16 SFT checkpoint 初始化全新 PPO(iteration 归零、optimizer 全新)。"""
         payload = torch.load(path, map_location=self.device, weights_only=False)
         validate_fresh_model_checkpoint_contract(payload)
-        checkpoint_config = ModelConfig(**dict(payload["model_config"]))
+        checkpoint_config = ModelConfig.from_mapping(dict(payload["model_config"]))
         if checkpoint_config != self.config:
             raise RuntimeError(
                 "V16 SFT checkpoint model_config differs from the active PPO topology"

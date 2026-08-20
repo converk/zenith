@@ -25,11 +25,7 @@ import torch
 
 from ..model.bridge import BatchedStateBridge, NUM_PLAYERS
 from ..training.metrics import SemanticMetrics
-from ..training.rewards import (
-    DecisionAnalysisBatch,
-    EfficiencyAnalyzer,
-    PublicStateTracker,
-)
+from ..training.rewards import PublicStateTracker
 from ..training.worker import active_decisions
 from ..model.action_groups import action_group as _action_group
 from .mechanism import DEFAULT_1V3_HANCHANS_PER_PROCESS, TOTAL_1V3_HANCHANS
@@ -122,12 +118,6 @@ def evaluate_1v3(
     model_b_path = str(Path(model_b_path).resolve())
     adapter_a = load_policy_adapter(model_a_path, device=device_a)
     adapter_b = load_policy_adapter(model_b_path, device=device_b)
-    # V16 编码不需要 v13 的逐动作派生分析;只有任一策略走 v13 契约时才构建,
-    # 避免 1600 半庄评测承担无谓的 shanten/ukeire 分析开销。
-    needs_analysis = bool(
-        getattr(adapter_a, "requires_decision_analysis", True)
-        or getattr(adapter_b, "requires_decision_analysis", True)
-    )
     metric_a = SemanticMetrics()
     metric_b = SemanticMetrics()
 
@@ -159,7 +149,6 @@ def evaluate_1v3(
         bridge.sync(observations)
         public = PublicStateTracker(batch_size_now)
         public.update(bridge.last_events)
-        analyzer = EfficiencyAnalyzer(131_072)
         start_scores = [[int(value) for value in row] for row in envs.scores()]
         candidate_seats = [
             (batch_start + env_index) % NUM_PLAYERS
@@ -171,13 +160,6 @@ def evaluate_1v3(
         for _step in range(int(max_steps)):
             actions_by_env: list[dict[int, Any]] = [{} for _ in range(batch_size_now)]
             decisions = active_decisions(observations, active_envs)
-            analysis = (
-                DecisionAnalysisBatch.build(
-                    decisions, analyzer=analyzer, public=public,
-                )
-                if decisions and needs_analysis
-                else None
-            )
             for policy_name, adapter in (("a", adapter_a), ("b", adapter_b)):
                 policy_decisions = [
                     decision for decision in decisions
@@ -188,7 +170,7 @@ def evaluate_1v3(
                     continue
                 metrics = metric_a if policy_name == "a" else metric_b
                 action_ids, actions = _greedy_actions(
-                    adapter, bridge, policy_decisions, analysis,
+                    adapter, bridge, policy_decisions, None,
                     metrics=metrics, public=public,
                 )
                 action_counts[policy_name].update(int(value) for value in action_ids)

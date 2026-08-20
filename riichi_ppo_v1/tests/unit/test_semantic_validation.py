@@ -8,29 +8,71 @@ from riichi_ppo_v1.model.critic_features import (
     TOKEN_KIND_TILE_COUNT,
 )
 from riichi_ppo_v1.model.semantic_validation import (
-    assert_actor_token_semantics,
     assert_critic_token_semantics,
+    assert_v16_actor_input_semantics,
     summarize_tokens,
 )
 
 
-def actor_rows() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    factors = np.zeros((1, 1, 10), dtype=np.uint8)
-    factors[0, 0] = [1, 1, 4, 2, 1, 5, 1, 0, 2, 1]  # public red tsumogiri
-    return factors, np.zeros((1, 1, 8), dtype=np.float32), np.asarray([1], dtype=np.int64)
+def v16_inputs() -> dict[str, np.ndarray]:
+    history_factors = np.zeros((1, 2, 10), dtype=np.uint8)
+    history_factors[0, 0] = [1, 1, 4, 2, 1, 5, 1, 0, 2, 1]
+    history_factors[0, 1] = [2, 2, 1, 1, 0, 0, 0, 0, 0, 1]
+    history_numeric = np.zeros((1, 2, 8), dtype=np.float32)
+    history_lengths = np.asarray([2], dtype=np.int64)
+    snapshot_kinds = np.asarray([[0, 1, 2, 3]], dtype=np.uint8)
+    snapshot_cat = np.zeros((1, 4, 4), dtype=np.uint8)
+    snapshot_num = np.zeros((1, 4, 7), dtype=np.float32)
+    query_rows = np.zeros((1, 2, 15), dtype=np.int32)
+    query_rows[0, 0, 0] = 1
+    query_rows[0, 1, 0] = 2
+    query_action_ids = np.asarray([[0]], dtype=np.int32)
+    query_pair_counts = np.asarray([1], dtype=np.int64)
+    legal_mask = np.zeros((1, 241), dtype=np.bool_)
+    legal_mask[0, 0] = True
+    return {
+        "history_factors": history_factors,
+        "history_numeric": history_numeric,
+        "history_lengths": history_lengths,
+        "snapshot_kinds": snapshot_kinds,
+        "snapshot_cat": snapshot_cat,
+        "snapshot_num": snapshot_num,
+        "snapshot_lengths": np.asarray([4], dtype=np.int64),
+        "query_rows": query_rows,
+        "query_action_ids": query_action_ids,
+        "query_pair_counts": query_pair_counts,
+        "legal_mask": legal_mask,
+    }
 
 
-def test_actor_validator_accepts_public_actor_tokens_without_opponent_masks() -> None:
-    factors, numeric, lengths = actor_rows()
-    assert_actor_token_semantics(factors, numeric, lengths)
-    assert summarize_tokens(factors[0], 1)["red_five_tokens"] == 1
+def test_v16_actor_validator_accepts_valid_segments_and_summarizes_reds() -> None:
+    data = v16_inputs()
+    assert_v16_actor_input_semantics(**data)
+    assert summarize_tokens(data["history_factors"][0], 2)["red_five_tokens"] == 1
 
 
-def test_actor_validator_rejects_hidden_information() -> None:
-    factors, numeric, lengths = actor_rows()
-    factors[0, 0, 9] = 2
+def test_v16_actor_validator_rejects_hidden_history_information() -> None:
+    data = v16_inputs()
+    data["history_factors"][0, 0, 9] = 2
     with pytest.raises(AssertionError, match="hidden information"):
-        assert_actor_token_semantics(factors, numeric, lengths)
+        assert_v16_actor_input_semantics(**data)
+
+
+def test_v16_actor_validator_rejects_critic_only_history_segment() -> None:
+    data = v16_inputs()
+    data["history_factors"][0, 0, 0] = SEGMENT_CRITIC_FUTURE_WALL
+    data["history_factors"][0, 0, 1] = TOKEN_KIND_FUTURE_WALL
+    data["history_factors"][0, 0, 2] = FIELD_FUTURE_WALL
+    with pytest.raises(AssertionError, match="critic-only or unknown segment"):
+        assert_v16_actor_input_semantics(**data)
+
+
+def test_v16_actor_validator_requires_query_ids_to_match_legal_mask() -> None:
+    data = v16_inputs()
+    data["query_action_ids"][0, 0] = 5
+    data["query_rows"][0, :, 1] = 5
+    with pytest.raises(AssertionError, match="legal mask"):
+        assert_v16_actor_input_semantics(**data)
 
 
 def test_critic_validator_rejects_public_state() -> None:
@@ -101,18 +143,9 @@ def test_critic_validator_rejects_wrong_future_wall_kind() -> None:
 
 def test_critic_validator_rejects_invalid_red_five_flag() -> None:
     rows = future_rows()
-    rows[0, 4] = 4  # honor tile marked red
+    rows[0, 4] = 4
     rows[0, 6] = 1
     factors = rows[None, :]
     lengths = np.asarray([5], dtype=np.int64)
     with pytest.raises(AssertionError, match="non-red-five future-wall tile"):
         assert_critic_token_semantics(factors, lengths)
-
-
-def test_actor_validator_rejects_critic_only_future_wall_segment() -> None:
-    factors, numeric, lengths = actor_rows()
-    factors[0, 0, 0] = SEGMENT_CRITIC_FUTURE_WALL
-    factors[0, 0, 1] = TOKEN_KIND_FUTURE_WALL
-    factors[0, 0, 2] = FIELD_FUTURE_WALL
-    with pytest.raises(AssertionError, match="critic-only or unknown segment"):
-        assert_actor_token_semantics(factors, numeric, lengths)

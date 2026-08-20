@@ -1,8 +1,8 @@
 """PPO checkpoint 的同步分片 1v3 评测。
 
-每个 update checkpoint 在并行子进程中以互不相交的连续种子区间对阵冻结的
-V13 SFT 基线。训练循环在继续下一个 update 前阻塞等待本函数,因此单个分片失败
-会中止训练,而不是静默产出残缺曲线。
+每个 update checkpoint 在并行子进程中以互不相交的连续种子区间对阵冻结基线。
+训练循环在继续下一个 update 前阻塞等待本函数,因此单个分片失败会中止训练,
+而不是静默产出残缺曲线。
 """
 
 from __future__ import annotations

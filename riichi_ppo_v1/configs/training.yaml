@@ -1,14 +1,12 @@
-# 当前训练流程：SFT 初始化后的四席 current-policy 自博弈 PPO。
+# 中性 PPO 默认配置:现行拓扑为 V16 输入 + symmetric_action_query。
+# 版本化长训参数请使用自包含的 v16_*/v17_* 配置。
 seed: 1
-token_schema_version: 13
 device: cuda
 learner_gpus: 2
 iterations: 5000
-model_size: mid
+model_size: v16
 context_tokens: 4096
-policy_head_type: isolated_action_query
-offense_fusion: false
-critic_head_type: action_value
+policy_head_type: symmetric_action_query
 critic_layers: 2
 inference_dtype: bf16
 game_mode: 4p-red-half
@@ -21,16 +19,15 @@ inference_max_batch_size: 512
 inference_batch_wait_ms: 5.0
 inference_batch_target_rows: 0
 inference_batch_target_workers: 0
-kyokus_per_worker: 1
+games_per_update: 512
 
-# 标准 PPO。每个 transition 只在所属小局结算时得到终局分差 reward。
-# 保留高倍满以上的点差信息，同时限制异常/多倍役满样本。
-kyoku_reward_clip_points: 32000
+# 标准 PPO。性能/训练测试基线显式使用 target_kl=0.0、update_epochs=4。
 gamma: 1.0
 gae_lambda: 0.95
 ppo_clip: 0.20
 update_epochs: 4
 minibatch_size: 512
+gradient_accumulation_steps: 1
 update_batch_mode: streaming
 entropy_start: 0.01
 entropy_end: 0.001
@@ -39,9 +36,7 @@ value_loss: huber
 value_target_normalization: batch_std
 value_target_std_floor: 0.01
 max_grad_norm: 0.5
-target_kl: 0.02
-# `learning_rate` remains the backward-compatible actor fallback. Production
-# PPO schedules the three disjoint parameter groups from their own base LR.
+target_kl: 0.0
 learning_rate: 0.00002
 actor_learning_rate: 0.00002
 shared_learning_rate: 0.000005
@@ -53,19 +48,17 @@ adam_beta2: 0.999
 adam_epsilon: 0.00001
 weight_decay: 0.01
 
-# 标准 SFT → PPO 衔接：actor-only SFT 导入后将 Q head 置零，先固定
-# actor/shared 表征训练私有 Q-Critic，再以冻结的 SFT actor 作为 KL reference。
-zero_q_head_on_sft_init: true
-critic_bootstrap_updates: 40
+# SFT/GRP 衔接由版本配置提供具体 checkpoint。
+critic_bootstrap_updates: 2
 critic_bootstrap_learning_rate: 0.00002
-# 正式 PPO 中 Q loss 回传到 shared public backbone 的梯度倍率。
 critic_public_grad_scale: 0.25
-sft_kl_coef_start: 0.02
+sft_kl_coef_start: 0.0025
+sft_kl_coef_middle: 0.001
 sft_kl_coef_end: 0.002
-sft_kl_anneal_updates: 5000
+sft_kl_middle_fraction: 0.5
+grp_checkpoint: null
 
 checkpoint_interval_updates: 50
 checkpoint_dir: checkpoints/train_riichi_current
 resume: null
-# 新 PPO 从 SFT 或旧 PPO checkpoint 的 model state 初始化；不恢复其训练状态。
 init_model: null

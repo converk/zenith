@@ -1,7 +1,7 @@
 """V16 actor-only SFT 从零训练入口。
 
-与 v13 SFT 训练分离:V16 输入为 Objective Facts + Compact Snapshot + 每动作一对
-Query,网络为 symmetric_action_query 策略头。节奏键(每 3000 steps 验证/保存、
+V16 输入为 Objective Facts + Compact Snapshot + 每动作一对 Query,网络为
+symmetric_action_query 策略头。节奏键(每 3000 steps 验证/保存、
 最终 96 半庄)只引用 ``sft/contract.py`` 的机制常量,禁止实验配置复制。
 """
 
@@ -83,9 +83,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
 _CADENCE_KEYS = (
     "validation_interval_steps",
     "checkpoint_interval_steps",
-    "heuristic_evaluation_interval_steps",
-    "heuristic_evaluation_hanchan_count",
-    "heuristic_evaluation_final_hanchan_count",
 )
 
 
@@ -295,7 +292,6 @@ def _save_checkpoint_v16(
         mode=training_mode(config), epoch=epoch, global_step=global_step,
         rank_batches_consumed=rank_batches_consumed,
         best_validation_loss=best_validation_loss,
-        best_heuristic_point_delta=float("-inf"),
         metrics=dict(metrics or {}),
         rank_rng_states=[_local_rng_state()],
     )

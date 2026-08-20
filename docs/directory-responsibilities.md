@@ -7,13 +7,13 @@
 
 | 目录 | 职责 |
 | --- | --- |
-| `configs/` | 打包默认配置与自包含版本实验配置(训练、监控、SFT、v14/v15) |
-| `docs/` | 协议、动作空间与 v13 数据契约文档 |
+| `configs/` | 打包默认配置与自包含版本实验配置(训练、监控、SFT、V16/V17) |
+| `docs/` | 协议、动作空间与 V16 输入契约文档 |
 | `evaluation/` | 跨阶段确定性评测:1v3 对抗、分片驱动与策略适配边界 |
 | `model/` | 模型结构、领域常量单一来源、动作分组与模型/环境转换边界 |
 | `sft/` | SFT 数据准备、预计算、训练、契约与 checkpoint 持久化 |
 | `tools/` | 独立生产 CLI(事件统计、协议验证入口) |
-| `training/` | PPO 训练循环、rollout、单/双卡 learner(DDP)、奖励与对手机制 |
+| `training/` | PPO 训练循环、rollout、单/双卡 learner(DDP)与奖励机制 |
 | `tests/` | 单元/集成/协议测试,不含任何生产入口 |
 
 ## riichi_lab_bot(在线 bot)

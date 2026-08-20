@@ -1,6 +1,6 @@
 # V16 Actor 输入协议(encoding_protocol_version = 16)
 
-本协议取代 v13 的 token schema / feature schema / rust-analysis /
+本协议取代旧 token schema / feature schema / rust-analysis /
 decision-analysis 多版本拆分,是 V16 Actor 输入的唯一权威版本,与
 `specs/003-v16-model-rework/contracts/actor-input-v16.md` 逐条一致。实现常量以
 `model/encoding_protocol.py` 为单一来源。
@@ -13,8 +13,8 @@ Actor 输入 = Objective Facts(历史事件 + 自身手牌 + 摸牌)
           + 每个合法动作一对(Offense Query, Defense Query)
 ```
 
-Snapshot 不含三家完整牌河与完整副露序列(已由历史事件覆盖);全部 Derived
-Features(v13 的 hand/value/placement/threat 摘要与候选 query 编码)删除。
+Snapshot 不含三家完整牌河与完整副露序列(已由历史事件覆盖);旧的
+hand/value/placement/threat 摘要与候选 query 编码已删除。
 
 ## Compact Snapshot
 

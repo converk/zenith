@@ -4,7 +4,6 @@ import json
 
 import numpy as np
 
-from riichi_ppo_v1.sft.evaluation_cases import evaluation_cases, merge_evaluation_summaries
 from riichi_ppo_v1.training.metrics import SemanticMetrics, action_kind, append_metric_jsonl, metric_counters, ppo_buffer_metrics
 from riichi_ppo_v1.training.trajectory import Transition
 
@@ -111,18 +110,3 @@ def test_ppo_buffer_and_evaluation_matrix_metrics() -> None:
     assert result["buffer/advantage_std"] == 0.0
     assert result["buffer/value_mean"] == 0.25
     assert result["buffer/value_std"] == 0.0
-    first = evaluation_cases(10, 100, cycle=0)
-    second = evaluation_cases(10, 100, cycle=1)
-    assert len(first) == len(second) == 100
-    assert [seat for _seed, seat, _recipe in first].count(0) == 25
-    assert [seat for _seed, seat, _recipe in second].count(0) == 25
-    assert {seat for _seed, seat, _recipe in first + second} == {0, 1, 2, 3}
-    assert all([seat for _seed, seat, _recipe in first + second].count(seat) == 50 for seat in range(4))
-    merged = merge_evaluation_summaries([
-        {"eval/kyoku/count": 2.0, "eval/kyoku/point_delta_mean": 1.0, "eval/match/count": 1.0, "eval/match/mean_rank": 1.0},
-        {"eval/kyoku/count": 2.0, "eval/kyoku/point_delta_mean": 3.0, "eval/match/count": 3.0, "eval/match/mean_rank": 3.0},
-    ])
-    assert merged["eval/kyoku/point_delta_mean"] == 2.0
-    assert merged["eval/kyoku/point_delta_mean_stderr"] == 1.0
-    assert merged["eval/match/count"] == 4.0
-    assert merged["eval/match/mean_rank"] == 2.5

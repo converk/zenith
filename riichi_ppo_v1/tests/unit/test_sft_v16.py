@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 import gzip
 import io
 import json
 from pathlib import Path
+import random
 import tarfile
 from tempfile import TemporaryDirectory
 
@@ -24,9 +26,11 @@ from riichi_ppo_v1.model.encoding_protocol import (
     SLOT_CARDINALITIES,
 )
 from riichi_ppo_v1.sft.contract import (
+    LEGACY_V16_SFT_CONTRACT_VERSION,
     V16_ACTOR_INPUT_CONTRACT_SHA256,
     validate_v16_manifest,
 )
+from riichi_ppo_v1.sft.checkpoint import checkpoint_payload, load_exact_resume
 from riichi_ppo_v1.sft.data import _member_metadata, encode_kyoku_v16
 from riichi_ppo_v1.sft.precompute import (
     _selection_bucket,
@@ -206,6 +210,55 @@ def test_v16_train_config_rejects_duplicated_cadence_keys(tmp_path: Path) -> Non
     }
     with pytest.raises(ValueError, match="cadence"):
         validate_config({**base, "validation_interval_steps": 3000})
+
+
+def test_v16_checkpoint_resume_filters_inert_legacy_model_config(tmp_path: Path) -> None:
+    config = ModelConfig(
+        layers=2, shared_layers=1, critic_layers=1, d_model=32,
+        query_heads=2, kv_heads=1, head_dim=16, ffn_dim=64,
+        context_tokens=4096, policy_head_type="symmetric_action_query",
+    )
+    model = KyokuTransformerActorCritic(config)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _step: 1.0)
+    payload = checkpoint_payload(
+        model,
+        optimizer,
+        scheduler,
+        config={"train_critic": False, "train_public_value": False},
+        manifest_hash="manifest",
+        mode="actor_only",
+        epoch=1,
+        global_step=2,
+        rank_batches_consumed=[3],
+        best_validation_loss=0.5,
+        metrics={"validation/loss": 0.5},
+        rank_rng_states=[{
+            "torch": torch.get_rng_state(),
+            "cuda": None,
+            "numpy": np.random.get_state(),
+            "python": random.getstate(),
+        }],
+    )
+    payload["sft_contract_version"] = LEGACY_V16_SFT_CONTRACT_VERSION
+    payload["model_config"] = {
+        **asdict(config),
+        "offense_" + "fusion": False,
+        "critic_" + "head_type": "action_value",
+    }
+    path = tmp_path / "resume.pt"
+    torch.save(payload, path)
+
+    loaded = load_exact_resume(
+        path,
+        model_config=config,
+        training_mode="actor_only",
+        dataset_manifest_hash="manifest",
+        world_size=1,
+        trainable_scope="full_actor",
+    )
+    assert loaded["global_step"] == 2
+    assert loaded["data_cursor"]["rank_batches_consumed"] == [3]
 
 
 def test_precompute_v16_reuses_base_encoded(tmp_path: Path) -> None:

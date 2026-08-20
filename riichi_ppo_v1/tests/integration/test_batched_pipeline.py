@@ -20,12 +20,8 @@ except ImportError:  # pragma: no cover
 from riichi_ppo_v1.model.architecture import KyokuTransformerActorCritic, ModelConfig
 from riichi_ppo_v1.model.bridge import BatchedStateBridge, Decision
 from riichi_ppo_v1.model.semantic_validation import (
-    assert_actor_token_semantics,
     assert_critic_token_semantics,
-)
-from riichi_ppo_v1.training.rewards import (
-    DecisionAnalysisBatch,
-    EfficiencyAnalyzer,
+    assert_v16_actor_input_semantics,
 )
 
 
@@ -51,25 +47,29 @@ class BatchedPipelineTest(unittest.TestCase):
                 if observation.legal_actions():
                     decisions.append(Decision(env_index, seat, observation))
         self.assertGreaterEqual(len(decisions), 2)
-        (
-            factors,
-            numeric,
-            lengths,
-            masks,
-            _history_generations,
-            critic_factors,
-            critic_lengths,
-        ) = bridge.prepare(decisions)
-        self.assertEqual(factors.shape, (len(decisions), factors.shape[1], 10))
-        self.assertEqual(numeric.shape, (*factors.shape[:2], 8))
-        self.assertEqual(critic_factors.shape, (len(decisions), critic_factors.shape[1], 10))
-        self.assertEqual(critic_lengths.shape, (len(decisions),))
-        self.assertEqual(masks.shape, (len(decisions), 241))
-        self.assertTrue(np.all(masks.any(axis=1)))
-        assert_actor_token_semantics(factors, numeric, lengths)
-        assert_critic_token_semantics(critic_factors, critic_lengths, include_public_state=False)
+        prepared = bridge.prepare_v16(decisions)
+        self.assertEqual(prepared.history_factors.shape, (len(decisions), prepared.history_factors.shape[1], 10))
+        self.assertEqual(prepared.history_numeric.shape, (*prepared.history_factors.shape[:2], 8))
+        self.assertEqual(prepared.critic_factors.shape, (len(decisions), prepared.critic_factors.shape[1], 10))
+        self.assertEqual(prepared.critic_lengths.shape, (len(decisions),))
+        self.assertEqual(prepared.legal_mask.shape, (len(decisions), 241))
+        self.assertTrue(np.all(prepared.legal_mask.any(axis=1)))
+        assert_v16_actor_input_semantics(
+            prepared.history_factors,
+            prepared.history_numeric,
+            prepared.history_lengths,
+            prepared.snapshot_kinds,
+            prepared.snapshot_cat,
+            prepared.snapshot_num,
+            prepared.snapshot_lengths,
+            prepared.query_rows,
+            prepared.query_action_ids,
+            prepared.query_pair_counts,
+            prepared.legal_mask,
+        )
+        assert_critic_token_semantics(prepared.critic_factors, prepared.critic_lengths, include_public_state=False)
 
-        action_ids = [int(np.flatnonzero(mask)[0]) for mask in masks]
+        action_ids = [int(np.flatnonzero(mask)[0]) for mask in prepared.legal_mask]
         decoded = bridge.decode(decisions, action_ids)
         self.assertEqual(len(decoded), len(decisions))
 
@@ -82,34 +82,49 @@ class BatchedPipelineTest(unittest.TestCase):
         self.assertEqual(end_kyoku.shape, (2,))
         self.assertEqual(end_game.shape, (2,))
 
-    def test_critic_public_projection_is_opt_in_and_semantic(self) -> None:
+    def test_prepare_v16_critic_features_are_semantic_and_forwardable(self) -> None:
         envs = BatchedRiichiEnv(1, seed=101, step_threads=1)
         observations = list(envs.reset())
-        bridge = BatchedStateBridge(riichi.MjaiKyokuStateMachineManager(1), 1, critic_include_public_state=True)
+        bridge = BatchedStateBridge(riichi.MjaiKyokuStateMachineManager(1), 1)
         bridge.sync(observations)
         decisions = [Decision(0, int(seat), obs) for seat, obs in observations[0].items() if obs.legal_actions()]
-        analysis = DecisionAnalysisBatch.build(
-            decisions, analyzer=EfficiencyAnalyzer(),
+        prepared = bridge.prepare_v16(decisions)
+        assert_v16_actor_input_semantics(
+            prepared.history_factors,
+            prepared.history_numeric,
+            prepared.history_lengths,
+            prepared.snapshot_kinds,
+            prepared.snapshot_cat,
+            prepared.snapshot_num,
+            prepared.snapshot_lengths,
+            prepared.query_rows,
+            prepared.query_action_ids,
+            prepared.query_pair_counts,
+            prepared.legal_mask,
         )
-        factors, numeric, lengths, masks, _generation, critic, critic_lengths = bridge.prepare(
-            decisions, analysis,
-        )
-        assert_actor_token_semantics(factors, numeric, lengths)
-        assert_critic_token_semantics(critic, critic_lengths, include_public_state=True)
-        self.assertTrue(np.all(masks.any(axis=1)))
+        assert_critic_token_semantics(prepared.critic_factors, prepared.critic_lengths, include_public_state=False)
+        self.assertTrue(np.all(prepared.legal_mask.any(axis=1)))
 
         model = KyokuTransformerActorCritic(ModelConfig(
             layers=2, shared_layers=1, critic_layers=1, d_model=32,
-            query_heads=2, kv_heads=1, head_dim=16, ffn_dim=64, context_tokens=128,
+            query_heads=2, kv_heads=1, head_dim=16, ffn_dim=64, context_tokens=4096,
+            policy_head_type="symmetric_action_query",
         )).eval()
         with torch.no_grad():
-            output = model(
-                torch.as_tensor(factors, dtype=torch.long),
-                torch.as_tensor(numeric),
-                torch.as_tensor(masks),
-                torch.as_tensor(lengths),
-                critic_factors=torch.as_tensor(critic, dtype=torch.long),
-                critic_lengths=torch.as_tensor(critic_lengths),
+            output = model.forward_v16(
+                torch.as_tensor(prepared.history_factors, dtype=torch.long),
+                torch.as_tensor(prepared.history_numeric),
+                torch.as_tensor(prepared.history_lengths),
+                torch.as_tensor(prepared.snapshot_kinds, dtype=torch.long),
+                torch.as_tensor(prepared.snapshot_cat, dtype=torch.long),
+                torch.as_tensor(prepared.snapshot_num),
+                torch.as_tensor(prepared.snapshot_lengths),
+                torch.as_tensor(prepared.query_rows, dtype=torch.long),
+                torch.as_tensor(prepared.query_action_ids, dtype=torch.long),
+                torch.as_tensor(prepared.query_pair_counts),
+                torch.as_tensor(prepared.legal_mask),
+                critic_factors=torch.as_tensor(prepared.critic_factors, dtype=torch.long),
+                critic_lengths=torch.as_tensor(prepared.critic_lengths),
             )
         self.assertEqual(tuple(output["policy_logits"].shape), (len(decisions), 241))
         self.assertTrue(torch.isfinite(output["raw_policy_logits"]).all())

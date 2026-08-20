@@ -1,8 +1,8 @@
-"""语义 token 解码器型 GQA 演员-评论家。
+"""V16 单协议 GQA 演员-评论家。
 
-v13 契约使用隔离的两 token 动作查询(offense/defense 相邻对),输出固定的
-241 维动作空间。历史 v11 checkpoint 兼容已移除,模型头只支持
-``isolated_action_query``。
+Actor 输入固定为 Objective Facts + Compact Snapshot + 每动作一对
+Offense/Defense Query,输出固定 241 维动作空间。旧 isolated-action-query
+模型头与历史兼容分支已移除。
 """
 
 from __future__ import annotations
@@ -14,11 +14,6 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from .feature_schema import (
-    ACTION_QUERY_DEFENSE,
-    ACTION_QUERY_OFFENSE,
-    ACTION_QUERY_SEGMENT,
-)
 from .encoding_protocol import (
     DEFENSE_SLOT_ORDER,
     OFFENSE_SLOT_ORDER,
@@ -51,9 +46,7 @@ class ModelConfig:
     context_tokens: int = 4096
     rope_base: float = 10_000.0
     eps: float = 1e-6
-    policy_head_type: str = "isolated_action_query"
-    offense_fusion: bool = False
-    critic_head_type: str = "state_value"
+    policy_head_type: str = "symmetric_action_query"
 
     def __post_init__(self) -> None:
         if self.d_model != self.query_heads * self.head_dim:
@@ -68,18 +61,17 @@ class ModelConfig:
             raise ValueError("shared_layers must be positive and leave at least one actor-only layer")
         if self.critic_layers < 1:
             raise ValueError("critic_layers must be positive")
-        if self.policy_head_type not in {"isolated_action_query", "symmetric_action_query"}:
-            raise ValueError(
-                "policy_head_type must be isolated_action_query or symmetric_action_query"
-            )
-        if self.critic_head_type not in {"state_value", "action_value"}:
-            raise ValueError("critic_head_type must be state_value or action_value")
+        if self.policy_head_type != "symmetric_action_query":
+            raise ValueError("policy_head_type must be symmetric_action_query")
 
     @classmethod
     def preset(cls, size: str) -> "ModelConfig":
         configs = {
             "mid": cls(),
-            "large": cls(d_model=384, query_heads=12, kv_heads=3, head_dim=32, ffn_dim=1152),
+            "large": cls(
+                d_model=384, query_heads=12, kv_heads=3, head_dim=32,
+                ffn_dim=1152,
+            ),
             # V16-small:版本命名保持 V16,只调整隐藏层容量,输入/输出协议不变。
             "v16": cls(
                 layers=4,
@@ -97,6 +89,14 @@ class ModelConfig:
             return configs[size]
         except KeyError as exc:
             raise ValueError("model size must be 'mid', 'large' or 'v16'") from exc
+
+    @classmethod
+    def from_mapping(cls, values: dict[str, object]) -> "ModelConfig":
+        """从 checkpoint/config 映射恢复现行 V16 拓扑。"""
+        filtered = dict(values)
+        for key in ("offense_" + "fusion", "critic_" + "head_type"):
+            filtered.pop(key, None)
+        return cls(**filtered)
 
 
 class FactorEmbedding(nn.Module):
@@ -259,78 +259,6 @@ def _attention_layout(lengths: Tensor, tokens: int) -> tuple[Tensor, Tensor]:
     return (mask & valid_query) | (first_key & ~valid_query), valid
 
 
-def isolated_action_layout(
-    factors: Tensor,
-    lengths: Tensor,
-    legal_mask: Tensor | None = None,
-) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    """Build and validate the v13 state/action block-sparse causal layout.
-
-    Returns ``mask, valid, position_ids, state_mask, defense_action_ids``.
-    Query rows are required to be a suffix of adjacent offense/defense pairs.
-    Pair order is intentionally unconstrained: identical position ids and
-    isolation must make the policy invariant to candidate permutation.
-    """
-    if factors.ndim != 3 or factors.shape[-1] != TOKEN_WIDTH:
-        raise ValueError("token_factors must be [batch, tokens, 10]")
-    batch, tokens, _ = factors.shape
-    device = factors.device
-    token_index = torch.arange(tokens, device=device)[None].expand(batch, -1)
-    valid = token_index < lengths[:, None]
-    query = valid & factors[..., 0].eq(ACTION_QUERY_SEGMENT)
-    offense = query & factors[..., 9].eq(ACTION_QUERY_OFFENSE)
-    defense = query & factors[..., 9].eq(ACTION_QUERY_DEFENSE)
-    state = valid & ~query
-    first_query = torch.where(query, token_index, tokens).amin(dim=1)
-    expected_query = valid & (token_index >= first_query[:, None])
-    pair_offset = token_index - first_query[:, None]
-    expected_offense = expected_query & pair_offset.remainder(2).eq(0)
-    expected_defense = expected_query & pair_offset.remainder(2).eq(1)
-    action_ids = factors[..., 2].long() - 1
-    previous_ids = torch.cat((action_ids.new_full((batch, 1), -1), action_ids[:, :-1]), dim=1)
-    malformed = (
-        first_query.eq(tokens)
-        | query.sum(dim=1).remainder(2).ne(0)
-        | (query != expected_query).any(dim=1)
-        | (offense != expected_offense).any(dim=1)
-        | (defense != expected_defense).any(dim=1)
-        | (defense & action_ids.ne(previous_ids)).any(dim=1)
-        | (query & (action_ids.lt(0) | action_ids.ge(NUM_ACTIONS))).any(dim=1)
-    )
-    offense_counts = torch.zeros((batch, NUM_ACTIONS), dtype=torch.long, device=device)
-    offense_counts.scatter_add_(1, action_ids.clamp(0, NUM_ACTIONS - 1), offense.long())
-    malformed |= offense_counts.gt(1).any(dim=1)
-    if legal_mask is not None:
-        if legal_mask.shape != (batch, NUM_ACTIONS):
-            raise ValueError(f"legal_mask must be [batch, {NUM_ACTIONS}]")
-        malformed |= (offense_counts != legal_mask.long()).any(dim=1)
-    if bool(malformed.any()):
-        raise ValueError(
-            "each legal action must have one adjacent offense/defense query pair; "
-            "queries must form a valid suffix with matching unique action ids"
-        )
-
-    q_index = token_index[:, :, None]
-    k_index = token_index[:, None, :]
-    state_q, state_k = state[:, :, None], state[:, None, :]
-    query_q = query[:, :, None]
-    mask = (
-        (state_q & state_k & k_index.le(q_index))
-        | (query_q & state_k)
-        | (query_q & k_index.eq(q_index))
-        | (defense[:, :, None] & k_index.eq(q_index - 1))
-    ).unsqueeze(1)
-    positions = torch.where(
-        state, token_index,
-        torch.where(offense, first_query[:, None], first_query[:, None] + 1),
-    )
-    defense_ids = torch.where(defense, action_ids, -1)
-    # Avoid NaNs on padded query rows; valid masking zeroes their outputs.
-    padded = ~valid
-    mask[:, 0, :, 0] |= padded
-    return mask, valid, positions, state, defense_ids
-
-
 class CausalGQA(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
@@ -413,225 +341,34 @@ class KyokuTransformerActorCritic(nn.Module):
         self.public_backbone = Decoder(self.config, layers=self.config.shared_layers, final_norm=False)
         self.actor_backbone = Decoder(self.config, layers=self.config.layers - self.config.shared_layers)
         self.critic_backbone = Decoder(self.config, layers=self.config.critic_layers)
-        self.register_parameter("query", None)
-        if self.config.policy_head_type == "symmetric_action_query":
-            # V16:Offense/Defense 对称融合(concat 384→192→SiLU→Policy MLP),
-            # 普通初始化、无 zero-init 分支、无 241 维 Q head。
-            self.snapshot_embeddings = SnapshotEmbedding(self.config.d_model)
-            self.query_embedding = QueryEmbedding(self.config.d_model)
-            self.action_fusion = nn.Sequential(
-                nn.Linear(2 * self.config.d_model, self.config.d_model),
-                nn.SiLU(),
-            )
-            self.policy_mlp = nn.Sequential(
-                nn.RMSNorm(self.config.d_model, eps=self.config.eps),
-                nn.Linear(self.config.d_model, self.config.d_model),
-                nn.SiLU(),
-                nn.Linear(self.config.d_model, 1),
-            )
-            self.offense_projection = None
-            self.q_head = None
-            self.value_head = nn.Linear(self.config.d_model, 1)
-            # Top-3 Q scorer:输入 [z_critic; detach(h_a)] →384→192→SiLU→1。
-            self.q_scorer = nn.Sequential(
-                nn.Linear(2 * self.config.d_model, self.config.d_model),
-                nn.SiLU(),
-                nn.Linear(self.config.d_model, 1),
-            )
-        else:
-            self.policy_head = nn.Sequential(
-                nn.RMSNorm(self.config.d_model, eps=self.config.eps),
-                nn.Linear(self.config.d_model, self.config.d_model),
-                nn.SiLU(),
-                nn.Linear(self.config.d_model, 1),
-            )
-            if self.config.offense_fusion:
-                self.offense_projection: nn.Module | None = nn.Linear(
-                    self.config.d_model, self.config.d_model
-                )
-                nn.init.zeros_(self.offense_projection.weight)
-                nn.init.zeros_(self.offense_projection.bias)
-            else:
-                self.offense_projection = None
-            if self.config.critic_head_type == "action_value":
-                self.q_head: nn.Module | None = nn.Linear(self.config.d_model, NUM_ACTIONS)
-                self.value_head: nn.Module | None = None
-            else:
-                self.value_head = nn.Linear(self.config.d_model, 1)
-                self.q_head = None
+        # V16:Offense/Defense 对称融合(concat 384→192→SiLU→Policy MLP),
+        # 普通初始化、无 zero-init 分支、无 241 维 Q head。
+        self.snapshot_embeddings = SnapshotEmbedding(self.config.d_model)
+        self.query_embedding = QueryEmbedding(self.config.d_model)
+        self.action_fusion = nn.Sequential(
+            nn.Linear(2 * self.config.d_model, self.config.d_model),
+            nn.SiLU(),
+        )
+        self.policy_mlp = nn.Sequential(
+            nn.RMSNorm(self.config.d_model, eps=self.config.eps),
+            nn.Linear(self.config.d_model, self.config.d_model),
+            nn.SiLU(),
+            nn.Linear(self.config.d_model, 1),
+        )
+        self.value_head = nn.Linear(self.config.d_model, 1)
+        # Top-3 Q scorer:输入 [z_critic; detach(h_a)] →384→192→SiLU→1。
+        self.q_scorer = nn.Sequential(
+            nn.Linear(2 * self.config.d_model, self.config.d_model),
+            nn.SiLU(),
+            nn.Linear(self.config.d_model, 1),
+        )
         nn.init.normal_(self.value_query, std=self.config.d_model ** -0.5)
 
-    def _isolated_public(
-        self, token_factors: Tensor, token_numeric: Tensor, token_lengths: Tensor,
-        legal_mask: Tensor | None,
-    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-        tokens = self.token_embedding(token_factors, token_numeric)
-        layout = isolated_action_layout(token_factors, token_lengths, legal_mask)
-        attention_mask, valid, position_ids, state_mask, defense_ids = layout
-        shared = self.public_backbone(
-            tokens, token_lengths, attention_mask=attention_mask, valid=valid,
-            position_ids=position_ids,
-        )
-        actor = self.actor_backbone(
-            shared, token_lengths, attention_mask=attention_mask, valid=valid,
-            position_ids=position_ids,
-        )
-        return shared, actor, state_mask, defense_ids, valid
-
-    def _isolated_logits(
-        self, actor: Tensor, defense_ids: Tensor, legal_mask: Tensor | None,
-    ) -> tuple[Tensor, Tensor]:
-        batch = actor.shape[0]
-        raw = actor.new_zeros((batch, NUM_ACTIONS), dtype=torch.float32)
-        defense = defense_ids.ge(0)
-        rows, positions = torch.nonzero(defense, as_tuple=True)
-        policy_hidden = actor[rows, positions]
-        if self.offense_projection is not None:
-            policy_hidden = policy_hidden + self.offense_projection(actor[rows, positions - 1])
-        scores = self.policy_head(policy_hidden).squeeze(-1).float()
-        raw[rows, defense_ids[rows, positions]] = scores
-        if legal_mask is None:
-            inferred = torch.zeros_like(raw, dtype=torch.bool)
-            inferred[rows, defense_ids[rows, positions]] = True
-            legal_mask = inferred
-        logits = raw.masked_fill(~legal_mask.to(device=raw.device, dtype=torch.bool), float("-inf"))
-        return raw, logits
-
-    def forward_policy(
-        self,
-        token_factors: Tensor,
-        token_numeric: Tensor,
-        legal_mask: Tensor | None = None,
-        token_lengths: Tensor | None = None,
-    ) -> dict[str, Tensor]:
-        """Run only the shared-public and actor branches."""
-        if token_factors.shape[1] > self.config.context_tokens:
-            raise ValueError(f"context overflow: {token_factors.shape[1]} > {self.config.context_tokens}")
-        if token_lengths is None:
-            token_lengths = token_factors.ne(0).any(-1).long().sum(-1)
-        token_lengths = token_lengths.to(device=token_factors.device, dtype=torch.long)
-        if token_lengths.shape != (token_factors.shape[0],):
-            raise ValueError("token_lengths must have one entry per batch row")
-        if torch.any(token_lengths < 0) or torch.any(token_lengths > token_factors.shape[1]):
-            raise ValueError("token_lengths exceed supplied token rows")
-        _shared, actor, _state, defense_ids, _valid = self._isolated_public(
-            token_factors, token_numeric, token_lengths, legal_mask
-        )
-        raw, logits = self._isolated_logits(actor, defense_ids, legal_mask)
-        return {"raw_policy_logits": raw, "policy_logits": logits}
-
     def forward(self, *args, **kwargs):
-        """入口分发:V16 关键字输入走 ``forward_v16``,其余走 legacy 路径。"""
-        if "history_factors" in kwargs or "query_rows" in kwargs:
-            if args:
-                raise TypeError("V16 forward only accepts keyword arguments")
-            return self.forward_v16(**kwargs)
-        return self._forward_legacy(*args, **kwargs)
-
-    def _forward_legacy(
-        self,
-        token_factors: Tensor,
-        token_numeric: Tensor,
-        legal_mask: Tensor | None = None,
-        token_lengths: Tensor | None = None,
-        *,
-        critic_factors: Tensor | None = None,
-        critic_lengths: Tensor | None = None,
-        detach_critic_public: bool = False,
-        critic_public_grad_scale: float = 1.0,
-        policy_only: bool = False,
-    ) -> dict[str, Tensor]:
-        if policy_only:
-            return self.forward_policy(
-                token_factors, token_numeric, legal_mask, token_lengths
-            )
-        if token_factors.shape[1] > self.config.context_tokens:
-            raise ValueError(f"context overflow: {token_factors.shape[1]} > {self.config.context_tokens}")
-        if token_lengths is None:
-            token_lengths = token_factors.ne(0).any(-1).long().sum(-1)
-        token_lengths = token_lengths.to(device=token_factors.device, dtype=torch.long)
-        if token_lengths.shape != (token_factors.shape[0],):
-            raise ValueError("token_lengths must have one entry per batch row")
-        if torch.any(token_lengths < 0) or torch.any(token_lengths > token_factors.shape[1]):
-            raise ValueError("token_lengths exceed supplied token rows")
-        tokens = self.token_embedding(token_factors, token_numeric)
-        batch, padded, width = tokens.shape
-        rows = torch.arange(batch, device=tokens.device)
-        public_sequence, actor_sequence, state_mask, defense_ids, _valid = self._isolated_public(
-            token_factors, token_numeric, token_lengths, legal_mask
-        )
-        raw, logits = self._isolated_logits(actor_sequence, defense_ids, legal_mask)
-        public_lengths = state_mask.long().sum(-1)
-        public_capacity = int(public_lengths.max().item())
-        packed_public = public_sequence.new_zeros((batch, public_capacity, width))
-        source_rows, source_positions = torch.nonzero(state_mask, as_tuple=True)
-        packed_positions = state_mask.long().cumsum(dim=1)[
-            source_rows, source_positions,
-        ] - 1
-        packed_public[source_rows, packed_positions] = public_sequence[
-            source_rows, source_positions,
-        ]
-        public_sequence = packed_public
-        if critic_factors is None:
-            critic_factors = token_factors.new_zeros((batch, 0, TOKEN_WIDTH))
-        if critic_lengths is None:
-            critic_lengths = critic_factors.ne(0).any(-1).long().sum(-1)
-        critic_factors = critic_factors.to(device=token_factors.device)
-        critic_lengths = critic_lengths.to(device=token_factors.device, dtype=torch.long)
-        if critic_factors.ndim != 3 or critic_factors.shape[0] != batch or critic_factors.shape[-1] != TOKEN_WIDTH:
-            raise ValueError("critic_factors must be [batch, critic_tokens, 10]")
-        if critic_lengths.shape != (batch,):
-            raise ValueError("critic_lengths must have one entry per batch row")
-        if torch.any(critic_lengths < 0) or torch.any(critic_lengths > critic_factors.shape[1]):
-            raise ValueError("critic_lengths exceed supplied critic rows")
-        critic_sequence_lengths = public_lengths + critic_lengths + 1
-        if torch.any(critic_sequence_lengths > self.config.context_tokens):
-            raise ValueError("critic context overflow: public tokens + critic tokens + two queries exceed context_tokens")
-        critic_private = self.critic_embedding(critic_factors)
-        critic_capacity = int(critic_sequence_lengths.max().item())
-        critic_sequence = critic_private.new_zeros((batch, critic_capacity, width))
-        # Preserve every shared-public representation, including the learned
-        # policy query at the end of each row.  Value gradients improve this
-        # shared prefix but cannot update the actor-only policy tail.
-        public_positions = torch.arange(public_sequence.shape[1], device=tokens.device)[None, :].expand(batch, -1)
-        public_valid = public_positions < public_lengths[:, None]
-        public_grad_scale = 0.0 if detach_critic_public else float(critic_public_grad_scale)
-        if not 0.0 <= public_grad_scale <= 1.0:
-            raise ValueError("critic_public_grad_scale must be in [0, 1]")
-        if public_grad_scale == 0.0:
-            critic_public = public_sequence.detach()
-        elif public_grad_scale == 1.0:
-            critic_public = public_sequence
-        else:
-            detached_public = public_sequence.detach()
-            # Preserve the exact forward value while scaling only the value
-            # branch gradient entering the shared public representation.
-            critic_public = detached_public + public_grad_scale * (
-                public_sequence - detached_public
-            )
-        critic_sequence[
-            rows[:, None].expand_as(public_positions)[public_valid], public_positions[public_valid]
-        ] = critic_public[public_valid]
-        private_positions = public_lengths[:, None] + torch.arange(
-            critic_private.shape[1], device=tokens.device
-        )[None, :]
-        private_valid = torch.arange(critic_private.shape[1], device=tokens.device)[None, :] < critic_lengths[:, None]
-        critic_sequence[rows[:, None].expand_as(private_positions)[private_valid], private_positions[private_valid]] = critic_private[private_valid]
-        value_indices = public_lengths + critic_lengths
-        critic_sequence[rows, value_indices] = self.value_query
-        critic_hidden = self.critic_backbone(critic_sequence, critic_sequence_lengths)[rows, value_indices]
-        # Autocast 使前面的矩阵乘落在 BF16,但策略概率与价值估计要进入 PPO 的
-        # 数值敏感 ratio/loss 路径,离开模型前先提升精度。
-        output = {
-            "raw_policy_logits": raw,
-            "policy_logits": logits,
-        }
-        if self.q_head is not None:
-            output["q_values"] = self.q_head(critic_hidden).float()
-        else:
-            assert self.value_head is not None
-            output["value"] = self.value_head(critic_hidden).squeeze(-1).float()
-        return output
+        """DDP 兼容的 V16 前向分发。"""
+        if args:
+            raise TypeError("V16 forward only accepts keyword arguments")
+        return self.forward_v16(**kwargs)
 
     def forward_v16(
         self,

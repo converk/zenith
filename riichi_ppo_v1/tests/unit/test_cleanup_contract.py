@@ -27,11 +27,13 @@ def test_remaining_tools_are_importable_and_covered() -> None:
 
 def test_remaining_configs_are_loadable() -> None:
     training = load_config()
-    assert training["policy_head_type"] == "isolated_action_query"
+    assert training["policy_head_type"] == "symmetric_action_query"
+    assert training["model_size"] == "v16"
     assert training["checkpoint_dir"] == "checkpoints/train_riichi_current"
     sft = load_sft_config(ROOT / "configs" / "sft.yaml")
-    assert sft["policy_head_type"] == "isolated_action_query"
-    assert sft["checkpoint_dir"] == "checkpoints/train_riichi_v13/sft"
+    assert sft["policy_head_type"] == "symmetric_action_query"
+    assert sft["model_size"] == "v16"
+    assert sft["checkpoint_dir"] == "checkpoints/train_riichi_current/sft"
     for name in CONFIG_NAMES:
         assert (ROOT / "configs" / name).exists()
 

@@ -356,10 +356,10 @@ def test_load_model_weights_requires_v16_sft_contract() -> None:
         for name, value in source.model.state_dict().items():
             torch.testing.assert_close(target.model.state_dict()[name], value)
 
-        wrong = path.with_name("v13.pt")
+        wrong = path.with_name("unsupported.pt")
         torch.save({
             "model": source.weights(),
-            "model_config": {**asdict(source.config), "policy_head_type": "isolated_action_query"},
+            "model_config": {**asdict(source.config), "policy_head_type": "unsupported_query"},
             "training_stage": "sft",
         }, wrong)
         with pytest.raises(RuntimeError, match="symmetric_action_query"):

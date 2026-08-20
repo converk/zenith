@@ -162,7 +162,7 @@ class PolicyEngine:
                 "V16/V17 bot requires policy_head_type=symmetric_action_query"
             )
         try:
-            config = ModelConfig(**dict(raw_config))
+            config = ModelConfig.from_mapping(dict(raw_config))
         except (TypeError, ValueError) as exc:
             raise RuntimeError("checkpoint has an invalid model_config") from exc
         state = payload.get("model")

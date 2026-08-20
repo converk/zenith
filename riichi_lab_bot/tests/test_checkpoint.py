@@ -49,7 +49,7 @@ def test_non_symmetric_policy_head_is_rejected(
     monkeypatch.setattr(
         "torch.load",
         lambda *args, **kwargs: {
-            "model_config": {"policy_head_type": "isolated_action_query"},
+            "model_config": {"policy_head_type": "unsupported_query"},
             "model": {},
         },
     )

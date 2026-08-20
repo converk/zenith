@@ -85,7 +85,6 @@ def test_v16_preset_matches_design_table() -> None:
     assert config.layers - config.shared_layers == 1
     assert config.critic_layers == 2
     assert config.policy_head_type == "symmetric_action_query"
-    assert config.critic_head_type == "state_value"
 
 
 def test_d_model_must_equal_heads_times_head_dim() -> None:

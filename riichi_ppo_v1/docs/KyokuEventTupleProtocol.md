@@ -124,9 +124,8 @@ Python 在提交前将 RiichiEnv 的物理牌号转为 MJAI 牌字符串，并�
 
 ## 7. V16 信息编码协议(现行契约)
 
-自 V16 起,上述 v13 token schema 与四版本拆分(token schema / feature schema /
-rust-analysis / decision-analysis)不再是现行契约,仅作为 v13/v15 存量产物的
-历史记录保留。现行 Actor 输入为:
+自 V16 起,旧 token schema 与多版本拆分(token schema / feature schema /
+rust-analysis / decision-analysis)不再是现行契约。现行 Actor 输入为:
 
 ```text
 Objective Facts(历史事件 + 自身手牌 + 摸牌)
