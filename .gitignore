@@ -1,4 +1,10 @@
-checkpoints/
+# checkpoints 整体忽略,仅放行 V17 PPO u045 最佳检查点(1v3 评测最优)。
+checkpoints/*
+!checkpoints/train_riichi_v17/
+checkpoints/train_riichi_v17/*
+!checkpoints/train_riichi_v17/ppo/
+checkpoints/train_riichi_v17/ppo/*
+!checkpoints/train_riichi_v17/ppo/checkpoint_00045.pt
 datasets/
 runs/
 __pycache__/
