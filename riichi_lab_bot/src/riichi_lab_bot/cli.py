@@ -8,6 +8,7 @@ import json
 import logging
 import os
 
+from .audit import V16InputAuditRecorder
 from .client import (
     RANKED_URL,
     VALIDATION_URL,
@@ -45,6 +46,7 @@ def _common_parser() -> argparse.ArgumentParser:
         default="INFO",
     )
     common.add_argument("--jsonl-log", default=None)
+    common.add_argument("--audit-log", default=None)
     return common
 
 
@@ -118,6 +120,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(message)s",
     )
     recorder = EventRecorder(args.jsonl_log)
+    audit_recorder = V16InputAuditRecorder(args.audit_log)
     try:
         policy = _load_policy(args, recorder)
         if args.command == "local":
@@ -170,6 +173,7 @@ def main() -> None:
                     token=token,
                     policy=policy,
                     recorder=recorder,
+                    audit_recorder=audit_recorder,
                 )
             )
             print(

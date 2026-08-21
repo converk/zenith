@@ -8,6 +8,7 @@ import json
 import time
 from typing import Any
 
+from .audit import V16InputAuditRecorder
 from .bridge import OnlineStateBridge
 from .observation import (
     ObservationView,
@@ -57,6 +58,7 @@ async def play_connection(
     token: str,
     policy: PolicyEngine,
     recorder: EventRecorder,
+    audit_recorder: V16InputAuditRecorder | None = None,
     deadline_margin_ms: int = 250,
 ) -> SessionResult:
     from websockets.asyncio.client import connect
@@ -207,6 +209,18 @@ async def play_connection(
                         "local elapsed time reached deadline margin",
                     )
                 if safe.payload is None:
+                    if audit_recorder is not None:
+                        audit_recorder.emit_request(
+                            request_id=request_id,
+                            observation_base64=encoded,
+                            possible_actions=possible_actions,
+                            prepared=prepared,
+                            model_action_id=model_action_id,
+                            inference_ms=inference_ms,
+                            selected_payload=None,
+                            selected_source=safe.source,
+                            selected_reason=safe.reason,
+                        )
                     metrics.withheld_actions += 1
                     recorder.emit(
                         "response_withheld",
@@ -216,6 +230,18 @@ async def play_connection(
                         reason=safe.reason,
                     )
                     continue
+                if audit_recorder is not None:
+                    audit_recorder.emit_request(
+                        request_id=request_id,
+                        observation_base64=encoded,
+                        possible_actions=possible_actions,
+                        prepared=prepared,
+                        model_action_id=model_action_id,
+                        inference_ms=inference_ms,
+                        selected_payload=safe.payload,
+                        selected_source=safe.source,
+                        selected_reason=safe.reason,
+                    )
                 bridge.record_response(prepared, safe.payload)
                 await websocket.send(
                     json.dumps(

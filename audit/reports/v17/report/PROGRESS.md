@@ -95,3 +95,69 @@
 - reward_mean=-1.9045e-10 value_loss=0.31026 q_loss=0.33785 entropy=0.3444 actor_grad_norm=0.19018 critic_grad_norm=1.5088 shared_grad_norm=0.2831
 - rollout_wall_s=492.49 update_wall_s=353.47 sps=1774.9 grp_calls=1843.8 history_pool_size=0
 - 1v3 vs SFT: first_place_rate=0.2605 top2_rate=0.5057 mean_rank=2.483 point_diff_mean=+750.0 ci95=[273.31527777777774, 1254.4327777777776]
+
+## 2026-08-20 update=5
+
+- reward_mean=-1.8368e-10 value_loss=0.32061 entropy=0.48277 actor_grad_norm=0.17414 critic_grad_norm=2.5391 shared_grad_norm=0.26086
+- rollout_wall_s=445.41 update_wall_s=506.23 sps=1548.3 grp_calls=1905.6 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.2587 top2_rate=0.5018 mean_rank=2.489 point_diff_mean=+395.2 ci95=[-198.01666666666665, 1008.167083333333]
+
+## 2026-08-20 update=10
+
+- reward_mean=-1.7249e-10 value_loss=0.3118 entropy=0.48077 actor_grad_norm=0.18746 critic_grad_norm=1.7493 shared_grad_norm=0.27943
+- rollout_wall_s=449.93 update_wall_s=496.93 sps=1530.8 grp_calls=1869 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.2717 top2_rate=0.5178 mean_rank=2.463 point_diff_mean=+1056.2 ci95=[430.9558333333333, 1646.9249999999995]
+
+## 2026-08-21 update=15
+
+- reward_mean=-1.7931e-10 value_loss=0.30865 entropy=0.48757 actor_grad_norm=0.19547 critic_grad_norm=1.2048 shared_grad_norm=0.28972
+- rollout_wall_s=441.79 update_wall_s=490.21 sps=1544.8 grp_calls=1877.4 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.2823 top2_rate=0.5335 mean_rank=2.422 point_diff_mean=+1879.7 ci95=[1250.6466666666668, 2513.3624999999997]
+
+## 2026-08-21 update=20
+
+- reward_mean=-1.7463e-10 value_loss=0.30335 entropy=0.50394 actor_grad_norm=0.20548 critic_grad_norm=1.1364 shared_grad_norm=0.30687
+- rollout_wall_s=448.11 update_wall_s=488.79 sps=1529.9 grp_calls=1886.8 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3058 top2_rate=0.5677 mean_rank=2.348 point_diff_mean=+3030.0 ci95=[2430.794583333334, 3677.4083333333333]
+
+## 2026-08-21 update=25
+
+- reward_mean=-1.9614e-10 value_loss=0.30032 entropy=0.50726 actor_grad_norm=0.21244 critic_grad_norm=0.97655 shared_grad_norm=0.31509
+- rollout_wall_s=410 update_wall_s=466.72 sps=1557.5 grp_calls=1818.6 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3038 top2_rate=0.5613 mean_rank=2.355 point_diff_mean=+3090.7 ci95=[2489.3758333333335, 3714.8287499999997]
+
+## 2026-08-21 update=30
+
+- reward_mean=-1.9185e-10 value_loss=0.30209 entropy=0.51591 actor_grad_norm=0.21879 critic_grad_norm=1.0598 shared_grad_norm=0.32629
+- rollout_wall_s=430.84 update_wall_s=482.91 sps=1508.6 grp_calls=1842.8 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3115 top2_rate=0.5665 mean_rank=2.350 point_diff_mean=+3100.5 ci95=[2499.0491666666667, 3765.2487499999997]
+
+## 2026-08-21 update=35
+
+- reward_mean=-1.5859e-10 value_loss=0.3003 entropy=0.51506 actor_grad_norm=0.22784 critic_grad_norm=1.017 shared_grad_norm=0.33848
+- rollout_wall_s=416.99 update_wall_s=461.61 sps=1540.9 grp_calls=1822.5 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3250 top2_rate=0.5645 mean_rank=2.340 point_diff_mean=+3124.1 ci95=[2492.5825, 3736.5591666666664]
+
+## 2026-08-21 update=40
+
+- reward_mean=-1.896e-10 value_loss=0.29685 entropy=0.52196 actor_grad_norm=0.23894 critic_grad_norm=0.91514 shared_grad_norm=0.35429
+- rollout_wall_s=415.43 update_wall_s=467.86 sps=1555.5 grp_calls=1850.6 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3177 top2_rate=0.5673 mean_rank=2.335 point_diff_mean=+3430.2 ci95=[2828.8954166666667, 4087.4725]
+
+## 2026-08-21 update=45
+
+- reward_mean=-1.5894e-10 value_loss=0.29407 entropy=0.52756 actor_grad_norm=0.24662 critic_grad_norm=0.90136 shared_grad_norm=0.3666
+- rollout_wall_s=418.14 update_wall_s=457.13 sps=1542.8 grp_calls=1812.7 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3290 top2_rate=0.5877 mean_rank=2.297 point_diff_mean=+3951.4 ci95=[3295.4775, 4586.2891666666665]
+
+## 2026-08-21 update=50
+
+- reward_mean=-1.9585e-10 value_loss=0.29768 entropy=0.53217 actor_grad_norm=0.25193 critic_grad_norm=0.91369 shared_grad_norm=0.37348
+- rollout_wall_s=403.86 update_wall_s=466.62 sps=1569.3 grp_calls=1838.2 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3207 top2_rate=0.5737 mean_rank=2.326 point_diff_mean=+3412.3 ci95=[2820.1833333333334, 4064.0779166666666]
+
+## 2026-08-21 update=55
+
+- reward_mean=-1.5769e-10 value_loss=0.29477 entropy=0.54146 actor_grad_norm=0.26009 critic_grad_norm=0.83277 shared_grad_norm=0.38617
+- rollout_wall_s=414.58 update_wall_s=458.7 sps=1551.9 grp_calls=1831.3 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3315 top2_rate=0.5747 mean_rank=2.303 point_diff_mean=+3748.2 ci95=[3103.7495833333337, 4359.220416666667]
