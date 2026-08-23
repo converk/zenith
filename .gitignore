@@ -23,3 +23,6 @@ audit/reports/*/*
 !audit/reports/*/design/
 !audit/reports/*/report/
 !audit/reports/*/scripts/
+
+# 忽略在线分析脚本
+online_game_analysis/
