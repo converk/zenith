@@ -25,6 +25,7 @@ from ..model import KyokuTransformerActorCritic, ModelConfig
 from ..model.schema import NUM_ACTIONS, TOKEN_SCHEMA_VERSION
 from .metrics import ppo_buffer_metrics
 from .profiling import StageProfiler
+from .rollout_buffer import RolloutBuffer
 from .trajectory import Transition, transition_sequence_length
 
 # V16 参数分支:actor/critic/shared 三组独立调度,gradient 按参数根分发。
@@ -579,6 +580,15 @@ class PPOLearner:
             else 1.0 - float(np.var(returns - raw_values, dtype=np.float64)) / returns_var
         )
 
+        # SoA 一次性物化:每个 epoch / minibatch 复用同一份紧凑缓冲,避免逐
+        # Transition 的 Python 长度计算、padded 分配与逐行 ``torch.tensor`` 拷贝。
+        # 关闭开关(update_use_soa=false)时退化为旧路径,作为语义 oracle。
+        use_soa = bool(self.hp.get("update_use_soa", True))
+        buffer: RolloutBuffer | None = None
+        if use_soa:
+            buffer = RolloutBuffer(transitions)
+            buffer.advantages = np.asarray(advantages, dtype=np.float32)
+
         metric_sample_sums: dict[str, torch.Tensor] = {}
         metric_sample_count = 0
         step_metric_totals: dict[str, torch.Tensor] = {}
@@ -673,25 +683,40 @@ class PPOLearner:
             epoch_kl_sum: torch.Tensor | None = None
             epoch_kl_count = 0
             with self.profiler.stage("update/length_bucket"):
-                minibatches = length_bucketed_minibatches(transitions, minibatch_size, rng=rng)
+                if buffer is not None:
+                    minibatches = buffer.bucketed_minibatches(minibatch_size, rng=rng)
+                else:
+                    minibatches = length_bucketed_minibatches(transitions, minibatch_size, rng=rng)
             for batch_number, indices in enumerate(minibatches, start=1):
-                selected = [transitions[int(index)] for index in indices]
-                batch = collate(
-                    selected,
-                    self.device,
-                    self.profiler,
-                    advantages=advantages[indices],
-                )
+                if buffer is not None:
+                    with self.profiler.stage("update/collate_soa_gather"):
+                        host_batch = buffer.collate(indices)
+                    batch = transfer_batch_to_device(host_batch, self.device, self.profiler)
+                    selected = indices
+                else:
+                    selected = [transitions[int(index)] for index in indices]
+                    batch = collate(
+                        selected,
+                        self.device,
+                        self.profiler,
+                        advantages=advantages[indices],
+                    )
                 legal_mask = batch["legal_mask"]
                 actions = batch["actions"]
                 old_logprobs = batch["old_logprobs"]
                 adv = batch["advantages"]
                 batch_returns = torch.as_tensor(returns[indices], device=self.device)
                 executed_samples += len(selected)
-                executed_tokens += sum(transition_sequence_length(item) for item in selected)
-                executed_padded_input_tokens += len(selected) * max(
-                    transition_sequence_length(item) for item in selected
-                )
+                if buffer is not None:
+                    executed_tokens += int(buffer.sequence_lengths[indices].sum())
+                    executed_padded_input_tokens += int(
+                        len(indices) * int(buffer.sequence_lengths[indices].max())
+                    )
+                else:
+                    executed_tokens += sum(transition_sequence_length(item) for item in selected)
+                    executed_padded_input_tokens += len(selected) * max(
+                        transition_sequence_length(item) for item in selected
+                    )
                 with self._gpu_stage("update/model_forward"):
                     with torch.autocast(
                         device_type=self.device.type,
