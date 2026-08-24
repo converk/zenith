@@ -1,15 +1,15 @@
 {
-  "version": "0.16.3",
+  "version": "0.16.5",
   "integration_state_schema": 1,
   "installed_integrations": [
-    "copilot"
+    "dsh"
   ],
   "integration_settings": {
-    "copilot": {
+    "dsh": {
       "script": "sh",
       "invoke_separator": "-"
     }
   },
-  "integration": "copilot",
-  "default_integration": "copilot"
+  "integration": "dsh",
+  "default_integration": "dsh"
 }
