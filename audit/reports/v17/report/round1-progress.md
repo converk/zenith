@@ -52,11 +52,39 @@ rollout=155.30 / update=185.79 / total=342.16)对比:
 
 说明:update 第 2 轮 119.4s(SoA host 拷贝从 ~105s 降到 ~8s),第 3 轮因 GPU
 前向抖动(update_forward_s 27.5→47.1s)回到 184.7s;均值仍显著低于基线。
-同条件基线(v17_ppo_perf_512g4e_noso.yaml)正在后台运行以作对照。
 
-## 进行中
+## 同条件基线(SoA 关)结果
 
-- 同条件基线(SoA 关)三轮基准后台运行中;完成后给最终对照加速比。
+同一机器条件、同一 512g4e 基准,仅关闭 SoA(`v17_ppo_perf_512g4e_noso.yaml`):
+
+| iteration | rollout_wall_s | update_wall_s | algorithm_wall_s |
+|---|---|---|---|
+| 1(预热) | 171.503 | 233.001 | 404.519 |
+| 2 | 125.632 | 163.102 | 290.133 |
+| 3 | 133.116 | 256.029 | 390.223 |
+| 均值(2,3) | 129.374 | 209.565 | 340.178 |
+
+### 最终对照(同条件,SoA 开 vs 关,第 2/3 轮均值)
+
+| metric | baseline(s) | SoA(s) | speedup |
+|---|---|---|---|
+| rollout | 129.374 | 127.331 | 1.02× |
+| update | 209.565 | 152.004 | 1.38× |
+| total | 340.178 | 280.630 | 1.21× |
+
+**结论**:SoA 一次性物化显著改善 update(1.38×)与总时间(1.21×),但 rollout
+基本不变(1.02×)。原因是 rollout 的 `state/v16_query_assembly`(实测 80s/迭代)
+未受影响;**rollout 1.2× 目标尚未达成**,必须在下一轮实现 batched/Rust 融合的
+V16 query/snapshot/critic 编码(micro-profile 显示其占 `prepare_v16` 的 ~90%)。
+
+## 进行中 / 下一步
+
+- 实现 batched/Rust V16 query 编码(消除逐动作 PyO3 与 JSON/dict 往返),
+  目标让 rollout_wall_s ≥1.20×。
+- 紧凑 rollout buffer(worker 内 SoA + Ray 大数组/shared memory)。
+- PPO update 深化(pinned slabs、non_blocking H2D、DDP static graph)。
+- 并发拓扑 sweep(T1/T2/T3)。
+- `v17_ppo.yaml`(2048 局)实际配置验证。
 
 ## 下一步
 
