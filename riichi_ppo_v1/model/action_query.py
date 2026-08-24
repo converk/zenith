@@ -573,6 +573,434 @@ def analyze_action_queries(
     return offense_query, defense_query
 
 
+def _observation_facts(observation: object) -> dict[str, object]:
+    """提取一个观察者的全部不变量事实(同一次决策的多个合法动作共享)。
+
+    这些事实只依赖 observation,不依赖具体 action;对同一决策批的多个动作
+    只计算一次,避免每个动作重复 ``_remaining_counts`` / ``_river_masks`` /
+    ``_public_visible_counts`` 等 O(牌数) 扫描。
+    """
+    seat = int(observation.player_id)
+    opponents = ((seat + 1) % 4, (seat + 2) % 4, (seat + 3) % 4)
+    hand = _own_hand(observation)
+    melds = _own_melds(observation)
+    remaining = _remaining_counts(observation)
+    rivers = _river_masks(observation)
+    own_river = int(rivers[seat])
+    dora_mult = dora_type_multiplicities(observation.dora_indicators)
+    public_visible = _public_visible_counts(observation)
+    dora_indicators = [int(tile) for tile in observation.dora_indicators]
+    score = int(observation.scores[seat])
+    player_wind = (seat - int(observation.oya)) % 4
+    round_wind = int(observation.round_wind)
+    honba = int(observation.honba)
+    sticks = int(observation.riichi_sticks)
+    declared = bool(observation.riichi_declared[seat])
+    return {
+        "seat": seat,
+        "opponents": opponents,
+        "hand": hand,
+        "melds": melds,
+        "remaining": remaining,
+        "rivers": rivers,
+        "own_river": own_river,
+        "dora_mult": dora_mult,
+        "public_visible": public_visible,
+        "dora_indicators": dora_indicators,
+        "score": score,
+        "player_wind": player_wind,
+        "round_wind": round_wind,
+        "honba": honba,
+        "sticks": sticks,
+        "declared": declared,
+        "menzen": _menzen(melds),
+        "missed_doujun": bool(observation.missed_agari_doujun),
+        "missed_riichi": bool(observation.missed_agari_riichi),
+    }
+
+
+def _post_shape(hand: list[int], tile: int | None, *, kind: str) -> np.ndarray:
+    """打牌/立直/副露后的暗牌 34 计数形状(不含已经固定的副露牌)。"""
+    post = list(hand)
+    if tile is not None:
+        try:
+            post.remove(int(tile))
+        except ValueError:
+            pass
+    return np.bincount([t // 4 for t in post], minlength=TILE_KINDS).astype(np.uint8)
+
+
+def analyze_action_queries_batch(
+    rows: list[tuple[object, object, int]],
+) -> list[tuple[ActionQuery, ActionQuery]]:
+    """批量生成一批 (observation, action, action_id) 的 Offense/Defense Query。
+
+    语义与 ``analyze_action_queries`` 完全一致,但:
+    - 同一 observation 的不变量事实只计算一次(``_observation_facts``);
+    - 所有动作的 offense / defense / shanten 内核调用汇聚为每内核 1 次 batch
+      调用,消除逐动作的 numpy 组装与结果提取 Python 开销(尤其
+      ``_analyze_defense_row`` 的 ~31μs/动作)。
+    """
+    if not rows:
+        return []
+    facts_cache: dict[int, dict[str, object]] = {}
+
+    kind_of: list[str] = []
+    row_primary: list[int | None] = []
+    row_source: list[int | None] = []
+    o7_of: list[int] = []
+    o9_of: list[int | None] = []
+    off_slot: list[int | None] = []
+    def_slot: list[int | None] = []
+    hand_slot: list[int | None] = []
+    fixed_offense: list[tuple[int, ...] | None] = []
+    fixed_defense: list[tuple[list[int], list[int], list[int], int] | None] = []
+    off_reqs: list[tuple[int, dict[str, object]]] = []
+    def_reqs: list[tuple[int, dict[str, object]]] = []
+    hand_reqs: list[tuple[int, dict[str, object]]] = []
+
+    n = len(rows)
+    for row, (observation, action, action_id) in enumerate(rows):
+        kind = _action_kind(action)
+        facts = facts_cache.setdefault(id(observation), _observation_facts(observation))
+        seat = int(facts["seat"])
+        hand = list(facts["hand"])
+        melds = list(facts["melds"])
+        remaining = np.asarray(facts["remaining"])
+        rivers = np.asarray(facts["rivers"])
+        own_river = int(facts["own_river"])
+        dora_mult = facts["dora_mult"]
+        public_visible = np.asarray(facts["public_visible"])
+        dora_indicators = list(facts["dora_indicators"])
+        score = int(facts["score"])
+        player_wind = int(facts["player_wind"])
+        round_wind = int(facts["round_wind"])
+        honba = int(facts["honba"])
+        sticks = int(facts["sticks"])
+        declared = bool(facts["declared"])
+        menzen = bool(facts["menzen"])
+        opponents = facts["opponents"]
+
+        tile = getattr(action, "tile", None)
+        if tile is None and kind in {"reach", "dahai"}:
+            drawn = getattr(observation, "drawn_tile", None)
+            if drawn is not None:
+                tile = int(drawn)
+        primary_type = int(tile) // 4 if tile is not None else None
+        source_seat = _source_seat(observation, kind)
+
+        kind_of.append(kind)
+        row_primary.append(primary_type)
+        row_source.append(source_seat)
+        o7_of.append(_O7_YES if menzen else _O7_NO)
+        o9_of.append(None)
+        off_slot.append(None)
+        def_slot.append(None)
+        hand_slot.append(None)
+        fixed_offense.append(None)
+        fixed_defense.append(None)
+
+        if kind in {"tsumo", "ron"}:
+            win_type = primary_type
+            full = _physical_tiles(hand, melds)
+            if tile is not None:
+                full.append(int(tile))
+            fixed_offense[row] = (
+                0, 0, 0, 0, 0, 0, 0,
+                o7_of[row], 2,
+                bucket_o9(_count_dora_aka(full, dora_mult)),
+            )
+            fixed_defense[row] = (
+                [2, 2, 2], [2, 2, 2], [0, 0, 0],
+                _visible_code(public_visible, win_type),
+            )
+        elif kind in {"reach", "dahai"}:
+            post = list(hand)
+            if tile is not None:
+                try:
+                    post.remove(int(tile))
+                except ValueError:
+                    pass
+            shape = np.bincount([t // 4 for t in post], minlength=TILE_KINDS).astype(np.uint8)
+            o9_of[row] = bucket_o9(_count_dora_aka(_physical_tiles(post, melds), dora_mult))
+            off_reqs.append((row, {
+                "post": post, "melds": melds, "remaining": remaining,
+                "own_river": own_river, "score": score,
+                "dora_indicators": dora_indicators, "player_wind": player_wind,
+                "round_wind": round_wind, "honba": honba, "sticks": sticks,
+                "missed_doujun": facts["missed_doujun"],
+                "missed_riichi": facts["missed_riichi"],
+                "declared": True if kind == "reach" else declared,
+            }))
+            off_slot[row] = len(off_reqs) - 1
+            def_reqs.append((row, {
+                "discard_type": primary_type, "shape": shape,
+                "remaining": remaining, "rivers": rivers, "opponents": opponents,
+            }))
+            def_slot[row] = len(def_reqs) - 1
+        elif kind in {"chi", "pon", "ankan", "daiminkan", "kakan"}:
+            consumed = [int(value) for value in (getattr(action, "consume_tiles", ()) or ())]
+            post = list(hand)
+            called = int(tile) if tile is not None else None
+            if kind == "kakan":
+                added = called if called is not None else (consumed[-1] if consumed else None)
+                if added is not None:
+                    _remove_first_by_type(post, int(added) // 4, 1)
+            else:
+                counts_temp: dict[int, int] = {}
+                for value in consumed:
+                    tile_type = value // 4
+                    counts_temp[tile_type] = counts_temp.get(tile_type, 0) + 1
+                for tile_type, count in sorted(counts_temp.items()):
+                    _remove_first_by_type(post, tile_type, count)
+            three_melds, kan_types = _decompose_melds(melds)
+            kan_type = (
+                (called if called is not None else consumed[0]) // 4
+                if (called is not None or consumed)
+                else None
+            )
+            post_menzen = menzen and kind == "ankan"
+            o7_of[row] = _O7_YES if post_menzen else _O7_NO
+            if kind in {"chi", "pon"}:
+                counts, three_melds = _kernel_shape(post, three_melds + 1, kan_types, target=14)
+                new_meld = [*consumed]
+                if called is not None and called not in new_meld:
+                    new_meld.append(called)
+                full = _physical_tiles(post, melds) + new_meld
+            elif kind == "daiminkan":
+                counts, three_melds = _kernel_shape(
+                    post, three_melds, [*kan_types, kan_type] if kan_type is not None else kan_types,
+                    target=13,
+                )
+                full = list(post) + ([called] * 3 if called is not None else consumed)
+            elif kind == "ankan":
+                counts, three_melds = _kernel_shape(
+                    post, three_melds, [*kan_types, kan_type] if kan_type is not None else kan_types,
+                    target=13,
+                )
+                full = list(post) + consumed
+            else:
+                added = called if called is not None else (consumed[-1] if consumed else None)
+                if added is not None:
+                    try:
+                        post.remove(added)
+                    except ValueError:
+                        pass
+                counts, three_melds = _kernel_shape(
+                    post, max(0, three_melds - 1),
+                    [*kan_types, kan_type] if kan_type is not None else kan_types,
+                    target=13,
+                )
+                full = _physical_tiles(post, melds) + ([added] if added is not None else [])
+            hand_reqs.append((row, {"counts": counts, "melds": three_melds}))
+            hand_slot[row] = len(hand_reqs) - 1
+            # O9 在组装时与 hand_results 中的 shanten 结合;此处不设 fixed_offense。
+            o9_of[row] = bucket_o9(_count_dora_aka(full, dora_mult))
+            post_counts = np.bincount(
+                [t // 4 for t in post], minlength=TILE_KINDS,
+            ).astype(np.uint8)
+            def_reqs.append((row, {
+                "discard_type": None, "shape": post_counts,
+                "remaining": remaining, "rivers": rivers, "opponents": opponents,
+            }))
+            def_slot[row] = len(def_reqs) - 1
+        else:
+            # none / pass / ryukyoku:当前手牌不变。
+            full = _physical_tiles(hand, melds)
+            if len(full) == 13:
+                off_reqs.append((row, {
+                    "post": hand, "melds": melds, "remaining": remaining,
+                    "own_river": own_river, "score": score,
+                    "dora_indicators": dora_indicators, "player_wind": player_wind,
+                    "round_wind": round_wind, "honba": honba, "sticks": sticks,
+                    "missed_doujun": facts["missed_doujun"],
+                    "missed_riichi": facts["missed_riichi"],
+                    "declared": declared,
+                }))
+                off_slot[row] = len(off_reqs) - 1
+                o9_of[row] = bucket_o9(_count_dora_aka(full, dora_mult))
+            else:
+                three_melds, kan_types = _decompose_melds(melds)
+                if not melds:
+                    shanten = min(
+                        _shanten_counts(
+                            _kernel_shape(
+                                [tile for index, tile in enumerate(hand) if index != drop],
+                                0, [], target=13,
+                            )[0],
+                            0,
+                        )
+                        for drop in range(len(hand))
+                    )
+                else:
+                    counts, three_melds = _kernel_shape(hand, three_melds, kan_types, target=13)
+                    shanten = _shanten_counts(counts, three_melds)
+                fixed_offense[row] = (
+                    0 if shanten < 0 else min(shanten, 5) + 1,
+                    0, 0, 0, 0, 0, 0,
+                    o7_of[row], 2,
+                    bucket_o9(_count_dora_aka(full, dora_mult)),
+                )
+            shape_concealed = np.bincount(
+                [t // 4 for t in hand], minlength=TILE_KINDS,
+            ).astype(np.uint8)
+            def_reqs.append((row, {
+                "discard_type": None, "shape": shape_concealed,
+                "remaining": remaining, "rivers": rivers, "opponents": opponents,
+            }))
+            def_slot[row] = len(def_reqs) - 1
+
+    # ---- 第 2 遍:批量调用 offense / defense / shanten 内核 ----
+    off_results: dict[int, tuple[int, ...]] = {}
+    if off_reqs:
+        off_inputs = []
+        for row, req in off_reqs:
+            post = req["post"]
+            three_melds, kan_types = _decompose_melds(req["melds"])
+            counts, three_melds = _kernel_shape(post, three_melds, kan_types, target=13)
+            off_inputs.append((row, counts, three_melds, req, post))
+        shape_arr = np.ascontiguousarray(np.stack([x[1] for x in off_inputs]), dtype=np.uint8)
+        meld_arr = np.asarray([int(x[2]) for x in off_inputs], dtype=np.uint8)
+        remain_arr = np.ascontiguousarray(np.stack([x[3]["remaining"] for x in off_inputs]), dtype=np.uint8)
+        river_arr = np.asarray([int(x[3]["own_river"]) for x in off_inputs], dtype=np.uint64)
+        doujun_arr = np.asarray([bool(x[3]["missed_doujun"]) for x in off_inputs], dtype=bool)
+        rmiss_arr = np.asarray([bool(x[3]["missed_riichi"]) for x in off_inputs], dtype=bool)
+        decl_arr = np.asarray([bool(x[3]["declared"]) for x in off_inputs], dtype=bool)
+        score_arr = np.asarray([int(x[3]["score"]) for x in off_inputs], dtype=np.int32)
+        offense_result = riichi.analyze_offense_v16(
+            shape_arr, meld_arr, remain_arr, river_arr,
+            doujun_arr, rmiss_arr, decl_arr, score_arr,
+        )
+        shanten_v = np.asarray(offense_result.shanten)
+        kinds_v = np.asarray(offense_result.effective_kinds)
+        effrem_v = np.asarray(offense_result.effective_remaining)
+        waits_v = np.asarray(offense_result.wait_kinds)
+        waitmask_v = np.asarray(offense_result.wait_mask)
+        furiten_v = np.asarray(offense_result.furiten)
+        canriichi_v = np.asarray(offense_result.can_riichi)
+        for slot, (row, _counts, _tm, req, post) in enumerate(off_inputs):
+            shanten = int(shanten_v[slot])
+            kinds = int(kinds_v[slot])
+            effrem = int(effrem_v[slot])
+            wait_kinds = int(waits_v[slot])
+            wait_mask = int(waitmask_v[slot])
+            furiten = int(furiten_v[slot])
+            can_riichi = _O8_CODE[int(canriichi_v[slot])]
+            yaku_class = 0
+            base_han = 0
+            if wait_kinds > 0:
+                melds_list = req["melds"]
+                yaku = riichienv.analyze_offense_v16(
+                    [post], [melds_list], np.asarray([wait_mask], dtype=np.uint64),
+                    [req["dora_indicators"]], np.asarray([req["player_wind"]], dtype=np.uint8),
+                    np.asarray([req["round_wind"]], dtype=np.uint8),
+                    np.asarray([req["honba"]], dtype=np.uint8),
+                    np.asarray([req["sticks"]], dtype=np.uint8),
+                )
+                yaku_class = int(np.asarray(yaku.yaku_class)[0])
+                base_han = int(np.asarray(yaku.base_han)[0])
+            off_results[row] = (
+                0 if shanten < 0 else min(shanten, 5) + 1,
+                bucket_o1(kinds),
+                bucket_o2(effrem),
+                bucket_o3(wait_kinds if wait_kinds > 0 else None),
+                yaku_class,
+                bucket_o5(base_han if base_han > 0 else None),
+                furiten,
+                can_riichi,
+            )
+
+    def_results: dict[int, tuple[list[int], list[int], list[int], int]] = {}
+    if def_reqs:
+        def_discard = np.array(
+            [-1 if req["discard_type"] is None else int(req["discard_type"]) for _r, req in def_reqs],
+            dtype=np.int16,
+        )
+        def_rivers = np.stack([
+            np.asarray([req["rivers"][opp] for opp in req["opponents"]], dtype=np.uint64)
+            for _r, req in def_reqs
+        ])
+        def_hand = np.ascontiguousarray(np.stack([req["shape"] for _r, req in def_reqs]), dtype=np.uint8)
+        def_remain = np.ascontiguousarray(np.stack([req["remaining"] for _r, req in def_reqs]), dtype=np.uint8)
+        defense_result = riichi.analyze_defense_v16(
+            def_discard, np.ascontiguousarray(def_rivers), def_hand, def_remain,
+        )
+        genbutsu_v = np.asarray(defense_result.genbutsu)
+        suji_v = np.asarray(defense_result.suji)
+        stock_v = np.asarray(defense_result.stock)
+        visible_v = np.asarray(defense_result.visible)
+        for slot, (_r, _req) in enumerate(def_reqs):
+            genbutsu = [
+                2 if int(value) == 2 else 1 - int(value)
+                for value in genbutsu_v[slot]
+            ]
+            suji = [
+                2 if int(value) == 2 else 1 - int(value)
+                for value in suji_v[slot]
+            ]
+            stock = [bucket_d6(int(value)) for value in stock_v[slot]]
+            visible = int(visible_v[slot])
+            def_results[slot] = (genbutsu, suji, stock, visible)
+
+    hand_results: dict[int, int] = {}
+    if hand_reqs:
+        hand_counts = np.ascontiguousarray(np.stack([req["counts"] for _r, req in hand_reqs]), dtype=np.uint8)
+        hand_melds = np.asarray([int(req["melds"]) for _r, req in hand_reqs], dtype=np.uint8)
+        hand_result = riichi.analyze_hands(hand_counts, hand_melds)
+        shanten_v = np.asarray(hand_result.shanten)
+        for slot, (_r, _req) in enumerate(hand_reqs):
+            hand_results[slot] = int(shanten_v[slot, 0])
+
+    # ---- 第 3 遍:组装 ----
+    out: list[tuple[ActionQuery, ActionQuery]] = []
+    for row in range(n):
+        observation, action, action_id = rows[row]
+        kind = kind_of[row]
+        primary_type = row_primary[row]
+        source_seat = row_source[row]
+        facts = facts_cache[id(observation)]
+        if fixed_offense[row] is not None:
+            offense = fixed_offense[row]
+        elif off_slot[row] is not None:
+            head = off_results[row]
+            # O8:立直宣告=2;打牌=can_riichi(head[7]);非打牌(none/pass/ryukyoku)=2。
+            o8 = 2 if kind != "dahai" else head[7]
+            offense = (
+                *head[:7],
+                o7_of[row],
+                o8,
+                o9_of[row],
+            )
+        else:
+            # chi/pon/ankan/daiminkan/kakan:shanten 已在 hand_results 中。
+            slot = hand_slot[row]
+            shanten = hand_results[slot]
+            offense = (
+                0 if shanten < 0 else min(shanten, 5) + 1,
+                0, 0, 0, 0, 0, 0,
+                o7_of[row],
+                2 if kind in _KAN_KINDS else 1,
+                o9_of[row] if o9_of[row] is not None else 0,
+            )
+        if fixed_defense[row] is not None:
+            d_gen, d_suji, d_stock, d_visible = fixed_defense[row]
+        else:
+            slot = def_slot[row]
+            d_gen, d_suji, d_stock, d_visible = def_results[slot]
+        if kind in {"reach", "dahai"} or kind in {"chi", "pon", "ankan", "daiminkan", "kakan"}:
+            d_visible = _visible_code(facts["public_visible"], primary_type)
+        offense_query = ActionQuery(
+            QUERY_OFFENSE, int(action_id), kind, primary_type, source_seat,
+            tuple(int(value) for value in offense),
+        )
+        defense_query = ActionQuery(
+            QUERY_DEFENSE, int(action_id), kind, primary_type, source_seat,
+            tuple(int(value) for value in (*d_gen, *d_suji, *d_stock, d_visible)),
+        )
+        out.append((offense_query, defense_query))
+    return out
+
+
 def encode_query_row(query: ActionQuery) -> np.ndarray:
     """把 ActionQuery 编码为固定宽度存储行(见 QUERY_ROW_WIDTH)。
 

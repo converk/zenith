@@ -329,7 +329,12 @@ if ray is not None:
             )
             self.state_machine = riichi.MjaiKyokuStateMachineManager(self.num_envs)
             self.profiler = StageProfiler(enabled=bool(config.get("profile_enabled", True)))
-            self.bridge = BatchedStateBridge(self.state_machine, self.num_envs, self.profiler)
+            self.bridge = BatchedStateBridge(
+                self.state_machine,
+                self.num_envs,
+                self.profiler,
+                batch_query=bool(config.get("v16_batch_query", False)),
+            )
             self.observations = list(self.envs.reset())
             self.walls = list(self.envs.walls())
             self.bridge.sync(self.observations)

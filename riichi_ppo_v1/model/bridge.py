@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 
 from ..training.profiling import StageProfiler
-from .action_query import analyze_action_queries, encode_query_row
+from .action_query import analyze_action_queries, analyze_action_queries_batch, encode_query_row
 from .schema import NUM_ACTIONS, TID_COUNT
 from .critic_features import (
     collect_visible_table_state,
@@ -159,11 +159,13 @@ class BatchedStateBridge:
         profiler: StageProfiler | None = None,
         *,
         critic_include_public_state: bool = False,
+        batch_query: bool = False,
     ) -> None:
         self.state_machine = state_machine
         self.num_envs = int(num_envs)
         self.profiler = profiler or StageProfiler(enabled=False)
         self.critic_include_public_state = bool(critic_include_public_state)
+        self.batch_query = bool(batch_query)
         self.last_events: list[list[list[str]]] = [[[] for _ in range(NUM_PLAYERS)] for _ in range(num_envs)]
         self.observations_by_env: list[dict[int, Any]] | None = None
 
@@ -321,6 +323,8 @@ class BatchedStateBridge:
             query_rows: list[np.ndarray] = []
             action_id_rows: list[np.ndarray] = []
             snapshot_rows: list[np.ndarray] = []
+            # 每个决策的「action_id -> 代表 Action」映射(供 query 生成与 batch 复用)。
+            per_row_actions: list[dict[int, Any]] = []
             decoded_cursor = 0
             for row, decision in enumerate(decisions):
                 observation = decision.observation
@@ -345,19 +349,49 @@ class BatchedStateBridge:
                             f"env={decision.env_index} seat={decision.seat_id} mjai={raw}"
                         )
                     actions_by_id[int(action_id)] = action
-                rows: list[np.ndarray] = []
-                action_ids: list[int] = []
-                for action_id in ids:
-                    offense, defense = analyze_action_queries(
-                        observation, actions_by_id[int(action_id)], int(action_id),
-                    )
-                    rows.append(encode_query_row(offense))
-                    rows.append(encode_query_row(defense))
-                    action_ids.append(int(action_id))
-                query_rows.append(np.asarray(rows, dtype=np.int32) if rows else np.zeros((0, 15), dtype=np.int32))
-                action_id_rows.append(np.asarray(action_ids, dtype=np.int32))
-                kinds, categorical, numeric = encode_snapshot_rows(build_snapshot_facts(observation))
-                snapshot_rows.append((kinds, categorical, numeric))
+                per_row_actions.append(actions_by_id)
+
+            if self.batch_query:
+                # 批量路径:收集全部 (observation, action, action_id) 三元组,
+                # 一次调用 analyze_action_queries_batch,再按决策切回。
+                triples: list[tuple[Any, Any, int]] = []
+                row_offsets: list[int] = [0]
+                for row, decision in enumerate(decisions):
+                    for action_id in ids_by_row[row]:
+                        triples.append((decision.observation, per_row_actions[row][action_id], int(action_id)))
+                    row_offsets.append(len(triples))
+                all_pairs = analyze_action_queries_batch(triples)
+                for row, decision in enumerate(decisions):
+                    start, end = row_offsets[row], row_offsets[row + 1]
+                    pair = all_pairs[start:end]
+                    rows: list[np.ndarray] = []
+                    action_ids: list[int] = []
+                    for offense, defense in pair:
+                        rows.append(encode_query_row(offense))
+                        rows.append(encode_query_row(defense))
+                        action_ids.append(int(offense.action_id))
+                    query_rows.append(np.asarray(rows, dtype=np.int32) if rows else np.zeros((0, 15), dtype=np.int32))
+                    action_id_rows.append(np.asarray(action_ids, dtype=np.int32))
+                    kinds, categorical, numeric = encode_snapshot_rows(build_snapshot_facts(decision.observation))
+                    snapshot_rows.append((kinds, categorical, numeric))
+            else:
+                for row, decision in enumerate(decisions):
+                    observation = decision.observation
+                    ids = ids_by_row[row]
+                    actions_by_id = per_row_actions[row]
+                    rows: list[np.ndarray] = []
+                    action_ids: list[int] = []
+                    for action_id in ids:
+                        offense, defense = analyze_action_queries(
+                            observation, actions_by_id[int(action_id)], int(action_id),
+                        )
+                        rows.append(encode_query_row(offense))
+                        rows.append(encode_query_row(defense))
+                        action_ids.append(int(action_id))
+                    query_rows.append(np.asarray(rows, dtype=np.int32) if rows else np.zeros((0, 15), dtype=np.int32))
+                    action_id_rows.append(np.asarray(action_ids, dtype=np.int32))
+                    kinds, categorical, numeric = encode_snapshot_rows(build_snapshot_facts(observation))
+                    snapshot_rows.append((kinds, categorical, numeric))
         with self.profiler.stage("state/critic_feature_encode"):
             if self.observations_by_env is None:
                 critic_features = [empty_critic_features() for _decision in decisions]
