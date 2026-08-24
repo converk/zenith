@@ -11,6 +11,11 @@
       `tests/unit/test_rollout_buffer.py`。
 - [x] T3 golden trace 冻结脚本:`audit/reports/v17/scripts/freeze_golden_baseline.py`
       (纯 CPU,冻结 V16 编码 oracle 输出)。
+- [x] T4(b) V16 action query 批量生成:`analyze_action_queries_batch`
+      (`riichi_ppo_v1/model/action_query.py`)+ `bridge.prepare_v16` 的
+      `batch_query` 开关 + `tests/unit/test_action_query_batch.py`。与逐动作
+      oracle 逐元素一致;`analyze_action_queries` ~119→101 μs/action,
+      `prepare_v16` 端到端 ~1.14×。**仍待与 convolution 并发/GPU 深挖**。
 
 ## 待实现
 
