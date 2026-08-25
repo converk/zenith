@@ -214,4 +214,6 @@ answer_0..answer_9]`;每动作固定 offense/defense 两行。其余输入的 dt
 state-machine 的 pending request 同时保存固定 action id→原始合法 Action 下标,
 `bridge.prepare_v16` 不再执行 `decode_actions` 后的 JSON parse/canonical/match。
 生产桥接只保留 Rust 融合路径,不再暴露 Python batch/逐动作回退开关。逐动作实现
-仅由 SFT 离线重编码使用,不进入 PPO rollout。
+也不再由 Python 重复计算:SFT、审计与历史调用方仍可使用
+`analyze_action_queries`,但该接口只把一个动作交给 Rust 融合编码器并恢复兼容对象。
+动作分派、post-shape、向听、有效牌、防守与役种均以 Rust 为唯一语义来源。

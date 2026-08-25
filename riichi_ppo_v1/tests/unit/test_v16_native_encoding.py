@@ -52,7 +52,7 @@ def _step(envs, bridge, observations, tick: int):
     return observations, list(envs.walls())
 
 
-def test_native_query_rows_match_independent_sft_oracle(rollout_state) -> None:
+def test_native_query_rows_match_compatibility_api(rollout_state) -> None:
     envs, bridge, observations, walls = rollout_state
     checked = 0
     deduplicated = 0

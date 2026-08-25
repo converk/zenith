@@ -33,6 +33,9 @@
 - [x] T12 Rust-only 单路径清理:删除 PPO Python batch/逐动作回退、配置开关与
       旧路径测试;听牌 O4/O5 facts 重建迁入 Rust;golden/unit/integration/bot
       全部回归通过。
+- [x] T13 V16 Action Query 语义单一来源:`analyze_action_queries` 改为 Rust
+      融合编码器的兼容适配层,删除 Python 的动作分派、post-shape、向听、有效牌、
+      防守与役种重复实现;SFT、在线审计和测试共用同一 Rust 语义。
 
 ## 后续可选深化(本次 rollout ≥1.20× 验收不再阻塞)
 

@@ -189,6 +189,9 @@ query 热路径不再执行 `decode_actions -> MJAI JSON -> canonical JSON -> Py
 - 清理前验收:`riichi_ppo_v1/tests/unit` 164 passed;V16 bridge 集成 11 passed;
   Rust crate 10 passed;RiichiEnv 定向测试 14 passed。移除 3 个旧路径专用测试后,
   当前完整 unit 为 161 passed,集成与 bot 为 53 passed、1 个硬件测试 skipped。
+- `analyze_action_queries` 当前仅为 Rust 单动作编码结果恢复 `ActionQuery` 兼容对象;
+  Python 中原有动作分派、post-shape、向听/有效牌、防守与役种实现已删除。SFT、
+  在线审计、PPO 与测试共用 Rust 语义;脚本内手算的 V16 语义断言全部通过。
 - V16 schema、GRP/PPO/GAE/value/entropy/SFT KL、current-only transition、
   opponent mix、checkpoint/DDP 数学均未修改;无需改协议文档。
 

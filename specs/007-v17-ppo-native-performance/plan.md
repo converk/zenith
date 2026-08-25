@@ -7,7 +7,9 @@
 3. **Rust 融合决策批**(已完成):`riichienv` core 粗粒度紧凑事实物化 +
    `riichi.encode_v16_batch` 融合 offense/defense/shanten/query row;query 热路径
    消除 decode/canonical JSON 与逐动作 Observation 属性扫描;生产桥接只保留
-   该路径,没有 Python runtime 回退或配置分支。
+   该路径,没有 Python runtime 回退或配置分支。SFT/审计保留的
+   `analyze_action_queries` 公共接口也委托同一 Rust 编码器,Python 不再保存第二份
+   Action Query 业务规则。
 4. **direct action-id step + 紧凑 rollout buffer**:action id 由 Rust 直接应用;
    worker 内 pending 改 SoA;driver→learner 走 Ray 大数组/共享内存。
 5. **PPO update 深化**:pinned host slabs、non_blocking H2D、DDP static graph /
@@ -27,7 +29,7 @@
 
 ## 关键风险
 
-- Rust 编码器与 Python oracle 的逐元素一致(尤其动作类型分派/终局约定);
-  用 golden trace 回归。
+- Rust 编码器与冻结的 Python 基线及脚本内手算语义 oracle 逐元素一致(尤其动作
+  类型分派/终局约定);当前生产与兼容接口统一用 golden trace 防回归。
 - DDP 分片在改动 collate 后保持 NCCL 对齐与 early-stop 同步。
 - 内存:SoA 扁平 buffer 的宿主峰值内存需与旧 list 对比并记录。

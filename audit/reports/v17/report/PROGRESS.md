@@ -1,9 +1,20 @@
 # V17 进度记录
 
+## 2026-08-25 Action Query Rust 语义统一
+
+- 删除 `action_query.py` 中动作分派、post-shape、向听/有效牌、防守、役种等
+  Python 重复实现;保留的 `analyze_action_queries` 仅为 SFT/审计历史调用方提供
+  `ActionQuery` 兼容对象,实际逐动作编码委托 Rust compact+fused API。
+- 生产、SFT、在线审计与测试由此共用同一 Rust 业务规则;测试中原“独立 SFT
+  oracle”名称同步修正为 compatibility API,正确性证据改由冻结 golden 与脚本内
+  手算语义断言承担。
+- 验证:golden 15 数组/69,733 元素及 JSON 全等;unit 161 passed;integration +
+  bot 53 passed、1 skipped;V16 语义 oracle 全部断言通过。
+
 ## 2026-08-25 Rust-only 单路径清理
 
 - 删除 PPO rollout 的 Python 逐动作/Python batch 回退、两个配置开关及旧 CPU
-  对比脚本,生产桥接固定进入 Rust compact+fused 编码;SFT 离线逐动作编码不受影响。
+  对比脚本,生产桥接固定进入 Rust compact+fused 编码;本条为 T13 语义统一前记录。
 - O4/O5 听牌行的 post-hand/facts 重建迁入 `riichienv` Rust API;Python 只负责
   Observation wrapper 边界规范化与连续数组回填。
 - 在线 bot 的 `ObservationView` 显式暴露原始 RiichiEnv Observation,重建的
