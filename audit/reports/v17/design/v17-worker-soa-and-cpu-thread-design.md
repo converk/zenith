@@ -64,12 +64,13 @@ driver 先 `ray.wait` 等全部 ObjectRef ready,再按原始 worker 顺序 `ray.
 
 ## 5. oracle 与正确性
 
-`worker_return_soa=false` 保留旧返回路径作为 oracle。专项测试固定 seed,验证:
+专项验收曾用旧返回路径作为临时 oracle;验收完成后已收敛为 SoA 单路径并删除
+fallback。当前专项测试固定 seed,直接验证:
 
 - 所有整数、bool、mask 与有效长度逐元素全等;
 - float32 字段先显式转换为协议 dtype,`atol=0,rtol=0`,最大误差 0;
-- concatenate、任意 select、DDP 重复补齐下标、round-trip 全等;
-- GAE advantages、empirical returns、相同权重/seed 的 PPO loss 与旧路径一致;
+- concatenate、任意 select 与 DDP 重复补齐下标全等;
+- GAE advantages、empirical returns 与冻结公式一致;
 - V16 全 action kind、bridge、golden 与 Rust 编码 oracle 继续通过。
 
 ## 6. 后续决策

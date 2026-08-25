@@ -17,10 +17,7 @@ from riichi_ppo_v1.training.learner import (
     approximate_kl_values,
     branch_grad_norms,
     categorical_kl_values,
-    collate,
     discounted_empirical_returns,
-    length_bucketed_minibatches,
-    materialize_host_batch,
     normalize_value_targets,
     scheduled_entropy_coefficient,
     scheduled_learning_rate,
@@ -29,6 +26,7 @@ from riichi_ppo_v1.training.learner import (
     transfer_batch_to_device,
     value_loss_values,
 )
+from riichi_ppo_v1.training.rollout_buffer import RolloutBuffer
 from riichi_ppo_v1.training.trajectory import Transition
 
 
@@ -146,7 +144,7 @@ def test_discounted_empirical_returns_reset_at_kyoku_boundaries() -> None:
     rows[1].done = True
     rows[3].done = True
     np.testing.assert_allclose(
-        discounted_empirical_returns(rows, 0.5),
+        discounted_empirical_returns(RolloutBuffer(rows), 0.5),
         [2.0, 2.0, 5.0, 4.0],
     )
 
@@ -178,7 +176,7 @@ def test_categorical_kl_masks_illegal_logits_and_is_zero_at_reference() -> None:
 def test_transition_length_metrics_report_v16_sequence_tokens() -> None:
     first = transition(0.0)
     second = transition(0.0)
-    metrics = transition_length_metrics([first, second])
+    metrics = transition_length_metrics(RolloutBuffer([first, second]))
     length = 2 + 2 + 4
     assert metrics["update/buffer_transition_tokens_mean"] == length
     assert metrics["update/buffer_transition_input_tokens_max"] == length
@@ -192,7 +190,8 @@ def test_length_bucketing_covers_all_rows_with_homogeneous_batches() -> None:
         if index % 2:
             item.history_length = 7
     np.random.seed(7)
-    batches = length_bucketed_minibatches(transitions, minibatch_size=2)
+    buffer = RolloutBuffer(transitions)
+    batches = buffer.bucketed_minibatches(minibatch_size=2)
 
     assert sorted(index for batch in batches for index in batch) == list(range(len(transitions)))
     assert all(len(batch) <= 2 for batch in batches)
@@ -205,12 +204,13 @@ def test_length_bucketing_covers_all_rows_with_homogeneous_batches() -> None:
 def test_split_collate_transfers_all_v16_segments() -> None:
     transitions = [transition(0.2), transition(-0.1)]
     advantages = np.asarray([1.5, -0.5], dtype=np.float32)
-    host = materialize_host_batch(transitions, advantages=advantages)
+    buffer = RolloutBuffer(transitions)
+    buffer.advantages = advantages
+    host = buffer.collate([0, 1])
     split = transfer_batch_to_device(host, torch.device("cpu"))
-    legacy = collate(transitions, torch.device("cpu"), advantages=advantages)
-    assert set(split) == set(legacy)
+    assert set(split) == set(host)
     for name in split:
-        torch.testing.assert_close(split[name], legacy[name])
+        torch.testing.assert_close(split[name], host[name])
     torch.testing.assert_close(split["advantages"], torch.tensor([1.5, -0.5]))
 
 
@@ -253,7 +253,9 @@ def test_branch_learning_rates_are_scheduled_independently() -> None:
             critic_learning_rate=4e-5,
         ),
     )
-    metrics = learner.update([transition(0.2), transition(-0.1)], shuffle_seed=3)
+    metrics = learner.update(
+        RolloutBuffer([transition(0.2), transition(-0.1)]), shuffle_seed=3,
+    )
     assert metrics["system/actor_learning_rate"] == 1e-5
     assert metrics["system/shared_learning_rate"] == 2.5e-6
     assert metrics["system/critic_learning_rate"] == 2e-5
@@ -274,7 +276,9 @@ def test_branch_learning_rate_mins_are_applied() -> None:
     )
     # 跳到最后一次 update,验证各参数组 LR 精确衰减到 min。
     learner.iteration = 99
-    metrics = learner.update([transition(0.2), transition(-0.1)], shuffle_seed=3)
+    metrics = learner.update(
+        RolloutBuffer([transition(0.2), transition(-0.1)]), shuffle_seed=3,
+    )
     assert metrics["system/actor_learning_rate"] == pytest.approx(5e-6)
     assert metrics["system/shared_learning_rate"] == pytest.approx(1.25e-6)
     assert metrics["system/critic_learning_rate"] == pytest.approx(1e-5)
@@ -287,7 +291,10 @@ def test_cpu_update_completes_epochs_and_keeps_finite_metrics() -> None:
         **learner_kwargs(update_epochs=2, minibatch_size=2, target_kl=0.0),
     )
     metrics = learner.update(
-        [transition(0.2, action=0), transition(-0.1, action=5), transition(0.3, action=0)],
+        RolloutBuffer([
+            transition(0.2, action=0), transition(-0.1, action=5),
+            transition(0.3, action=0),
+        ]),
         shuffle_seed=7,
     )
     assert metrics["update/early_stop"] == 0.0
@@ -391,7 +398,7 @@ def test_critic_bootstrap_freezes_actor_and_only_trains_critic() -> None:
     shared_before = learner.model.token_embedding.table.weight.detach().clone()
     critic_before = learner.model.value_head.weight.detach().clone()
     rows = [transition(1.0), transition(-1.0)]
-    metrics = learner.update(rows, shuffle_seed=3)
+    metrics = learner.update(RolloutBuffer(rows), shuffle_seed=3)
     assert metrics["training/critic_bootstrap"] == 1.0
     assert metrics["training/policy_update"] == 0.0
     assert metrics["system/actor_learning_rate"] == 0.0
@@ -402,7 +409,7 @@ def test_critic_bootstrap_freezes_actor_and_only_trains_critic() -> None:
     torch.testing.assert_close(learner.model.action_fusion[0].weight, actor_before)
     torch.testing.assert_close(learner.model.token_embedding.table.weight, shared_before)
     assert not torch.equal(learner.model.value_head.weight, critic_before)
-    joint = learner.update(rows, shuffle_seed=4)
+    joint = learner.update(RolloutBuffer(rows), shuffle_seed=4)
     assert joint["training/critic_bootstrap"] == 0.0
     assert joint["training/policy_update"] == 1.0
     assert joint["system/actor_learning_rate"] > 0.0
@@ -435,7 +442,7 @@ def test_sft_kl_anchor_loads_frozen_reference_and_restores_through_checkpoint() 
             for parameter in learner.reference_model.parameters()
         )
         rows = [transition(0.2), transition(-0.1)]
-        metrics = learner.update(rows, shuffle_seed=3)
+        metrics = learner.update(RolloutBuffer(rows), shuffle_seed=3)
         assert metrics["system/sft_kl_coef"] > 0.0
         assert np.isfinite(metrics["sft_reference_kl"])
         checkpoint_path = Path(directory) / "ppo.pt"

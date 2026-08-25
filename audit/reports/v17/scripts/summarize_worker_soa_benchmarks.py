@@ -28,7 +28,6 @@ METRICS = (
     "rollout/transition_assembly_s",
     "rollout/return_array_count",
     "rollout/return_array_bytes",
-    "rollout/return_transition_objects",
     "ppo/update/configured_epochs",
     "ppo/update/epochs_completed",
     "ppo/update/planned_minibatches",
@@ -62,7 +61,6 @@ def _summary(path: str, workers: int) -> dict[str, Any]:
     for name in (
         "rollout/grp_calls",
         "rollout/return_array_bytes",
-        "rollout/return_transition_objects",
     ):
         if name in metrics:
             metrics[name]["global_mean"] = metrics[name]["mean"] * workers

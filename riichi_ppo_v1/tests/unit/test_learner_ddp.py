@@ -12,8 +12,9 @@ import sys
 from riichi_ppo_v1.training.learner_ddp import (
     LearnerDDP,
     aggregate_learner_metrics,
-    partition_learner_shards,
+    learner_shard_indices,
 )
+from riichi_ppo_v1.training.rollout_buffer import RolloutBuffer
 
 from .test_v16_learner import transition
 
@@ -31,7 +32,7 @@ def _pdeathsig_probe(queue) -> None:
 
 def test_partition_keeps_all_rows_and_equal_batch_counts() -> None:
     rows = [transition(0.0) for _ in range(1025)]
-    shards = partition_learner_shards(rows, world_size=2, minibatch_size=512)
+    shards = learner_shard_indices(len(rows), world_size=2, minibatch_size=512)
 
     assert len(shards) == 2
     counts = [len(shard) for shard in shards]
@@ -40,22 +41,21 @@ def test_partition_keeps_all_rows_and_equal_batch_counts() -> None:
     ]
     assert batch_counts[0] == batch_counts[1]
     assert sum(counts) - len(rows) <= 511
-    originals = [row for shard in shards for row in shard]
-    # 轮询切分:每个原始行恰好由某一个分片持有,补齐只复制已有对象。
-    assert len({id(row) for row in originals}) == len(rows)
+    originals = [index for shard in shards for index in shard]
+    # 轮询切分:每个原始下标至少出现一次,补齐只重复已有下标。
+    assert set(originals) == set(range(len(rows)))
     assert all(len(shard) >= 1 for shard in shards)
 
 
 def test_partition_single_rank_returns_input_unchanged() -> None:
-    rows = [transition(0.0) for _ in range(3)]
-    assert partition_learner_shards(rows, world_size=1, minibatch_size=2) == [rows]
+    assert learner_shard_indices(3, world_size=1, minibatch_size=2) == [[0, 1, 2]]
 
 
 def test_partition_rejects_too_few_rows_or_bad_sizes() -> None:
     with pytest.raises(ValueError, match="cannot split"):
-        partition_learner_shards([transition(0.0)], world_size=2, minibatch_size=2)
+        learner_shard_indices(1, world_size=2, minibatch_size=2)
     with pytest.raises(ValueError, match="minibatch_size"):
-        partition_learner_shards([transition(0.0)], world_size=1, minibatch_size=0)
+        learner_shard_indices(1, world_size=1, minibatch_size=0)
 
 
 def test_aggregate_metrics_weights_samples_and_steps() -> None:
@@ -90,7 +90,7 @@ def test_aggregate_metrics_weights_samples_and_steps() -> None:
             "gpu/torch_memory_peak_allocated_mb": 200.0,
         },
     ]
-    aggregated = aggregate_learner_metrics(per_rank, rows)
+    aggregated = aggregate_learner_metrics(per_rank, RolloutBuffer(rows))
 
     assert aggregated["loss"] == pytest.approx(2.5)  # (10*1 + 30*3) / 40
     assert aggregated["grad_norm"] == pytest.approx(0.65)  # (2*0.5 + 6*0.7) / 8

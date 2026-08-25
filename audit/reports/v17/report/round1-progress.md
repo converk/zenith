@@ -14,14 +14,12 @@
    - 新增 `riichi_ppo_v1/training/rollout_buffer.py`:`RolloutBuffer` 把整个
      rollout 一次性抽成 flat SoA(变长字段用 offset 索引),`collate(indices)`
      用向量化 gather 替代逐样本拷贝。
-   - `PPOLearner.update` 接入 `update_use_soa` 开关(默认 true),旧路径保留为
-     oracle。
-   - 新增 `tests/unit/test_rollout_buffer.py`(3 项)。实测 host 拷贝从
-     ~37.9ms/512 行降到 ~2.2ms/512 行(≈17×),且与 `materialize_host_batch`
-     逐元素等价;`update_use_soa=true/false` 两大路径在同一权重起点下 loss
-     一致。
-3. **基准配置**:新增 `riichi_ppo_v1/configs/v17_ppo_perf_512g4e.yaml`(SoA 开)
-   与 `v17_ppo_perf_512g4e_noso.yaml`(SoA 关),标准基线
+   - `PPOLearner.update` 接入 SoA 路径;验收后已删除旧逐对象 fallback 与开关。
+   - 新增 `tests/unit/test_rollout_buffer.py`。实测 host 拷贝从
+     ~37.9ms/512 行降到 ~2.2ms/512 行(≈17×);验收时曾与旧逐对象实现逐元素及
+     loss 对照,单路径清理后改为直接验证 SoA 字段、padding 与冻结公式。
+3. **基准配置**:新增 `riichi_ppo_v1/configs/v17_ppo_perf_512g4e.yaml`与历史
+   逐对象对照配置(验收后已删除),标准基线
    games_per_update=512 / update_epochs=4 / target_kl=0.0 / learner_gpus=2 /
    eval1v3_enabled=false。
 4. **golden baseline 冻结脚本**:`audit/reports/v17/scripts/freeze_golden_baseline.py`
@@ -55,7 +53,7 @@ rollout=155.30 / update=185.79 / total=342.16)对比:
 
 ## 同条件基线(SoA 关)结果
 
-同一机器条件、同一 512g4e 基准,仅关闭 SoA(`v17_ppo_perf_512g4e_noso.yaml`):
+同一机器条件、同一 512g4e 基准,历史逐对象对照(临时配置验收后已删除):
 
 | iteration | rollout_wall_s | update_wall_s | algorithm_wall_s |
 |---|---|---|---|

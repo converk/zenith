@@ -12,8 +12,8 @@
    Action Query 业务规则。
 4. **紧凑 rollout 返回链路**(已完成):小局内暂存 `Transition` 完成 GAE,worker
    返回前压成 flat+offsets SoA;Ray 只传 29 个大数组/worker;driver 合并后 learner
-   与双卡 DDP 直接消费 SoA,不恢复百万级对象。direct action-id step 依据新 profiling
-   保留为后续项。
+   与双卡 DDP 直接消费 SoA,不恢复百万级对象;旧对象 fallback 与开关已在验收后
+   删除。direct action-id step 依据新 profiling 保留为后续项。
 5. **PPO update 深化**:pinned host slabs、non_blocking H2D、DDP static graph /
    fused AdamW / torch.compile 评估。
 6. **CPU/Ray 资源 sweep**(已完成):A/B/C/D 三轮微基准 + C/D 标准 GPU 三轮;

@@ -1,6 +1,6 @@
 # V17 PPO 性能基准(标准基线):games_per_update=512 / update_epochs=4 /
 # target_kl=0.0 / learner_gpus=2。自包含完整配置,不与打包默认叠加。
-# 仅用于性能基准;启用了 RolloutBuffer SoA 一次性物化(path update_use_soa=true)。
+# 仅用于性能基准;rollout 返回与 learner 更新固定使用 RolloutBuffer SoA。
 seed: 1
 device: cuda
 learner_gpus: 2
@@ -21,7 +21,6 @@ envs_per_worker: 32
 env_step_threads: 4
 rollout_worker_num_cpus: 2
 rollout_worker_cpu_threads: 1
-worker_return_soa: true
 inference_max_batch_size: 512
 inference_batch_wait_ms: 8.0
 inference_batch_target_rows: 0
@@ -34,8 +33,6 @@ update_epochs: 4
 minibatch_size: 1536
 gradient_accumulation_steps: 1
 update_batch_mode: streaming
-# 性能基准使用 SoA 一次性物化(默认 true,此处显式声明)。
-update_use_soa: true
 entropy_start: 0.01
 entropy_end: 0.003
 value_coef: 0.5

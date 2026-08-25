@@ -32,7 +32,6 @@ from .learner import (
     rollout_update_targets,
 )
 from .rollout_buffer import RolloutBuffer
-from .trajectory import Transition
 
 
 _CMD_UPDATE = "update"
@@ -92,22 +91,6 @@ _RANK0_KEYS = {
 }
 
 
-def partition_learner_shards(
-    transitions: list[Transition],
-    world_size: int,
-    minibatch_size: int,
-) -> list[list[Transition]]:
-    """轮询切分并把每个分片补齐到一致的本地 minibatch 数。
-
-    轮询保证两 rank 负载均衡;补齐量不超过 ``minibatch_size - 1``,只在两
-    分片长度跨越 minibatch 边界时发生,使 DDP collective 严格对齐。
-    """
-    index_shards = learner_shard_indices(
-        len(transitions), world_size, minibatch_size,
-    )
-    return [[transitions[index] for index in shard] for shard in index_shards]
-
-
 def learner_shard_indices(
     count: int,
     world_size: int,
@@ -152,7 +135,7 @@ def _weighted_mean(values: list[float], weights: list[float]) -> float:
 
 def aggregate_learner_metrics(
     metrics_by_rank: list[dict[str, float]],
-    transitions: list[Transition] | RolloutBuffer,
+    transitions: RolloutBuffer,
 ) -> dict[str, float]:
     """把两个 DDP rank 的本地指标汇总为一次 update 的全局指标。"""
     if not metrics_by_rank:
@@ -393,22 +376,17 @@ class LearnerDDP:
 
     def update(
         self,
-        transitions: list[Transition] | RolloutBuffer,
+        transitions: RolloutBuffer,
         *,
         shuffle_seed: int | None = None,
     ) -> tuple[dict[str, float], list[dict[str, float]]]:
         """分片更新;返回 ``(全局汇总指标, 逐 rank 指标)``。"""
+        if not isinstance(transitions, RolloutBuffer):
+            raise TypeError("LearnerDDP.update requires a RolloutBuffer")
         index_shards = learner_shard_indices(
             len(transitions), self.world_size, self._minibatch_size,
         )
-        if isinstance(transitions, RolloutBuffer):
-            shards: list[list[Transition] | RolloutBuffer] = [
-                transitions.select(shard) for shard in index_shards
-            ]
-        else:
-            shards = [
-                [transitions[index] for index in shard] for shard in index_shards
-            ]
+        shards = [transitions.select(shard) for shard in index_shards]
         advantages, returns, _return_mean, _return_std = rollout_update_targets(
             transitions, self._gamma,
         )

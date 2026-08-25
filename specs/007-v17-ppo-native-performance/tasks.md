@@ -4,10 +4,10 @@
 
 ## 已完成
 
-- [x] T1 冻结基线:创建标准 512g4e 基准配置
-      (`riichi_ppo_v1/configs/v17_ppo_perf_512g4e{,_noso}.yaml`)。
+- [x] T1 冻结基线:创建标准 512g4e 基准配置;临时逐对象对照配置在单路径
+      验收后删除。
 - [x] T2 学习者一次性物化:`riichi_ppo_v1/training/rollout_buffer.py`
-      (`RolloutBuffer`) + `PPOLearner.update` 接入 `update_use_soa` 开关 +
+      (`RolloutBuffer`) + `PPOLearner.update` 单路径 +
       `tests/unit/test_rollout_buffer.py`。
 - [x] T3 golden trace 冻结脚本:`audit/reports/v17/scripts/freeze_golden_baseline.py`
       (纯 CPU,冻结 V16 编码 oracle 输出)。
@@ -54,6 +54,9 @@
 - [x] T16 标准 512g4e 三轮与真实 2048 验证:最终 50.684/130.099/181.274s;
       2048 为 2078 games、1,610,326 transitions、2/2 epochs、2100/2100
       minibatches、3,220,652 executed samples。
+- [x] T17 SoA 单路径清理:删除 worker/driver/learner/DDP 的旧对象 fallback、配置
+      开关、对象恢复/逐对象 collate oracle 与三份临时对照配置;测试改为直接验证
+      SoA 契约和冻结数学公式。
 
 ## 后续可选深化
 

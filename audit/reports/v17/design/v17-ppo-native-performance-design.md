@@ -55,12 +55,13 @@ BatchedRiichiEnv(Rust 批量 env, 每 worker 1 个, 32+ 桌)
 
 ### 2.1 学习者一次性物化(SoA buffer)——已实现
 
-- 新文件 `riichi_ppo_v1/training/rollout_buffer.py`:`RolloutBuffer` 在 update 开始时
-  一次性把 `list[Transition]` 抽成扁平 SoA(变长字段用 offset 索引),`collate(indices)`
-  用向量化 gather 替代逐样本 `torch.tensor` 拷贝。
-- `PPOLearner.update` 增加 `update_use_soa`(默认 true)开关;关闭时保留旧 oracle。
-- 实测:host 拷贝从 ~37.9ms/512行 降到 ~2.2ms/512行(≈17×),且与
-  `materialize_host_batch` 逐元素等价(见 `tests/unit/test_rollout_buffer.py`)。
+- 新文件 `riichi_ppo_v1/training/rollout_buffer.py`:`RolloutBuffer` 在 worker GAE
+  完成后一次性把 `list[Transition]` 抽成扁平 SoA(变长字段用 offset 索引),
+  `collate(indices)` 用向量化 gather 替代逐样本 `torch.tensor` 拷贝。
+- worker、driver、learner 与 DDP 固定走 RolloutBuffer 单路径;旧逐对象 fallback
+  仅用于验收对照,现已删除。
+- 实测:host 拷贝从 ~37.9ms/512行 降到 ~2.2ms/512行(≈17×);当前测试直接
+  校验全部字段、padding、分片与冻结 GAE/returns 公式。
 - 收益区间:标准 512局/4epoch 下 `update/host padding copy` 约 100s → ~6s。
 
 ### 2.2 Rust 融合快速路径(待实现, 主目标)

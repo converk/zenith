@@ -42,7 +42,6 @@ class ConfigLoadingTest(unittest.TestCase):
             if name.startswith("v17_"):
                 self.assertEqual(config["rollout_worker_num_cpus"], 2)
                 self.assertEqual(config["rollout_worker_cpu_threads"], 1)
-                self.assertTrue(config["worker_return_soa"])
             self.assertEqual(config["eval1v3_output_dir"].split("/")[:2], ["audit", "reports"])
             self.assertNotIn("offense_" + "fusion", config)
             self.assertNotIn("critic_" + "head_type", config)
@@ -60,26 +59,19 @@ class ConfigLoadingTest(unittest.TestCase):
         self.assertIsNone(resumed["init_model"])
         self.assertEqual(resumed["games_per_update"], 512)
         self.assertEqual(resumed["env_step_threads"], 4)
-        self.assertTrue(resumed["worker_return_soa"])
         self.assertEqual(resumed["eval1v3_output_dir"], "audit/reports/v17/eval")
 
-    def test_v17_thread_and_worker_soa_benchmarks_are_self_contained(self) -> None:
+    def test_v17_performance_benchmark_has_selected_worker_resources(self) -> None:
         configs = Path(__file__).resolve().parents[2] / "configs"
-        baseline = load_config(str(configs / "v17_ppo_perf_512g4e.yaml"))
-        expected = {
-            "v17_ppo_perf_512g4e_limit1.yaml": (4, False),
-            "v17_ppo_perf_512g4e_limit1_worker_soa.yaml": (4, True),
-        }
-        for name, (step_threads, worker_soa) in expected.items():
-            config = load_config(str(configs / name))
-            self.assertTrue(set(baseline).issubset(config))
-            self.assertEqual(config["games_per_update"], 512)
-            self.assertEqual(config["update_epochs"], 4)
-            self.assertEqual(config["target_kl"], 0.0)
-            self.assertEqual(config["env_step_threads"], step_threads)
-            self.assertEqual(config["rollout_worker_cpu_threads"], 1)
-            self.assertEqual(config["rollout_worker_num_cpus"], 2)
-            self.assertEqual(config["worker_return_soa"], worker_soa)
+        config = load_config(str(configs / "v17_ppo_perf_512g4e.yaml"))
+        self.assertEqual(config["games_per_update"], 512)
+        self.assertEqual(config["update_epochs"], 4)
+        self.assertEqual(config["target_kl"], 0.0)
+        self.assertEqual(config["env_step_threads"], 4)
+        self.assertEqual(config["rollout_worker_cpu_threads"], 1)
+        self.assertEqual(config["rollout_worker_num_cpus"], 2)
+        self.assertNotIn("worker_return_soa", config)
+        self.assertNotIn("update_use_soa", config)
 
     def test_worker_partitioning_balances_workers_across_learners(self) -> None:
         self.assertEqual(partition_worker_indices(6, 2), [[0, 2, 4], [1, 3, 5]])

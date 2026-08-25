@@ -1,12 +1,8 @@
 """PPO rollout SoA(Structure-of-Arrays)紧凑缓冲:一次性物化 + 跨 epoch 复用。
 
-旧路径在 ``learner.py`` 的每个 epoch、每个 minibatch 都对 ``list[Transition]``
-重新取长度、重新分配 padded tensor、并逐样本复制。本模块把整个 rollout 一次性
-物化成扁平 SoA 数组(变长字段用 offset 索引),并提供一个向量化的 ``collate``
-把某个 minibatch 的 index 数组 gather 成 V16 padded host 张量。
-
-约定与 ``learner.materialize_host_batch`` 保持完全一致(输出字段、dtype、shape),
-因此本模块可作为一个安全的替代路径;旧路径保留为 semantic oracle/debug fallback。
+worker 在 GAE 完成后把 ``list[Transition]`` 一次性物化成扁平 SoA 数组(变长字段
+使用 offset 索引),driver、learner 与 DDP 分片全程只传递该结构。``collate``
+把 minibatch 下标向量化 gather 成 V16 padded host 张量。
 
 边界说明:
 - 所有变长字段都存成「flat 数组 + offset(长度 N+1)」;collate 用一次性 gather
@@ -111,7 +107,7 @@ class RolloutBuffer:
         )
 
         # ---- 可变长字段:flat + offset ----
-        self.history_offsets, self.history_factors, self.history_numeric = self._concat_var(
+        self.history_offsets, self.history_factors, _ = self._concat_var(
             transitions,
             lambda item: item.history_factors.astype(np.uint8, copy=False),
         )
@@ -227,8 +223,6 @@ class RolloutBuffer:
             setattr(result, flat_name, np.concatenate([
                 np.asarray(getattr(buffer, flat_name)) for buffer in buffers
             ], axis=0))
-        # 旧版本误把 history_factors 的通道宽存在此属性;保留兼容但不参与训练。
-        result.history_numeric = _HISTORY_W
         return result
 
     @staticmethod
@@ -282,58 +276,6 @@ class RolloutBuffer:
             )
             setattr(result, offsets_name, selected_offsets)
             setattr(result, flat_name, selected_flat)
-        result.history_numeric = _HISTORY_W
-        return result
-
-    def to_transitions(self) -> list[Transition]:
-        """仅供 oracle/debug 恢复旧对象路径;生产训练不得调用。"""
-        result: list[Transition] = []
-        for index in range(self.size):
-            history = slice(self.history_offsets[index], self.history_offsets[index + 1])
-            history_numeric = slice(
-                self.history_numeric_offsets[index], self.history_numeric_offsets[index + 1]
-            )
-            snapshot_kinds = slice(
-                self.snapshot_kinds_offsets[index], self.snapshot_kinds_offsets[index + 1]
-            )
-            snapshot_cat = slice(
-                self.snapshot_cat_offsets[index], self.snapshot_cat_offsets[index + 1]
-            )
-            snapshot_num = slice(
-                self.snapshot_num_offsets[index], self.snapshot_num_offsets[index + 1]
-            )
-            query_rows = slice(
-                self.query_rows_offsets[index], self.query_rows_offsets[index + 1]
-            )
-            query_ids = slice(
-                self.query_ids_offsets[index], self.query_ids_offsets[index + 1]
-            )
-            critic = slice(self.critic_offsets[index], self.critic_offsets[index + 1])
-            critic_length = int(self.critic_lengths[index])
-            result.append(Transition(
-                history_factors=self.history_factors[history].copy(),
-                history_numeric=self.history_numeric_flat[history_numeric].copy(),
-                history_length=int(self.history_lengths[index]),
-                snapshot_kinds=self.snapshot_kinds_flat[snapshot_kinds].copy(),
-                snapshot_cat=self.snapshot_cat_flat[snapshot_cat].copy(),
-                snapshot_num=self.snapshot_num_flat[snapshot_num].copy(),
-                snapshot_length=int(self.snapshot_lengths[index]),
-                query_rows=self.query_rows_flat[query_rows].copy(),
-                query_action_ids=self.query_ids_flat[query_ids].copy(),
-                query_pair_counts=int(self.query_pair_counts[index]),
-                legal_mask=self.legal_mask[index].copy(),
-                action=int(self.actions[index]),
-                logprob=float(self.old_logprobs[index]),
-                value=float(self.values[index]),
-                reward=float(self.rewards[index]),
-                kyoku_reward=float(self.kyoku_rewards[index]),
-                done=bool(self.done[index]),
-                advantage=float(self.advantages[index]),
-                critic_factors=(
-                    self.critic_factors_flat[critic].copy() if critic_length else None
-                ),
-                critic_length=critic_length,
-            ))
         return result
 
     @staticmethod
@@ -358,8 +300,7 @@ class RolloutBuffer:
         return np.asarray(offsets, dtype=np.int64), flat, (flat.shape[1] if flat.ndim >= 2 else 0)
 
     def collate(self, indices: Sequence[int]) -> dict[str, torch.Tensor]:
-        """把一个 minibatch 的 index 数组 gather 成与 ``materialize_host_batch``
-        一致的 V16 padded host 张量(CPU)。"""
+        """把一个 minibatch 的下标数组 gather 成 V16 padded host 张量(CPU)。"""
         idx = np.asarray([int(index) for index in indices], dtype=np.int64)
         if len(idx) == 0:
             raise ValueError("cannot collate an empty minibatch")
@@ -441,7 +382,7 @@ class RolloutBuffer:
         else:
             critic_factors = np.zeros((batch, 0, _CRITIC_W), dtype=np.uint8)
 
-        # 与 materialize_host_batch 一致:标量用 torch.empty/long,legal bool。
+        # 标量长度/动作使用 long,legal mask 使用 bool。
         history_lengths = torch.from_numpy(hist_lens)
         snapshot_lengths = torch.from_numpy(snap_lens)
         query_pair_counts = torch.from_numpy(pair_counts)
@@ -471,7 +412,7 @@ class RolloutBuffer:
         }
 
     def bucketed_minibatches(self, minibatch_size: int, rng: np.random.Generator | None = None) -> tuple[np.ndarray, ...]:
-        """与 ``learner.length_bucketed_minibatches`` 等价,但直接用已存的长度。"""
+        """按已存序列长度构造随机分桶 minibatch,减少长尾 padding。"""
         if minibatch_size <= 0:
             raise ValueError("minibatch_size must be positive")
         count = self.size

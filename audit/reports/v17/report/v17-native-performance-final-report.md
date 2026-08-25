@@ -55,9 +55,8 @@ BatchedRiichiEnv(每 worker 32 桌)
 - 一次物化:所有变长字段(history/snapshot/query/critic)落成 flat arrays +
   `offsets[N+1]`;标量字段(actions/old_logprobs/values/rewards/advantages/
   done/legal_mask)直接抽取。
-- `collate(indices)` 用 `_gather_padded` 向量化 gather,输出与
-  `materialize_host_batch` **byte-exact** 的 V16 padded host 张量。
-- 关闭 `update_use_soa=false` 可回退旧逐样本路径(oracle)。
+- `collate(indices)` 用 `_gather_padded` 向量化 gather,输出 V16 padded host
+  张量;验收时与旧实现 byte-exact,现已删除旧逐样本 fallback。
 
 ### 3.2 批量 query(`analyze_action_queries_batch`)
 - `_observation_facts(observation)`:抽出 remain/rivers/dora/hand/meld 等
@@ -97,9 +96,8 @@ T1(少 worker 大 env)理论上会减少并发编码并行度,风险较高未跑
 
 ## 6. 正确性证据
 
-- `RolloutBuffer.collate` 与 `materialize_host_batch` 逐元素等价
-  (`tests/unit/test_rollout_buffer.py`,3 项;`update_use_soa` 真假两大权重路径 loss
-  一致)。
+- `RolloutBuffer.collate` 的所有字段、有效区间与零 padding 均由
+  `tests/unit/test_rollout_buffer.py` 直接校验;GAE/returns 对照冻结公式。
 - `prepare_v16`(batch off/on)325 个 tensor 逐元素一致;
   `analyze_action_queries_batch` 与逐动作 oracle 0 mismatch/1233 actions
   (`tests/unit/test_action_query_batch.py`,2 项)。
@@ -140,7 +138,7 @@ T1(少 worker 大 env)理论上会减少并发编码并行度,风险较高未跑
 
 ## 10. 阶段性训练建议(已由第 17 节取代)
 
-- 当时启用 `update_use_soa: true` 与 Python `v16_batch_query`;后者及其配置开关
+- 当时启用 learner SoA 与 Python `v16_batch_query`;后者及其配置开关
   已在 Rust-only 清理中删除。
 - 保持 `num_workers=12`、`envs_per_worker=32`、`inference_batch_wait_ms=8.0`、
   `inference_batch_target_rows=0`(即默认,不要用大 batch)。
@@ -254,11 +252,11 @@ rollout **1.69×**、total **1.32×**;新轮 transitions 多 1.77%,update 的 4.
 
 ## 17. 推荐正式配置与启动命令
 
-使用自包含 `riichi_ppo_v1/configs/v17_ppo.yaml`;Action Query 现在无运行时开关,
-固定使用 Rust 融合路径。保持 `update_use_soa` 默认 true,以及现有
-12 worker × 32 env / 双 inference actor 拓扑;worker 使用
-`rollout_worker_num_cpus=2`、`rollout_worker_cpu_threads=1`、
-`worker_return_soa=true`,并保留 GPU 验证胜出的 `env_step_threads=4`:
+使用自包含 `riichi_ppo_v1/configs/v17_ppo.yaml`;Action Query 与 rollout
+返回/learner 更新均无运行时开关,固定使用 Rust 融合编码 + RolloutBuffer SoA。
+保持 12 worker × 32 env / 双 inference actor 拓扑;worker 使用
+`rollout_worker_num_cpus=2`、`rollout_worker_cpu_threads=1`,并保留 GPU
+验证胜出的 `env_step_threads=4`:
 
 ```
 env -C /mnt/disk1/hubowen/zenith \

@@ -22,11 +22,9 @@ from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
-from ..model.schema import NUM_ACTIONS, TOKEN_SCHEMA_VERSION
-from .metrics import ppo_buffer_metrics
+from ..model.schema import TOKEN_SCHEMA_VERSION
 from .profiling import StageProfiler
 from .rollout_buffer import RolloutBuffer
-from .trajectory import Transition, transition_sequence_length
 
 # V16 参数分支:actor/critic/shared 三组独立调度,gradient 按参数根分发。
 ACTOR_ROOTS = {"actor_backbone", "query_embedding", "action_fusion", "policy_mlp"}
@@ -149,26 +147,16 @@ def branch_grad_norms(model: nn.Module) -> dict[str, torch.Tensor]:
 
 
 def _rollout_values(
-    transitions: list[Transition] | RolloutBuffer,
+    transitions: RolloutBuffer,
     field: str,
     dtype: np.dtype[Any],
 ) -> np.ndarray:
-    """从旧对象列表或 worker SoA 读取同一标量字段。"""
-    if isinstance(transitions, RolloutBuffer):
-        return np.asarray(getattr(transitions, field), dtype=dtype)
-    source = {
-        "actions": "action",
-        "old_logprobs": "logprob",
-        "values": "value",
-        "rewards": "reward",
-        "kyoku_rewards": "kyoku_reward",
-        "advantages": "advantage",
-    }.get(field, field)
-    return np.asarray([getattr(item, source) for item in transitions], dtype=dtype)
+    """从 rollout SoA 读取标量字段。"""
+    return np.asarray(getattr(transitions, field), dtype=dtype)
 
 
 def discounted_empirical_returns(
-    transitions: list[Transition] | RolloutBuffer, gamma: float,
+    transitions: RolloutBuffer, gamma: float,
 ) -> np.ndarray:
     """Monte Carlo reward-to-go,每局终局时重置。"""
     returns = np.zeros(len(transitions), dtype=np.float32)
@@ -184,7 +172,7 @@ def discounted_empirical_returns(
 
 
 def rollout_update_targets(
-    transitions: list[Transition] | RolloutBuffer,
+    transitions: RolloutBuffer,
     gamma: float,
 ) -> tuple[np.ndarray, np.ndarray, float, float]:
     """完整 rollout 的 advantage 归一化与 empirical returns(供 DDP 分片复用)。"""
@@ -226,17 +214,11 @@ def categorical_kl_values(
 
 
 def transition_length_metrics(
-    transitions: list[Transition] | RolloutBuffer,
+    transitions: RolloutBuffer,
     prefix: str = "update/buffer",
 ) -> dict[str, float]:
     """描述 V16 语义序列长度与全量 padding 基线。"""
-    lengths = (
-        np.asarray(transitions.sequence_lengths, dtype=np.int64)
-        if isinstance(transitions, RolloutBuffer)
-        else np.asarray([
-            transition_sequence_length(item) for item in transitions
-        ], dtype=np.int64)
-    )
+    lengths = np.asarray(transitions.sequence_lengths, dtype=np.int64)
     if np.any(lengths < 0):
         raise ValueError("sequence length cannot be negative")
     global_padded_input_tokens = int(lengths.max()) * len(transitions)
@@ -255,21 +237,18 @@ def transition_length_metrics(
 
 
 def rollout_target_metrics(
-    transitions: list[Transition] | RolloutBuffer,
+    transitions: RolloutBuffer,
 ) -> dict[str, float]:
     """全量 rollout 的序列长度与 advantage 统计(host 侧,供 learner 与汇总共用)。"""
     length_metrics = transition_length_metrics(transitions)
-    if isinstance(transitions, RolloutBuffer):
-        advantages = np.asarray(transitions.advantages, dtype=np.float64)
-        values = np.asarray(transitions.values, dtype=np.float64)
-        length_metrics.update({
-            "buffer/advantage_mean": float(advantages.mean()),
-            "buffer/advantage_std": float(advantages.std()),
-            "buffer/value_mean": float(values.mean()),
-            "buffer/value_std": float(values.std()),
-        })
-    else:
-        length_metrics.update(ppo_buffer_metrics(transitions))
+    advantages = np.asarray(transitions.advantages, dtype=np.float64)
+    values = np.asarray(transitions.values, dtype=np.float64)
+    length_metrics.update({
+        "buffer/advantage_mean": float(advantages.mean()),
+        "buffer/advantage_std": float(advantages.std()),
+        "buffer/value_mean": float(values.mean()),
+        "buffer/value_std": float(values.std()),
+    })
     raw_advantages = _rollout_values(
         transitions, "advantages", np.dtype(np.float64),
     )
@@ -278,111 +257,6 @@ def rollout_target_metrics(
         "advantage_std": float(raw_advantages.std()),
     })
     return length_metrics
-
-
-def length_bucketed_minibatches(
-    transitions: list[Transition], minibatch_size: int, rng: np.random.Generator | None = None,
-) -> tuple[np.ndarray, ...]:
-    """返回序列长度相近的随机顺序 minibatch,避免长尾 padding。"""
-    if minibatch_size <= 0:
-        raise ValueError("minibatch_size must be positive")
-    lengths = np.asarray([transition_sequence_length(item) for item in transitions], dtype=np.int64)
-    if not len(lengths):
-        raise ValueError("cannot bucket an empty rollout")
-    if np.any(lengths < 0):
-        raise ValueError("sequence length cannot be negative")
-    permutation = rng.permutation if rng is not None else np.random.permutation
-    shuffled = permutation(len(transitions))
-    sorted_indices = shuffled[np.argsort(lengths[shuffled], kind="stable")]
-    batches = tuple(
-        sorted_indices[start : start + minibatch_size]
-        for start in range(0, len(sorted_indices), minibatch_size)
-    )
-    batch_order = permutation(len(batches))
-    return tuple(batches[index] for index in batch_order)
-
-
-def materialize_host_batch(
-    transitions: list[Transition],
-    profiler: StageProfiler | None = None,
-    *,
-    advantages: np.ndarray | None = None,
-) -> dict[str, torch.Tensor]:
-    """把一个长度分桶 minibatch 按 V16 分段 padding 成 CPU 张量。"""
-    if not transitions:
-        raise ValueError("cannot collate an empty rollout")
-    profile = profiler or StageProfiler(enabled=False)
-    with profile.stage("update/collate_shape_and_allocate"):
-        batch = len(transitions)
-        max_history = max(item.history_length for item in transitions)
-        max_snapshot = max(item.snapshot_length for item in transitions)
-        max_pairs = max(item.query_pair_counts for item in transitions)
-        max_critic = max(int(item.critic_length) for item in transitions)
-        history_factors = torch.zeros((batch, max_history, 10), dtype=torch.uint8)
-        history_numeric = torch.zeros((batch, max_history, 8), dtype=torch.float32)
-        history_lengths = torch.empty(batch, dtype=torch.long)
-        snapshot_kinds = torch.zeros((batch, max_snapshot), dtype=torch.uint8)
-        snapshot_cat = torch.zeros((batch, max_snapshot, 4), dtype=torch.uint8)
-        snapshot_num = torch.zeros((batch, max_snapshot, 7), dtype=torch.float32)
-        snapshot_lengths = torch.empty(batch, dtype=torch.long)
-        query_rows = torch.zeros((batch, 2 * max_pairs, 15), dtype=torch.int32)
-        query_action_ids = torch.zeros((batch, max_pairs), dtype=torch.int32)
-        query_pair_counts = torch.empty(batch, dtype=torch.long)
-        legal = torch.empty((batch, NUM_ACTIONS), dtype=torch.bool)
-        critic_factors = torch.zeros((batch, max_critic, 10), dtype=torch.uint8)
-        critic_lengths = torch.empty(batch, dtype=torch.long)
-        actions = torch.empty(batch, dtype=torch.long)
-        old_logprobs = torch.empty(batch, dtype=torch.float32)
-        advantage_values = torch.empty(batch, dtype=torch.float32)
-    with profile.stage("update/collate_host_padding_copy"):
-        source_advantages = (
-            np.asarray([item.advantage for item in transitions], dtype=np.float32)
-            if advantages is None
-            else np.asarray(advantages, dtype=np.float32)
-        )
-        if source_advantages.shape != (batch,):
-            raise ValueError("advantages must have one value per transition")
-        for row, item in enumerate(transitions):
-            # Ray 反序列化出的 numpy 数组只读,torch.as_tensor 会零拷贝包装并
-            # 触发非可写警告;torch.tensor 总是拷贝,统一走这条安全路径。
-            history_factors[row, : item.history_length] = torch.tensor(item.history_factors)
-            history_numeric[row, : item.history_length] = torch.tensor(item.history_numeric)
-            history_lengths[row] = int(item.history_length)
-            snapshot_kinds[row, : item.snapshot_length] = torch.tensor(item.snapshot_kinds)
-            snapshot_cat[row, : item.snapshot_length] = torch.tensor(item.snapshot_cat)
-            snapshot_num[row, : item.snapshot_length] = torch.tensor(item.snapshot_num)
-            snapshot_lengths[row] = int(item.snapshot_length)
-            query_rows[row, : item.query_rows.shape[0]] = torch.tensor(item.query_rows)
-            query_action_ids[row, : item.query_pair_counts] = torch.tensor(item.query_action_ids)
-            query_pair_counts[row] = int(item.query_pair_counts)
-            legal[row] = torch.tensor(item.legal_mask)
-            critic_length = int(item.critic_length)
-            if critic_length:
-                if item.critic_factors is None:
-                    raise ValueError("critic transition length requires critic arrays")
-                critic_factors[row, :critic_length] = torch.tensor(item.critic_factors[:critic_length])
-            critic_lengths[row] = critic_length
-            actions[row] = int(item.action)
-            old_logprobs[row] = float(item.logprob)
-            advantage_values[row] = float(source_advantages[row])
-    return {
-        "history_factors": history_factors,
-        "history_numeric": history_numeric,
-        "history_lengths": history_lengths,
-        "snapshot_kinds": snapshot_kinds,
-        "snapshot_cat": snapshot_cat,
-        "snapshot_num": snapshot_num,
-        "snapshot_lengths": snapshot_lengths,
-        "query_rows": query_rows,
-        "query_action_ids": query_action_ids,
-        "query_pair_counts": query_pair_counts,
-        "legal_mask": legal,
-        "critic_factors": critic_factors,
-        "critic_lengths": critic_lengths,
-        "actions": actions,
-        "old_logprobs": old_logprobs,
-        "advantages": advantage_values,
-    }
 
 
 def transfer_batch_to_device(
@@ -397,18 +271,6 @@ def transfer_batch_to_device(
             name: value.to(device=device)
             for name, value in host_batch.items()
         }
-
-
-def collate(
-    transitions: list[Transition],
-    device: torch.device,
-    profiler: StageProfiler | None = None,
-    *,
-    advantages: np.ndarray | None = None,
-) -> dict[str, torch.Tensor]:
-    """Padding 一个长度分桶 minibatch 并转移到 learner 设备。"""
-    host_batch = materialize_host_batch(transitions, profiler, advantages=advantages)
-    return transfer_batch_to_device(host_batch, device, profiler)
 
 
 class PPOLearner:
@@ -582,12 +444,14 @@ class PPOLearner:
 
     def update(
         self,
-        transitions: list[Transition] | RolloutBuffer,
+        transitions: RolloutBuffer,
         *,
         shuffle_seed: int | None = None,
         advantages: np.ndarray | None = None,
         returns: np.ndarray | None = None,
     ) -> dict[str, float]:
+        if not isinstance(transitions, RolloutBuffer):
+            raise TypeError("PPOLearner.update requires a RolloutBuffer")
         if not transitions:
             raise ValueError("cannot update from an empty rollout")
         self.profiler.reset()
@@ -625,20 +489,8 @@ class PPOLearner:
             else 1.0 - float(np.var(returns - raw_values, dtype=np.float64)) / returns_var
         )
 
-        # SoA 一次性物化:每个 epoch / minibatch 复用同一份紧凑缓冲,避免逐
-        # Transition 的 Python 长度计算、padded 分配与逐行 ``torch.tensor`` 拷贝。
-        # 关闭开关(update_use_soa=false)时退化为旧路径,作为语义 oracle。
-        use_soa = bool(self.hp.get("update_use_soa", True))
-        buffer: RolloutBuffer | None = None
-        if use_soa:
-            buffer = (
-                transitions
-                if isinstance(transitions, RolloutBuffer)
-                else RolloutBuffer(transitions)
-            )
-            buffer.advantages = np.asarray(advantages, dtype=np.float32)
-        elif isinstance(transitions, RolloutBuffer):
-            raise ValueError("worker SoA rollout requires update_use_soa=true")
+        # 每个 epoch / minibatch 复用同一份紧凑缓冲,避免恢复 Transition 对象。
+        transitions.advantages = np.asarray(advantages, dtype=np.float32)
 
         metric_sample_sums: dict[str, torch.Tensor] = {}
         metric_sample_count = 0
@@ -734,40 +586,21 @@ class PPOLearner:
             epoch_kl_sum: torch.Tensor | None = None
             epoch_kl_count = 0
             with self.profiler.stage("update/length_bucket"):
-                if buffer is not None:
-                    minibatches = buffer.bucketed_minibatches(minibatch_size, rng=rng)
-                else:
-                    minibatches = length_bucketed_minibatches(transitions, minibatch_size, rng=rng)
+                minibatches = transitions.bucketed_minibatches(minibatch_size, rng=rng)
             for batch_number, indices in enumerate(minibatches, start=1):
-                if buffer is not None:
-                    with self.profiler.stage("update/collate_soa_gather"):
-                        host_batch = buffer.collate(indices)
-                    batch = transfer_batch_to_device(host_batch, self.device, self.profiler)
-                    selected = indices
-                else:
-                    selected = [transitions[int(index)] for index in indices]
-                    batch = collate(
-                        selected,
-                        self.device,
-                        self.profiler,
-                        advantages=advantages[indices],
-                    )
+                with self.profiler.stage("update/collate_soa_gather"):
+                    host_batch = transitions.collate(indices)
+                batch = transfer_batch_to_device(host_batch, self.device, self.profiler)
                 legal_mask = batch["legal_mask"]
                 actions = batch["actions"]
                 old_logprobs = batch["old_logprobs"]
                 adv = batch["advantages"]
                 batch_returns = torch.as_tensor(returns[indices], device=self.device)
-                executed_samples += len(selected)
-                if buffer is not None:
-                    executed_tokens += int(buffer.sequence_lengths[indices].sum())
-                    executed_padded_input_tokens += int(
-                        len(indices) * int(buffer.sequence_lengths[indices].max())
-                    )
-                else:
-                    executed_tokens += sum(transition_sequence_length(item) for item in selected)
-                    executed_padded_input_tokens += len(selected) * max(
-                        transition_sequence_length(item) for item in selected
-                    )
+                executed_samples += len(indices)
+                executed_tokens += int(transitions.sequence_lengths[indices].sum())
+                executed_padded_input_tokens += int(
+                    len(indices) * int(transitions.sequence_lengths[indices].max())
+                )
                 with self._gpu_stage("update/model_forward"):
                     with torch.autocast(
                         device_type=self.device.type,
@@ -921,7 +754,7 @@ class PPOLearner:
                                 epoch_kl_sum = kl_sum.detach().clone()
                             else:
                                 epoch_kl_sum.add_(kl_sum.detach())
-                            epoch_kl_count += len(selected)
+                            epoch_kl_count += len(indices)
                 for name, values in (
                     (
                         "loss",
@@ -952,8 +785,8 @@ class PPOLearner:
                         metric_sample_sums[name].add_(detached)
                     else:
                         metric_sample_sums[name] = detached.clone()
-                metric_sample_count += len(selected)
-                if len(selected):
+                metric_sample_count += len(indices)
+                if len(indices):
                     ratio_samples.append(ratio.detach())
                 for name, value in (
                     ("grad_norm", grad_norm),

@@ -57,30 +57,6 @@ def _process_cpu_snapshot() -> dict[str, float]:
     }
 
 
-def _transition_payload_stats(transitions: list[Transition]) -> tuple[int, int]:
-    """估算旧返回路径中的独立 ndarray 数量与有效数组字节数。"""
-    array_count = 0
-    array_bytes = 0
-    fields = (
-        "history_factors",
-        "history_numeric",
-        "snapshot_kinds",
-        "snapshot_cat",
-        "snapshot_num",
-        "query_rows",
-        "query_action_ids",
-        "legal_mask",
-        "critic_factors",
-    )
-    for transition in transitions:
-        for field in fields:
-            value = getattr(transition, field)
-            if isinstance(value, np.ndarray):
-                array_count += 1
-                array_bytes += int(value.nbytes)
-    return array_count, array_bytes
-
-
 def active_decisions(
     observations_by_env: list[dict[int, Any]], active_envs: set[int] | None = None,
 ) -> list[Decision]:
@@ -769,7 +745,7 @@ if ray is not None:
         def collect(
             self,
             update: int | None = None,
-        ) -> tuple[list[Transition] | RolloutBuffer, dict[str, float]]:
+        ) -> tuple[RolloutBuffer, dict[str, float]]:
             if update is not None:
                 self.set_rollout_context(int(update))
             # V17:rollout 停止条件为「完整半庄数」,不再使用 kyokus_per_worker。
@@ -867,19 +843,11 @@ if ray is not None:
             stats.update(self.semantic.summary())
             stats["semantic_summary_s"] = time.perf_counter() - semantic_started
             payload_started = time.perf_counter()
-            if bool(self.config.get("worker_return_soa", False)):
-                payload: list[Transition] | RolloutBuffer = RolloutBuffer(transitions)
-                stats["worker_soa_pack_s"] = time.perf_counter() - payload_started
-                array_count, array_bytes = payload.payload_stats()
-                transition_objects = 0
-            else:
-                payload = transitions
-                stats["worker_soa_pack_s"] = 0.0
-                array_count, array_bytes = _transition_payload_stats(transitions)
-                transition_objects = len(transitions)
+            payload = RolloutBuffer(transitions)
+            stats["worker_soa_pack_s"] = time.perf_counter() - payload_started
+            array_count, array_bytes = payload.payload_stats()
             stats["return_array_count"] = float(array_count)
             stats["return_array_bytes"] = float(array_bytes)
-            stats["return_transition_objects"] = float(transition_objects)
             stats["return_payload_profile_s"] = time.perf_counter() - payload_started
             cpu_finished = _process_cpu_snapshot()
             stats.update({

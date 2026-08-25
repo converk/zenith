@@ -9,6 +9,7 @@ import numpy as np
 import torch
 
 from riichi_ppo_v1.training.learner import PPOLearner
+from riichi_ppo_v1.training.rollout_buffer import RolloutBuffer
 
 
 @dataclass
@@ -94,7 +95,7 @@ def test_gradient_accumulation_steps_affect_step_count() -> None:
         _transition(0.2, action=0), _transition(-0.1, action=1),
         _transition(0.3, action=2),
     ]
-    metrics = learner.update(transitions, shuffle_seed=7)
+    metrics = learner.update(RolloutBuffer(transitions), shuffle_seed=7)
     # 4 个 minibatch(3 样本/2 → 2 每 epoch × 2 epochs);accumulation=2。
     assert metrics["update/executed_minibatches"] == 4.0
 
@@ -108,6 +109,6 @@ def test_gradient_accumulation_single_step_does_not_break() -> None:
         _transition(0.2, action=0), _transition(-0.1, action=1),
         _transition(0.3, action=2),
     ]
-    metrics = learner.update(transitions, shuffle_seed=7)
+    metrics = learner.update(RolloutBuffer(transitions), shuffle_seed=7)
     assert metrics["update/executed_minibatches"] == 4.0
     assert np.isfinite(metrics["loss"])
