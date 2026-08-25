@@ -145,6 +145,103 @@ pub struct OffenseAnalysisV16 {
     can_riichi: Py<PyArray1<u8>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct OffenseRowV16 {
+    pub shanten: i8,
+    pub effective_kinds: u8,
+    pub effective_remaining: u16,
+    pub wait_kinds: u8,
+    pub wait_mask: u64,
+    pub furiten: u8,
+    pub can_riichi: u8,
+}
+
+/// 计算单个 13 张动作后形状的 V16 进攻事实。
+///
+/// Python 批接口与融合编码器共用这一实现,避免两条热路径的语义漂移。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn offense_row_v16(
+    counts: &[u8; TILE_KINDS],
+    open_melds: u8,
+    remaining: &[u8; TILE_KINDS],
+    own_river: u64,
+    missed_doujun: bool,
+    missed_riichi: bool,
+    riichi_declared: bool,
+    score: i32,
+) -> Result<OffenseRowV16, String> {
+    let total: u16 =
+        counts.iter().map(|&value| u16::from(value)).sum::<u16>() + 3 * u16::from(open_melds);
+    if total != 13 {
+        return Err(format!(
+            "shape represents {total} tiles (counts + 3×melds); expected 13"
+        ));
+    }
+    if counts.iter().any(|&value| value > 4) {
+        return Err("shape contains a count above 4".to_string());
+    }
+    if own_river >> TILE_KINDS != 0 {
+        return Err(format!("own river mask exceeds {TILE_KINDS} bits"));
+    }
+
+    let shanten_value = shanten::calculate(counts, open_melds).overall;
+    let after_draws = shanten::calculate_after_draws(counts, open_melds);
+    let mut improving = 0_u64;
+    if shanten_value > 0 {
+        for tile in 0..TILE_KINDS {
+            if counts[tile] >= 4 {
+                continue;
+            }
+            if after_draws[tile] < shanten_value {
+                improving |= 1_u64 << tile;
+            }
+        }
+    }
+    let mut wait_mask = 0_u64;
+    if shanten_value == 0 {
+        for tile in 0..TILE_KINDS {
+            if counts[tile] >= 4 {
+                continue;
+            }
+            if after_draws[tile] < 0 {
+                wait_mask |= 1_u64 << tile;
+            }
+        }
+    }
+    let furiten = if shanten_value != 0 || wait_mask == 0 {
+        0
+    } else if (0..TILE_KINDS)
+        .any(|tile| wait_mask & (1_u64 << tile) != 0 && own_river & (1_u64 << tile) != 0)
+    {
+        2
+    } else if missed_doujun || missed_riichi {
+        3
+    } else {
+        1
+    };
+    let can_riichi = if riichi_declared {
+        0
+    } else if open_melds > 0 || score < 1000 || wait_mask == 0 {
+        2
+    } else {
+        1
+    };
+    let effective_remaining = (0..TILE_KINDS)
+        .filter(|&tile| improving & (1_u64 << tile) != 0)
+        .map(|tile| u16::from(remaining[tile]))
+        .sum::<u16>();
+
+    Ok(OffenseRowV16 {
+        shanten: shanten_value,
+        effective_kinds: improving.count_ones() as u8,
+        effective_remaining,
+        wait_kinds: u8::try_from(wait_mask.count_ones()).unwrap_or(u8::MAX),
+        wait_mask,
+        furiten,
+        can_riichi,
+    })
+}
+
 #[pymethods]
 impl OffenseAnalysisV16 {
     #[getter]
@@ -212,7 +309,9 @@ pub fn analyze_offense_v16(
         }
     }
     if remaining.shape() != [rows, TILE_KINDS] {
-        return Err(PyValueError::new_err("remaining must have shape uint8[N,34]"));
+        return Err(PyValueError::new_err(
+            "remaining must have shape uint8[N,34]",
+        ));
     }
     let shape_values = shape_counts
         .as_slice()
@@ -247,91 +346,38 @@ pub fn analyze_offense_v16(
     let mut out_furiten = vec![0_u8; rows];
     let mut out_riichi = vec![0_u8; rows];
 
-    py.detach(|| {
+    let analysis_result: Result<(), String> = py.detach(|| {
         for row in 0..rows {
             let start = row * TILE_KINDS;
             let mut counts = [0_u8; TILE_KINDS];
             counts.copy_from_slice(&shape_values[start..start + TILE_KINDS]);
-            let total: u16 = counts.iter().map(|&value| u16::from(value)).sum::<u16>()
-                + 3 * u16::from(meld_values[row]);
-            if total != 13 {
-                return Err(format!(
-                    "row {row} shape represents {total} tiles (counts + 3×melds); expected 13"
-                ));
-            }
-            if counts.iter().any(|&value| value > 4) {
-                return Err(format!("row {row} contains a count above 4"));
-            }
             let remaining_row = &remaining_values[start..start + TILE_KINDS];
+            let remaining_row: [u8; TILE_KINDS] =
+                remaining_row.try_into().expect("remaining row width");
             let river = river_values[row];
-            if river >> TILE_KINDS != 0 {
-                return Err(format!("row {row} own river mask exceeds {TILE_KINDS} bits"));
-            }
-            let shanten_value = shanten::calculate(&counts, meld_values[row]).overall;
+            let value = offense_row_v16(
+                &counts,
+                meld_values[row],
+                &remaining_row,
+                river,
+                doujun_values[row],
+                riichi_missed_values[row],
+                riichi_values[row],
+                score_values[row],
+            )
+            .map_err(|error| format!("row {row} {error}"))?;
 
-            let mut improving = 0_u64;
-            if shanten_value > 0 {
-                for tile in 0..TILE_KINDS {
-                    if counts[tile] >= 4 {
-                        continue;
-                    }
-                    let mut next = counts;
-                    next[tile] += 1;
-                    if shanten::calculate(&next, meld_values[row]).overall < shanten_value {
-                        improving |= 1_u64 << tile;
-                    }
-                }
-            }
-            let mut wait_mask = 0_u64;
-            if shanten_value == 0 {
-                for tile in 0..TILE_KINDS {
-                    if counts[tile] >= 4 {
-                        continue;
-                    }
-                    let mut next = counts;
-                    next[tile] += 1;
-                    if shanten::calculate(&next, meld_values[row]).overall < 0 {
-                        wait_mask |= 1_u64 << tile;
-                    }
-                }
-            }
-            let furiten = if shanten_value != 0 || wait_mask == 0 {
-                0
-            } else if (0..TILE_KINDS).any(|tile| {
-                wait_mask & (1_u64 << tile) != 0 && river & (1_u64 << tile) != 0
-            }) {
-                2
-            } else if doujun_values[row] || riichi_missed_values[row] {
-                3
-            } else {
-                1
-            };
-            let can_riichi = if riichi_values[row] {
-                0
-            } else if meld_values[row] > 0 {
-                2
-            } else if score_values[row] < 1000 {
-                2
-            } else if wait_mask == 0 {
-                2
-            } else {
-                1
-            };
-
-            out_shanten[row] = shanten_value;
-            out_kinds[row] = improving.count_ones() as u8;
-            out_remaining[row] = (0..TILE_KINDS)
-                .filter(|&tile| improving & (1_u64 << tile) != 0)
-                .map(|tile| u16::from(remaining_row[tile]))
-                .sum::<u16>();
-            out_waits[row] = u8::try_from(wait_mask.count_ones()).unwrap_or(u8::MAX);
-            out_mask[row] = wait_mask;
-            out_furiten[row] = furiten;
-            out_riichi[row] = can_riichi;
+            out_shanten[row] = value.shanten;
+            out_kinds[row] = value.effective_kinds;
+            out_remaining[row] = value.effective_remaining;
+            out_waits[row] = value.wait_kinds;
+            out_mask[row] = value.wait_mask;
+            out_furiten[row] = value.furiten;
+            out_riichi[row] = value.can_riichi;
         }
         Ok(())
-    })
-    .map_err(PyValueError::new_err)?;
+    });
+    analysis_result.map_err(PyValueError::new_err)?;
 
     let shanten_array = PyArray1::from_vec(py, out_shanten);
     let kinds_array = PyArray1::from_vec(py, out_kinds);
@@ -478,7 +524,9 @@ pub fn analyze_defense_v16(
 ) -> PyResult<DefenseAnalysisV16> {
     let rows = discard_types.len();
     if river_masks.shape() != [rows, 3] {
-        return Err(PyValueError::new_err("river_masks must have shape uint64[N,3]"));
+        return Err(PyValueError::new_err(
+            "river_masks must have shape uint64[N,3]",
+        ));
     }
     if hand_counts.shape() != [rows, TILE_KINDS] {
         return Err(PyValueError::new_err(
@@ -520,8 +568,7 @@ pub fn analyze_defense_v16(
             if tile < -1 || tile >= TILE_KINDS as i16 {
                 return Err(format!("row {row} discard type {tile} is out of range"));
             }
-            let hand_row: [u8; TILE_KINDS] = hand_values
-                [row * TILE_KINDS..(row + 1) * TILE_KINDS]
+            let hand_row: [u8; TILE_KINDS] = hand_values[row * TILE_KINDS..(row + 1) * TILE_KINDS]
                 .try_into()
                 .expect("hand row width");
             let remaining_row: [u8; TILE_KINDS] = remaining_values
@@ -571,7 +618,7 @@ pub fn analyze_defense_v16(
 }
 
 /// 单行防守事实(D0–D9),与 Python 侧 `encoding_protocol.py` 的编码下标一致。
-fn defense_row(
+pub(crate) fn defense_row(
     tile: i16,
     rivers: &[u64; 3],
     hand: &[u8; TILE_KINDS],
@@ -594,8 +641,7 @@ fn defense_row(
         return (genbutsu, suji, stock, 5);
     }
     let tile = tile as usize;
-    let visible = (4_usize.saturating_sub(usize::from(remaining[tile])))
-        .min(4) as u8;
+    let visible = (4_usize.saturating_sub(usize::from(remaining[tile]))).min(4) as u8;
     for opponent in 0..3 {
         let river = rivers[opponent];
         genbutsu[opponent] = u8::from(river & (1_u64 << tile) != 0);
@@ -631,15 +677,13 @@ mod defense_tests {
         hand[3] = 2;
         let mut remaining = [4_u8; TILE_KINDS];
         remaining[5] = 1;
-        let (genbutsu, suji, stock, visible) =
-            defense_row(-1, &rivers, &hand, &remaining);
+        let (genbutsu, suji, stock, visible) = defense_row(-1, &rivers, &hand, &remaining);
         assert_eq!(genbutsu, [2, 2, 2]);
         assert_eq!(suji, [2, 2, 2]);
         // 非打牌动作仍计算安全牌库存:手中 4m 是对手 0 的现物。
         assert_eq!(stock, [1, 0, 0]);
         assert_eq!(visible, 5);
-        let (_g, _s, _k, visible_discard) =
-            defense_row(5, &rivers, &hand, &remaining);
+        let (_g, _s, _k, visible_discard) = defense_row(5, &rivers, &hand, &remaining);
         assert_eq!(visible_discard, 3);
     }
 }

@@ -9,6 +9,7 @@ mod analysis;
 mod mjai_kyoku_state_machine;
 mod shanten;
 mod shanten_table;
+mod v16_encoding;
 
 use pyo3::prelude::*;
 
@@ -21,6 +22,7 @@ const SHANTEN_UNAVAILABLE: i8 = 127;
 fn riichi(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<MjaiKyokuStateMachineManager>()?;
     analysis::register(m)?;
+    v16_encoding::register(m)?;
     m.add("ANALYSIS_VERSION", HAND_ANALYSIS_VERSION)?;
     Ok(())
 }

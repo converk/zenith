@@ -36,21 +36,49 @@ impl ShantenTable {
             self.suits[encode(&counts[18..27])],
             self.honors[encode(&counts[27..34])],
         ];
-        let mut combined = 1_u64;
-        for group in groups {
-            combined = combine(combined, group);
+        best_from_combined(combine_groups(&groups), open_melds)
+    }
+
+    /// 同一 13 张形状的 34 种摸牌共享三个未变化牌组的合并结果。
+    fn standard_after_draws(&self, counts: &[u8; 34], open_melds: u8) -> [i8; 34] {
+        let codes = [
+            encode(&counts[0..9]),
+            encode(&counts[9..18]),
+            encode(&counts[18..27]),
+            encode(&counts[27..34]),
+        ];
+        let groups = [
+            self.suits[codes[0]],
+            self.suits[codes[1]],
+            self.suits[codes[2]],
+            self.honors[codes[3]],
+        ];
+        let mut unchanged = [0_u64; 4];
+        for changed in 0..4 {
+            let others = groups
+                .iter()
+                .enumerate()
+                .filter_map(|(index, &value)| (index != changed).then_some(value))
+                .collect::<Vec<_>>();
+            unchanged[changed] = combine_groups(&others);
         }
 
-        let mut best = 8_i8;
-        for index in BitIndices(combined) {
-            let (melds, taatsu, pair) = unpack(index);
-            let melds = melds + open_melds.min(4);
-            if melds <= 4 {
-                let useful_taatsu = taatsu.min(4 - melds);
-                best = best.min(8 - 2 * melds as i8 - useful_taatsu as i8 - pair as i8);
+        let mut out = [crate::SHANTEN_UNAVAILABLE; 34];
+        for tile in 0..34 {
+            if counts[tile] >= 4 {
+                continue;
             }
+            let group = if tile < 27 { tile / 9 } else { 3 };
+            let local = if tile < 27 { tile % 9 } else { tile - 27 };
+            let changed_code = codes[group] + POW5[local];
+            let changed_value = if group < 3 {
+                self.suits[changed_code]
+            } else {
+                self.honors[changed_code]
+            };
+            out[tile] = best_from_combined(combine(unchanged[group], changed_value), open_melds);
         }
-        best
+        out
     }
 
     fn payload_checksum(&self) -> u64 {
@@ -158,6 +186,19 @@ pub(super) fn standard(counts: &[u8; 34], open_melds: u8) -> i8 {
         .standard(counts, open_melds)
 }
 
+pub(super) fn standard_after_draws(counts: &[u8; 34], open_melds: u8) -> [i8; 34] {
+    TABLE
+        .get_or_init(|| {
+            let path = configured_cache_path();
+            ShantenTable::read(&path).unwrap_or_else(|_| {
+                let table = ShantenTable::generate();
+                let _ = table.write(&path);
+                table
+            })
+        })
+        .standard_after_draws(counts, open_melds)
+}
+
 fn generate_group_table(width: usize, sequences: bool) -> Vec<u64> {
     let state_count = 5_usize.pow(width as u32);
     let mut table = vec![0_u64; state_count];
@@ -223,6 +264,30 @@ fn combine(left: u64, right: u64) -> u64 {
         }
     }
     result
+}
+
+fn combine_groups(groups: &[u64]) -> u64 {
+    let mut values = groups.iter().copied();
+    let Some(mut combined) = values.next() else {
+        return 1;
+    };
+    for group in values {
+        combined = combine(combined, group);
+    }
+    combined
+}
+
+fn best_from_combined(combined: u64, open_melds: u8) -> i8 {
+    let mut best = 8_i8;
+    for index in BitIndices(combined) {
+        let (melds, taatsu, pair) = unpack(index);
+        let melds = melds + open_melds.min(4);
+        if melds <= 4 {
+            let useful_taatsu = taatsu.min(4 - melds);
+            best = best.min(8 - 2 * melds as i8 - useful_taatsu as i8 - pair as i8);
+        }
+    }
+    best
 }
 
 fn encode(counts: &[u8]) -> usize {

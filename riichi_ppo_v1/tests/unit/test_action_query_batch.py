@@ -33,18 +33,21 @@ def rollout_state():
     sm = riichi.MjaiKyokuStateMachineManager(num)
     bridge_old = BatchedStateBridge(sm, num, batch_query=False)
     bridge_new = BatchedStateBridge(sm, num, batch_query=True)
+    bridge_rust = BatchedStateBridge(sm, num, batch_query=True, rust_encoding=True)
     obs = list(envs.reset())
     walls = list(envs.walls())
     bridge_old.sync(obs)
     bridge_new.sync(obs)
-    return environment(envs, bridge_old, bridge_new, obs, walls, num)
+    bridge_rust.sync(obs)
+    return environment(envs, bridge_old, bridge_new, bridge_rust, obs, walls, num)
 
 
 class environment:
-    def __init__(self, envs, bridge_old, bridge_new, obs, walls, num):
+    def __init__(self, envs, bridge_old, bridge_new, bridge_rust, obs, walls, num):
         self.envs = envs
         self.bridge_old = bridge_old
         self.bridge_new = bridge_new
+        self.bridge_rust = bridge_rust
         self.obs = obs
         self.walls = walls
         self.num = num
@@ -61,6 +64,7 @@ class environment:
         self.walls = list(self.envs.walls())
         self.bridge_old.sync(self.obs)
         self.bridge_new.sync(self.obs)
+        self.bridge_rust.sync(self.obs)
 
     def decision_batch(self):
         decisions = []
@@ -116,3 +120,30 @@ def test_analyze_action_queries_batch_matches_per_action(rollout_state) -> None:
     for left, right in zip(oracle, batched, strict=True):
         assert left[0] == right[0]
         assert left[1] == right[1]
+
+
+def test_rust_encoding_matches_python_batch_in_prepare(rollout_state) -> None:
+    env = rollout_state
+    checked = 0
+    deduplicated = 0
+    for _ in range(30):
+        decisions = env.decision_batch()
+        if decisions:
+            oracle = env.bridge_new.prepare_v16(decisions, walls=env.walls)
+            rust = env.bridge_rust.prepare_v16(decisions, walls=env.walls)
+            for key in (
+                "history_factors", "history_numeric", "history_lengths",
+                "snapshot_kinds", "snapshot_cat", "snapshot_num", "snapshot_lengths",
+                "query_rows", "query_action_ids", "query_pair_counts", "legal_mask",
+                "critic_factors", "critic_lengths",
+            ):
+                np.testing.assert_array_equal(
+                    np.asarray(getattr(rust, key)), np.asarray(getattr(oracle, key)),
+                    err_msg=key,
+                )
+                checked += 1
+            stats = env.bridge_rust.last_v16_rust_stats
+            deduplicated += max(0, stats["actions"] - stats["unique_offense_rows"])
+        env.step()
+    assert checked > 0
+    assert deduplicated > 0

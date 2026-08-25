@@ -13,6 +13,8 @@ struct ActionRequest {
     /// 241-action protocol.  Keeping the original string avoids a parse /
     /// serialize round-trip before `Observation.select_action_from_mjai`.
     possible_actions: [Option<String>; NUM_ACTIONS],
+    /// 每个固定 action id 对应调用方合法动作列表中的首个下标。
+    source_indices: [Option<usize>; NUM_ACTIONS],
 }
 
 impl TableStateMachine {
@@ -51,7 +53,8 @@ impl TableStateMachine {
             return Err("player_index must be in 0..4".to_owned());
         }
         let mut possible_actions: [Option<String>; NUM_ACTIONS] = std::array::from_fn(|_| None);
-        for action_json in action_jsons {
+        let mut source_indices: [Option<usize>; NUM_ACTIONS] = std::array::from_fn(|_| None);
+        for (source_index, action_json) in action_jsons.into_iter().enumerate() {
             let action: Value = serde_json::from_str(&action_json)
                 .map_err(|error| format!("invalid legal action JSON: {error}"))?;
             let action_id = action_id_from_mjai_value(&action)?;
@@ -66,9 +69,28 @@ impl TableStateMachine {
                 continue;
             }
             possible_actions[action_id] = Some(action_json);
+            source_indices[action_id] = Some(source_index);
         }
-        self.pending_requests[player_index as usize] = Some(ActionRequest { possible_actions });
+        self.pending_requests[player_index as usize] = Some(ActionRequest {
+            possible_actions,
+            source_indices,
+        });
         Ok(())
+    }
+
+    fn action_source_indices(&self, player_index: u8) -> Result<Vec<(usize, usize)>, String> {
+        if player_index >= NUM_PLAYERS as u8 {
+            return Err("player_index must be in 0..4".to_owned());
+        }
+        let Some(request) = &self.pending_requests[player_index as usize] else {
+            return Ok(Vec::new());
+        };
+        Ok(request
+            .source_indices
+            .iter()
+            .enumerate()
+            .filter_map(|(action_id, source)| source.map(|index| (action_id, index)))
+            .collect())
     }
 
     fn action_mask(&self, player_index: u8) -> [bool; NUM_ACTIONS] {

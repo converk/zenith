@@ -172,4 +172,27 @@ impl MjaiKyokuStateMachineManager {
                 .ok_or_else(|| PyValueError::new_err("no legal-action request for batch_index"))
         }).collect()
     }
+
+    /// 返回固定 action id 到调用方合法动作列表下标的直接映射。
+    ///
+    /// prepare_v16 可据此复用原始 Action 对象,无需把 MJAI JSON 解码后再解析匹配。
+    fn action_ids_with_source_indices(
+        &self,
+        batch_indices: Vec<usize>,
+    ) -> PyResult<Vec<Vec<(usize, usize)>>> {
+        batch_indices
+            .into_iter()
+            .map(|batch_index| {
+                let env_index = batch_index / NUM_PLAYERS;
+                let player_index = (batch_index % NUM_PLAYERS) as u8;
+                let table = self
+                    .tables
+                    .get(env_index)
+                    .ok_or_else(|| PyValueError::new_err("batch_index is out of range"))?;
+                table
+                    .action_source_indices(player_index)
+                    .map_err(PyValueError::new_err)
+            })
+            .collect()
+    }
 }

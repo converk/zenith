@@ -19,6 +19,7 @@ from .critic_features import (
     pad_critic_feature_rows,
 )
 from .snapshot import build_snapshot_facts, encode_snapshot_rows
+from .v16_rust_encoding import encode_action_queries_batch_native
 
 NUM_PLAYERS = 4
 _DECISION_ACTION_TYPES = frozenset({"dahai", "reach", "ankan", "kakan", "ryukyoku"})
@@ -109,17 +110,27 @@ def _canonical_mjai(value: str) -> str:
     return json.dumps(json.loads(value), separators=(",", ":"), sort_keys=True)
 
 
-def action_jsons_and_decision_flag(observation: Any) -> tuple[list[str], int]:
-    """Create exact templates and the snapshot's action-window flag together."""
+def _action_objects_jsons_and_decision_flag(
+    observation: Any,
+) -> tuple[list[Any], list[str], int]:
+    """一次遍历返回 Action 对象、规范模板与决策窗口标志。"""
     drawn = getattr(observation, "drawn_tile", None)
+    objects: list[Any] = []
     result: list[str] = []
     has_decision_action = False
     for action in observation.legal_actions():
+        objects.append(action)
         tsumogiri = action.tile is not None and drawn is not None and int(action.tile) == int(drawn)
         action_json, action_type = _normalized_action_json(action.to_mjai(), tsumogiri)
         result.append(action_json)
         has_decision_action |= action_type in _DECISION_ACTION_TYPES
-    return result, int(has_decision_action)
+    return objects, result, int(has_decision_action)
+
+
+def action_jsons_and_decision_flag(observation: Any) -> tuple[list[str], int]:
+    """返回规范动作模板与 snapshot 决策窗口标志。"""
+    _objects, result, flag = _action_objects_jsons_and_decision_flag(observation)
+    return result, flag
 
 
 def action_jsons(observation: Any) -> list[str]:
@@ -160,12 +171,15 @@ class BatchedStateBridge:
         *,
         critic_include_public_state: bool = False,
         batch_query: bool = False,
+        rust_encoding: bool = False,
     ) -> None:
         self.state_machine = state_machine
         self.num_envs = int(num_envs)
         self.profiler = profiler or StageProfiler(enabled=False)
         self.critic_include_public_state = bool(critic_include_public_state)
         self.batch_query = bool(batch_query)
+        self.rust_encoding = bool(rust_encoding)
+        self.last_v16_rust_stats: dict[str, int] = {}
         self.last_events: list[list[list[str]]] = [[[] for _ in range(NUM_PLAYERS)] for _ in range(num_envs)]
         self.observations_by_env: list[dict[int, Any]] | None = None
 
@@ -290,68 +304,76 @@ class BatchedStateBridge:
             raise ValueError("cannot prepare an empty decision batch")
         batch_indices = [decision.batch_index for decision in decisions]
         with self.profiler.stage("state/legal_action_json"):
-            action_rows = [action_jsons_and_decision_flag(decision.observation) for decision in decisions]
-            legal_actions = [actions for actions, _flag in action_rows]
+            action_rows = [
+                _action_objects_jsons_and_decision_flag(decision.observation)
+                for decision in decisions
+            ]
+            legal_objects = [objects for objects, _actions, _flag in action_rows]
+            legal_actions = [actions for _objects, actions, _flag in action_rows]
         with self.profiler.stage("state/snapshot_json"):
             snapshots = [
                 snapshot_json(decision.observation, decision_flag)
-                for decision, (_actions, decision_flag) in zip(decisions, action_rows, strict=True)
+                for decision, (_objects, _actions, decision_flag) in zip(
+                    decisions, action_rows, strict=True,
+                )
             ]
         with self.profiler.stage("state/rust_prepare_decisions"):
             prepared = self.state_machine.prepare_decisions(
                 batch_indices, legal_actions, snapshots,
             )
-        with self.profiler.stage("state/rust_decode_actions"):
+        with self.profiler.stage("state/rust_action_index_map"):
             mask = np.asarray(prepared[3], dtype=np.bool_)
-            ids_by_row: list[list[int]] = [
-                np.flatnonzero(mask[row]).tolist() for row in range(len(decisions))
-            ]
-            decode_pairs = [
-                (batch_indices[row], action_id)
-                for row, ids in enumerate(ids_by_row)
-                for action_id in ids
-            ]
-            decoded = (
-                self.state_machine.decode_actions(
-                    [pair[0] for pair in decode_pairs],
-                    [pair[1] for pair in decode_pairs],
-                )
-                if decode_pairs
-                else []
-            )
+            index_rows = self.state_machine.action_ids_with_source_indices(batch_indices)
+            ids_by_row: list[list[int]] = []
+            per_row_actions: list[dict[int, Any]] = []
+            for row, mappings in enumerate(index_rows):
+                ids: list[int] = []
+                actions_by_id: dict[int, Any] = {}
+                for action_id, source_index in mappings:
+                    action_id = int(action_id)
+                    source_index = int(source_index)
+                    if not 0 <= source_index < len(legal_objects[row]):
+                        raise RuntimeError(
+                            f"state machine returned invalid legal action index {source_index}"
+                        )
+                    ids.append(action_id)
+                    actions_by_id[action_id] = legal_objects[row][source_index]
+                expected = np.flatnonzero(mask[row]).tolist()
+                if ids != expected:
+                    raise RuntimeError("state machine action-index mapping disagrees with legal mask")
+                ids_by_row.append(ids)
+                per_row_actions.append(actions_by_id)
         with self.profiler.stage("state/v16_query_assembly"):
             query_rows: list[np.ndarray] = []
             action_id_rows: list[np.ndarray] = []
             snapshot_rows: list[np.ndarray] = []
-            # 每个决策的「action_id -> 代表 Action」映射(供 query 生成与 batch 复用)。
-            per_row_actions: list[dict[int, Any]] = []
-            decoded_cursor = 0
-            for row, decision in enumerate(decisions):
-                observation = decision.observation
-                legal = list(observation.legal_actions())
-                templates = action_jsons(observation)
-                if len(legal) != len(templates):
-                    raise RuntimeError(
-                        f"env={decision.env_index} seat={decision.seat_id} legal/template length mismatch"
-                    )
-                representative: dict[str, Any] = {}
-                for action, template in zip(legal, templates, strict=True):
-                    representative.setdefault(_canonical_mjai(template), action)
-                ids = ids_by_row[row]
-                row_decoded = decoded[decoded_cursor : decoded_cursor + len(ids)]
-                decoded_cursor += len(ids)
-                actions_by_id: dict[int, Any] = {}
-                for action_id, raw in zip(ids, row_decoded, strict=True):
-                    action = representative.get(_canonical_mjai(raw))
-                    if action is None:
-                        raise RuntimeError(
-                            f"decoded action_id={action_id} has no legal representative "
-                            f"env={decision.env_index} seat={decision.seat_id} mjai={raw}"
+            if self.rust_encoding:
+                # Rust 融合路径直接返回连续 [动作,进攻/防守,15] 行;Python 只按
+                # 决策边界切片,旧批量与逐动作路径继续作为独立 oracle。
+                triples: list[tuple[Any, Any, int]] = []
+                row_offsets: list[int] = [0]
+                for row, decision in enumerate(decisions):
+                    for action_id in ids_by_row[row]:
+                        triples.append(
+                            (decision.observation, per_row_actions[row][action_id], int(action_id))
                         )
-                    actions_by_id[int(action_id)] = action
-                per_row_actions.append(actions_by_id)
-
-            if self.batch_query:
+                    row_offsets.append(len(triples))
+                encoded = encode_action_queries_batch_native(triples)
+                self.last_v16_rust_stats = {
+                    "actions": len(triples),
+                    "unique_offense_rows": encoded.unique_offense_rows,
+                    "unique_shanten_rows": encoded.unique_shanten_rows,
+                }
+                for row, decision in enumerate(decisions):
+                    start, end = row_offsets[row], row_offsets[row + 1]
+                    value = encoded.query_rows[start:end]
+                    query_rows.append(value.reshape(-1, value.shape[-1]))
+                    action_id_rows.append(np.asarray(ids_by_row[row], dtype=np.int32))
+                    kinds, categorical, numeric = encode_snapshot_rows(
+                        build_snapshot_facts(decision.observation)
+                    )
+                    snapshot_rows.append((kinds, categorical, numeric))
+            elif self.batch_query:
                 # 批量路径:收集全部 (observation, action, action_id) 三元组,
                 # 一次调用 analyze_action_queries_batch,再按决策切回。
                 triples: list[tuple[Any, Any, int]] = []

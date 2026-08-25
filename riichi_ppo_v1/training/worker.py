@@ -336,6 +336,7 @@ if ray is not None:
                 self.num_envs,
                 self.profiler,
                 batch_query=bool(config.get("v16_batch_query", True)),
+                rust_encoding=bool(config.get("v16_rust_encoding", False)),
             )
             self.observations = list(self.envs.reset())
             self.walls = list(self.envs.walls())

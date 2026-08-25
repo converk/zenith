@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
 
 mod env;
+mod v16_facts;
 
 #[pyfunction]
 #[pyo3(name = "calculate_score", signature = (han, fu, is_oya, is_tsumo, honba, num_players=4))]
@@ -78,6 +79,7 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<riichienv_core::observation_3p::Observation3P>()?;
     m.add_class::<env::RiichiEnv>()?;
     m.add_class::<env::BatchedRiichiEnv>()?;
+    m.add_class::<v16_facts::CompactV16Facts>()?;
 
     m.add_function(wrap_pyfunction!(calculate_score_py, m)?)?;
     m.add_function(wrap_pyfunction!(parse_hand_py, m)?)?;
@@ -85,6 +87,7 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(check_riichi_candidates_py, m)?)?;
     m.add_function(wrap_pyfunction!(calculate_shanten_py, m)?)?;
     m.add_function(wrap_pyfunction!(calculate_shanten_3p_py, m)?)?;
+    m.add_function(wrap_pyfunction!(v16_facts::prepare_v16_compact_facts, m)?)?;
     m.add_function(wrap_pyfunction!(
         riichienv_core::yaku::get_yaku_by_id_py,
         m

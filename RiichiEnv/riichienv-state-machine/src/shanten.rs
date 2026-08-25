@@ -31,6 +31,39 @@ pub fn calculate(counts: &[u8; 34], open_melds: u8) -> Shanten {
     }
 }
 
+/// 计算同一形状分别摸入 34 种牌后的综合向听,共享标准型牌组中间结果。
+pub fn calculate_after_draws(counts: &[u8; 34], open_melds: u8) -> [i8; 34] {
+    let standard = shanten_table::standard_after_draws(counts, open_melds);
+    let pair_count = counts.iter().filter(|&&count| count >= 2).count() as i8;
+    let distinct_count = counts.iter().filter(|&&count| count > 0).count() as i8;
+    let orphan_unique = ORPHANS.iter().filter(|&&index| counts[index] > 0).count() as i8;
+    let orphan_pair = ORPHANS.iter().any(|&index| counts[index] >= 2);
+    let mut out = [crate::SHANTEN_UNAVAILABLE; 34];
+    for tile in 0..34 {
+        let count = counts[tile];
+        if count >= 4 {
+            continue;
+        }
+        let seven_pairs = if open_melds == 0 {
+            let pairs = pair_count + i8::from(count == 1);
+            let distinct = distinct_count + i8::from(count == 0);
+            6 - pairs + (7 - distinct).max(0)
+        } else {
+            crate::SHANTEN_UNAVAILABLE
+        };
+        let thirteen_orphans = if open_melds == 0 {
+            let is_orphan = ORPHANS.contains(&tile);
+            let unique = orphan_unique + i8::from(is_orphan && count == 0);
+            let pair = orphan_pair || (is_orphan && count == 1);
+            13 - unique - i8::from(pair)
+        } else {
+            crate::SHANTEN_UNAVAILABLE
+        };
+        out[tile] = standard[tile].min(seven_pairs).min(thirteen_orphans);
+    }
+    out
+}
+
 pub fn seven_pairs(counts: &[u8; 34]) -> i8 {
     let pairs = counts.iter().filter(|&&c| c >= 2).count() as i8;
     let distinct = counts.iter().filter(|&&c| c > 0).count() as i8;
@@ -179,5 +212,37 @@ mod tests {
         }
         kokushi[0] = 2;
         assert_eq!(thirteen_orphans(&kokushi), -1);
+    }
+
+    #[test]
+    fn batched_draws_match_individual_calculation() {
+        let mut state = 0x6a09_e667_u32;
+        for open_melds in 0..=4_u8 {
+            let concealed_tiles = 13_usize.saturating_sub(3 * open_melds as usize);
+            for _ in 0..500 {
+                let mut counts = [0_u8; 34];
+                let mut placed = 0;
+                while placed < concealed_tiles {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    let tile = state as usize % 34;
+                    if counts[tile] < 4 {
+                        counts[tile] += 1;
+                        placed += 1;
+                    }
+                }
+                let batched = calculate_after_draws(&counts, open_melds);
+                for tile in 0..34 {
+                    if counts[tile] >= 4 {
+                        assert_eq!(batched[tile], crate::SHANTEN_UNAVAILABLE);
+                        continue;
+                    }
+                    let mut next = counts;
+                    next[tile] += 1;
+                    assert_eq!(batched[tile], calculate(&next, open_melds).overall);
+                }
+            }
+        }
     }
 }
