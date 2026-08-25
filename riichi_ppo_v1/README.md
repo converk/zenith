@@ -34,6 +34,13 @@ CUDA_DEVICE=0,1 conda run -n Mahjong-AI riichi-sft-train \
   --config riichi_ppo_v1/configs/v18_sft.yaml
 ```
 
+数据生成 + 训练可一键执行（产物地址与校验见脚本头部注释）：
+
+```bash
+bash audit/reports/v18/scripts/run_v18_precompute_and_sft.sh            # 生成数据 + 训练
+bash audit/reports/v18/scripts/run_v18_precompute_and_sft.sh --skip-precompute  # 已有数据仅训练
+```
+
 预计算 manifest 必须声明 `riichi-sft-encoded-v18`、protocol 18 和冻结的 V18
 contract hash；旧缓存会 fail closed。actor-only BC 只优化 Actor 参数，并只保存
 可被 V18 精确加载的 Actor artifact。固定验证/checkpoint 节奏为每 3000 steps，
