@@ -39,6 +39,10 @@ class ConfigLoadingTest(unittest.TestCase):
             self.assertEqual(config["model_size"], "v16")
             self.assertEqual(config["policy_head_type"], "symmetric_action_query")
             self.assertEqual(config["learner_gpus"], 2)
+            if name.startswith("v17_"):
+                self.assertEqual(config["rollout_worker_num_cpus"], 2)
+                self.assertEqual(config["rollout_worker_cpu_threads"], 1)
+                self.assertTrue(config["worker_return_soa"])
             self.assertEqual(config["eval1v3_output_dir"].split("/")[:2], ["audit", "reports"])
             self.assertNotIn("offense_" + "fusion", config)
             self.assertNotIn("critic_" + "head_type", config)
@@ -55,6 +59,8 @@ class ConfigLoadingTest(unittest.TestCase):
         )
         self.assertIsNone(resumed["init_model"])
         self.assertEqual(resumed["games_per_update"], 512)
+        self.assertEqual(resumed["env_step_threads"], 4)
+        self.assertTrue(resumed["worker_return_soa"])
         self.assertEqual(resumed["eval1v3_output_dir"], "audit/reports/v17/eval")
 
     def test_v17_thread_and_worker_soa_benchmarks_are_self_contained(self) -> None:

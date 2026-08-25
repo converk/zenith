@@ -22,6 +22,9 @@ grp_checkpoint: checkpoints/train_riichi_v17/grp/best.pt
 num_workers: 12
 envs_per_worker: 32
 env_step_threads: 4
+rollout_worker_num_cpus: 2
+rollout_worker_cpu_threads: 1
+worker_return_soa: true
 inference_max_batch_size: 512
 inference_batch_wait_ms: 5.0
 inference_batch_target_rows: 0
