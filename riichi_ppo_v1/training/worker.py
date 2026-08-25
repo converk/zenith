@@ -6,6 +6,7 @@ import json
 from collections import Counter
 from pathlib import Path
 import re
+import resource
 import time
 from typing import Any
 
@@ -26,6 +27,57 @@ from .profiling import StageProfiler
 from .trajectory import Transition, finish_kyoku_gae
 
 RESULT_CODES = {"ron": 1, "tsumo": 2, "ryukyoku": 3, "abort": 4}
+
+
+def _configure_rollout_torch_threads(config: dict[str, Any]) -> None:
+    """尽早限制 rollout actor 内的 PyTorch CPU 线程池。"""
+    value = config.get("rollout_worker_cpu_threads")
+    if value is None:
+        return
+    threads = int(value)
+    if threads <= 0:
+        raise ValueError("rollout_worker_cpu_threads must be positive")
+    torch.set_num_threads(threads)
+    torch.set_num_interop_threads(threads)
+
+
+def _process_cpu_snapshot() -> dict[str, float]:
+    """读取当前 actor 的线程数、上下文切换与常驻内存。"""
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    try:
+        threads = sum(1 for _entry in Path("/proc/self/task").iterdir())
+    except OSError:
+        threads = 0
+    return {
+        "threads": float(threads),
+        "voluntary_context_switches": float(usage.ru_nvcsw),
+        "involuntary_context_switches": float(usage.ru_nivcsw),
+        "max_rss_kb": float(usage.ru_maxrss),
+    }
+
+
+def _transition_payload_stats(transitions: list[Transition]) -> tuple[int, int]:
+    """估算旧返回路径中的独立 ndarray 数量与有效数组字节数。"""
+    array_count = 0
+    array_bytes = 0
+    fields = (
+        "history_factors",
+        "history_numeric",
+        "snapshot_kinds",
+        "snapshot_cat",
+        "snapshot_num",
+        "query_rows",
+        "query_action_ids",
+        "legal_mask",
+        "critic_factors",
+    )
+    for transition in transitions:
+        for field in fields:
+            value = getattr(transition, field)
+            if isinstance(value, np.ndarray):
+                array_count += 1
+                array_bytes += int(value.nbytes)
+    return array_count, array_bytes
 
 
 def active_decisions(
@@ -309,6 +361,7 @@ if ray is not None:
             config: dict[str, Any],
             inference: Any,
         ) -> None:
+            _configure_rollout_torch_threads(config)
             try:
                 import riichi
                 from riichienv import BatchedRiichiEnv, HandEvaluator
@@ -755,6 +808,7 @@ if ray is not None:
             for lineup in self.lineups:
                 lineup_counts.update(lineup)
             started = time.perf_counter()
+            cpu_started = _process_cpu_snapshot()
             while active_envs:
                 step, new_rewards, new_kyokus, ended_kyokus, done_indices = (
                     self._advance_once(active_envs=active_envs)
@@ -806,9 +860,35 @@ if ray is not None:
                 "drain_steps": float(drain_steps),
             }
             stats.update(self.profiler.delta({}, prefix="timing"))
+            semantic_started = time.perf_counter()
             for transition in transitions:
                 self.semantic.record_transition_reward(transition)
             stats.update(self.semantic.summary())
+            stats["semantic_summary_s"] = time.perf_counter() - semantic_started
+            payload_started = time.perf_counter()
+            array_count, array_bytes = _transition_payload_stats(transitions)
+            stats["return_array_count"] = float(array_count)
+            stats["return_array_bytes"] = float(array_bytes)
+            stats["return_transition_objects"] = float(len(transitions))
+            stats["return_payload_profile_s"] = time.perf_counter() - payload_started
+            cpu_finished = _process_cpu_snapshot()
+            stats.update({
+                "worker_id": float(self.worker_id),
+                "collect_total_s": time.perf_counter() - started,
+                "system/threads_start": cpu_started["threads"],
+                "system/threads_end": cpu_finished["threads"],
+                "system/voluntary_context_switches": (
+                    cpu_finished["voluntary_context_switches"]
+                    - cpu_started["voluntary_context_switches"]
+                ),
+                "system/involuntary_context_switches": (
+                    cpu_finished["involuntary_context_switches"]
+                    - cpu_started["involuntary_context_switches"]
+                ),
+                "system/max_rss_kb": cpu_finished["max_rss_kb"],
+                "system/torch_threads": float(torch.get_num_threads()),
+                "system/torch_interop_threads": float(torch.get_num_interop_threads()),
+            })
             return transitions, stats
 
 else:

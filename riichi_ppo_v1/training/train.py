@@ -171,8 +171,28 @@ def partition_worker_indices(num_workers: int, num_learners: int) -> list[list[i
     return [list(range(rank, num_workers, num_learners)) for rank in range(num_learners)]
 
 
+def rollout_worker_options(config: dict[str, Any]) -> dict[str, Any]:
+    """构造只作用于 rollout actor 的 Ray 资源与线程环境。"""
+    num_cpus = float(config.get("rollout_worker_num_cpus", 1.0))
+    if num_cpus <= 0.0:
+        raise ValueError("rollout_worker_num_cpus must be positive")
+    options: dict[str, Any] = {"num_cpus": num_cpus}
+    value = config.get("rollout_worker_cpu_threads")
+    if value is not None:
+        threads = int(value)
+        if threads <= 0:
+            raise ValueError("rollout_worker_cpu_threads must be positive")
+        options["runtime_env"] = {"env_vars": {
+            "OPENBLAS_NUM_THREADS": str(threads),
+            "OMP_NUM_THREADS": str(threads),
+            "MKL_NUM_THREADS": str(threads),
+            "NUMEXPR_NUM_THREADS": str(threads),
+        }}
+    return options
+
+
 def summarize_worker_rollout(
-    results: list[tuple[list[Any], dict[str, float]]],
+    results: list[tuple[Any, dict[str, float]]],
 ) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
     """Aggregate worker stats while retaining the slowest worker per stage."""
     stats_list = [stats for _transitions, stats in results]
@@ -221,6 +241,30 @@ def summarize_worker_rollout(
         else:
             metrics[target] = float(np.mean(values))
 
+    # 只为资源、配额与返回链路保留逐 worker 分布,避免复制全部语义指标。
+    distribution_names = {
+        "rollout_s", "collect_total_s", "games", "kyokus",
+        "drain_steps", "drain_kyokus", "semantic_summary_s",
+        "return_array_count", "return_array_bytes", "return_transition_objects",
+        "worker_soa_pack_s", "system/threads_start", "system/threads_end",
+        "system/voluntary_context_switches", "system/involuntary_context_switches",
+        "system/max_rss_kb",
+    }
+    for name in sorted(distribution_names):
+        values = np.asarray([
+            float(stats[name]) for stats in stats_list
+            if name in stats and np.isfinite(stats[name])
+        ], dtype=np.float64)
+        if not len(values):
+            continue
+        base = f"rollout/worker/{name}"
+        metrics.update({
+            f"{base}/min": float(np.min(values)),
+            f"{base}/max": float(np.max(values)),
+            f"{base}/p50": float(np.percentile(values, 50)),
+            f"{base}/p90": float(np.percentile(values, 90)),
+        })
+
     rows: dict[str, dict[str, float]] = {}
     for total_name in sorted(
         name
@@ -236,6 +280,8 @@ def summarize_worker_rollout(
             "worker_mean_total_s": float(np.mean(totals)),
             "worker_max_total_s": float(np.max(totals)),
             "worker_min_total_s": float(np.min(totals)),
+            "worker_p50_total_s": float(np.percentile(totals, 50)),
+            "worker_p90_total_s": float(np.percentile(totals, 90)),
             "worker_sum_count": float(np.sum(counts)),
         }
         rows[stage] = row
@@ -345,8 +391,9 @@ def run(config: dict[str, Any]) -> None:
     )
     # 先推送初始权重再创建 worker,保证第一个 rollout 从 SFT/resume 权重采样。
     ray.get([actor.update_weights.remote(learner.weights()) for actor in inference_actors])
+    worker_options = rollout_worker_options(config)
     workers = [
-        RolloutWorker.remote(
+        RolloutWorker.options(**worker_options).remote(
             index,
             config,
             inference_actors[worker_to_rank[index]],
@@ -469,10 +516,20 @@ def run(config: dict[str, Any]) -> None:
             ray.get([actor.begin_rollout.remote(update_number) for actor in inference_actors])
             begin_rollout_s = time.perf_counter() - begin_rollout_started
             rollout_started = time.perf_counter()
-            results = ray.get([
+            rollout_refs = [
                 worker.collect.remote(update_number)
                 for worker in workers
-            ])
+            ]
+            ready_refs, pending_refs = ray.wait(
+                rollout_refs, num_returns=len(rollout_refs), timeout=None,
+            )
+            if pending_refs or len(ready_refs) != len(rollout_refs):
+                raise RuntimeError("not all rollout workers became ready")
+            rollout_worker_ready_s = time.perf_counter() - rollout_started
+            result_get_started = time.perf_counter()
+            # 按原始 worker 顺序取回,保持 transition 拼接与固定 seed 语义不变。
+            results = ray.get(rollout_refs)
+            rollout_result_get_s = time.perf_counter() - result_get_started
             rollout_wall_s = time.perf_counter() - rollout_started
             profile_summary_started = time.perf_counter()
             actor_profiles = ray.get([
@@ -512,6 +569,10 @@ def run(config: dict[str, Any]) -> None:
             model_decisions = sum(stats.get("model_decisions", 0.0) for _t, stats in results)
             recorded_decisions = sum(stats.get("recorded_decisions", 0.0) for _t, stats in results)
             rollout_metrics, worker_timing = summarize_worker_rollout(results)
+            worker_collect_max_s = max(
+                float(stats.get("collect_total_s", stats.get("rollout_s", 0.0)))
+                for _payload, stats in results
+            )
             actor_metrics = {
                 f"rollout/inference_actor/{name}": float(value)
                 for name, value in actor_profile.items()
@@ -524,6 +585,11 @@ def run(config: dict[str, Any]) -> None:
                 })
             rollout_metrics.update({
                 "rollout/begin_rollout_s": begin_rollout_s,
+                "rollout/worker_ready_s": rollout_worker_ready_s,
+                "rollout/result_get_s": rollout_result_get_s,
+                "rollout/object_store_publish_gap_estimate_s": max(
+                    0.0, rollout_worker_ready_s - worker_collect_max_s,
+                ),
                 "rollout/profile_summary_s": profile_summary_s,
                 "rollout/transition_assembly_s": transition_assembly_s,
                 "rollout/wall_s": rollout_wall_s,
