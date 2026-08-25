@@ -207,7 +207,13 @@ def summarize_worker_rollout(
         if not values:
             continue
         target = name if name.startswith(("train/", "reward_schedule/")) else f"rollout/{name}"
-        if name.endswith("/count") or name.endswith("_count"):
+        if (
+            name.endswith("/count")
+            or name.endswith("_count")
+            or name in {
+                "grp_calls", "return_array_bytes", "return_transition_objects",
+            }
+        ):
             metrics[target] = float(np.sum(values))
         elif name.startswith("train/kyoku/"):
             weighted = [

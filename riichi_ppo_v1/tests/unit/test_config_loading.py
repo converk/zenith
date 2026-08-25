@@ -104,6 +104,7 @@ class ConfigLoadingTest(unittest.TestCase):
             ([], {
                 "rollout_s": float(index),
                 "games": float(index + 40),
+                "grp_calls": 5.0,
                 "timing/env/step_batch_native/total_s": float(index) / 10.0,
                 "timing/env/step_batch_native/count": 10.0,
             })
@@ -114,6 +115,7 @@ class ConfigLoadingTest(unittest.TestCase):
         self.assertEqual(metrics["rollout/worker/rollout_s/max"], 12.0)
         self.assertEqual(metrics["rollout/worker/rollout_s/p50"], 6.5)
         self.assertAlmostEqual(metrics["rollout/worker/rollout_s/p90"], 10.9)
+        self.assertEqual(metrics["rollout/grp_calls"], 60.0)
         self.assertAlmostEqual(
             timing["env/step_batch_native"]["worker_p50_total_s"], 0.65,
         )
