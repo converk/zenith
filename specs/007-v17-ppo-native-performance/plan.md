@@ -10,21 +10,26 @@
    该路径,没有 Python runtime 回退或配置分支。SFT/审计保留的
    `analyze_action_queries` 公共接口也委托同一 Rust 编码器,Python 不再保存第二份
    Action Query 业务规则。
-4. **direct action-id step + 紧凑 rollout buffer**:action id 由 Rust 直接应用;
-   worker 内 pending 改 SoA;driver→learner 走 Ray 大数组/共享内存。
+4. **紧凑 rollout 返回链路**(已完成):小局内暂存 `Transition` 完成 GAE,worker
+   返回前压成 flat+offsets SoA;Ray 只传 29 个大数组/worker;driver 合并后 learner
+   与双卡 DDP 直接消费 SoA,不恢复百万级对象。direct action-id step 依据新 profiling
+   保留为后续项。
 5. **PPO update 深化**:pinned host slabs、non_blocking H2D、DDP static graph /
    fused AdamW / torch.compile 评估。
-6. **并发拓扑 sweep**:T1(少 actor 大 vector)/T2(中)/T3(当前)三组对比。
-7. **完整测试与三轮基准 + 报告**(已完成,rollout 1.78× vs 129.374s 基线)。
+6. **CPU/Ray 资源 sweep**(已完成):A/B/C/D 三轮微基准 + C/D 标准 GPU 三轮;
+   worker BLAS/OpenMP/PyTorch 限为 1,Ray 声明 2 CPU/worker;GPU 证实
+   `env_step_threads=2` 无收益,正式值保持 4。T1/T2 actor 拓扑不再是当前主因。
+7. **完整测试与三轮基准 + 真实 2048 + 报告**(已完成):最终相对 noso 基线
+   rollout 2.55×、update 1.61×、total 1.88×。
 
-阶段 4–6 保留为后续可选深化;阶段 3 已使 rollout 验收目标达成,本轮不引入
-额外 direct-step/共享内存/DDP 风险。
+worker SoA 与线程资源治理已完成;direct-step、pinned slabs/compile 与动态配额只在
+后续 profiling 显示成为主瓶颈时再启动。
 
 ## 依赖关系
 
 - 阶段 3 依赖阶段 1(基线+golden)与阶段 2(SoA 通路为 rollout buffer 打底)。
 - 阶段 4 依赖阶段 3 的 compact action id 通路。
-- 阶段 5/6 依赖阶段 2-4。
+- 阶段 5/6 依赖阶段 2-4;本轮只完成有实测收益或必要资源治理的子项。
 - 阶段 7 依赖全部。
 
 ## 关键风险

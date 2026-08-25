@@ -1,0 +1,748 @@
+{
+  "runs": {
+    "real": {
+      "metrics": {
+        "gpu/utilization.gpu/max": {
+          "mean": 100.0,
+          "values": [
+            100.0
+          ]
+        },
+        "gpu/utilization.gpu/mean": {
+          "mean": 50.47831474597274,
+          "values": [
+            50.47831474597274
+          ]
+        },
+        "iteration/algorithm_wall_s": {
+          "mean": 412.04534273501486,
+          "values": [
+            412.04534273501486
+          ]
+        },
+        "ppo/update/configured_epochs": {
+          "mean": 2.0,
+          "values": [
+            2.0
+          ]
+        },
+        "ppo/update/epochs_completed": {
+          "mean": 2.0,
+          "values": [
+            2.0
+          ]
+        },
+        "ppo/update/executed_minibatches": {
+          "mean": 2100.0,
+          "values": [
+            2100.0
+          ]
+        },
+        "ppo/update/executed_transition_samples": {
+          "mean": 3220652.0,
+          "values": [
+            3220652.0
+          ]
+        },
+        "ppo/update/planned_minibatches": {
+          "mean": 2100.0,
+          "values": [
+            2100.0
+          ]
+        },
+        "rollout/games": {
+          "mean": 2078.0,
+          "values": [
+            2078.0
+          ]
+        },
+        "rollout/grp_calls": {
+          "global_mean": 24630.0,
+          "mean": 2052.5,
+          "values": [
+            2052.5
+          ]
+        },
+        "rollout/kyokus": {
+          "mean": 24668.0,
+          "values": [
+            24668.0
+          ]
+        },
+        "rollout/object_store_publish_gap_estimate_s": {
+          "mean": 2.4277334619837347,
+          "values": [
+            2.4277334619837347
+          ]
+        },
+        "rollout/result_get_s": {
+          "mean": 0.0019005729991476983,
+          "values": [
+            0.0019005729991476983
+          ]
+        },
+        "rollout/return_array_bytes": {
+          "global_mean": 6925800834.0,
+          "mean": 577150069.5,
+          "values": [
+            577150069.5
+          ]
+        },
+        "rollout/return_array_count": {
+          "mean": 348.0,
+          "values": [
+            348.0
+          ]
+        },
+        "rollout/return_transition_objects": {
+          "global_mean": 0.0,
+          "mean": 0.0,
+          "values": [
+            0.0
+          ]
+        },
+        "rollout/transition_assembly_s": {
+          "mean": 2.0140742040239275,
+          "values": [
+            2.0140742040239275
+          ]
+        },
+        "rollout/wall_s": {
+          "mean": 206.72471076698275,
+          "values": [
+            206.72471076698275
+          ]
+        },
+        "rollout/worker/rollout_s/max": {
+          "mean": 201.8215400140034,
+          "values": [
+            201.8215400140034
+          ]
+        },
+        "rollout/worker/rollout_s/min": {
+          "mean": 175.1913759619929,
+          "values": [
+            175.1913759619929
+          ]
+        },
+        "rollout/worker/rollout_s/p50": {
+          "mean": 185.36395260351128,
+          "values": [
+            185.36395260351128
+          ]
+        },
+        "rollout/worker/rollout_s/p90": {
+          "mean": 200.30433777890576,
+          "values": [
+            200.30433777890576
+          ]
+        },
+        "rollout/worker/worker_soa_pack_s/p50": {
+          "mean": 2.1469400794885587,
+          "values": [
+            2.1469400794885587
+          ]
+        },
+        "rollout/worker/worker_soa_pack_s/p90": {
+          "mean": 2.3177516357100103,
+          "values": [
+            2.3177516357100103
+          ]
+        },
+        "transitions": {
+          "mean": 1610326.0,
+          "values": [
+            1610326.0
+          ]
+        },
+        "update/wall_s": {
+          "mean": 203.29967561198282,
+          "values": [
+            203.29967561198282
+          ]
+        }
+      },
+      "path": "checkpoints/train_riichi_v17/perf_2048_worker_soa/performance.jsonl",
+      "rounds": 1,
+      "scored_rounds": 1
+    },
+    "step2": {
+      "metrics": {
+        "gpu/utilization.gpu/max": {
+          "mean": 100.0,
+          "values": [
+            100.0,
+            100.0
+          ]
+        },
+        "gpu/utilization.gpu/mean": {
+          "mean": 66.39848712178045,
+          "values": [
+            60.02170542635659,
+            72.7752688172043
+          ]
+        },
+        "iteration/algorithm_wall_s": {
+          "mean": 224.75431109000056,
+          "values": [
+            191.14268034198903,
+            258.3659418380121
+          ]
+        },
+        "ppo/update/configured_epochs": {
+          "mean": 4.0,
+          "values": [
+            4.0,
+            4.0
+          ]
+        },
+        "ppo/update/epochs_completed": {
+          "mean": 4.0,
+          "values": [
+            4.0,
+            4.0
+          ]
+        },
+        "ppo/update/executed_minibatches": {
+          "mean": 1040.0,
+          "values": [
+            1048.0,
+            1032.0
+          ]
+        },
+        "ppo/update/executed_transition_samples": {
+          "mean": 1592208.0,
+          "values": [
+            1601816.0,
+            1582600.0
+          ]
+        },
+        "ppo/update/planned_minibatches": {
+          "mean": 1040.0,
+          "values": [
+            1048.0,
+            1032.0
+          ]
+        },
+        "rollout/games": {
+          "mean": 543.5,
+          "values": [
+            552.0,
+            535.0
+          ]
+        },
+        "rollout/grp_calls": {
+          "global_mean": 6061.5,
+          "mean": 505.125,
+          "values": [
+            507.8333333333333,
+            502.4166666666667
+          ]
+        },
+        "rollout/kyokus": {
+          "mean": 6053.5,
+          "values": [
+            6096.0,
+            6011.0
+          ]
+        },
+        "rollout/object_store_publish_gap_estimate_s": {
+          "mean": 2.60712537902873,
+          "values": [
+            2.6251390620309394,
+            2.589111696026521
+          ]
+        },
+        "rollout/result_get_s": {
+          "mean": 19.003096385495155,
+          "values": [
+            20.886511966993567,
+            17.119680803996744
+          ]
+        },
+        "rollout/return_array_bytes": {
+          "global_mean": 1659784906.5,
+          "mean": 138315408.875,
+          "values": [
+            139100231.08333334,
+            137530586.66666666
+          ]
+        },
+        "rollout/return_array_count": {
+          "mean": 3582468.0,
+          "values": [
+            3604086.0,
+            3560850.0
+          ]
+        },
+        "rollout/return_transition_objects": {
+          "global_mean": 398052.0,
+          "mean": 33171.0,
+          "values": [
+            33371.166666666664,
+            32970.833333333336
+          ]
+        },
+        "rollout/transition_assembly_s": {
+          "mean": 1.2878807974921074,
+          "values": [
+            1.435900345997652,
+            1.1398612489865627
+          ]
+        },
+        "rollout/wall_s": {
+          "mean": 72.89476696700149,
+          "values": [
+            77.33551127300598,
+            68.454022660997
+          ]
+        },
+        "rollout/worker/rollout_s/max": {
+          "mean": 51.145808489003684,
+          "values": [
+            53.681141003005905,
+            48.610475975001464
+          ]
+        },
+        "rollout/worker/rollout_s/min": {
+          "mean": 40.49436290550511,
+          "values": [
+            40.61453539400827,
+            40.374190417001955
+          ]
+        },
+        "rollout/worker/rollout_s/p50": {
+          "mean": 45.370318492510705,
+          "values": [
+            46.143659066510736,
+            44.596977918510674
+          ]
+        },
+        "rollout/worker/rollout_s/p90": {
+          "mean": 48.15170210185024,
+          "values": [
+            47.88843204790319,
+            48.414972155797294
+          ]
+        },
+        "rollout/worker/worker_soa_pack_s/p50": {
+          "mean": 0.0,
+          "values": [
+            0.0,
+            0.0
+          ]
+        },
+        "rollout/worker/worker_soa_pack_s/p90": {
+          "mean": 0.0,
+          "values": [
+            0.0,
+            0.0
+          ]
+        },
+        "transitions": {
+          "mean": 398052.0,
+          "values": [
+            400454.0,
+            395650.0
+          ]
+        },
+        "update/wall_s": {
+          "mean": 150.56510909549252,
+          "values": [
+            112.36417664599139,
+            188.76604154499364
+          ]
+        }
+      },
+      "path": "checkpoints/train_riichi_v17/perf_512g4e_limit1_step2/performance.jsonl",
+      "rounds": 3,
+      "scored_rounds": 2
+    },
+    "thread_limit": {
+      "metrics": {
+        "gpu/utilization.gpu/max": {
+          "mean": 100.0,
+          "values": [
+            100.0,
+            100.0
+          ]
+        },
+        "gpu/utilization.gpu/mean": {
+          "mean": 66.37560863081052,
+          "values": [
+            60.779578606158836,
+            71.97163865546219
+          ]
+        },
+        "iteration/algorithm_wall_s": {
+          "mean": 223.97783931400045,
+          "values": [
+            182.90980960600427,
+            265.0458690219966
+          ]
+        },
+        "ppo/update/configured_epochs": {
+          "mean": 4.0,
+          "values": [
+            4.0,
+            4.0
+          ]
+        },
+        "ppo/update/epochs_completed": {
+          "mean": 4.0,
+          "values": [
+            4.0,
+            4.0
+          ]
+        },
+        "ppo/update/executed_minibatches": {
+          "mean": 1032.0,
+          "values": [
+            1016.0,
+            1048.0
+          ]
+        },
+        "ppo/update/executed_transition_samples": {
+          "mean": 1580370.0,
+          "values": [
+            1559744.0,
+            1600996.0
+          ]
+        },
+        "ppo/update/planned_minibatches": {
+          "mean": 1032.0,
+          "values": [
+            1016.0,
+            1048.0
+          ]
+        },
+        "rollout/games": {
+          "mean": 551.5,
+          "values": [
+            551.0,
+            552.0
+          ]
+        },
+        "rollout/grp_calls": {
+          "global_mean": 6022.5,
+          "mean": 501.875,
+          "values": [
+            494.5833333333333,
+            509.1666666666667
+          ]
+        },
+        "rollout/kyokus": {
+          "mean": 6021.0,
+          "values": [
+            5931.0,
+            6111.0
+          ]
+        },
+        "rollout/object_store_publish_gap_estimate_s": {
+          "mean": 2.535092944497592,
+          "values": [
+            2.4394731919746846,
+            2.630712697020499
+          ]
+        },
+        "rollout/result_get_s": {
+          "mean": 19.365841188991908,
+          "values": [
+            21.0435365899757,
+            17.688145788008114
+          ]
+        },
+        "rollout/return_array_bytes": {
+          "global_mean": 1647579753.5000002,
+          "mean": 137298312.7916667,
+          "values": [
+            135564075.0,
+            139032550.58333334
+          ]
+        },
+        "rollout/return_array_count": {
+          "mean": 3555832.5,
+          "values": [
+            3509424.0,
+            3602241.0
+          ]
+        },
+        "rollout/return_transition_objects": {
+          "global_mean": 395092.5,
+          "mean": 32924.375,
+          "values": [
+            32494.666666666668,
+            33354.083333333336
+          ]
+        },
+        "rollout/transition_assembly_s": {
+          "mean": 1.2655403514945647,
+          "values": [
+            1.4298167509841733,
+            1.101263952004956
+          ]
+        },
+        "rollout/wall_s": {
+          "mean": 72.76606027501111,
+          "values": [
+            72.14767345800647,
+            73.38444709201576
+          ]
+        },
+        "rollout/worker/rollout_s/max": {
+          "mean": 50.72984752198681,
+          "values": [
+            48.53676772999461,
+            52.92292731397902
+          ]
+        },
+        "rollout/worker/rollout_s/min": {
+          "mean": 38.853142084000865,
+          "values": [
+            39.59649962600088,
+            38.10978454200085
+          ]
+        },
+        "rollout/worker/rollout_s/p50": {
+          "mean": 45.37058309651184,
+          "values": [
+            44.811332022509305,
+            45.92983417051437
+          ]
+        },
+        "rollout/worker/rollout_s/p90": {
+          "mean": 49.571583091208595,
+          "values": [
+            48.17651323742466,
+            50.96665294499253
+          ]
+        },
+        "rollout/worker/worker_soa_pack_s/p50": {
+          "mean": 0.0,
+          "values": [
+            0.0,
+            0.0
+          ]
+        },
+        "rollout/worker/worker_soa_pack_s/p90": {
+          "mean": 0.0,
+          "values": [
+            0.0,
+            0.0
+          ]
+        },
+        "transitions": {
+          "mean": 395092.5,
+          "values": [
+            389936.0,
+            400249.0
+          ]
+        },
+        "update/wall_s": {
+          "mean": 149.93885206051345,
+          "values": [
+            109.32474040202214,
+            190.55296371900477
+          ]
+        }
+      },
+      "path": "checkpoints/train_riichi_v17/perf_512g4e_limit1/performance.jsonl",
+      "rounds": 3,
+      "scored_rounds": 2
+    },
+    "worker_soa": {
+      "metrics": {
+        "gpu/utilization.gpu/max": {
+          "mean": 100.0,
+          "values": [
+            100.0,
+            100.0
+          ]
+        },
+        "gpu/utilization.gpu/mean": {
+          "mean": 68.03859835816357,
+          "values": [
+            60.947826086956525,
+            75.12937062937063
+          ]
+        },
+        "iteration/algorithm_wall_s": {
+          "mean": 181.27409476849425,
+          "values": [
+            145.44256619998487,
+            217.10562333700364
+          ]
+        },
+        "ppo/update/configured_epochs": {
+          "mean": 4.0,
+          "values": [
+            4.0,
+            4.0
+          ]
+        },
+        "ppo/update/epochs_completed": {
+          "mean": 4.0,
+          "values": [
+            4.0,
+            4.0
+          ]
+        },
+        "ppo/update/executed_minibatches": {
+          "mean": 1032.0,
+          "values": [
+            1032.0,
+            1032.0
+          ]
+        },
+        "ppo/update/executed_transition_samples": {
+          "mean": 1575814.0,
+          "values": [
+            1577536.0,
+            1574092.0
+          ]
+        },
+        "ppo/update/planned_minibatches": {
+          "mean": 1032.0,
+          "values": [
+            1032.0,
+            1032.0
+          ]
+        },
+        "rollout/games": {
+          "mean": 553.5,
+          "values": [
+            553.0,
+            554.0
+          ]
+        },
+        "rollout/grp_calls": {
+          "global_mean": 6021.0,
+          "mean": 501.75,
+          "values": [
+            502.0833333333333,
+            501.4166666666667
+          ]
+        },
+        "rollout/kyokus": {
+          "mean": 6021.0,
+          "values": [
+            6025.0,
+            6017.0
+          ]
+        },
+        "rollout/object_store_publish_gap_estimate_s": {
+          "mean": 0.11476349699660204,
+          "values": [
+            0.1289644640055485,
+            0.10056252998765558
+          ]
+        },
+        "rollout/result_get_s": {
+          "mean": 0.0026350309926783666,
+          "values": [
+            0.0021094789844937623,
+            0.003160583000862971
+          ]
+        },
+        "rollout/return_array_bytes": {
+          "global_mean": 1693718616.0,
+          "mean": 141143218.0,
+          "values": [
+            141271954.0,
+            141014482.0
+          ]
+        },
+        "rollout/return_array_count": {
+          "mean": 348.0,
+          "values": [
+            348.0,
+            348.0
+          ]
+        },
+        "rollout/return_transition_objects": {
+          "global_mean": 0.0,
+          "mean": 0.0,
+          "values": [
+            0.0,
+            0.0
+          ]
+        },
+        "rollout/transition_assembly_s": {
+          "mean": 0.4856613500014646,
+          "values": [
+            0.5241185130144004,
+            0.4472041869885288
+          ]
+        },
+        "rollout/wall_s": {
+          "mean": 50.68374439499166,
+          "values": [
+            53.17982720999862,
+            48.187661579984706
+          ]
+        },
+        "rollout/worker/rollout_s/max": {
+          "mean": 50.04915481500211,
+          "values": [
+            52.508050867007114,
+            47.59025876299711
+          ]
+        },
+        "rollout/worker/rollout_s/min": {
+          "mean": 39.3318833305093,
+          "values": [
+            38.162849790998735,
+            40.500916870019864
+          ]
+        },
+        "rollout/worker/rollout_s/p50": {
+          "mean": 45.11012673925143,
+          "values": [
+            44.55907009700604,
+            45.66118338149681
+          ]
+        },
+        "rollout/worker/rollout_s/p90": {
+          "mean": 47.62351810585678,
+          "values": [
+            48.085197978513314,
+            47.16183823320025
+          ]
+        },
+        "rollout/worker/worker_soa_pack_s/p50": {
+          "mean": 0.4433025920006912,
+          "values": [
+            0.4355547349987319,
+            0.45105044900265057
+          ]
+        },
+        "rollout/worker/worker_soa_pack_s/p90": {
+          "mean": 0.49607468360190976,
+          "values": [
+            0.4979858031088952,
+            0.4941635640949244
+          ]
+        },
+        "transitions": {
+          "mean": 393953.5,
+          "values": [
+            394384.0,
+            393523.0
+          ]
+        },
+        "update/wall_s": {
+          "mean": 130.09905786649324,
+          "values": [
+            91.73318253399339,
+            168.4649331989931
+          ]
+        }
+      },
+      "path": "checkpoints/train_riichi_v17/perf_512g4e_limit1_worker_soa/performance.jsonl",
+      "rounds": 3,
+      "scored_rounds": 2
+    }
+  },
+  "schema_version": 1,
+  "workers": 12
+}

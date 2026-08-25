@@ -37,15 +37,30 @@
       融合编码器的兼容适配层,删除 Python 的动作分派、post-shape、向听、有效牌、
       防守与役种重复实现;SFT、在线审计和测试共用同一 Rust 语义。
 
-## 后续可选深化(本次 rollout ≥1.20× 验收不再阻塞)
+## 本轮新增完成
+
+- [x] T7 紧凑 rollout 返回:worker 在最终 GAE 后把 `list[Transition]` 压为
+      flat+offsets SoA;driver 合并并让 learner/DDP 直接消费;旧对象路径保留为
+      oracle。标准计分轮 Ray `result_get` 19.37s→0.0026s,数组数
+      355.6 万→348,rollout 1.44×。
+- [x] T9(a) CPU 线程/Ray 资源 A/B/C/D sweep:rollout actor 独立设置
+      BLAS/OpenMP/PyTorch=1 与 `num_cpus=2`;GPU 三轮确认 step_threads=2 无收益并
+      回退,正式保留 step_threads=4。
+- [x] T14 返回链路 profiling:worker min/max/p50/p90、语义汇总、SoA pack、
+      object-store 发布差距、driver get/merge、数组数/字节数、线程/上下文切换、
+      games/kyokus/drain 分布全部落入 performance JSONL。
+- [x] T15 正确性:SoA merge/select/重复 DDP 下标/round-trip/GAE/returns/loss
+      逐元素或 float32 严格对照;unit 167、integration/protocol 34、Rust 10 通过。
+- [x] T16 标准 512g4e 三轮与真实 2048 验证:最终 50.684/130.099/181.274s;
+      2048 为 2078 games、1,610,326 transitions、2/2 epochs、2100/2100
+      minibatches、3,220,652 executed samples。
+
+## 后续可选深化
 
 - [ ] T6 direct action-id step:`bridge.decode` 之后由 Rust 直接应用 action id
-      驱动 `env.step_batch`。
-- [ ] T7 紧凑 rollout buffer:worker 内 pending 从 `list[Transition]` 改 SoA;
-      driver→learner 改 Ray 大数组/shared memory;记录 RPC/序列化/object-store
-      /materialization 时间与峰值内存。
+      驱动 `env.step_batch`;当前仅约 0.20s/worker/512,不再是主瓶颈。
 - [ ] T8 PPO update 深化:pinned host slabs、non_blocking H2D 并验证重叠;
       评估 DDP static graph / fused AdamW / torch.compile / bf16 autocast;
       两个 DDP rank 等量 shard。
-- [ ] T9 并发拓扑 sweep:T1/T2/T3 三组,测量 inference batch 分布、queue wait、
+- [ ] T9(b) actor 拓扑 sweep:T1/T2/T3 三组,测量 inference batch 分布、queue wait、
       GPU/actor idle、CPU run queue、线程过度订阅、active decision rows。

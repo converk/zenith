@@ -1,6 +1,6 @@
 # V17 PPO 原生性能重构 · 最终报告
 
-> 日期:2026-08-25 · 状态:最终(Rust 融合后 rollout/update/total 均达到验收)
+> 日期:2026-08-25 · 状态:最终(Rust 融合 + worker SoA/CPU 资源治理)
 > 相关产物:`specs/007-v17-ppo-native-performance/`、`audit/reports/v17/{design,eval,report,scripts}/`、`logs/v17/`
 
 ---
@@ -247,8 +247,8 @@ rollout **1.69×**、total **1.32×**;新轮 transitions 多 1.77%,update 的 4.
 - history 继续由 Rust state-machine 提供;snapshot/critic 仍沿用既有批路径,
   没有伪称进入同一个 `encode_v16_batch`;听牌 yaku facts 与计算已迁入 Rust。
   全字段已通过 oracle,且 profiling 中不再是主导项。
-- direct action-id step、worker pending SoA/Ray 大数组、pinned slabs/DDP static
-  graph 仍可深化,但不再是本次 ≥1.20× 验收的阻塞项。
+- worker SoA/Ray 大数组已在第 18–25 节完成。direct action-id step、pinned
+  slabs/DDP static graph 仍可深化,但新 profiling 显示它们不是当前主瓶颈。
 - 流水线/双缓冲未合入:融合路径已把 rollout 推到 1.78×,继续改异步状态机会增加
   current-only transition 与 action/state 对齐风险,本轮选择在正确性边界停下。
 
@@ -256,7 +256,9 @@ rollout **1.69×**、total **1.32×**;新轮 transitions 多 1.77%,update 的 4.
 
 使用自包含 `riichi_ppo_v1/configs/v17_ppo.yaml`;Action Query 现在无运行时开关,
 固定使用 Rust 融合路径。保持 `update_use_soa` 默认 true,以及现有
-12 worker × 32 env / 双 inference actor 拓扑:
+12 worker × 32 env / 双 inference actor 拓扑;worker 使用
+`rollout_worker_num_cpus=2`、`rollout_worker_cpu_threads=1`、
+`worker_return_soa=true`,并保留 GPU 验证胜出的 `env_step_threads=4`:
 
 ```
 env -C /mnt/disk1/hubowen/zenith \
@@ -269,3 +271,137 @@ env -C /mnt/disk1/hubowen/zenith \
 ```
 
 本轮只做验证,未启动正式长期训练。
+
+---
+
+## 18. Round 6:CPU 线程/Ray 资源与 worker SoA
+
+新数据流:
+
+```
+worker 小局内 Transition(仅本进程,用于 reward/GAE 回填)
+  -> 最终 GAE
+  -> RolloutBuffer(flat arrays + offsets,29 ndarray/shard)
+  -> Ray object store
+driver
+  -> 按 worker id 合并 SoA(不恢复 Transition)
+  -> DDP round-robin select(含原有 filler index)
+  -> learner 直接 collate SoA
+```
+
+Ray actor 的 `runtime_env.env_vars` 在 NumPy/PyTorch import 前只给 rollout worker
+设置 `OPENBLAS/OMP/MKL/NUMEXPR=1`;actor 初始化最前设置 PyTorch intra/interop=1。
+learner 没有被全局限流。每 worker 声明 2 CPU,12 worker 在 24 物理核/48 逻辑
+线程机器上全部同时调度。
+
+## 19. A/B/C/D CPU 三轮 sweep
+
+12 进程 × 32 env × 500 ticks,每进程另跑 1000 次同结构 GRP forward:
+
+| 组合 | step threads | worker CPU limit | table-step/s | GRP max | 总 wall | 最大线程数 | 非自愿切换 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| A current | 4 | 无 | 280,136 | 3.336s | 5.706s | 52 | 27,583 |
+| B step2 | 2 | 无 | 280,267 | 3.460s | 5.840s | 52 | 31,399 |
+| C limit1 | 4 | 1 | 277,539 | **0.407s** | **2.596s** | 1 | 601 |
+| D limit1+step2 | 2 | 1 | 274,074 | 0.374s | 2.626s | 1 | **400** |
+
+线程限流令 GRP 尾时延约 8.2×、非自愿切换约 45.9× 改善;环境完整路径中
+step=2 没有 CPU 收益。Ray actor 本身另有基础服务线程,运行时 `torch_threads` 与
+`torch_interop_threads` 均实测为 1。
+
+## 20. C/D 标准 GPU 三轮:step=2 负结果
+
+相同 seed=1;第 1 轮预热,不剔除第 3 轮 update 抖动:
+
+| 组合 | 计分轮 rollout | rollout 均值 | update 均值 | total 均值 | env step 均值 |
+|---|---|---:|---:|---:|---:|
+| C limit1,step4 | 72.148 / 73.384 | **72.766** | **149.939** | **223.978** | **1.803** |
+| D limit1,step2 | 77.336 / 68.454 | 72.895 | 150.565 | 224.754 | 2.035 |
+
+D 相对 C 分别慢 0.18%/0.42%/0.35%,所以回退 step=2 配置并保留正式默认 4。
+C 相对 Round 5 A(72.772/151.021/225.044)端到端基本持平:线程限流是必要资源
+治理,但 GPU 闭环收益只有 0–0.7%,不虚报为主要加速来源。
+
+## 21. worker SoA 返回链路收益
+
+计分轮 worker 计算分布几乎不变(C vs SoA p50 45.37→45.11s),说明采样计算没有
+被删除。变化发生在返回边界:
+
+| metric(计分轮均值) | C:旧对象 | C+worker SoA | 变化 |
+|---|---:|---:|---:|
+| Transition objects | 395,093 | 0 | 全部在 worker 内压缩 |
+| ndarray count/global | 3,555,833 | 348(29/worker) | **10,218× 更少** |
+| 有效数组字节/global | ~1.648GB | ~1.694GB | 信息未减少 |
+| worker SoA pack p50 | 0 | 0.443s | 新增一次性成本 |
+| semantic summary/worker | 0.0357s | 0.0375s | 不变 |
+| object-store publish gap | 2.535s | 0.115s | **22.1×** |
+| driver `ray.get` | 19.366s | 0.0026s | **约 7,350×** |
+| driver merge | 1.266s | 0.486s | 2.61× |
+| rollout wall | 72.766s | **50.684s** | **1.44×** |
+
+旧路径的 `ray.get` 才是 worker mean/max 与 driver wall 巨大空白的主因;字节量并未
+下降,收益来自少量大数组取代数百万 Python/ndarray 对象。
+
+## 22. 标准 512g4e 最终三轮
+
+配置:`CUDA_DEVICE=0,1`,`learner_gpus=2`,`games_per_update=512`,
+`update_epochs=4`,`target_kl=0.0`,seed=1:
+
+| 轮次 | transitions | games | rollout | update | total | epochs | minibatches | samples |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1(预热) | 514,702 | 553 | 71.548 | 125.113 | 197.313 | 4/4 | 1344/1344 | 2,058,808 |
+| 2 | 394,384 | 553 | 53.180 | 91.733 | 145.443 | 4/4 | 1032/1032 | 1,577,536 |
+| 3 | 393,523 | 554 | 48.188 | 168.465 | 217.106 | 4/4 | 1032/1032 | 1,574,092 |
+| 2/3 均值 | 393,954 | 553.5 | **50.684** | **130.099** | **181.274** | 4/4 | 全部 | 1,575,814 |
+
+相对 Round 5 A:rollout **1.44×**、update **1.16×**、total **1.24×**。相对最初
+同条件 noso 129.374/209.566/340.178s:rollout **2.55×**、update **1.61×**、
+total **1.88×**。第三轮 update=168.465s 原样计入。
+
+主要 stage(计分轮均值):env step 1.796s/worker、Rust query 6.298s/worker、
+RPC wait 29.214s/worker;inference 两 actor 求和 host collate 4.260s、H2D 2.596s、
+full forward 41.338s、queue wait 100.813s。GPU utilization mean 68.04%、max 100%。
+
+## 23. 真实 2048 最终验证
+
+直接使用更新后的 `v17_ppo.yaml`,仅把 iterations 限为 1 且写入独立性能
+checkpoint:2078 games、24,668 kyokus、1,610,326 transitions、2/2 epochs、
+2100/2100 minibatches、3,220,652 executed samples,`early_stop=False`。
+
+| metric | 旧 Rust-only | worker SoA 最终 | speedup |
+|---|---:|---:|---:|
+| rollout | 275.312s | **206.725s** | **1.33×** |
+| update | 287.917s | **203.300s** | **1.42×** |
+| total | 563.269s | **412.045s** | **1.37×** |
+
+worker rollout min/p50/p90/max=175.19/185.36/200.30/201.82s;games/worker
+min/p50/p90/max=172/173/174.9/176;drain steps 79–95。SoA pack p50/p90=
+2.147/2.318s,driver get=1.9ms,合并=2.014s。返回仍为 348 arrays,每 worker
+平均约 577MB,没有减少有效输入。GPU utilization mean/max=50.48%/100%。
+
+旧轮与新轮都超过 2048 games 目标;新轮因异步 inference 服务顺序改变而轨迹长度
+不同,但没有主动减少 games、GRP、transitions 或训练计算。
+
+## 24. 正确性与计数验证
+
+- SoA round-trip/concatenate/select/DDP 重复 filler:离散数组与有效长度逐元素全等;
+  float32 先显式转协议 dtype,`atol=0,rtol=0`,最大误差 0。
+- GAE advantages、empirical returns、相同模型权重与 shuffle seed 的 PPO
+  loss/policy/value/entropy/KL 与旧路径一致。
+- 全 action kind(tsumo/ron/reach/dahai/chi/pon/ankan/daiminkan/kakan/pass/
+  none/ryukyoku)、V16 bridge/golden/oracle 沿用并通过。
+- 最终测试:`riichi_ppo_v1/tests/unit` 167 passed;integration/protocol 34 passed;
+  `riichienv-state-machine` Rust 10 passed;真实 Ray 冒烟通过并清理产物。
+- 标准与 2048 的 GRP 调用与 kyoku 边界一致;最终标准计分轮分别约 6025/6017
+  global GRP calls,2048 为 24,630;epochs/minibatches/executed samples 无减少。
+
+## 25. 后续 profiling 决策
+
+2048 中 Snapshot JSON + critic + action decode 合计约 10.63s/worker,只占 rollout
+wall 约 5.1%;inference RPC wait 为 122.92s/worker。返回链路大空白已消除,所以本轮
+不继续 Snapshot/Critic/direct-action Rust 融合。
+
+固定配额仍造成 worker max/p50 约 1.09×,但每 worker games 仅 172–176。动态接管
+需要跨 worker 协调完整半庄与小局收口,收益上界尚不足以覆盖语义风险;不采用达到
+全局目标就取消慢 worker的错误方案。下一优先级应重新 profile inference 调度或
+learner pinned/shared-memory 传输,而不是减少计算或再次放大 inference wait 窗口。
