@@ -62,8 +62,7 @@ class ConfigLoadingTest(unittest.TestCase):
         baseline = load_config(str(configs / "v17_ppo_perf_512g4e.yaml"))
         expected = {
             "v17_ppo_perf_512g4e_limit1.yaml": (4, False),
-            "v17_ppo_perf_512g4e_limit1_step2.yaml": (2, False),
-            "v17_ppo_perf_512g4e_limit1_step2_worker_soa.yaml": (2, True),
+            "v17_ppo_perf_512g4e_limit1_worker_soa.yaml": (4, True),
         }
         for name, (step_threads, worker_soa) in expected.items():
             config = load_config(str(configs / name))

@@ -1,4 +1,4 @@
-# V17 PPO 标准组合候选:线程限流 + env step=2 + worker SoA 返回。
+# V17 PPO 标准组合候选:线程限流 + worker SoA 返回。
 seed: 1
 device: cuda
 learner_gpus: 2
@@ -15,7 +15,7 @@ grp_checkpoint: checkpoints/train_riichi_v17/grp/best.pt
 
 num_workers: 12
 envs_per_worker: 32
-env_step_threads: 2
+env_step_threads: 4
 rollout_worker_num_cpus: 2
 rollout_worker_cpu_threads: 1
 worker_return_soa: true
@@ -64,7 +64,7 @@ sft_kl_coef_end: 0.002
 sft_kl_middle_fraction: 0.5
 
 checkpoint_interval_updates: 99999
-checkpoint_dir: checkpoints/train_riichi_v17/perf_512g4e_limit1_step2_worker_soa
+checkpoint_dir: checkpoints/train_riichi_v17/perf_512g4e_limit1_worker_soa
 resume: null
 
 opponent_mix:
