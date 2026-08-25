@@ -31,6 +31,7 @@ from .learner import (
     rollout_target_metrics,
     rollout_update_targets,
 )
+from .rollout_buffer import RolloutBuffer
 from .trajectory import Transition
 
 
@@ -151,7 +152,7 @@ def _weighted_mean(values: list[float], weights: list[float]) -> float:
 
 def aggregate_learner_metrics(
     metrics_by_rank: list[dict[str, float]],
-    transitions: list[Transition],
+    transitions: list[Transition] | RolloutBuffer,
 ) -> dict[str, float]:
     """把两个 DDP rank 的本地指标汇总为一次 update 的全局指标。"""
     if not metrics_by_rank:
@@ -392,7 +393,7 @@ class LearnerDDP:
 
     def update(
         self,
-        transitions: list[Transition],
+        transitions: list[Transition] | RolloutBuffer,
         *,
         shuffle_seed: int | None = None,
     ) -> tuple[dict[str, float], list[dict[str, float]]]:
@@ -400,9 +401,14 @@ class LearnerDDP:
         index_shards = learner_shard_indices(
             len(transitions), self.world_size, self._minibatch_size,
         )
-        shards = [
-            [transitions[index] for index in shard] for shard in index_shards
-        ]
+        if isinstance(transitions, RolloutBuffer):
+            shards: list[list[Transition] | RolloutBuffer] = [
+                transitions.select(shard) for shard in index_shards
+            ]
+        else:
+            shards = [
+                [transitions[index] for index in shard] for shard in index_shards
+            ]
         advantages, returns, _return_mean, _return_std = rollout_update_targets(
             transitions, self._gamma,
         )

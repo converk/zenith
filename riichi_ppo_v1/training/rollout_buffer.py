@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Iterator, Sequence
 
 import numpy as np
 import torch
@@ -99,6 +99,9 @@ class RolloutBuffer:
         )
         self.values = np.array([float(item.value) for item in transitions], dtype=np.float32)
         self.rewards = np.array([float(item.reward) for item in transitions], dtype=np.float32)
+        self.kyoku_rewards = np.array(
+            [float(item.kyoku_reward) for item in transitions], dtype=np.float32
+        )
         self.done = np.array([bool(item.done) for item in transitions], dtype=np.bool_)
         self.advantages = np.array(
             [float(item.advantage) for item in transitions], dtype=np.float32
@@ -170,6 +173,168 @@ class RolloutBuffer:
         self.critic_factors_flat = (
             np.concatenate(critic_parts, axis=0) if critic_parts else np.zeros((0, _CRITIC_W), dtype=np.uint8)
         )
+
+    def __len__(self) -> int:
+        return self.size
+
+    def arrays(self) -> Iterator[np.ndarray]:
+        """迭代实际参与序列化的连续数组,供传输 profiling 使用。"""
+        for value in vars(self).values():
+            if isinstance(value, np.ndarray):
+                yield value
+
+    def payload_stats(self) -> tuple[int, int]:
+        """返回 ndarray 数量与数组有效字节数。"""
+        arrays = tuple(self.arrays())
+        return len(arrays), sum(int(array.nbytes) for array in arrays)
+
+    @staticmethod
+    def _offsets(lengths: np.ndarray) -> np.ndarray:
+        offsets = np.empty(len(lengths) + 1, dtype=np.int64)
+        offsets[0] = 0
+        np.cumsum(np.asarray(lengths, dtype=np.int64), out=offsets[1:])
+        return offsets
+
+    @classmethod
+    def concatenate(cls, buffers: Sequence["RolloutBuffer"]) -> "RolloutBuffer":
+        """按 worker 顺序合并 SoA shard,不恢复百万级 Transition 对象。"""
+        if not buffers:
+            raise ValueError("cannot concatenate an empty rollout buffer list")
+        result = cls.__new__(cls)
+        result.size = sum(len(buffer) for buffer in buffers)
+        fixed_fields = (
+            "history_lengths", "snapshot_lengths", "query_pair_counts",
+            "critic_lengths", "sequence_lengths", "actions", "old_logprobs",
+            "values", "rewards", "kyoku_rewards", "done", "advantages",
+            "legal_mask",
+        )
+        for name in fixed_fields:
+            setattr(result, name, np.concatenate([
+                np.asarray(getattr(buffer, name)) for buffer in buffers
+            ], axis=0))
+        variable_fields = (
+            ("history_offsets", "history_factors", result.history_lengths),
+            ("history_numeric_offsets", "history_numeric_flat", result.history_lengths),
+            ("snapshot_kinds_offsets", "snapshot_kinds_flat", result.snapshot_lengths),
+            ("snapshot_cat_offsets", "snapshot_cat_flat", result.snapshot_lengths),
+            ("snapshot_num_offsets", "snapshot_num_flat", result.snapshot_lengths),
+            ("query_rows_offsets", "query_rows_flat", 2 * result.query_pair_counts),
+            ("query_ids_offsets", "query_ids_flat", result.query_pair_counts),
+            ("critic_offsets", "critic_factors_flat", result.critic_lengths),
+        )
+        for offsets_name, flat_name, lengths in variable_fields:
+            setattr(result, offsets_name, cls._offsets(lengths))
+            setattr(result, flat_name, np.concatenate([
+                np.asarray(getattr(buffer, flat_name)) for buffer in buffers
+            ], axis=0))
+        # 旧版本误把 history_factors 的通道宽存在此属性;保留兼容但不参与训练。
+        result.history_numeric = _HISTORY_W
+        return result
+
+    @staticmethod
+    def _select_flat(
+        flat: np.ndarray,
+        offsets: np.ndarray,
+        indices: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """按任意下标重排 flat+offsets,支持 DDP 补齐产生的重复下标。"""
+        starts = offsets[indices]
+        lengths = offsets[indices + 1] - starts
+        selected_offsets = RolloutBuffer._offsets(lengths)
+        total = int(selected_offsets[-1])
+        if total == 0:
+            return selected_offsets, np.empty((0, *flat.shape[1:]), dtype=flat.dtype)
+        # 每行源起点减目标起点后 repeat,一次生成连续 gather 下标。
+        bases = np.repeat(starts - selected_offsets[:-1], lengths)
+        source_indices = bases + np.arange(total, dtype=np.int64)
+        return selected_offsets, np.ascontiguousarray(flat[source_indices])
+
+    def select(self, indices: Sequence[int]) -> "RolloutBuffer":
+        """构造训练分片;字段与顺序严格遵循给定下标。"""
+        idx = np.asarray(indices, dtype=np.int64)
+        if idx.ndim != 1 or not len(idx):
+            raise ValueError("rollout buffer selection must be a non-empty 1D index array")
+        if int(idx.min()) < 0 or int(idx.max()) >= self.size:
+            raise IndexError("rollout buffer selection index is out of range")
+        result = self.__class__.__new__(self.__class__)
+        result.size = len(idx)
+        fixed_fields = (
+            "history_lengths", "snapshot_lengths", "query_pair_counts",
+            "critic_lengths", "sequence_lengths", "actions", "old_logprobs",
+            "values", "rewards", "kyoku_rewards", "done", "advantages",
+            "legal_mask",
+        )
+        for name in fixed_fields:
+            setattr(result, name, np.ascontiguousarray(getattr(self, name)[idx]))
+        variable_fields = (
+            ("history_offsets", "history_factors"),
+            ("history_numeric_offsets", "history_numeric_flat"),
+            ("snapshot_kinds_offsets", "snapshot_kinds_flat"),
+            ("snapshot_cat_offsets", "snapshot_cat_flat"),
+            ("snapshot_num_offsets", "snapshot_num_flat"),
+            ("query_rows_offsets", "query_rows_flat"),
+            ("query_ids_offsets", "query_ids_flat"),
+            ("critic_offsets", "critic_factors_flat"),
+        )
+        for offsets_name, flat_name in variable_fields:
+            selected_offsets, selected_flat = self._select_flat(
+                getattr(self, flat_name), getattr(self, offsets_name), idx,
+            )
+            setattr(result, offsets_name, selected_offsets)
+            setattr(result, flat_name, selected_flat)
+        result.history_numeric = _HISTORY_W
+        return result
+
+    def to_transitions(self) -> list[Transition]:
+        """仅供 oracle/debug 恢复旧对象路径;生产训练不得调用。"""
+        result: list[Transition] = []
+        for index in range(self.size):
+            history = slice(self.history_offsets[index], self.history_offsets[index + 1])
+            history_numeric = slice(
+                self.history_numeric_offsets[index], self.history_numeric_offsets[index + 1]
+            )
+            snapshot_kinds = slice(
+                self.snapshot_kinds_offsets[index], self.snapshot_kinds_offsets[index + 1]
+            )
+            snapshot_cat = slice(
+                self.snapshot_cat_offsets[index], self.snapshot_cat_offsets[index + 1]
+            )
+            snapshot_num = slice(
+                self.snapshot_num_offsets[index], self.snapshot_num_offsets[index + 1]
+            )
+            query_rows = slice(
+                self.query_rows_offsets[index], self.query_rows_offsets[index + 1]
+            )
+            query_ids = slice(
+                self.query_ids_offsets[index], self.query_ids_offsets[index + 1]
+            )
+            critic = slice(self.critic_offsets[index], self.critic_offsets[index + 1])
+            critic_length = int(self.critic_lengths[index])
+            result.append(Transition(
+                history_factors=self.history_factors[history].copy(),
+                history_numeric=self.history_numeric_flat[history_numeric].copy(),
+                history_length=int(self.history_lengths[index]),
+                snapshot_kinds=self.snapshot_kinds_flat[snapshot_kinds].copy(),
+                snapshot_cat=self.snapshot_cat_flat[snapshot_cat].copy(),
+                snapshot_num=self.snapshot_num_flat[snapshot_num].copy(),
+                snapshot_length=int(self.snapshot_lengths[index]),
+                query_rows=self.query_rows_flat[query_rows].copy(),
+                query_action_ids=self.query_ids_flat[query_ids].copy(),
+                query_pair_counts=int(self.query_pair_counts[index]),
+                legal_mask=self.legal_mask[index].copy(),
+                action=int(self.actions[index]),
+                logprob=float(self.old_logprobs[index]),
+                value=float(self.values[index]),
+                reward=float(self.rewards[index]),
+                kyoku_reward=float(self.kyoku_rewards[index]),
+                done=bool(self.done[index]),
+                advantage=float(self.advantages[index]),
+                critic_factors=(
+                    self.critic_factors_flat[critic].copy() if critic_length else None
+                ),
+                critic_length=critic_length,
+            ))
+        return result
 
     @staticmethod
     def _concat_var(

@@ -148,26 +148,48 @@ def branch_grad_norms(model: nn.Module) -> dict[str, torch.Tensor]:
     return {name: value.sqrt() for name, value in squared_sums.items()}
 
 
-def discounted_empirical_returns(transitions: list[Transition], gamma: float) -> np.ndarray:
+def _rollout_values(
+    transitions: list[Transition] | RolloutBuffer,
+    field: str,
+    dtype: np.dtype[Any],
+) -> np.ndarray:
+    """从旧对象列表或 worker SoA 读取同一标量字段。"""
+    if isinstance(transitions, RolloutBuffer):
+        return np.asarray(getattr(transitions, field), dtype=dtype)
+    source = {
+        "actions": "action",
+        "old_logprobs": "logprob",
+        "values": "value",
+        "rewards": "reward",
+        "kyoku_rewards": "kyoku_reward",
+        "advantages": "advantage",
+    }.get(field, field)
+    return np.asarray([getattr(item, source) for item in transitions], dtype=dtype)
+
+
+def discounted_empirical_returns(
+    transitions: list[Transition] | RolloutBuffer, gamma: float,
+) -> np.ndarray:
     """Monte Carlo reward-to-go,每局终局时重置。"""
     returns = np.zeros(len(transitions), dtype=np.float32)
     running = 0.0
+    rewards = _rollout_values(transitions, "rewards", np.dtype(np.float32))
+    done = _rollout_values(transitions, "done", np.dtype(np.bool_))
     for index in range(len(transitions) - 1, -1, -1):
-        item = transitions[index]
-        if item.done:
+        if done[index]:
             running = 0.0
-        running = float(item.reward) + float(gamma) * running
+        running = float(rewards[index]) + float(gamma) * running
         returns[index] = np.float32(running)
     return returns
 
 
 def rollout_update_targets(
-    transitions: list[Transition],
+    transitions: list[Transition] | RolloutBuffer,
     gamma: float,
 ) -> tuple[np.ndarray, np.ndarray, float, float]:
     """完整 rollout 的 advantage 归一化与 empirical returns(供 DDP 分片复用)。"""
-    source_advantages = np.asarray(
-        [item.advantage for item in transitions], dtype=np.float32,
+    source_advantages = _rollout_values(
+        transitions, "advantages", np.dtype(np.float32),
     )
     advantages = (
         (source_advantages - source_advantages.mean(dtype=np.float64))
@@ -203,9 +225,18 @@ def categorical_kl_values(
     return (probability * (safe_policy - safe_reference)).sum(-1)
 
 
-def transition_length_metrics(transitions: list[Transition], prefix: str = "update/buffer") -> dict[str, float]:
+def transition_length_metrics(
+    transitions: list[Transition] | RolloutBuffer,
+    prefix: str = "update/buffer",
+) -> dict[str, float]:
     """描述 V16 语义序列长度与全量 padding 基线。"""
-    lengths = np.asarray([transition_sequence_length(item) for item in transitions], dtype=np.int64)
+    lengths = (
+        np.asarray(transitions.sequence_lengths, dtype=np.int64)
+        if isinstance(transitions, RolloutBuffer)
+        else np.asarray([
+            transition_sequence_length(item) for item in transitions
+        ], dtype=np.int64)
+    )
     if np.any(lengths < 0):
         raise ValueError("sequence length cannot be negative")
     global_padded_input_tokens = int(lengths.max()) * len(transitions)
@@ -223,11 +254,25 @@ def transition_length_metrics(transitions: list[Transition], prefix: str = "upda
     }
 
 
-def rollout_target_metrics(transitions: list[Transition]) -> dict[str, float]:
+def rollout_target_metrics(
+    transitions: list[Transition] | RolloutBuffer,
+) -> dict[str, float]:
     """全量 rollout 的序列长度与 advantage 统计(host 侧,供 learner 与汇总共用)。"""
     length_metrics = transition_length_metrics(transitions)
-    length_metrics.update(ppo_buffer_metrics(transitions))
-    raw_advantages = np.asarray([item.advantage for item in transitions], dtype=np.float64)
+    if isinstance(transitions, RolloutBuffer):
+        advantages = np.asarray(transitions.advantages, dtype=np.float64)
+        values = np.asarray(transitions.values, dtype=np.float64)
+        length_metrics.update({
+            "buffer/advantage_mean": float(advantages.mean()),
+            "buffer/advantage_std": float(advantages.std()),
+            "buffer/value_mean": float(values.mean()),
+            "buffer/value_std": float(values.std()),
+        })
+    else:
+        length_metrics.update(ppo_buffer_metrics(transitions))
+    raw_advantages = _rollout_values(
+        transitions, "advantages", np.dtype(np.float64),
+    )
     length_metrics.update({
         "advantage_mean": float(raw_advantages.mean()),
         "advantage_std": float(raw_advantages.std()),
@@ -537,7 +582,7 @@ class PPOLearner:
 
     def update(
         self,
-        transitions: list[Transition],
+        transitions: list[Transition] | RolloutBuffer,
         *,
         shuffle_seed: int | None = None,
         advantages: np.ndarray | None = None,
@@ -570,8 +615,8 @@ class PPOLearner:
             return_std = float(returns.std(dtype=np.float64))
 
         # value 拟合度:对完整 rollout 的 empirical returns 计算 explained variance。
-        raw_values = np.asarray(
-            [float(item.value) for item in transitions], dtype=np.float64,
+        raw_values = _rollout_values(
+            transitions, "values", np.dtype(np.float64),
         )
         returns_var = float(np.var(returns, dtype=np.float64))
         length_metrics["value_explained_variance"] = (
@@ -586,8 +631,14 @@ class PPOLearner:
         use_soa = bool(self.hp.get("update_use_soa", True))
         buffer: RolloutBuffer | None = None
         if use_soa:
-            buffer = RolloutBuffer(transitions)
+            buffer = (
+                transitions
+                if isinstance(transitions, RolloutBuffer)
+                else RolloutBuffer(transitions)
+            )
             buffer.advantages = np.asarray(advantages, dtype=np.float32)
+        elif isinstance(transitions, RolloutBuffer):
+            raise ValueError("worker SoA rollout requires update_use_soa=true")
 
         metric_sample_sums: dict[str, torch.Tensor] = {}
         metric_sample_count = 0

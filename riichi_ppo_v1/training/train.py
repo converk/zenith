@@ -38,6 +38,7 @@ from .tensorboard import learner_peak_allocated_mb, write_curated_scalars
 from ..model.schema import TOKEN_SCHEMA_VERSION
 from .learner import PPOLearner, validate_fresh_model_checkpoint_contract
 from .learner_ddp import LearnerDDP
+from .rollout_buffer import RolloutBuffer
 from ..evaluation.head_to_head_1v3_shards import (
     run_sharded_1v3,
     validate_1v3_shard_plan,
@@ -538,11 +539,19 @@ def run(config: dict[str, Any]) -> None:
             actor_profile = aggregate_actor_profiles(actor_profiles)
             profile_summary_s = time.perf_counter() - profile_summary_started
             transition_assembly_started = time.perf_counter()
-            transitions = [
-                transition
-                for worker_transitions, _stats in results
-                for transition in worker_transitions
-            ]
+            worker_payloads = [payload for payload, _stats in results]
+            if all(isinstance(payload, RolloutBuffer) for payload in worker_payloads):
+                transitions: list[Any] | RolloutBuffer = RolloutBuffer.concatenate(
+                    worker_payloads,
+                )
+            elif all(isinstance(payload, list) for payload in worker_payloads):
+                transitions = [
+                    transition
+                    for worker_transitions in worker_payloads
+                    for transition in worker_transitions
+                ]
+            else:
+                raise RuntimeError("rollout workers returned mixed payload formats")
             transition_assembly_s = time.perf_counter() - transition_assembly_started
             update_started = time.perf_counter()
             update_seed = int(config["seed"]) + (iteration + 1) * 1_000_003
@@ -652,10 +661,24 @@ def run(config: dict[str, Any]) -> None:
             write_curated_scalars(writer, tensorboard_metrics, iteration + 1)
             histogram_interval = int(config.get("metrics_histogram_interval", 25))
             if histogram_interval > 0 and (iteration + 1) % histogram_interval == 0 and transitions:
-                writer.add_histogram("diagnostics/gae_advantage", np.asarray([item.advantage for item in transitions], dtype=np.float32), iteration + 1)
-                writer.add_histogram("diagnostics/value", np.asarray([item.value for item in transitions], dtype=np.float32), iteration + 1)
-                writer.add_histogram("diagnostics/legal_action_count", np.asarray([item.legal_mask.sum() for item in transitions], dtype=np.int16), iteration + 1)
-                writer.add_histogram("diagnostics/sequence_length", np.asarray([item.history_length + item.snapshot_length + 2 * item.query_pair_counts for item in transitions], dtype=np.int16), iteration + 1)
+                if isinstance(transitions, RolloutBuffer):
+                    histogram_values = {
+                        "gae_advantage": transitions.advantages,
+                        "value": transitions.values,
+                        "legal_action_count": transitions.legal_mask.sum(axis=1, dtype=np.int16),
+                        "sequence_length": transitions.sequence_lengths,
+                    }
+                else:
+                    histogram_values = {
+                        "gae_advantage": np.asarray([item.advantage for item in transitions], dtype=np.float32),
+                        "value": np.asarray([item.value for item in transitions], dtype=np.float32),
+                        "legal_action_count": np.asarray([item.legal_mask.sum() for item in transitions], dtype=np.int16),
+                        "sequence_length": np.asarray([item.history_length + item.snapshot_length + 2 * item.query_pair_counts for item in transitions], dtype=np.int16),
+                    }
+                for name, values in histogram_values.items():
+                    writer.add_histogram(
+                        f"diagnostics/{name}", np.asarray(values), iteration + 1,
+                    )
             append_jsonl(Path(config["checkpoint_dir"]) / "performance.jsonl", {
                 "iteration": iteration + 1,
                 "timestamp": time.time(),
