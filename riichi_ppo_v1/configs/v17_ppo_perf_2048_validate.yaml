@@ -3,7 +3,7 @@
 # - 纯 GRP reward(utility [1, 1/3, -1/3, -1]),无小局点差分量;
 # - 每 update 收集 2048 个完整半庄(rollout 停止条件为完整半庄数);
 # - 2 GPU DDP,minibatch_size=1536/GPU → global effective 3072;
-#   update_epochs=1;若 1536/GPU 因最长序列显存不足,可用
+#   update_epochs=2;若 1536/GPU 因最长序列显存不足,可用
 #   gradient_accumulation_steps=2(此时 per-GPU 每次 step 仍按 1536 语义,
 #   把 3072 拆成 2 步累积)但全局 effective batch 保持 ≈3072;
 # - 完全移除 Q 体系(无 Q loss/Q-Boosting),advantage 为 GAE(γ, λ);
@@ -36,6 +36,8 @@ inference_batch_wait_ms: 8.0
 inference_batch_target_rows: 0
 inference_batch_target_workers: 0
 games_per_update: 2048
+v16_batch_query: true
+v16_rust_encoding: true
 
 # PPO 超参(Mortal GRP 纯奖励;batch 增大不线性放大 LR)。
 gamma: 1.0
@@ -45,7 +47,7 @@ update_epochs: 2
 minibatch_size: 1536
 gradient_accumulation_steps: 1
 update_batch_mode: streaming
-# 熵系数 0.010->0.005
+# 熵系数 0.010->0.003
 entropy_start: 0.01
 entropy_end: 0.003
 value_coef: 0.5

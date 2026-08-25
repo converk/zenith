@@ -24,12 +24,12 @@ def test_v17_config_is_self_contained() -> None:
     assert config["inference_dtype"] == "bf16"
     # 2048 半庄/update(rollout 停止条件为完整半庄数)。
     assert config["games_per_update"] == 2048
-    # 2 GPU DDP,每 GPU 1536 → global 3072,update_epochs=1。
+    # 2 GPU DDP,每 GPU 1536 → global 3072,update_epochs=2。
     assert config["minibatch_size"] == 1536
-    assert config["update_epochs"] == 1
+    assert config["update_epochs"] == 2
     assert config.get("gradient_accumulation_steps", 1) >= 1
     # PPO 超参。
-    assert config["actor_learning_rate"] == pytest.approx(2e-5)
+    assert config["actor_learning_rate"] == pytest.approx(3e-5)
     assert config["actor_learning_rate_min"] == pytest.approx(5e-6)
     assert config["shared_learning_rate"] == pytest.approx(5e-6)
     assert config["shared_learning_rate_min"] == pytest.approx(1.25e-6)
@@ -39,7 +39,7 @@ def test_v17_config_is_self_contained() -> None:
     assert config["target_kl"] == 0.01
     assert config["max_grad_norm"] == 0.75
     assert config["entropy_start"] == 0.01
-    assert config["entropy_end"] == 0.01
+    assert config["entropy_end"] == 0.003
     assert config["critic_bootstrap_updates"] == 2
     assert config["iterations"] == 150
     assert config["total_updates"] == 150

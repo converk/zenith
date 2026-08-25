@@ -49,6 +49,11 @@ def main() -> None:
     parser.add_argument("--max-steps", type=int, default=40)
     parser.add_argument("--seed", type=int, default=20260819)
     parser.add_argument("--out", default="audit/reports/v17/eval/golden_baseline_v17.npz")
+    parser.add_argument(
+        "--rust-encoding",
+        action="store_true",
+        help="用 Rust 融合快路径重放同一 golden trace,供逐元素对照",
+    )
     args = parser.parse_args()
 
     config = _load_config(args.config)
@@ -68,7 +73,13 @@ def main() -> None:
         game_mode=config["game_mode"],
     )
     state_machine = riichi.MjaiKyokuStateMachineManager(num_envs)
-    bridge = BatchedStateBridge(state_machine, num_envs, profiler)
+    bridge = BatchedStateBridge(
+        state_machine,
+        num_envs,
+        profiler,
+        batch_query=bool(args.rust_encoding),
+        rust_encoding=bool(args.rust_encoding),
+    )
 
     observations = list(envs.reset())
     walls = list(envs.walls())
