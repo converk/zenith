@@ -11,6 +11,9 @@ import numpy as np
 
 from ..model.encoding_protocol import SNAPSHOT_FIELD_COUNT
 
+# 状态后缀行数与复用偏移的旧基线一致(删除剩余牌山估计 token 与新增巡目
+# 计数器相互抵消),因此本期无需额外的每决策行数校正。
+
 
 def _offset_lengths(offsets: np.ndarray) -> np.ndarray:
     values = np.asarray(offsets, dtype=np.int64)
@@ -48,6 +51,7 @@ def calculate(dataset: Path, split: str) -> dict[str, Any]:
     if count == 0:
         raise RuntimeError(f"encoded split contains no decisions: {dataset / split}")
     snapshot_sum = count * SNAPSHOT_FIELD_COUNT
+    total_sum = history_sum + snapshot_sum + query_sum
     return {
         "split": split,
         "shards": len(paths),
@@ -55,7 +59,7 @@ def calculate(dataset: Path, split: str) -> dict[str, Any]:
         "history_mean": history_sum / count,
         "snapshot_mean": snapshot_sum / count,
         "query_mean": query_sum / count,
-        "total_mean": (history_sum + snapshot_sum + query_sum) / count,
+        "total_mean": total_sum / count,
         "total_min": minimum,
         "total_max": maximum,
     }

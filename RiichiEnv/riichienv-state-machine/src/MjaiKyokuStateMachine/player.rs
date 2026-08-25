@@ -37,12 +37,11 @@ impl SemanticToken {
 struct PlayerKyokuStateMachine {
     absolute_seat: u8,
     history: Vec<SemanticToken>,
-    live_wall: u8,
 }
 
 impl PlayerKyokuStateMachine {
     fn new(absolute_seat: u8) -> Self {
-        Self { absolute_seat, history: Vec::new(), live_wall: 70 }
+        Self { absolute_seat, history: Vec::new() }
     }
 
     fn apply_player_event(&mut self, event: &MjaiEvent) -> Result<(), String> {
@@ -68,7 +67,6 @@ impl PlayerKyokuStateMachine {
 
     fn start_kyoku(&mut self, bakaze: MjaiTile, kyoku: u8) {
         self.history.clear();
-        self.live_wall = 70;
         let wind = bakaze.deaka().as_u8().saturating_sub(27).min(3);
         let hand = kyoku.saturating_sub(1).min(3);
         self.history.push(self.event_token(2, ACTOR_NONE, ACTOR_NONE, None, 1 + wind * 4 + hand));
@@ -76,9 +74,9 @@ impl PlayerKyokuStateMachine {
 
     fn apply_event(&mut self, event: &MjaiEvent) {
         match event {
-            // A draw changes the active wall and own snapshot hand. It has no
-            // standalone semantic token, matching the encoder in exp.
-            MjaiEvent::Tsumo { .. } => self.live_wall = self.live_wall.saturating_sub(1),
+            // 摸牌不产生独立语义 token:自身的摸牌由状态后缀的摸牌行表达,
+            // 剩余牌山数无法从 MJAI 事件流精确推导,不再估计、不再编码。
+            MjaiEvent::Tsumo { .. } => {}
             MjaiEvent::Dahai { actor, pai, tsumogiri } => {
                 self.history.push(self.event_token(4, self.relative(*actor), ACTOR_NONE, Some(*pai), 1 + u8::from(*tsumogiri)));
             }
@@ -136,18 +134,17 @@ impl PlayerKyokuStateMachine {
             (2, snapshot.kyoku_index as f32 + 1.0),
             (3, snapshot.honba as f32),
             (4, snapshot.riichi_sticks as f32),
-            (5, self.live_wall as f32),
         ] {
             out.push(SemanticToken::categorical([
                 SEGMENT_ACTOR_STATE, KIND_COUNTER, field, 0, 0, 0, 0, 0, 0, 0,
             ]).number(2, value));
         }
         out.push(SemanticToken::categorical([
-            SEGMENT_ACTOR_STATE, KIND_COUNTER, 6, self.relative(snapshot.oya), 0, 0, 0, 0, 0, 0,
+            SEGMENT_ACTOR_STATE, KIND_COUNTER, 5, self.relative(snapshot.oya), 0, 0, 0, 0, 0, 0,
         ]));
         let self_wind = (self.absolute_seat + NUM_PLAYERS as u8 - snapshot.oya) % NUM_PLAYERS as u8 + 1;
         out.push(SemanticToken::categorical([
-            SEGMENT_ACTOR_STATE, KIND_COUNTER, 7, ACTOR_SELF, 0, 0, 0, self_wind, 0, 0,
+            SEGMENT_ACTOR_STATE, KIND_COUNTER, 6, ACTOR_SELF, 0, 0, 0, self_wind, 0, 0,
         ]));
         for indicator in &snapshot.dora_indicators {
             let tile = snapshot_tile(indicator)?;
@@ -158,8 +155,19 @@ impl PlayerKyokuStateMachine {
             | (u8::from(drawn.is_some()) << 1)
             | ((snapshot.decision_flags & 1) << 2);
         out.push(SemanticToken::categorical([
-            SEGMENT_ACTOR_STATE, KIND_COUNTER, 8, ACTOR_SELF, 0, 0, 0, 0, flags, 0,
+            SEGMENT_ACTOR_STATE, KIND_COUNTER, 7, ACTOR_SELF, 0, 0, 0, 0, flags, 0,
         ]));
+        // 当前巡目 = 已完成公开舍牌轮数 + 1(精确计数,不是剩余牌数估计);
+        // 舍牌事件数可从公开事件前缀精确还原。
+        let dahai_count = self
+            .history
+            .iter()
+            .filter(|row| row.factors[1] == KIND_EVENT && row.factors[2] == 4)
+            .count() as u8;
+        let current_turn = (dahai_count / 4).saturating_add(1).min(25);
+        out.push(SemanticToken::categorical([
+            SEGMENT_ACTOR_STATE, KIND_COUNTER, 8, 0, 0, 0, 0, 0, 0, 0,
+        ]).number(2, current_turn as f32));
 
         let mut counts = [0u8; 34];
         let mut red = [false; 34];

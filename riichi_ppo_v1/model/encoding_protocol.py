@@ -1,6 +1,6 @@
 """现行 V18 信息编码协议的 Python 消费边界。
 
-29 个 Snapshot 字段的顺序与域只在 Rust ``atomic_snapshot`` 定义一次,本模块
+49 个 Snapshot 字段的顺序与域只在 Rust ``atomic_snapshot`` 定义一次,本模块
 直接读取其机器可读 schema。Query 行与 answer slot 的存储契约仍在本模块单点定义。
 """
 

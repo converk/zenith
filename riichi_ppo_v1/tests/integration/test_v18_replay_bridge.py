@@ -5,6 +5,11 @@ from pathlib import Path
 from riichienv import MjaiReplay
 
 from riichi_ppo_v1.model.snapshot import encode_snapshot_rows
+from riichi_ppo_v1.model.encoding_protocol import (
+    SNAPSHOT_FACTOR_WIDTH,
+    SNAPSHOT_FIELD_COUNT,
+    SNAPSHOT_NUMERIC_WIDTH,
+)
 
 
 def test_real_mjai_replay_decisions_encode_v18() -> None:
@@ -15,8 +20,8 @@ def test_real_mjai_replay_decisions_encode_v18() -> None:
     for seat in range(4):
         for observation, _expert in kyoku.steps(seat=seat, skip_single_action=False):
             factors, numeric = encode_snapshot_rows(observation)
-            assert factors.shape == (29, 4)
-            assert numeric.shape == (29, 1)
+            assert factors.shape == (SNAPSHOT_FIELD_COUNT, SNAPSHOT_FACTOR_WIDTH)
+            assert numeric.shape == (SNAPSHOT_FIELD_COUNT, SNAPSHOT_NUMERIC_WIDTH)
             checked += 1
             if checked >= 16:
                 break

@@ -7,6 +7,7 @@ from riichienv import BatchedRiichiEnv
 
 from riichi_ppo_v1.model import KyokuTransformerActorCritic
 from riichi_ppo_v1.model.bridge import BatchedStateBridge, Decision
+from riichi_ppo_v1.model.encoding_protocol import SNAPSHOT_FIELD_COUNT
 from riichi_ppo_v1.model.semantic_validation import (
     assert_actor_input_semantics,
     assert_critic_token_semantics,
@@ -49,4 +50,5 @@ def test_live_bridge_shapes_semantics_and_full_forward() -> None:
     legal = torch.as_tensor(batch.legal_mask)
     assert torch.isfinite(output["policy_logits"][legal]).all()
     assert torch.isneginf(output["policy_logits"][~legal]).all()
-    assert np.all(batch.snapshot_lengths == 29)
+    assert SNAPSHOT_FIELD_COUNT == 54
+    assert np.all(batch.snapshot_lengths == SNAPSHOT_FIELD_COUNT)

@@ -45,7 +45,6 @@ fn history_uses_semantic_events_and_omits_draw_and_terminal_events() {
     assert_eq!(history[2].factors[3], ACTOR_SHIMOCHA);
     assert_eq!(history[2].factors[6], 1); // red-five factor
     assert_eq!(history[2].factors[8], 2); // tsumogiri detail
-    assert_eq!(player.live_wall, 69);
 }
 
 #[test]

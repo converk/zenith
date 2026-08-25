@@ -19,6 +19,7 @@ from riichi_lab_bot.observation import (
 from riichi_ppo_v1.model.semantic_validation import (
     assert_actor_input_semantics,
 )
+from riichi_ppo_v1.model.encoding_protocol import SNAPSHOT_FIELD_BY_NAME
 
 _FURITEN_TEHAIS_JSON = (
     '["3m","3m","5m","6m","7m","8m","9m","1p","2p","3p","4p","5p","6p"],'
@@ -531,7 +532,8 @@ def test_present_empty_server_tsumogiri_flags_are_overridden() -> None:
     # 下家三次弃牌中 1 次手切、2 次摸切,当前连续摸切为 2。
     assert int(prepared.snapshot_factors[7, 2]) == 1
     assert int(prepared.snapshot_factors[8, 2]) == 2
-    assert int(prepared.snapshot_factors[26, 2]) == 2
+    streak_row = SNAPSHOT_FIELD_BY_NAME["opponent_1_tsumogiri_streak"].field_id - 1
+    assert int(prepared.snapshot_factors[streak_row, 2]) == 2
 
 
 def test_reach_declared_without_declaration_tile_is_normalized() -> None:

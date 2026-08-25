@@ -189,7 +189,7 @@ def assert_actor_input_semantics(
         history_factors, history_numeric, history_lengths,
     )
     if np.any(snapshot_lengths != SNAPSHOT_FIELD_COUNT):
-        raise AssertionError("snapshot_lengths must all equal 29")
+        raise AssertionError(f"snapshot_lengths must all equal {SNAPSHOT_FIELD_COUNT}")
     if np.any(~np.isfinite(snapshot_numeric)):
         raise AssertionError("snapshot numeric contains non-finite values")
 

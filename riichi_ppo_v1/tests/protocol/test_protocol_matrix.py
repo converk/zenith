@@ -134,13 +134,13 @@ class ProtocolMatrixTest(unittest.TestCase):
                 self.assertEqual(row[8], detail)
                 self.assertEqual(row[9], 1)
 
-            # The one tsumo above changes only the live-wall counter from 70
-            # to 69. Counter numeric features use the field-2 periods.
-            live_wall_index = np.flatnonzero((used[:, 0] == 2) & (used[:, 1] == 3) & (used[:, 2] == 5))[0]
-            self.assertEqual(used[live_wall_index].tolist(), [2, 3, 5, 0, 0, 0, 0, 0, 0, 0])
-            np.testing.assert_allclose(
-                np.asarray(numeric)[observer, live_wall_index], self.numeric_features(69.0, 2), atol=1e-6,
-            )
+            # 摸牌不再产生任何状态变化:剩余牌山数是无法从事件流精确推导的
+            # 估计值,已从 V18 输入删除。KIND_COUNTER field 5 现在只承载庄家
+            # 相对座次(categorical),不再有 numeric 计数值。
+            counter_five = used[(used[:, 0] == 2) & (used[:, 1] == 3) & (used[:, 2] == 5)]
+            self.assertEqual(counter_five.shape[0], 1)
+            self.assertEqual(int(counter_five[0, 3]), self.relative(observer, 1))
+            self.assertTrue(np.all(np.asarray(numeric)[observer, counter_five] == 0.0))
 
     def test_snapshot_suffix_preserves_visible_state_and_hides_opponents(self) -> None:
         snapshot = {
@@ -172,10 +172,15 @@ class ProtocolMatrixTest(unittest.TestCase):
             int(row[2]): index for index, row in enumerate(used) if row[0] == 2 and row[1] == 3
         }
         counters = {field: used[index] for field, index in counter_indices.items()}
-        self.assertEqual(counters[6].tolist(), [2, 3, 6, 2, 0, 0, 0, 0, 0, 0])  # dealer is shimocha
-        self.assertEqual(counters[7].tolist(), [2, 3, 7, 1, 0, 0, 0, 4, 0, 0])  # north self-wind
-        self.assertEqual(counters[8][8], 0b111)  # riichi, drawn tile, active decision
-        for field, value in ((1, 2), (2, 4), (3, 4), (4, 5), (5, 70)):
+        self.assertEqual(counters[5].tolist(), [2, 3, 5, 2, 0, 0, 0, 0, 0, 0])  # dealer is shimocha
+        self.assertEqual(counters[6].tolist(), [2, 3, 6, 1, 0, 0, 0, 4, 0, 0])  # north self-wind
+        self.assertEqual(counters[7][8], 0b111)  # riichi, drawn tile, active decision
+        # 巡目=已舍牌轮数+1;本测试无 dahai 事件,固定为第 1 巡。
+        self.assertEqual(counters[8].tolist(), [2, 3, 8, 0, 0, 0, 0, 0, 0, 0])
+        np.testing.assert_allclose(
+            numeric[counter_indices[8]], self.numeric_features(1.0, 2), atol=1e-6,
+        )
+        for field, value in ((1, 2), (2, 4), (3, 4), (4, 5)):
             np.testing.assert_allclose(numeric[counter_indices[field]], self.numeric_features(float(value), 2), atol=1e-6)
 
         hand_rows = used[(used[:, 0] == 2) & (used[:, 1] == 4) & (used[:, 2] == 1)]

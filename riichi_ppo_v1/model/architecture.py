@@ -186,7 +186,7 @@ class QueryEmbedding(nn.Module):
 
 
 class SnapshotEmbedding(nn.Module):
-    """29 个原子字段共用的 factor/numeric 嵌入。"""
+    """固定原子字段共用的 factor/numeric 嵌入。"""
 
     def __init__(self, d_model: int) -> None:
         super().__init__()
@@ -201,13 +201,17 @@ class SnapshotEmbedding(nn.Module):
             SNAPSHOT_FIELD_COUNT,
             SNAPSHOT_FACTOR_WIDTH,
         ):
-            raise ValueError("snapshot_factors must be [batch,29,4]")
+            raise ValueError(
+                f"snapshot_factors must be [batch,{SNAPSHOT_FIELD_COUNT},{SNAPSHOT_FACTOR_WIDTH}]"
+            )
         if numeric.shape != (
             factors.shape[0],
             SNAPSHOT_FIELD_COUNT,
             SNAPSHOT_NUMERIC_WIDTH,
         ):
-            raise ValueError("snapshot_numeric must be [batch,29,1]")
+            raise ValueError(
+                f"snapshot_numeric must be [batch,{SNAPSHOT_FIELD_COUNT},{SNAPSHOT_NUMERIC_WIDTH}]"
+            )
         return self.embedding(factors, numeric)
 
 
@@ -432,11 +436,15 @@ class KyokuTransformerActorCritic(nn.Module):
         if history_numeric.shape != (*history_factors.shape[:2], NUMERIC_WIDTH):
             raise ValueError(f"history_numeric must be [batch, tokens, {NUMERIC_WIDTH}]")
         if snapshot_factors.shape[1:] != (SNAPSHOT_FIELD_COUNT, SNAPSHOT_FACTOR_WIDTH):
-            raise ValueError("snapshot_factors must be [batch,29,4]")
+            raise ValueError(
+                f"snapshot_factors must be [batch,{SNAPSHOT_FIELD_COUNT},{SNAPSHOT_FACTOR_WIDTH}]"
+            )
         if snapshot_numeric.shape != (
             snapshot_factors.shape[0], SNAPSHOT_FIELD_COUNT, SNAPSHOT_NUMERIC_WIDTH,
         ):
-            raise ValueError("snapshot_numeric must be [batch,29,1]")
+            raise ValueError(
+                f"snapshot_numeric must be [batch,{SNAPSHOT_FIELD_COUNT},{SNAPSHOT_NUMERIC_WIDTH}]"
+            )
         if query_rows.ndim != 3 or query_rows.shape[-1] != QUERY_ROW_WIDTH:
             raise ValueError(f"query_rows must be [batch, queries, {QUERY_ROW_WIDTH}]")
         if query_action_ids.ndim != 2 or query_rows.shape[1] != 2 * query_action_ids.shape[1]:
@@ -457,7 +465,7 @@ class KyokuTransformerActorCritic(nn.Module):
             snapshot_lengths, SNAPSHOT_FIELD_COUNT, "snapshot_lengths",
         )
         if torch.any(snapshot_lengths != SNAPSHOT_FIELD_COUNT):
-            raise ValueError("snapshot_lengths must all equal 29")
+            raise ValueError(f"snapshot_lengths must all equal {SNAPSHOT_FIELD_COUNT}")
         pair_counts = lengths(
             query_pair_counts, query_action_ids.shape[1], "query_pair_counts",
         )

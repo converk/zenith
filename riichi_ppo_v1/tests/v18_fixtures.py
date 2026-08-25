@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import torch
 
-from riichi_ppo_v1.model.encoding_protocol import SNAPSHOT_FIELDS
+from riichi_ppo_v1.model.encoding_protocol import (
+    SNAPSHOT_FACTOR_WIDTH,
+    SNAPSHOT_FIELD_COUNT,
+    SNAPSHOT_FIELDS,
+    SNAPSHOT_NUMERIC_WIDTH,
+)
 from riichi_ppo_v1.model.schema import NUM_ACTIONS
 
 
@@ -13,12 +18,12 @@ def actor_inputs(*, batch: int = 2, action_ids: tuple[int, ...] = (1, 7, 12)) ->
     history_factors[:, :, 0] = 1
     history_numeric = torch.zeros(batch, 3, 8)
     history_lengths = torch.full((batch,), 3, dtype=torch.long)
-    snapshot_factors = torch.zeros(batch, 29, 4, dtype=torch.long)
+    snapshot_factors = torch.zeros(batch, SNAPSHOT_FIELD_COUNT, SNAPSHOT_FACTOR_WIDTH, dtype=torch.long)
     for index, field in enumerate(SNAPSHOT_FIELDS):
         snapshot_factors[:, index, 0] = field.field_id
         snapshot_factors[:, index, 1] = field.relative_seat
-    snapshot_numeric = torch.zeros(batch, 29, 1)
-    snapshot_lengths = torch.full((batch,), 29, dtype=torch.long)
+    snapshot_numeric = torch.zeros(batch, SNAPSHOT_FIELD_COUNT, SNAPSHOT_NUMERIC_WIDTH)
+    snapshot_lengths = torch.full((batch,), SNAPSHOT_FIELD_COUNT, dtype=torch.long)
     count = len(action_ids)
     ids = torch.tensor(action_ids, dtype=torch.long)[None].expand(batch, -1).clone()
     query_rows = torch.zeros(batch, 2 * count, 15, dtype=torch.long)

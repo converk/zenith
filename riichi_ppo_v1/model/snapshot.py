@@ -1,4 +1,4 @@
-"""固定 29 行原子 Snapshot 的原生桥接。"""
+"""固定 49 行原子 Snapshot 的原生桥接。"""
 
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ def encode_snapshot_batch(observations: list[object]) -> tuple[np.ndarray, np.nd
     if factors.shape != expected_factors or numeric.shape != expected_numeric:
         raise RuntimeError("native Snapshot batch returned malformed shapes")
     if lengths.shape != (len(observations),) or np.any(lengths != SNAPSHOT_FIELD_COUNT):
-        raise RuntimeError("native Snapshot lengths must all equal 29")
+        raise RuntimeError(f"native Snapshot lengths must all equal {SNAPSHOT_FIELD_COUNT}")
     for row in range(len(observations)):
         _validate(factors[row], numeric[row])
     return factors, numeric, lengths

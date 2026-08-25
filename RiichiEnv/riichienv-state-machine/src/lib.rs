@@ -9,7 +9,8 @@ pub mod atomic_snapshot;
 #[path = "MjaiKyokuStateMachine/mod.rs"]
 mod mjai_kyoku_state_machine;
 mod query_encoding;
-mod shanten;
+/// 向听与"摸入后向听"算法接口;Python 侧进张/和牌张数统计复用同一算法。
+pub mod shanten;
 mod shanten_table;
 
 use pyo3::prelude::*;

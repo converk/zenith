@@ -4,10 +4,22 @@ use pyo3::prelude::*;
 
 use crate::{shanten, SHANTEN_UNAVAILABLE};
 
-pub const SNAPSHOT_FIELD_COUNT: usize = 29;
+pub const SNAPSHOT_FIELD_COUNT: usize = 54;
 pub const SNAPSHOT_FACTOR_WIDTH: usize = 4;
 pub const SNAPSHOT_NUMERIC_WIDTH: usize = 1;
 pub const SCORE_PRESSURE_SCALE: f32 = 100_000.0;
+pub const SNAPSHOT_OPPONENT_COUNT: usize = 3;
+pub const SNAPSHOT_OPPONENT_SUMMARY_WIDTH: usize = 13;
+pub const SNAPSHOT_FIRST_DISCARD_LIMIT: usize = 6;
+pub const SNAPSHOT_FIRST_DISCARD_COUNT_MAX: u8 = SNAPSHOT_FIRST_DISCARD_LIMIT as u8;
+pub const SNAPSHOT_YAKUHAI_HAN_OVERFLOW_BUCKET: u8 = 6;
+pub const SNAPSHOT_VISIBLE_MELD_DORA_AKA_OVERFLOW_BUCKET: u8 = 8;
+pub const SNAPSHOT_FULLY_VISIBLE_KIND_OVERFLOW_BUCKET: u8 = 25;
+pub const SNAPSHOT_UNKNOWN_DORA_COPY_OVERFLOW_BUCKET: u8 = 16;
+/// 立直后摸切数的溢出桶:0..15 精确计数,16=16+。
+pub const SNAPSHOT_POST_RIICHI_TSUMOGIRI_OVERFLOW_BUCKET: u8 = 16;
+/// 自身进张/和牌张数的溢出桶:0..39 精确计数,40=40+。
+pub const SNAPSHOT_PROGRESS_TILE_OVERFLOW_BUCKET: u8 = 40;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SnapshotFieldSpec {
@@ -47,26 +59,226 @@ pub const SNAPSHOT_SCHEMA: [SnapshotFieldSpec; SNAPSHOT_FIELD_COUNT] = [
     field(7, "opponent_1_open_meld_count", 1, 4, 0, false),
     field(8, "opponent_1_tedashi_count", 1, 25, 0, false),
     field(9, "opponent_1_tsumogiri_count", 1, 25, 0, false),
-    field(10, "opponent_2_riichi_status", 2, 3, 0, false),
-    field(11, "opponent_2_riichi_turn", 2, 25, 0, false),
-    field(12, "opponent_2_open_meld_count", 2, 4, 0, false),
-    field(13, "opponent_2_tedashi_count", 2, 25, 0, false),
-    field(14, "opponent_2_tsumogiri_count", 2, 25, 0, false),
-    field(15, "opponent_3_riichi_status", 3, 3, 0, false),
-    field(16, "opponent_3_riichi_turn", 3, 25, 0, false),
-    field(17, "opponent_3_open_meld_count", 3, 4, 0, false),
-    field(18, "opponent_3_tedashi_count", 3, 25, 0, false),
-    field(19, "opponent_3_tsumogiri_count", 3, 25, 0, false),
-    field(20, "overall_shanten", 0, 8, 0, false),
-    field(21, "standard_shanten", 0, 8, 0, false),
-    field(22, "chiitoitsu_shanten", 0, 8, 0, false),
-    field(23, "kokushi_shanten", 0, 15, 0, false),
-    field(24, "opponent_1_latest_tedashi", 1, 0, 37, false),
-    field(25, "opponent_2_latest_tedashi", 2, 0, 37, false),
-    field(26, "opponent_3_latest_tedashi", 3, 0, 37, false),
-    field(27, "opponent_1_tsumogiri_streak", 1, 4, 0, false),
-    field(28, "opponent_2_tsumogiri_streak", 2, 4, 0, false),
-    field(29, "opponent_3_tsumogiri_streak", 3, 4, 0, false),
+    field(
+        10,
+        "opponent_1_post_riichi_tsumogiri_count",
+        1,
+        SNAPSHOT_POST_RIICHI_TSUMOGIRI_OVERFLOW_BUCKET,
+        0,
+        false,
+    ),
+    field(
+        11,
+        "opponent_1_first_six_man_count",
+        1,
+        SNAPSHOT_FIRST_DISCARD_COUNT_MAX,
+        0,
+        false,
+    ),
+    field(
+        12,
+        "opponent_1_first_six_pin_count",
+        1,
+        SNAPSHOT_FIRST_DISCARD_COUNT_MAX,
+        0,
+        false,
+    ),
+    field(
+        13,
+        "opponent_1_first_six_sou_count",
+        1,
+        SNAPSHOT_FIRST_DISCARD_COUNT_MAX,
+        0,
+        false,
+    ),
+    field(
+        14,
+        "opponent_1_first_six_terminal_honor_count",
+        1,
+        SNAPSHOT_FIRST_DISCARD_COUNT_MAX,
+        0,
+        false,
+    ),
+    field(
+        15,
+        "opponent_1_open_meld_yakuhai_han",
+        1,
+        SNAPSHOT_YAKUHAI_HAN_OVERFLOW_BUCKET,
+        0,
+        false,
+    ),
+    field(
+        16,
+        "opponent_1_visible_meld_dora_aka_han",
+        1,
+        SNAPSHOT_VISIBLE_MELD_DORA_AKA_OVERFLOW_BUCKET,
+        0,
+        false,
+    ),
+    field(17, "opponent_1_riichi_declaration_tile", 1, 0, 37, false),
+    field(18, "opponent_2_riichi_status", 2, 3, 0, false),
+    field(19, "opponent_2_riichi_turn", 2, 25, 0, false),
+    field(20, "opponent_2_open_meld_count", 2, 4, 0, false),
+    field(21, "opponent_2_tedashi_count", 2, 25, 0, false),
+    field(22, "opponent_2_tsumogiri_count", 2, 25, 0, false),
+    field(
+        23,
+        "opponent_2_post_riichi_tsumogiri_count",
+        2,
+        SNAPSHOT_POST_RIICHI_TSUMOGIRI_OVERFLOW_BUCKET,
+        0,
+        false,
+    ),
+    field(
+        24,
+        "opponent_2_first_six_man_count",
+        2,
+        SNAPSHOT_FIRST_DISCARD_COUNT_MAX,
+        0,
+        false,
+    ),
+    field(
+        25,
+        "opponent_2_first_six_pin_count",
+        2,
+        SNAPSHOT_FIRST_DISCARD_COUNT_MAX,
+        0,
+        false,
+    ),
+    field(
+        26,
+        "opponent_2_first_six_sou_count",
+        2,
+        SNAPSHOT_FIRST_DISCARD_COUNT_MAX,
+        0,
+        false,
+    ),
+    field(
+        27,
+        "opponent_2_first_six_terminal_honor_count",
+        2,
+        SNAPSHOT_FIRST_DISCARD_COUNT_MAX,
+        0,
+        false,
+    ),
+    field(
+        28,
+        "opponent_2_open_meld_yakuhai_han",
+        2,
+        SNAPSHOT_YAKUHAI_HAN_OVERFLOW_BUCKET,
+        0,
+        false,
+    ),
+    field(
+        29,
+        "opponent_2_visible_meld_dora_aka_han",
+        2,
+        SNAPSHOT_VISIBLE_MELD_DORA_AKA_OVERFLOW_BUCKET,
+        0,
+        false,
+    ),
+    field(30, "opponent_2_riichi_declaration_tile", 2, 0, 37, false),
+    field(31, "opponent_3_riichi_status", 3, 3, 0, false),
+    field(32, "opponent_3_riichi_turn", 3, 25, 0, false),
+    field(33, "opponent_3_open_meld_count", 3, 4, 0, false),
+    field(34, "opponent_3_tedashi_count", 3, 25, 0, false),
+    field(35, "opponent_3_tsumogiri_count", 3, 25, 0, false),
+    field(
+        36,
+        "opponent_3_post_riichi_tsumogiri_count",
+        3,
+        SNAPSHOT_POST_RIICHI_TSUMOGIRI_OVERFLOW_BUCKET,
+        0,
+        false,
+    ),
+    field(
+        37,
+        "opponent_3_first_six_man_count",
+        3,
+        SNAPSHOT_FIRST_DISCARD_COUNT_MAX,
+        0,
+        false,
+    ),
+    field(
+        38,
+        "opponent_3_first_six_pin_count",
+        3,
+        SNAPSHOT_FIRST_DISCARD_COUNT_MAX,
+        0,
+        false,
+    ),
+    field(
+        39,
+        "opponent_3_first_six_sou_count",
+        3,
+        SNAPSHOT_FIRST_DISCARD_COUNT_MAX,
+        0,
+        false,
+    ),
+    field(
+        40,
+        "opponent_3_first_six_terminal_honor_count",
+        3,
+        SNAPSHOT_FIRST_DISCARD_COUNT_MAX,
+        0,
+        false,
+    ),
+    field(
+        41,
+        "opponent_3_open_meld_yakuhai_han",
+        3,
+        SNAPSHOT_YAKUHAI_HAN_OVERFLOW_BUCKET,
+        0,
+        false,
+    ),
+    field(
+        42,
+        "opponent_3_visible_meld_dora_aka_han",
+        3,
+        SNAPSHOT_VISIBLE_MELD_DORA_AKA_OVERFLOW_BUCKET,
+        0,
+        false,
+    ),
+    field(43, "opponent_3_riichi_declaration_tile", 3, 0, 37, false),
+    field(44, "overall_shanten", 0, 8, 0, false),
+    field(45, "standard_shanten", 0, 8, 0, false),
+    field(46, "chiitoitsu_shanten", 0, 8, 0, false),
+    field(47, "kokushi_shanten", 0, 15, 0, false),
+    field(
+        48,
+        "fully_visible_tile_kind_count",
+        0,
+        SNAPSHOT_FULLY_VISIBLE_KIND_OVERFLOW_BUCKET,
+        0,
+        false,
+    ),
+    field(
+        49,
+        "unknown_distinct_dora_copy_count",
+        0,
+        SNAPSHOT_UNKNOWN_DORA_COPY_OVERFLOW_BUCKET,
+        0,
+        false,
+    ),
+    field(
+        50,
+        "self_improve_tile_count",
+        0,
+        SNAPSHOT_PROGRESS_TILE_OVERFLOW_BUCKET,
+        0,
+        false,
+    ),
+    field(
+        51,
+        "self_win_tile_count",
+        0,
+        SNAPSHOT_PROGRESS_TILE_OVERFLOW_BUCKET,
+        0,
+        false,
+    ),
+    field(52, "opponent_1_tsumogiri_streak", 1, 4, 0, false),
+    field(53, "opponent_2_tsumogiri_streak", 2, 4, 0, false),
+    field(54, "opponent_3_tsumogiri_streak", 3, 4, 0, false),
 ];
 
 #[derive(Clone, Debug)]
@@ -82,8 +294,16 @@ pub struct AtomicSnapshotInput {
     pub open_meld_count: [u8; 3],
     pub tedashi_count: [u8; 3],
     pub tsumogiri_count: [u8; 3],
-    pub latest_tedashi: [u8; 3],
+    pub post_riichi_tsumogiri_count: [u8; 3],
+    pub riichi_declaration_tile: [u8; 3],
     pub tsumogiri_streak: [u8; 3],
+    pub first_six_discard_counts: [[u8; 4]; SNAPSHOT_OPPONENT_COUNT],
+    pub open_meld_yakuhai_han: [u8; SNAPSHOT_OPPONENT_COUNT],
+    pub visible_meld_dora_aka_han: [u8; SNAPSHOT_OPPONENT_COUNT],
+    pub fully_visible_tile_kind_count: u8,
+    pub unknown_distinct_dora_copy_count: u8,
+    pub self_improve_tile_count: u8,
+    pub self_win_tile_count: u8,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -121,12 +341,20 @@ pub fn encode(input: &AtomicSnapshotInput) -> Result<AtomicSnapshot, String> {
     {
         return Err("同种牌计数不得超过 4".to_string());
     }
-    for index in 0..3 {
+    for index in 0..SNAPSHOT_OPPONENT_COUNT {
         if !(1..=3).contains(&input.riichi_status[index])
             || input.riichi_turn[index] > 25
             || input.open_meld_count[index] > 4
-            || input.latest_tedashi[index] > 37
+            || input.post_riichi_tsumogiri_count[index]
+                > SNAPSHOT_POST_RIICHI_TSUMOGIRI_OVERFLOW_BUCKET
+            || input.riichi_declaration_tile[index] > 37
             || input.tsumogiri_streak[index] > 4
+            || input.first_six_discard_counts[index]
+                .iter()
+                .any(|&value| value > SNAPSHOT_FIRST_DISCARD_COUNT_MAX)
+            || input.open_meld_yakuhai_han[index] > SNAPSHOT_YAKUHAI_HAN_OVERFLOW_BUCKET
+            || input.visible_meld_dora_aka_han[index]
+                > SNAPSHOT_VISIBLE_MELD_DORA_AKA_OVERFLOW_BUCKET
         {
             return Err(format!("对手 {index} 的原子字段超出协议域"));
         }
@@ -136,6 +364,13 @@ pub fn encode(input: &AtomicSnapshotInput) -> Result<AtomicSnapshot, String> {
         if input.riichi_status[index] != 1 && input.riichi_turn[index] == 0 {
             return Err(format!("对手 {index} 已立直时巡目不得为 N/A"));
         }
+    }
+    if input.fully_visible_tile_kind_count > SNAPSHOT_FULLY_VISIBLE_KIND_OVERFLOW_BUCKET
+        || input.unknown_distinct_dora_copy_count > SNAPSHOT_UNKNOWN_DORA_COPY_OVERFLOW_BUCKET
+        || input.self_improve_tile_count > SNAPSHOT_PROGRESS_TILE_OVERFLOW_BUCKET
+        || input.self_win_tile_count > SNAPSHOT_PROGRESS_TILE_OVERFLOW_BUCKET
+    {
+        return Err("全局原子字段超出协议域".to_string());
     }
 
     let mut factors = [[0_u8; SNAPSHOT_FACTOR_WIDTH]; SNAPSHOT_FIELD_COUNT];
@@ -158,13 +393,20 @@ pub fn encode(input: &AtomicSnapshotInput) -> Result<AtomicSnapshot, String> {
         numeric[relative + 1][0] = (delta as f32 / SCORE_PRESSURE_SCALE).clamp(-1.0, 1.0);
     }
 
-    for opponent in 0..3 {
-        let start = 4 + opponent * 5;
+    for opponent in 0..SNAPSHOT_OPPONENT_COUNT {
+        let start = 4 + opponent * SNAPSHOT_OPPONENT_SUMMARY_WIDTH;
         factors[start][2] = input.riichi_status[opponent];
         factors[start + 1][2] = input.riichi_turn[opponent];
         factors[start + 2][2] = input.open_meld_count[opponent];
         factors[start + 3][2] = count_bucket(input.tedashi_count[opponent]);
         factors[start + 4][2] = count_bucket(input.tsumogiri_count[opponent]);
+        factors[start + 5][2] = input.post_riichi_tsumogiri_count[opponent];
+        for category in 0..4 {
+            factors[start + 6 + category][2] = input.first_six_discard_counts[opponent][category];
+        }
+        factors[start + 10][2] = input.open_meld_yakuhai_han[opponent];
+        factors[start + 11][2] = input.visible_meld_dora_aka_han[opponent];
+        factors[start + 12][3] = input.riichi_declaration_tile[opponent];
     }
 
     let standard = shanten::standard(&input.hand_counts, input.meld_count);
@@ -179,13 +421,16 @@ pub fn encode(input: &AtomicSnapshotInput) -> Result<AtomicSnapshot, String> {
         shanten::thirteen_orphans(&input.special_counts)
     };
     let overall = standard.min(chiitoitsu).min(kokushi);
-    factors[19][2] = shanten_code(overall, 6)?;
-    factors[20][2] = shanten_code(standard, 6)?;
-    factors[21][2] = shanten_code(chiitoitsu, 6)?;
-    factors[22][2] = shanten_code(kokushi, 13)?;
-    for opponent in 0..3 {
-        factors[23 + opponent][3] = input.latest_tedashi[opponent];
-        factors[26 + opponent][2] = input.tsumogiri_streak[opponent];
+    factors[43][2] = shanten_code(overall, 6)?;
+    factors[44][2] = shanten_code(standard, 6)?;
+    factors[45][2] = shanten_code(chiitoitsu, 6)?;
+    factors[46][2] = shanten_code(kokushi, 13)?;
+    factors[47][2] = input.fully_visible_tile_kind_count;
+    factors[48][2] = input.unknown_distinct_dora_copy_count;
+    factors[49][2] = input.self_improve_tile_count;
+    factors[50][2] = input.self_win_tile_count;
+    for opponent in 0..SNAPSHOT_OPPONENT_COUNT {
+        factors[51 + opponent][2] = input.tsumogiri_streak[opponent];
     }
 
     validate(&factors, &numeric)?;
@@ -259,14 +504,22 @@ mod tests {
             open_meld_count: [0, 1, 4],
             tedashi_count: [0, 24, 30],
             tsumogiri_count: [30, 2, 0],
-            latest_tedashi: [0, 1, 37],
+            post_riichi_tsumogiri_count: [0, 15, 16],
+            riichi_declaration_tile: [0, 1, 37],
             tsumogiri_streak: [0, 3, 4],
+            first_six_discard_counts: [[1, 2, 3, 0], [6, 0, 0, 0], [0, 0, 0, 6]],
+            open_meld_yakuhai_han: [0, 5, 6],
+            visible_meld_dora_aka_han: [0, 7, 8],
+            fully_visible_tile_kind_count: 25,
+            unknown_distinct_dora_copy_count: 16,
+            self_improve_tile_count: 40,
+            self_win_tile_count: 12,
         }
     }
 
     #[test]
     fn schema_is_fixed_and_contiguous() {
-        assert_eq!(SNAPSHOT_SCHEMA.len(), 29);
+        assert_eq!(SNAPSHOT_SCHEMA.len(), 54);
         for (index, spec) in SNAPSHOT_SCHEMA.iter().enumerate() {
             assert_eq!(usize::from(spec.field_id), index + 1);
         }
@@ -276,11 +529,36 @@ mod tests {
     fn encodes_domains_and_overflow_buckets() {
         let snapshot = encode(&input()).expect("合法 Snapshot");
         assert_eq!(snapshot.factors[0][2], 2);
+        // 对手 1 摘要(start=4):状态/巡目/副露/手切/摸切/立直后摸切/四类前六/
+        // 役番/宝番/宣言牌。
+        assert_eq!(snapshot.factors[4][2], 1);
         assert_eq!(snapshot.factors[7][2], 0);
-        assert_eq!(snapshot.factors[17][2], 25);
-        assert_eq!(snapshot.factors[23][3], 0);
-        assert_eq!(snapshot.factors[25][3], 37);
-        assert_eq!(snapshot.factors[28][2], 4);
+        assert_eq!(snapshot.factors[8][2], 25);
+        assert_eq!(snapshot.factors[9][2], 0);
+        assert_eq!(snapshot.factors[10][2], 1);
+        assert_eq!(snapshot.factors[12][2], 3);
+        assert_eq!(snapshot.factors[13][2], 0);
+        assert_eq!(snapshot.factors[14][2], 0);
+        assert_eq!(snapshot.factors[15][2], 0);
+        assert_eq!(snapshot.factors[16][3], 0);
+        // 对手 2(start=17):立直后摸切 15、宣言牌 1。
+        assert_eq!(snapshot.factors[22][2], 15);
+        assert_eq!(snapshot.factors[29][3], 1);
+        // 对手 3(start=30):立直后摸切 16=16+、宣言牌 37、新六项溢出桶截至。
+        assert_eq!(snapshot.factors[35][2], 16);
+        assert_eq!(snapshot.factors[39][2], 6);
+        assert_eq!(snapshot.factors[40][2], 6);
+        assert_eq!(snapshot.factors[41][2], 8);
+        assert_eq!(snapshot.factors[42][3], 37);
+        // 全局与自身进展:完全可见 25=25+、未知宝牌 16=16+、进张 40=40+、
+        // 和牌 12、三条摸切连打。
+        assert_eq!(snapshot.factors[47][2], 25);
+        assert_eq!(snapshot.factors[48][2], 16);
+        assert_eq!(snapshot.factors[49][2], 40);
+        assert_eq!(snapshot.factors[50][2], 12);
+        assert_eq!(snapshot.factors[51][2], 0);
+        assert_eq!(snapshot.factors[52][2], 3);
+        assert_eq!(snapshot.factors[53][2], 4);
         assert!((snapshot.numeric[1][0] + 0.05).abs() < f32::EPSILON);
     }
 
@@ -290,8 +568,8 @@ mod tests {
         value.hand_is_open = true;
         value.meld_count = 1;
         let snapshot = encode(&value).expect("合法开手 Snapshot");
-        assert_eq!(snapshot.factors[21][2], 0);
-        assert_eq!(snapshot.factors[22][2], 0);
+        assert_eq!(snapshot.factors[45][2], 0);
+        assert_eq!(snapshot.factors[46][2], 0);
     }
 
     #[test]
@@ -299,6 +577,19 @@ mod tests {
         let mut value = input();
         value.riichi_status[0] = 1;
         value.riichi_turn[0] = 1;
+        assert!(encode(&value).is_err());
+    }
+
+    #[test]
+    fn rejects_out_of_domain_progress_and_post_riichi_values() {
+        let mut value = input();
+        value.self_improve_tile_count = 41;
+        assert!(encode(&value).is_err());
+        let mut value = input();
+        value.post_riichi_tsumogiri_count[0] = 17;
+        assert!(encode(&value).is_err());
+        let mut value = input();
+        value.riichi_declaration_tile[0] = 38;
         assert!(encode(&value).is_err());
     }
 

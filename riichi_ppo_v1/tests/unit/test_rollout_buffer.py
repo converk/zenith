@@ -9,12 +9,12 @@ import torch
 from riichi_ppo_v1.training.learner import PPOLearner, rollout_update_targets
 from riichi_ppo_v1.training.rollout_buffer import RolloutBuffer
 from riichi_ppo_v1.training.trajectory import Transition
-from riichi_ppo_v1.model.encoding_protocol import SNAPSHOT_FIELDS
+from riichi_ppo_v1.model.encoding_protocol import SNAPSHOT_FIELD_COUNT, SNAPSHOT_FIELDS
 
 
 def _random_transition(rng: np.random.Generator) -> Transition:
     history_length = int(rng.integers(20, 60))
-    snapshot_length = 29
+    snapshot_length = SNAPSHOT_FIELD_COUNT
     pair_count = int(rng.integers(1, 8))
     critic_length = 8
     action_ids = rng.choice(30, size=(pair_count,), replace=False).astype(np.int32)
