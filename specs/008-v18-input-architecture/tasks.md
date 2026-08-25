@@ -28,7 +28,7 @@ task is changed to `[X]` only after its stated validation passes.
 
 - [X] T005 [P] Add failing V18 protocol/domain/order tests in `riichi_ppo_v1/tests/unit/test_v18_encoding_protocol.py`
 - [X] T006 [P] Add failing native Snapshot and source-seat tests in `RiichiEnv/riichienv-state-machine/src/atomic_snapshot.rs` and `RiichiEnv/riichienv-python/src/encoding_facts.rs`
-- [X] T007 Define the only 29-field order/domain table and machine-readable schema export in `RiichiEnv/riichienv-state-machine/src/atomic_snapshot.rs`, then consume it without a copied table in `riichi_ppo_v1/model/encoding_protocol.py`
+- [X] T007 Define the only initial 29-field order/domain table and machine-readable schema export in `RiichiEnv/riichienv-state-machine/src/atomic_snapshot.rs`, then consume it without a copied table in `riichi_ppo_v1/model/encoding_protocol.py`
 - [X] T008 Implement Rust atomic Snapshot derivation/schema validation and reuse the existing last-supplier event logic in `RiichiEnv/riichienv-state-machine/src/atomic_snapshot.rs`
 - [X] T009 Implement native Observation/Action fact extraction including supplier source seats in `RiichiEnv/riichienv-python/src/encoding_facts.rs` and register it in `RiichiEnv/riichienv-python/src/lib.rs`
 - [X] T010 Update PyO3 typing/export contracts for V18 facts in `RiichiEnv/src/riichienv/_riichienv.pyi`, `RiichiEnv/src/riichienv/__init__.py`, and `RiichiEnv/riichienv-state-machine/src/lib.rs`
@@ -40,10 +40,10 @@ task is changed to `[X]` only after its stated validation passes.
 
 ## Phase 3: User Story 1 - Encode atomic public state (Priority: P1) 🎯 MVP
 
-**Goal**: Every valid decision exposes exactly 29 ordered atomic Snapshot tokens with stable domains.
+**Goal**: Every valid decision exposes the active ordered atomic Snapshot tokens with stable domains.
 
 **Independent Test**: Representative, boundary, N/A, overflow, malformed, and replay fixtures all
-produce `[B,29,4]`, `[B,29,1]`, and lengths 29; projected validation mean is 97–103.
+produce the active fixed shapes and lengths; projected validation mean is documented by the active schema.
 
 ### Tests for User Story 1
 
@@ -54,7 +54,7 @@ produce `[B,29,4]`, `[B,29,1]`, and lengths 29; projected validation mean is 97�
 ### Implementation for User Story 1
 
 - [X] T015 [US1] Replace mixed V16 Snapshot assembly with the fixed native V18 bridge in `riichi_ppo_v1/model/snapshot.py`
-- [X] T016 [US1] Replace prepared-batch Snapshot fields and enforce length 29 in `riichi_ppo_v1/model/bridge.py`
+- [X] T016 [US1] Replace prepared-batch Snapshot fields and enforce the active fixed length in `riichi_ppo_v1/model/bridge.py`
 - [X] T017 [US1] Update V18 sample entities and collation shapes in `riichi_ppo_v1/sft/data.py` and `riichi_ppo_v1/sft/train.py`
 - [X] T018 [US1] Update semantic shape/domain/order validation in `riichi_ppo_v1/model/semantic_validation.py` and `riichi_ppo_v1/model/validation.py`
 - [X] T019 [US1] Propagate V18 Snapshot tensors through `riichi_ppo_v1/training/trajectory.py`, `riichi_ppo_v1/training/rollout_buffer.py`, and `riichi_ppo_v1/training/inference.py`
@@ -82,7 +82,7 @@ pair permutations preserve mapped logits at `atol=1e-5, rtol=1e-5`.
 
 ### Implementation for User Story 2
 
-- [X] T026 [US2] Implement Atomic Snapshot embedding for `[B,29,4]` plus `[B,29,1]` and make Query embedding consume action type, 34-kind primary tile, and source seat in `riichi_ppo_v1/model/architecture.py`
+- [X] T026 [US2] Implement Atomic Snapshot embedding for the Rust-defined fixed shape and make Query embedding consume action type, 34-kind primary tile, and source seat in `riichi_ppo_v1/model/architecture.py`
 - [X] T027 [US2] Validate metadata agreement, unique unordered action IDs, legal-mask set equality, and raw-logit mapping in `riichi_ppo_v1/model/action_query.py` and `riichi_ppo_v1/model/semantic_validation.py`
 - [X] T028 [US2] Set the fixed 256/16/4/16/704 and 3+1+2 topology, then implement public-only shared layers and pair-isolated Actor attention/position IDs in `riichi_ppo_v1/model/architecture.py`
 - [X] T029 [US2] Update native query bridge naming/contracts and all active callers in `riichi_ppo_v1/model/native_encoding.py` and `riichi_ppo_v1/model/bridge.py`
@@ -227,7 +227,7 @@ Docs: T053 protocol | T054 event bridge | T055 README | T056 SFT | T057 governan
 ### MVP First
 
 1. Complete T001–T011 to establish V18 native facts and schema.
-2. Complete T012–T022 for a fixed, validated, measurable 29-token input.
+2. Complete T012–T022 for a fixed, validated, measurable Snapshot input.
 3. Validate US1 independently before modifying attention or training interfaces.
 
 ### Incremental Delivery
@@ -242,3 +242,63 @@ Docs: T053 protocol | T054 event bridge | T055 README | T056 SFT | T057 governan
 - Historical V16/V17 checkpoints, datasets, logs, reports, and specs are never task deletion targets.
 - Code comments added or modified during implementation are Chinese.
 - No task authorizes full dataset generation, formal SFT, PPO design/run, or evaluation changes.
+
+---
+
+## Phase 9: 49-row Snapshot Objective Facts extension (Priority: P1)
+
+**Goal**: Extend the active V18 public Snapshot from 29 to 49 fixed categorical rows without any
+legacy V18 compatibility path or Python hot-path derivation.
+
+**Independent Test**: Native fixtures prove all 20 fields, their exact order/domains/overflow buckets,
+legal-information invariance, repeated-dora handling, wind-yakuhai, aka, ankan, and fewer-than-six
+discard cases; Python accepts `[B,49,4]`/`[B,49,1]`; the V18 model completes a forward pass.
+
+- [X] T062 [P] [US1] Add native failing boundary and information-boundary tests for the 20 new facts in `RiichiEnv/riichienv-state-machine/src/atomic_snapshot.rs` and `RiichiEnv/riichienv-python/src/encoding_facts.rs`
+- [X] T063 [P] [US1] Update failing Python schema/shape/order tests and dynamic fixtures in `riichi_ppo_v1/tests/unit/test_v18_encoding_protocol.py`, `riichi_ppo_v1/tests/unit/test_v18_snapshot.py`, and `riichi_ppo_v1/tests/v18_fixtures.py`
+- [X] T064 [P] [US1] Update failing native-bridge/replay/full-forward assertions in `riichi_ppo_v1/tests/integration/test_v18_encoding_bridge.py` and `riichi_ppo_v1/tests/integration/test_v18_replay_bridge.py`
+- [X] T065 [US1] Define the 49-field Rust schema, categorical bucket constants, and validation in `RiichiEnv/riichienv-state-machine/src/atomic_snapshot.rs`
+- [X] T066 [US1] Derive all new public-only facts inside the Rust preparation loop in `RiichiEnv/riichienv-python/src/encoding_facts.rs`, preserving concealed-kan menzen semantics
+- [X] T067 [US1] Propagate dynamic fixed-size schema validation and embeddings through `riichi_ppo_v1/model/encoding_protocol.py`, `riichi_ppo_v1/model/snapshot.py`, `riichi_ppo_v1/model/semantic_validation.py`, and `riichi_ppo_v1/model/architecture.py`
+- [X] T068 [US1] Update V18 token statistics, parameter-count expectation, and all active protocol docs in `riichi_ppo_v1/tools/v18_token_statistics.py`, `riichi_ppo_v1/tests/unit/test_v18_parameter_count.py`, `riichi_ppo_v1/docs/`, `README.md`, and `riichi_ppo_v1/README.md`
+- [X] T069 [US1] Run Rust, focused Python/protocol/integration tests, a V18 forward pass, and read-only token statistics; record results in `audit/reports/v18/report/PROGRESS.md`
+- [X] T070 [US1] Run `git diff --check`, synchronize this feature's schema/contract/design artifacts, and mark the evidence in `specs/008-v18-input-architecture/` and `audit/reports/v18/report/PROGRESS.md`
+
+---
+
+## Phase 10: Remove estimated remaining-wall token (Priority: P1)
+
+**Goal**: The V18 Objective Facts state suffix must not contain the estimated live-wall counter;
+the MJAI event stream cannot derive it exactly, so the estimator and its token are removed without
+changing any column layout or Snapshot schema.
+
+**Independent Test**: Protocol and Rust tests prove the removed counter is absent, the remaining
+KIND_COUNTER fields are contiguous 1..7, and per-decision sequence length projection drops by one.
+
+- [X] T071 [P] Add/modify failing tests for the removed live-wall token and renumbered counter fields in `RiichiEnv/riichienv-state-machine/src/MjaiKyokuStateMachine/semantic_token_tests.rs` and `riichi_ppo_v1/tests/protocol/test_protocol_matrix.py`
+- [X] T072 [US1] Remove the live-wall field, initializer, tsumo decrement, and state-suffix token row in `RiichiEnv/riichienv-state-machine/src/MjaiKyokuStateMachine/player.rs`; renumber KIND_COUNTER fields to 1..7
+- [X] T073 [US1] Add the one-token-per-decision state-suffix correction to `riichi_ppo_v1/tools/v18_token_statistics.py` and reinstall the local PyO3 extension
+- [X] T074 [US1] Synchronize FR-008d, Decision 13, Phase F, protocol docs, and `audit/reports/v18/report/PROGRESS.md`; re-run Rust/Python/protocol suites, read-only statistics, and a V18 forward pass
+
+---
+
+## Phase 11: Progress, riichi-trait, and turn facts (Priority: P1)
+
+**Goal**: Extend the active Snapshot from 49 to 54 rows with exact, publicly derivable facts:
+per-opponent riichi declaration tile and post-riichi tsumogiri count, self improve/win tile counts,
+and the exact current turn in the Objective Facts state suffix.
+
+**Independent Test**: Rust/Python tests prove new bounds (0..15,16+ / 0..39,40+ / 37-code tile),
+order, tenpai/one-shanten progress semantics, declaration-discard exclusion, and exact turn
+counting; read-only statistics report 124.803028 with 54 Snapshot rows.
+
+- [X] T075 [P] Add failing boundary/semantics tests for the five new facts in
+  `RiichiEnv/riichienv-state-machine/src/atomic_snapshot.rs`, `RiichiEnv/riichienv-python/src/encoding_facts.rs`,
+  `RiichiEnv/riichienv-state-machine/src/MjaiKyokuStateMachine/semantic_token_tests.rs`,
+  and `riichi_ppo_v1/tests/protocol/test_protocol_matrix.py`
+- [X] T076 [US1] Implement the 54-row Rust schema, new domains, encode validation, and derivation in
+  `atomic_snapshot.rs` + `encoding_facts.rs`; add the exact turn counter to `player.rs`
+- [X] T077 [US1] Update Python schema tests, parameter expectation (4,940,802), and the read-only
+  statistics tool; reinstall both native wheels with a single source build
+- [X] T078 [US1] Synchronize FR-002/004/005/008a/008d, Decision 14, Phase G, protocol docs, and
+  `audit/reports/v18/report/PROGRESS.md`; re-run Rust/Python/protocol suites and a V18 forward pass

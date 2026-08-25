@@ -8,7 +8,7 @@ MJAI 回转见 [KyokuActionSpace.md](KyokuActionSpace.md)，精确张量/schema 
 
 ```text
 Observation.new_events() -> Rust 状态机 -> Objective Facts
-Observation 当前公开/自身字段 -> 固定 29 行 Atomic Snapshot
+Observation 当前公开/自身字段 -> 固定 54 行 Atomic Snapshot
 Observation.legal_actions() -> 每动作 Offense/Defense Query pair + legal mask
 三段公共输入 -> Actor raw logits[action_id]
 公共共享表示 + 三家闭手 + 未来五张牌 -> Critic value（仅训练）
@@ -41,12 +41,18 @@ fail-closed 语义校验；Snapshot 字段顺序与域由 Rust 单一来源导�
 ## 当前决策输入
 
 Objective Facts 使用 `[B,L,10]` 分类因子和 `[B,L,8]` 连续通道表达有序公开事件、
-自身手牌/摸牌、分数与局况。短行右侧零 padding，`token_lengths` 给出有效长度；
-超过 `context_tokens` 必须拒绝，不能截断。
+自身手牌/摸牌、分数与局况。状态后缀只含场风、局数、本场、立直棒、庄家/自风、
+状态 flags、当前巡目（已舍牌轮数+1，精确计数）、宝牌指示牌与自身手牌/摸牌；**不包含剩余牌山数**——它无法从 MJAI
+事件流精确推导，旧估计值（固定 70 起、摸牌递减）已从 V18 输入删除。短行右侧零
+padding，`token_lengths` 给出有效长度；超过 `context_tokens` 必须拒绝，不能截断。
 
-Atomic Snapshot 始终为 `[B,29,4]` + `[B,29,1]`，表达自身名次、三家 score
-pressure、每家立直/副露/手切/摸切摘要、四种向听、最新手切和摸切连打。字段不可
-合并为异质 token，也不可改变顺序。
+Atomic Snapshot 始终为 `[B,54,4]` + `[B,54,1]`，表达自身名次、三家 score
+pressure、每家立直/副露/手切/摸切摘要、立直后摸切数与立直宣言牌、前六张舍牌
+花色与幺九统计、役牌/宝牌副露番、四种向听、全局可见四枚牌种/未知宝牌实体数、
+自身进张与听牌和牌张数、摸切连打。字段不可合并为异质 token，也不可改变顺序。
+新增统计只读取当前观察者合法已知区域，重复宝牌种在未知实体数中去重；暗杠不改
+变门清，但其已表示副露牌可计入宝牌统计。进张/和牌张数基于归一十三张形与合法
+已知区域的剩余实体牌，不使用任何估计量。
 
 每个合法动作生成连续两行 Query。`chi/pon/daiminkan/ron` 的 supplier 必须来自
 原生最后供牌者；其他动作必须为 N/A。Query action-ID 集合与 `bool[B,241]` legal

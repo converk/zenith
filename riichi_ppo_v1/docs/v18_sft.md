@@ -8,11 +8,11 @@ V18 SFT 的入口为 `riichi-sft-precompute` 与 `riichi-sft-train`，当前自�
 ## 数据契约
 
 manifest 必须包含 `format=riichi-sft-encoded-v18`、
-`encoding_protocol_version=18`、冻结的 contract SHA256、源 manifest SHA256，以及
+`encoding_protocol_version=18`、运行时从 Rust schema 推导的 contract SHA256、源 manifest SHA256，以及
 正数的 train/validation 局数和决策数。训练加载器会 fail closed，拒绝旧格式、未知
 hash 或不完整计数。
 
-每条样本保存 Objective Facts、`[29,4]` Snapshot factors、`[29,1]` Snapshot
+每条样本保存 Objective Facts、`[49,4]` Snapshot factors、`[49,1]` Snapshot
 numeric、Query pairs、action IDs、legal mask 和监督动作。V18 不保留旧格式适配层。
 
 ## Actor-only 生命周期

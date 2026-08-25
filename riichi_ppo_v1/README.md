@@ -1,6 +1,6 @@
 # V18 SFT/PPO 训练框架
 
-本包的活跃协议仅为 V18：Objective Facts + 29 个 Atomic Snapshot 字段 + 每个
+本包的活跃协议仅为 V18：Objective Facts + 54 个 Atomic Snapshot 字段 + 每个
 合法动作一对 Offense/Defense Query。V16/V17 配置与产物保留为冷存储，不能由
 活跃 checkpoint、SFT、评测或 bot 路径加载。
 

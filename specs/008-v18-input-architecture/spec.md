@@ -2,7 +2,7 @@
 
 **Feature Branch**: `008-v18-input-architecture`
 **Created**: 2026-08-25
-**Status**: Draft
+**Status**: Implemented — 2026-08-25 Snapshot Objective Facts extension complete
 **Input**: Upgrade Zenith to one V18 input/model contract with atomic snapshots, isolated query
 attention, strict Actor/Critic information boundaries, and Actor-only BC SFT readiness.
 
@@ -17,16 +17,16 @@ public-state facts so semantically different mahjong situations remain distingui
 contract.
 
 **Independent Test**: Encode representative and boundary fixtures and verify every sample has
-exactly 29 ordered Snapshot tokens, valid domains, and the required batch shapes.
+exactly 54 ordered Snapshot tokens, valid domains, and the required batch shapes.
 
 **Acceptance Scenarios**:
 
-1. **Given** any valid decision state, **When** encoded, **Then** its Snapshot has exactly 29 tokens
+1. **Given** any valid decision state, **When** encoded, **Then** its Snapshot has exactly 54 tokens
    in canonical order and no fact already represented by the state suffix.
 2. **Given** open/closed hands, all riichi phases, red fives, count limits, and winning shanten,
    **When** encoded, **Then** every value uses its specified categorical, tile, numeric, or N/A domain.
 3. **Given** the established 2024/2025 60% validation selection or a representative non-materialized
-   pass, **When** V18 lengths are measured, **Then** mean total length is 97–103 and component
+   pass, **When** V18 lengths are measured, **Then** mean total length is 121–127 and component
    statistics are reported.
 
 ---
@@ -135,24 +135,48 @@ audits and compare their evidence with V18 documentation.
 - **FR-001**: The system MUST expose one active V18 schema/version contract and MUST NOT provide
   V16/V17 loading, adaptation, conversion, fallback, compatibility flags, dual models, legacy maps,
   or state migration.
-- **FR-002**: Every valid sample MUST contain exactly 29 atomic Snapshot tokens ordered as four
-  placement/pressure facts, fifteen opponent-summary facts, and ten derived facts.
+- **FR-002**: Every valid sample MUST contain exactly 54 atomic Snapshot tokens ordered as four
+  placement/pressure facts, thirty-nine opponent-summary facts, and eleven derived facts.
 - **FR-003**: Placement facts MUST contain own rank followed by score pressure relative to each
   opponent in fixed relative-seat order, using one sample-independent normalization.
 - **FR-004**: For each opponent in fixed order, summary facts MUST be riichi status, riichi turn,
-  open meld count excluding concealed kans, cumulative tedashi count, and cumulative tsumogiri count.
-- **FR-005**: Derived facts MUST be overall, standard, chiitoitsu, and kokushi shanten, followed by
-  each opponent's latest tedashi tile and consecutive-tsumogiri length.
+  open meld count excluding concealed kans, cumulative tedashi count, cumulative tsumogiri count,
+  post-riichi tsumogiri count, first-six-discard man/pin/sou/terminal-or-honor counts, confirmed
+  open-meld yakuhai han, visible-meld dora-plus-aka han, and the riichi declaration tile.
+- **FR-005**: Derived facts MUST be overall, standard, chiitoitsu, and kokushi shanten; the number
+  of fully visible tile kinds in the observer's legal known area; unknown physical copies across
+  distinct current dora kinds; the observer's own shanten-improving and (when tenpai) winning tile
+  counts from a normalized 13-tile shape and the legal known area; then each opponent's
+  consecutive-tsumogiri length.
 - **FR-006**: Overall/standard shanten MUST support AGARI or 0..6; chiitoitsu MUST support N/A for
   open hands or AGARI/0..6; kokushi MUST support N/A for open hands or AGARI/0..13.
-- **FR-007**: Latest tedashi MUST support N/A or 37 red-aware tiles; streak MUST use 0/1/2/3/4+;
+- **FR-007**: The riichi declaration tile MUST support N/A or the 37-code tile vocabulary; streak
+  MUST use 0/1/2/3/4+;
   riichi status MUST use NONE/DECLARED/ACCEPTED; riichi turn MUST use N/A/1..24/25+.
 - **FR-008**: Rank, score pressure, open meld count, tedashi count, and tsumogiri count MUST each
   have one stable, documented, test-locked domain or bucket scheme established in design.
+- **FR-008a**: Each first-six-discard composition count MUST use exact categories `0..6`; yakuhai
+  han MUST use `0..5,6+`; visible-meld dora-plus-aka han MUST use `0..7,8+`; fully-visible tile
+  kinds MUST use `0..24,25+`; unknown distinct-dora physical copies and post-riichi tsumogiri MUST
+  use `0..15,16+`; own improve/win tile counts MUST use `0..39,40+`. All of these values are
+  categorical factors; `0` is a meaningful count for all of them except the win count, where `0`
+  means not tenpai, and each retains its own stable field/schema ID.
+- **FR-008b**: The observer's legal known area MUST include only own hand, own melds, public rivers,
+  public meld tiles, and revealed dora indicators. Snapshot derivation MUST NOT read another
+  player's concealed hand, true wall order, or post-hoc labels. Concealed-kan tiles that are already
+  represented by the public meld state MAY count for dora/aka but MUST NOT make the hand open.
+- **FR-008c**: Dora kinds MUST be computed from current indicators; repeated indicators for the same
+  dora kind contribute only once to the global unknown-copy count. Wind yakuhai MUST award its
+  actual han, including two han when seat wind and round wind coincide.
+- **FR-008d**: The Objective Facts state suffix MUST NOT include an estimated remaining-wall count.
+  Live-wall size cannot be derived exactly from the MJAI event stream, so the previous estimator and
+  its token are removed from V18 input; the suffix keeps round wind, hand number, honba, riichi
+  sticks, dealer, self wind, flags, the exact current turn (public discard rounds plus one), dora
+  indicators, own hand, and drawn tile.
 - **FR-009**: Snapshot MUST NOT duplicate round wind, hand number, dealer, honba, riichi sticks,
-  remaining tiles, dora indicators, absolute scores, own hand, or drawn tile from the state suffix.
-- **FR-010**: Snapshot factors MUST be `[B,29,4]` ordered as field ID, relative seat, categorical
-  value, tile value; numeric values MUST be `[B,29,1]`; every valid length MUST equal 29.
+  dora indicators, absolute scores, own hand, or drawn tile from the state suffix.
+- **FR-010**: Snapshot factors MUST be `[B,54,4]` ordered as field ID, relative seat, categorical
+  value, tile value; numeric values MUST be `[B,54,1]`; every valid length MUST equal 54.
 - **FR-011**: Field order/domains MUST have one authoritative definition shared by encoding,
   validation, collation, model consumption, and protocol checks.
 - **FR-012**: Existing history, current-state suffix, and one Offense/Defense pair per legal action
@@ -187,7 +211,7 @@ audits and compare their evidence with V18 documentation.
 - **FR-027**: Validation MUST cover unit, protocol, schema, integration, replay, normal, boundary,
   N/A, stable-bucket, malformed-input, isolation, state-key, and parameter-count cases.
 - **FR-028**: A non-materializing pass over the established 60% selection, or documented
-  representative V18 validation if it cannot be fully traversed, MUST report 97–103 mean tokens and
+  representative V18 validation if it cannot be fully traversed, MUST report 121–127 mean tokens and
   component statistics.
 - **FR-029**: V18 protocol, bridge docs, root/framework READMEs, training/SFT docs, config/default
   paths, AGENTS.md, directory responsibilities when changed, and active references MUST be synchronized.
@@ -212,9 +236,9 @@ audits and compare their evidence with V18 documentation.
 
 ### Measurable Outcomes
 
-- **SC-001**: 100% of valid samples contain 29 Snapshot tokens with `[B,29,4]` factors,
-  `[B,29,1]` numeric values, and length 29.
-- **SC-002**: Representative mean total length is 97–103, target near 99.80, with separate history,
+- **SC-001**: 100% of valid samples contain 54 Snapshot tokens with `[B,54,4]` factors,
+  `[B,54,1]` numeric values, and length 54.
+- **SC-002**: Representative mean total length is 121–127, target near 124.80, with separate history,
   Snapshot, and action-pair contributions.
 - **SC-003**: Parameter count is 4,900,000–5,100,000 and 0 state/config keys belong to Q scoring.
 - **SC-004**: 100% of action-ID-aligned logits in permutation fixtures agree within tolerance.
@@ -237,3 +261,5 @@ audits and compare their evidence with V18 documentation.
 - Delegated stable domains use global limits/overflow buckets, never sample-dependent scaling.
 - Floating-point tolerances are fixed before implementation and shared by validations.
 - Archived V16/V17 artifacts remain physically in place; archival moves are out of scope.
+- No V18 training sample or formal dataset exists yet, so the 54-row schema supersedes the previous
+  29-row V18 layout without a compatibility, migration, or fallback path.

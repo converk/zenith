@@ -6,7 +6,7 @@
 
 ## Summary
 
-Replace the only active input/model contract with V18: Rust-derived fixed 29-row atomic Snapshot,
+Replace the only active input/model contract with V18: Rust-derived fixed 54-row atomic Snapshot,
 query metadata with real supplier seat, structurally isolated action-pair attention, a conservative
 4.9M–5.1M GQA Actor-Critic without Q modules, strict public/private information boundaries, and an
 exact V18 Actor-only BC interface. Reuse history/suffix, action mapping, and Critic private tokens;
@@ -32,7 +32,7 @@ commands through `conda run -n Mahjong-AI`
 **Project Type**: Multi-package ML training system with Rust environment/state machine, PyO3 bridge,
 Python model/SFT framework, and online bot consumer
 
-**Performance Goals**: Mean total sequence length 97–103 (projected exact 99.803028); 29 Snapshot
+**Performance Goals**: Mean total sequence length 121–127 (projected exact 124.803028); 54 Snapshot
 rows for every sample; Actor-Critic 4.9M–5.1M parameters; pair permutations invariant within
 `atol=1e-5, rtol=1e-5`
 
@@ -41,7 +41,7 @@ five future tiles but no action queries; no Q/legacy path; no full dataset, form
 archived V16/V17 assets are immutable
 
 **Scale/Scope**: Existing validation metadata covers 1,439,440 decisions in 102 shards; 241 fixed
-actions; 29 Snapshot fields; changes span active model/schema/bridge/SFT/bot consumers and docs
+actions; 54 Snapshot fields; changes span active model/schema/bridge/SFT/bot consumers and docs
 
 ## Constitution Check
 
@@ -98,7 +98,7 @@ RiichiEnv/
 
 riichi_ppo_v1/
 ├── model/
-│   ├── encoding_protocol.py              # V18 schema、29 字段与域的单一来源
+│   ├── encoding_protocol.py              # V18 schema、54 字段与域的单一来源
 │   ├── snapshot.py                       # 原生 V18 Snapshot 桥接
 │   ├── action_query.py                   # Query 行公共对象/映射
 │   ├── architecture.py                   # 3+1 Actor、2 Critic、隔离 mask、无 Q
@@ -143,7 +143,7 @@ uses neutral reusable names where practical; historical versioned artifacts rema
 
 ### Phase A: Contract and Rust facts
 
-1. Lock the protocol version, 29-field table, domains, overflow buckets, and factor widths in one
+1. Lock the protocol version, 54-field table, domains, overflow buckets, and factor widths in one
    Rust authority exported through PyO3; build Python protocol definitions directly from that export.
 2. Reuse/extract the existing last supplier actor event helper. Extend current native encoding facts
    so chi/pon/daiminkan/ron receive real self-relative source and all other actions receive N/A.
@@ -154,7 +154,7 @@ uses neutral reusable names where practical; historical versioned artifacts rema
 ### Phase B: Python schema, model, and boundaries
 
 1. Replace old Snapshot tensors through sample, bridge, validation, collation, inference, rollout,
-   evaluation, and bot consumers with `[B,29,4]`, `[B,29,1]`, lengths 29.
+   evaluation, and bot consumers with `[B,54,4]`, `[B,54,1]`, lengths 54.
 2. Make QueryEmbedding consume all metadata. Validate pair identity and allow arbitrary unique pair
    order whose action-ID set equals the legal mask.
 3. Refactor forward into shared-public-only then Actor-only isolated attention; preserve action-ID
@@ -176,6 +176,43 @@ uses neutral reusable names where practical; historical versioned artifacts rema
    permutation, information-boundary, parameter, Q-key, and Actor-only lifecycle tests.
 2. Add the read-only token-statistics CLI and record the exact existing selection result.
 3. Synchronize all required docs/config/CLI paths and record every command/result in PROGRESS.md.
+
+### Phase E: 49-row Snapshot Objective Facts extension
+
+1. Extend the Rust schema from 29 to 49 rows in place: keep the four placement rows and the
+   seat-major opponent summaries, append six per-opponent facts directly after each opponent's five
+   existing summary fields, and place the two global categorical facts after the four shanten rows
+   and before the latest-tedashi/streak rows.
+2. Derive all 20 new facts inside the native preparation loop from own hand/melds, public rivers,
+   public meld tiles, and revealed dora indicators only; never read opponent concealed hands, wall
+   order, or post-hoc labels. Keep the existing `opened` predicate as the sole menzen test while
+   letting ankan tiles contribute to visible-meld dora/aka counts; deduplicate dora kinds for the
+   global unknown-copy count; advance dora kinds from current indicators.
+3. Propagate the fixed 49-row shapes through Python schema/bridge/validation/architecture without a
+   copied field table, update length expectations (116–122, target 118.80) and parameter
+   expectations, and re-run Rust, Python, protocol, replay, information-boundary, token-statistics,
+   and forward-pass evidence.
+
+### Phase F: Remove the estimated remaining-wall token
+
+1. Delete the live-wall counter from the Rust state-machine state suffix (field, initializer,
+   tsumo decrement, and its token row); renumber the remaining KIND_COUNTER fields to contiguous
+   1..7 so no hole remains.
+2. Update protocol tests to assert the absence of the removed counter and the new field numbers,
+   and add a one-token-per-decision correction to the read-only token-statistics tool.
+3. Rebuild/reinstall the local PyO3 extension, re-run Rust/Python/protocol suites and the
+   read-only statistics, and synchronize FR-008d, Decision 13, protocol docs, and PROGRESS.md.
+
+### Phase G: 54-row Snapshot extension: progress, riichi-trait, and turn facts
+
+1. Replace each opponent's latest-tedashi tile with the riichi declaration tile (same 37-code
+   vocabulary), add post-riichi tsumogiri counts per opponent, and keep the fixed opponent summary
+   at 13 rows per seat.
+2. Add self shanten-improving and tenpai winning tile counts from a normalized 13-tile shape and
+   the legal known area; add the exact current turn (public discard rounds plus one) to the
+   Objective Facts state suffix. All new facts are derived in Rust with no estimated values.
+3. Update schema/domains/tests/docs/statistics (54 rows, mean 124.803028) and parameter
+   expectations (4,940,802), then re-run Rust, Python, protocol, and forward-pass evidence.
 
 ## Complexity Tracking
 

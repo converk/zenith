@@ -8,12 +8,16 @@
 
 ## Snapshot
 
-- `snapshot_factors`: `[B,29,4]`, integer columns
+- `snapshot_factors`: `[B,54,4]`, integer columns
   `(field_id, relative_seat, categorical_value, tile_value)`.
-- `snapshot_numeric`: `[B,29,1]`, finite float.
-- `snapshot_lengths`: `[B]`, identically 29.
+- `snapshot_numeric`: `[B,54,1]`, finite float.
+- `snapshot_lengths`: `[B]`, identically 54.
 - Field positions and value domains are defined once in the Rust active protocol table and exported
   as machine-readable metadata consumed by every Python layer.
+- Per-opponent rows are seat-major: base five summary fields, first-six discard man/pin/sou/
+  terminal-or-honor counts (`0..6`), open-meld yakuhai (`0..5,6+`), and visible-meld dora-plus-aka
+  (`0..7,8+`). Global rows after shanten are fully visible kinds (`0..24,25+`) and unknown copies
+  across distinct dora kinds (`0..15,16+`). Zero is the valid non-missing value for all 20 additions.
 
 ## Query pairs
 
@@ -32,7 +36,9 @@
 
 ## Information boundary
 
-- Actor accepts public/self facts and legal-action Queries only.
+- Actor accepts public/self facts and legal-action Queries only. The new rows use no opponent
+  concealed-hand, true-wall, or post-hoc information; duplicate dora kinds are de-duplicated for
+  the global unknown-copy field.
 - Critic accepts shared public states, private hands in relative order 1/2/3, future wall positions
   1..5, then value query. It receives no action Query.
 

@@ -2,13 +2,13 @@
 
 ## AtomicSnapshotField
 
-Authoritative immutable Rust definition for one of 29 positions, exported through PyO3 and consumed
+Authoritative immutable Rust definition for one of 54 positions, exported through PyO3 and consumed
 without a copied Python field table.
 
 | Attribute | Type | Validation |
 |---|---|---|
-| index | integer | 0..28, unique and contiguous |
-| field_id | integer | 1..29, unique |
+| index | integer | 0..48, unique and contiguous |
+| field_id | integer | 1..54, unique schema ID |
 | name | string | stable protocol name |
 | relative_seat | integer | 0 for self/global or 1..3 opponent |
 | categorical_domain | named domain | fixed range/bucket table |
@@ -20,20 +20,22 @@ Canonical order:
 1. own rank
 2. score pressure versus seats 1, 2, 3
 3. for each seat 1, 2, 3: riichi status, riichi turn, open meld count, tedashi count,
-   tsumogiri count
+   tsumogiri count, first-six-discard man/pin/sou/terminal-or-honor counts, confirmed open-meld
+   yakuhai han, and visible-meld dora-plus-aka han
 4. overall, standard, chiitoitsu, kokushi shanten
-5. latest tedashi for seats 1, 2, 3
-6. consecutive tsumogiri for seats 1, 2, 3
+5. fully-visible tile-kind count and unknown copies across distinct dora kinds
+6. latest tedashi for seats 1, 2, 3
+7. consecutive tsumogiri for seats 1, 2, 3
 
 ## SnapshotBatch
 
 | Attribute | Shape/type | Validation |
 |---|---|---|
-| snapshot_factors | integer `[B,29,4]` | columns are field, relative seat, category, tile |
-| snapshot_numeric | float `[B,29,1]` | finite and rule-valid |
-| snapshot_lengths | integer `[B]` | every value equals 29 |
+| snapshot_factors | integer `[B,54,4]` | columns are field, relative seat, category, tile |
+| snapshot_numeric | float `[B,54,1]` | finite and rule-valid |
+| snapshot_lengths | integer `[B]` | every value equals 54 |
 
-State transition: native Observation → Rust-derived 29 rows → Python batch with no variable-length
+State transition: native Observation → Rust-derived 54 rows → Python batch with no variable-length
 Snapshot padding. Invalid native facts fail before model forward.
 
 ## ActionQueryPair

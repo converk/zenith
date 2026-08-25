@@ -1,4 +1,4 @@
-# V18 Actor-only BC SFT-ready 自包含配置。本 feature 只验证接口,不启动正式训练。
+# V18 Actor-only BC SFT-ready 自包含配置;Snapshot schema 由 Rust 固定为 49 行。
 seed: 1
 device: cuda
 learner_gpus: 2

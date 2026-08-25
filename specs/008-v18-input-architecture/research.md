@@ -2,7 +2,7 @@
 
 ## Decision 1: Atomic Snapshot representation
 
-- **Decision**: Replace the variable V16 mixed-kind Snapshot with exactly 29 rows. Each row uses
+- **Decision**: Replace the variable V16 mixed-kind Snapshot with exactly 49 rows. Each row uses
   four integer factors `(field_id, relative_seat, categorical_value, tile_value)` and one numeric
   channel. Field IDs are 1..29; factor value 0 is reserved for N/A/unused. The authoritative table
   lives once in Rust and is exported as machine-readable schema metadata; the Python protocol,
@@ -96,7 +96,8 @@
 - **Decision**: Add a production statistics CLI that reads the established validation selection's
   archived offset metadata or streams representative V18 re-encoding without writing samples.
   Existing exact validation metadata contains 1,439,440 decisions: history 53.837822, V16 Snapshot
-  6.124897, query pairs 8.482603. Replacing Snapshot with 29 projects V18 mean to 99.803028.
+  6.124897, query pairs 8.482603. The initial 29-row Snapshot projected 99.803028; the active
+  49-row Snapshot projects 118.803028 without materializing a dataset; the live-wall estimator was removed from the state suffix, one token per decision.
 - **Rationale**: This is exact for sequence length because V18 preserves history/query organization
   and fixes Snapshot length; it satisfies the non-materialization constraint.
 - **Alternatives considered**: Generating the full V18 selection is explicitly out of scope; a tiny
@@ -111,3 +112,57 @@
 - **Rationale**: Constitution v1.8.0 allows only one active V18 contract while preserving evidence.
 - **Alternatives considered**: Parallel V16/V18 implementations and compatibility flags are both
   explicitly prohibited.
+
+## Decision 11: 49-row public Snapshot extension
+
+- **Decision**: Keep the four placement rows first. For each relative opponent, append the six new
+  public facts directly after the existing five opponent summary fields: four exact `0..6`
+  first-six-river composition counts, `0..5,6+` confirmed open-meld yakuhai han, and
+  `0..7,8+` visible-meld dora-plus-aka han. Place the two global categorical facts after the four
+  shanten rows and before latest-tedashi/streak rows. The global domains are `0..24,25+` fully
+  visible tile kinds and `0..15,16+` unknown copies of distinct dora kinds.
+- **Rationale**: Per-opponent facts stay in the established seat-major summary region; global facts
+  stay with derived state. All 20 rows remain fixed categorical tokens and preserve query isolation.
+- **Alternatives considered**: Adding them to per-action Query rows would repeat state facts and let
+  candidate count alter the public prefix; continuous count features would weaken the categorical
+  field contract.
+
+## Decision 12: Legal information and meld semantics
+
+- **Decision**: Rust derives the extension using only own hand/melds, public rivers, public meld
+  tiles, and dora indicators. It never reads opponent hand vectors or wall order. Yakuhai examines
+  only opened melds; dora/aka uses all legally represented meld tiles, including ankan, while the
+  existing `opened` predicate remains the sole menzen test. Dora kinds are advanced from indicators
+  and deduplicated before unknown-copy counting.
+- **Rationale**: This proves the Actor's public boundary while retaining actual wind-yakuhai han and
+  visible dora information. Keeping all work in the native preparation loop avoids a Python hot path.
+- **Alternatives considered**: Deriving counts from offline labels, opponent concealed tiles, or
+  true wall state is forbidden; treating ankan as opened would corrupt menzen/shanten semantics.
+
+## Decision 13: Remove the estimated remaining-wall token
+
+- **Decision**: The Objective Facts state suffix no longer contains a live-wall (剩余牌山数) counter.
+  The previous estimator initialized 70 and decremented only on tsumo events, which cannot reproduce
+  kan-driven dead-wall changes or other exact wall sizes; since the MJAI event stream carries no
+  reliable remaining-wall field, the token is dropped and the remaining counter fields are
+  renumbered to a contiguous 1..7. The per-decision sequence projection becomes 118.803028.
+- **Rationale**: An estimated feature is worse than no feature for learning; removing it costs
+  exactly one fixed token per decision and keeps the public-input organization unchanged.
+- **Alternatives considered**: Keeping the estimator with a documented caveat, or routing
+  RiichiEnv-core `tiles_left` into the state-machine path, both break the single-source event-stream
+  derivation that the state machine guarantees.
+
+## Decision 14: Progress, riichi-trait, and turn facts
+
+- **Decision**: Snapshot is extended from 49 to 54 rows. Each opponent's latest-tedashi tile is
+  replaced by the riichi declaration tile (same 37-code vocabulary), a post-riichi tsumogiri count
+  keeps the opponent summary at 13 rows per seat, and two self facts join the global region: the
+  shanten-improving tile count and the tenpai winning tile count, both computed from a normalized
+  13-tile shape against remaining copies in the legal known area. The exact current turn (public
+  discard rounds + 1) joins the Objective Facts state suffix as a plain counter.
+- **Rationale**: Progress facts are the strongest missing signal (the model previously had to derive
+  improve/win counts through a long chain from raw hand + rivers); per-opponent riichi traits are
+  direct defense cues; the turn replaces the removed estimated wall count with an exact one.
+- **Alternatives considered**: Keeping latest-tedashi as a duplicated event-prefix fact; adding
+  estimated opponent danger or open-meld turn via event JSON parsing into the hot path; both are
+  rejected (redundancy or estimation vs. the exact derivation rule).

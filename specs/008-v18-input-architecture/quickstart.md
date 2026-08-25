@@ -12,7 +12,7 @@ conda run -n Mahjong-AI python -m pytest \
   riichi_ppo_v1/tests/unit/test_v18_actor_sft.py
 ```
 
-Expected: exactly 29 Snapshot rows; field/domain boundary cases pass; parameter count is 4.9M–5.1M;
+Expected: exactly 54 Snapshot rows; field/domain boundary cases pass; parameter count is 4.9M–5.1M;
 state keys contain no Q names; pair permutations preserve action-ID-aligned logits; Actor-only BC
 leaves Critic/value frozen and gradient-free.
 
@@ -49,8 +49,8 @@ conda run -n Mahjong-AI python -m riichi_ppo_v1.tools.validate \
   --games 1 --output audit/reports/v18/eval/v18_protocol_coverage.json
 ```
 
-Expected: the established selection is verified, mean V18 total length is 97–103 (target about
-99.80), parameter/state/schema checks pass, and any explicit output is placed under
+Expected: the established selection is verified, mean V18 total length is 116–122 (target about
+118.80), parameter/state/schema checks pass, and any explicit output is placed under
 `audit/reports/v18/` or `logs/v18/`.
 
 ## 5. Full affected suites

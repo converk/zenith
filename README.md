@@ -20,6 +20,6 @@ python -m pytest riichi_ppo_v1/tests RiichiEnv/tests riichi_lab_bot/tests
 - 设计与验收：[V18 spec](specs/008-v18-input-architecture/spec.md)
 - 可复现进度：[V18 PROGRESS](audit/reports/v18/report/PROGRESS.md)
 
-V18 使用 Objective Facts、固定 29 字段 Atomic Snapshot 和每个合法动作一对
-Offense/Defense Query。模型为约 4.93M 参数的 GQA Actor-Critic，Actor 与 Critic
+V18 使用 Objective Facts、固定 49 字段 Atomic Snapshot 和每个合法动作一对
+Offense/Defense Query。模型为约 4.94M 参数的 GQA Actor-Critic，Actor 与 Critic
 信息边界严格隔离。PPO 仍只采用宪法规定的固定 1v3 评测机制。
