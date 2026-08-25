@@ -8,6 +8,7 @@ use pyo3::{exceptions::PyValueError, prelude::*};
 use riichienv_core::{
     action::{Action, ActionType},
     observation::Observation,
+    offense_analysis::analyze_offense_v16_rows,
     types::Meld,
 };
 
@@ -75,6 +76,14 @@ pub struct CompactV16Facts {
     o9_values: Py<PyArray1<u8>>,
 }
 
+#[pyclass(name = "V16YakuValues", frozen)]
+pub struct V16YakuValues {
+    #[pyo3(get)]
+    yaku_class: Py<PyArray1<u8>>,
+    #[pyo3(get)]
+    base_han: Py<PyArray1<u8>>,
+}
+
 fn dora_type(indicator: u8) -> usize {
     let tile = usize::from(indicator) / 4;
     if tile < 27 {
@@ -95,7 +104,10 @@ fn tile_counts(tiles: &[u8]) -> [u8; TILE_KINDS] {
     counts
 }
 
-fn observation_facts(observation: &Observation) -> Result<ObservationFacts, String> {
+fn observation_facts(
+    observation: &Observation,
+    declared: bool,
+) -> Result<ObservationFacts, String> {
     let seat = usize::from(observation.player_id);
     if seat >= 4 {
         return Err("observation player_id must be in 0..4".to_string());
@@ -165,7 +177,7 @@ fn observation_facts(observation: &Observation) -> Result<ObservationFacts, Stri
         dora_multiplicity,
         own_river: rivers[seat],
         score: observation.scores[seat],
-        declared: observation.riichi_declared[seat],
+        declared,
         menzen: observation.melds[seat].iter().all(|meld| !meld.opened),
     })
 }
@@ -251,12 +263,17 @@ fn action_type_code(action_type: ActionType) -> u8 {
 
 /// 从唯一 Observation 与逐动作索引一次生成 Rust 融合编码器所需的连续事实。
 #[pyfunction]
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_v16_compact_facts(
     py: Python<'_>,
     observations: Vec<Observation>,
     observation_indices: PyReadonlyArray1<'_, u32>,
     actions: Vec<Action>,
     action_ids: PyReadonlyArray1<'_, u16>,
+    missed_doujun_overrides: PyReadonlyArray1<'_, bool>,
+    missed_riichi_overrides: PyReadonlyArray1<'_, bool>,
+    riichi_declared_overrides: PyReadonlyArray1<'_, bool>,
+    drawn_tile_overrides: PyReadonlyArray1<'_, i16>,
 ) -> PyResult<CompactV16Facts> {
     let rows = actions.len();
     if observation_indices.len() != rows || action_ids.len() != rows {
@@ -270,9 +287,45 @@ pub fn prepare_v16_compact_facts(
     let action_ids_slice = action_ids
         .as_slice()
         .map_err(|_| PyValueError::new_err("action_ids must be contiguous"))?;
+    let observation_count = observations.len();
+    for (name, length) in [
+        ("missed_doujun_overrides", missed_doujun_overrides.len()),
+        ("missed_riichi_overrides", missed_riichi_overrides.len()),
+        ("riichi_declared_overrides", riichi_declared_overrides.len()),
+        ("drawn_tile_overrides", drawn_tile_overrides.len()),
+    ] {
+        if length != observation_count {
+            return Err(PyValueError::new_err(format!(
+                "{name} must have length {observation_count}, got {length}"
+            )));
+        }
+    }
+    let missed_doujun_overrides = missed_doujun_overrides
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("missed_doujun_overrides must be contiguous"))?;
+    let missed_riichi_overrides = missed_riichi_overrides
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("missed_riichi_overrides must be contiguous"))?;
+    let riichi_declared_overrides = riichi_declared_overrides
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("riichi_declared_overrides must be contiguous"))?;
+    let drawn_tile_overrides = drawn_tile_overrides
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("drawn_tile_overrides must be contiguous"))?;
+    if drawn_tile_overrides
+        .iter()
+        .any(|&tile| !(-1..136).contains(&tile))
+    {
+        return Err(PyValueError::new_err(
+            "drawn_tile_overrides values must be -1 or physical tile ids in 0..136",
+        ));
+    }
     let facts = observations
         .iter()
-        .map(observation_facts)
+        .enumerate()
+        .map(|(index, observation)| {
+            observation_facts(observation, riichi_declared_overrides[index])
+        })
         .collect::<Result<Vec<_>, _>>()
         .map_err(PyValueError::new_err)?;
 
@@ -307,7 +360,8 @@ pub fn prepare_v16_compact_facts(
         let mut tile = action.tile;
         if tile.is_none() && matches!(action.action_type, ActionType::Riichi | ActionType::Discard)
         {
-            tile = observation.drawn_tile;
+            let override_tile = drawn_tile_overrides[observation_index];
+            tile = (override_tile >= 0).then_some(override_tile as u8);
         }
         let primary = tile.map(|value| usize::from(value) / 4);
         action_types[row] = action_type_code(action.action_type);
@@ -320,8 +374,8 @@ pub fn prepare_v16_compact_facts(
         for opponent in 0..3 {
             opponent_rivers[row * 3 + opponent] = fact.rivers[(seat + opponent + 1) % 4];
         }
-        missed_doujun[row] = observation.missed_agari_doujun;
-        missed_riichi[row] = observation.missed_agari_riichi;
+        missed_doujun[row] = missed_doujun_overrides[observation_index];
+        missed_riichi[row] = missed_riichi_overrides[observation_index];
         riichi_declared[row] = fact.declared;
         scores[row] = fact.score;
         o7_values[row] = u8::from(!fact.menzen);
@@ -521,5 +575,137 @@ pub fn prepare_v16_compact_facts(
         o7_values: PyArray1::from_vec(py, o7_values).unbind(),
         o8_values: PyArray1::from_vec(py, o8_values).unbind(),
         o9_values: PyArray1::from_vec(py, o9_values).unbind(),
+    })
+}
+
+/// 用 Rust Observation/Action 直接计算融合编码等待行的 O4/O5。
+#[pyfunction]
+pub fn analyze_v16_yaku_batch(
+    py: Python<'_>,
+    observations: Vec<Observation>,
+    observation_indices: PyReadonlyArray1<'_, u32>,
+    actions: Vec<Action>,
+    wait_masks: PyReadonlyArray1<'_, u64>,
+    drawn_tile_overrides: PyReadonlyArray1<'_, i16>,
+) -> PyResult<V16YakuValues> {
+    let rows = actions.len();
+    if observation_indices.len() != rows || wait_masks.len() != rows {
+        return Err(PyValueError::new_err(
+            "observation_indices/actions/wait_masks must have the same length",
+        ));
+    }
+    if drawn_tile_overrides.len() != observations.len() {
+        return Err(PyValueError::new_err(
+            "drawn_tile_overrides must have one value per observation",
+        ));
+    }
+    let observation_indices = observation_indices
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("observation_indices must be contiguous"))?;
+    let wait_masks = wait_masks
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("wait_masks must be contiguous"))?;
+    let drawn_tile_overrides = drawn_tile_overrides
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("drawn_tile_overrides must be contiguous"))?;
+    if drawn_tile_overrides
+        .iter()
+        .any(|&tile| !(-1..136).contains(&tile))
+    {
+        return Err(PyValueError::new_err(
+            "drawn_tile_overrides values must be -1 or physical tile ids in 0..136",
+        ));
+    }
+
+    let mut selected_rows = Vec::new();
+    let mut concealed_tiles = Vec::new();
+    let mut melds = Vec::new();
+    let mut selected_wait_masks = Vec::new();
+    let mut dora_indicators = Vec::new();
+    let mut player_wind = Vec::new();
+    let mut round_wind = Vec::new();
+    let mut honba = Vec::new();
+    let mut riichi_sticks = Vec::new();
+    for row in 0..rows {
+        if wait_masks[row] == 0 {
+            continue;
+        }
+        let observation_index = usize::try_from(observation_indices[row])
+            .map_err(|_| PyValueError::new_err("observation index conversion failed"))?;
+        let observation = observations
+            .get(observation_index)
+            .ok_or_else(|| PyValueError::new_err("observation index is out of range"))?;
+        let action = &actions[row];
+        if !matches!(
+            action.action_type,
+            ActionType::Riichi | ActionType::Discard | ActionType::Pass | ActionType::KyushuKyuhai
+        ) {
+            return Err(PyValueError::new_err(format!(
+                "row {row} has waits for an unsupported action type"
+            )));
+        }
+        let seat = usize::from(observation.player_id);
+        let mut post = observation.hands[seat]
+            .iter()
+            .map(|&tile| u8::try_from(tile).map_err(|_| "physical tile exceeds u8"))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(PyValueError::new_err)?;
+        if matches!(action.action_type, ActionType::Riichi | ActionType::Discard) {
+            let override_tile = drawn_tile_overrides[observation_index];
+            let tile = action
+                .tile
+                .or_else(|| (override_tile >= 0).then_some(override_tile as u8));
+            if let Some(tile) = tile
+                && let Some(index) = post.iter().position(|&value| value == tile)
+            {
+                post.remove(index);
+            }
+        }
+        selected_rows.push(row);
+        concealed_tiles.push(post);
+        melds.push(observation.melds[seat].clone());
+        selected_wait_masks.push(wait_masks[row]);
+        dora_indicators.push(
+            observation
+                .dora_indicators
+                .iter()
+                .map(|&tile| u8::try_from(tile).map_err(|_| "dora indicator exceeds u8"))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(PyValueError::new_err)?,
+        );
+        player_wind.push(((seat + 4 - usize::from(observation.oya)) % 4) as u8);
+        round_wind.push(observation.round_wind);
+        honba.push(observation.honba);
+        riichi_sticks.push(observation.riichi_sticks.min(u32::from(u8::MAX)) as u8);
+    }
+
+    let selected = py
+        .detach(|| {
+            analyze_offense_v16_rows(
+                &concealed_tiles,
+                &melds,
+                &selected_wait_masks,
+                &dora_indicators,
+                &player_wind,
+                &round_wind,
+                &honba,
+                &riichi_sticks,
+            )
+        })
+        .map_err(PyValueError::new_err)?;
+    let mut yaku_class = vec![0_u8; rows];
+    let mut base_han = vec![0_u8; rows];
+    for (source, row) in selected.into_iter().zip(selected_rows) {
+        yaku_class[row] = source.yaku_class;
+        base_han[row] = source.base_han;
+    }
+    let yaku_class = PyArray1::from_vec(py, yaku_class);
+    let base_han = PyArray1::from_vec(py, base_han);
+    for array in [yaku_class.as_any(), base_han.as_any()] {
+        array.call_method1("setflags", (false,))?;
+    }
+    Ok(V16YakuValues {
+        yaku_class: yaku_class.unbind(),
+        base_han: base_han.unbind(),
     })
 }

@@ -33,9 +33,6 @@ gradient_accumulation_steps: 1
 update_batch_mode: streaming
 # 性能基准使用 SoA 一次性物化(默认 true,此处显式声明)。
 update_use_soa: true
-# V16 Action Query 使用 Rust Observation/Action 紧凑事实融合编码。
-v16_batch_query: true
-v16_rust_encoding: true
 entropy_start: 0.01
 entropy_end: 0.003
 value_coef: 0.5

@@ -320,6 +320,11 @@ class ObservationView:
     def missing_fields(self) -> frozenset[str]:
         return object.__getattribute__(self, "_missing_fields")
 
+    @property
+    def native_observation(self) -> Any:
+        """返回供 Rust 编码器消费的原始 RiichiEnv Observation。"""
+        return object.__getattribute__(self, "_observation")
+
     def set_fields(self, fields: dict[str, Any]) -> None:
         merged = dict(object.__getattribute__(self, "_fields"))
         merged.update(fields)

@@ -80,6 +80,7 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<env::RiichiEnv>()?;
     m.add_class::<env::BatchedRiichiEnv>()?;
     m.add_class::<v16_facts::CompactV16Facts>()?;
+    m.add_class::<v16_facts::V16YakuValues>()?;
 
     m.add_function(wrap_pyfunction!(calculate_score_py, m)?)?;
     m.add_function(wrap_pyfunction!(parse_hand_py, m)?)?;
@@ -88,6 +89,7 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(calculate_shanten_py, m)?)?;
     m.add_function(wrap_pyfunction!(calculate_shanten_3p_py, m)?)?;
     m.add_function(wrap_pyfunction!(v16_facts::prepare_v16_compact_facts, m)?)?;
+    m.add_function(wrap_pyfunction!(v16_facts::analyze_v16_yaku_batch, m)?)?;
     m.add_function(wrap_pyfunction!(
         riichienv_core::yaku::get_yaku_by_id_py,
         m

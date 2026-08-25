@@ -1,10 +1,23 @@
 # V17 进度记录
 
+## 2026-08-25 Rust-only 单路径清理
+
+- 删除 PPO rollout 的 Python 逐动作/Python batch 回退、两个配置开关及旧 CPU
+  对比脚本,生产桥接固定进入 Rust compact+fused 编码;SFT 离线逐动作编码不受影响。
+- O4/O5 听牌行的 post-hand/facts 重建迁入 `riichienv` Rust API;Python 只负责
+  Observation wrapper 边界规范化与连续数组回填。
+- 在线 bot 的 `ObservationView` 显式暴露原始 RiichiEnv Observation,重建的
+  furiten/riichi/drawn-tile 覆盖值随紧凑边界传入,没有退回 Python 语义计算。
+- 验证:golden 15 数组/69,733 元素与 JSON 全等;unit 161 passed;integration +
+  bot 53 passed、1 skipped;Rust core 112 + correctness 4 + state-machine 10 passed。
+- CPU 同规模复测 8 env × 120 ticks、8,822 actions:`v16_query_assembly`
+  0.168479s,相对旧 Python batch 仍为 8.86×。
+
 ## 2026-08-25 Rust Action Query 融合性能验收
 
 - 新增 `riichienv.prepare_v16_compact_facts` 与 `riichi.encode_v16_batch`,保持
   `riichi` 不依赖 `riichienv`;完整 34 种摸牌 improving-mask 扫描与全部 action
-  row 均保留,旧 Python batch/逐动作路径保留为 oracle。
+  row 均保留;本条为清理前验收记录,后续已删除 PPO runtime 回退。
 - 正确性:全部 action kind 合成回归、真实 env bridge 全字段、golden 15 数组
   69,733 元素及边界 JSON 全等;unit 164 passed、集成 11 passed、Rust 10 passed、
   RiichiEnv 定向 14 passed。

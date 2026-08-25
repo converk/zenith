@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 """冻结 V16 PPO 编码 golden baseline(纯 CPU, 无 GPU/无 Ray)。
 
-目的:在 Rust 融合优化前,把「旧路径 oracle」的 V16 编码输出
-(history / snapshot / query / critic / legal_mask)与状态机事件、transition
-字段固定成可对比的 npz,便于后续任何快路径做逐元素正确性回归。
+目的:确定性重放当前 Rust 单路径的 V16 编码输出(history / snapshot / query /
+critic / legal_mask)与状态机事件、transition 字段,并与已经冻结的优化前 oracle
+NPZ 做逐元素正确性回归。
 
 用法(Mahjong-AI 环境):
   python audit/reports/v17/scripts/freeze_golden_baseline.py \
@@ -19,14 +19,13 @@ BatchedStateBridge,用「每个合法动作取第一个」做确定性 self-play
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 import numpy as np
 import yaml
 
 # 保持项目自定义 CUDA_DEVICE 约定,但本脚本不需要 GPU。
-import os
-
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
 
@@ -49,18 +48,14 @@ def main() -> None:
     parser.add_argument("--max-steps", type=int, default=40)
     parser.add_argument("--seed", type=int, default=20260819)
     parser.add_argument("--out", default="audit/reports/v17/eval/golden_baseline_v17.npz")
-    parser.add_argument(
-        "--rust-encoding",
-        action="store_true",
-        help="用 Rust 融合快路径重放同一 golden trace,供逐元素对照",
-    )
     args = parser.parse_args()
 
     config = _load_config(args.config)
     config.setdefault("seed", args.seed)
 
-    import riichi  # noqa: F401
+    import riichi
     from riichienv import BatchedRiichiEnv
+
     from riichi_ppo_v1.model.bridge import BatchedStateBridge
     from riichi_ppo_v1.training.profiling import StageProfiler
 
@@ -73,13 +68,7 @@ def main() -> None:
         game_mode=config["game_mode"],
     )
     state_machine = riichi.MjaiKyokuStateMachineManager(num_envs)
-    bridge = BatchedStateBridge(
-        state_machine,
-        num_envs,
-        profiler,
-        batch_query=bool(args.rust_encoding),
-        rust_encoding=bool(args.rust_encoding),
-    )
+    bridge = BatchedStateBridge(state_machine, num_envs, profiler)
 
     observations = list(envs.reset())
     walls = list(envs.walls())
@@ -116,7 +105,7 @@ def main() -> None:
         # decode 全部合法 action id, 冻结 id->MJAI 映射。
         ids = []
         for row, decision in enumerate(decisions):
-            for action_id in np.flatnonzero(np.asarray(getattr(prepared, "legal_mask"))[row]):
+            for action_id in np.flatnonzero(np.asarray(prepared.legal_mask)[row]):
                 ids.append((int(decision.batch_index), int(action_id)))
         if ids:
             mjai = state_machine.decode_actions(

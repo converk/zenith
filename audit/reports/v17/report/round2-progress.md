@@ -21,7 +21,8 @@
 
 ## 进行中
 
-- 组合基准(SoA + `v16_batch_query`):`v17_ppo_perf_512g4e_bq.yaml` 正在后台
+- 组合基准(SoA + `v16_batch_query`):历史使用的独立 bq 配置已在 Rust-only
+  单路径清理中删除;对应日志与本报告继续作为阶段证据。
   运行三轮,完成后给出与同条件基线(`perf_512g4e_noso`)和
   SoA-only(`perf_512g4e_soa`)的对照。
 

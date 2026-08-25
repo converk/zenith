@@ -193,15 +193,18 @@ encode_v16_batch(
 `riichienv`:
 
 1. `riichienv.prepare_v16_compact_facts(observations, observation_indices,
-   actions, action_ids) -> CompactV16Facts`:每个唯一 Observation 只提取一次,
+   actions, action_ids, boundary_overrides...) -> CompactV16Facts`:每个唯一
+   Observation 只提取一次,
    在 core 内完成 post-shape、remaining、river、meld/kan、kind/O7/O8/O9 与
    defense facts,返回 20 个 C-contiguous SoA NumPy 数组。
 2. `riichi.encode_v16_batch(...) -> V16BatchEncoding`:释放 GIL,复用
    `offense_row_v16`、`defense_row` 与 `shanten`,直接写
    `query_rows int32[N,2,15]` 和 `wait_masks uint64[N]`;附带
    `unique_offense_rows/unique_shanten_rows` 审计计数。
-3. 只有 `wait_masks != 0` 的少量听牌行由 `riichienv.analyze_offense_v16`
-   一次批调用回填 O4/O5。依赖方向不反转,全部 action 的 query 行仍逐一保留。
+3. 只有 `wait_masks != 0` 的少量听牌行由
+   `riichienv.analyze_v16_yaku_batch` 在 Rust 内重建 post-hand 并批量计算 O4/O5。
+   Python 只把连续结果写回 query buffer;依赖方向不反转,全部 action 的 query 行
+   仍逐一保留。
 
 `query_rows` 的末维严格保持 V16 15 列:
 `[query_type, action_id, action_type, primary_tile+1, source_seat+1,
@@ -210,4 +213,5 @@ answer_0..answer_9]`;每动作固定 offense/defense 两行。其余输入的 dt
 
 state-machine 的 pending request 同时保存固定 action id→原始合法 Action 下标,
 `bridge.prepare_v16` 不再执行 `decode_actions` 后的 JSON parse/canonical/match。
-旧逐动作路径与 Python batch 路径均保留为 oracle/回退开关。
+生产桥接只保留 Rust 融合路径,不再暴露 Python batch/逐动作回退开关。逐动作实现
+仅由 SFT 离线重编码使用,不进入 PPO rollout。

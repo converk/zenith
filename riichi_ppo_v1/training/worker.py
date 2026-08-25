@@ -329,14 +329,11 @@ if ray is not None:
             )
             self.state_machine = riichi.MjaiKyokuStateMachineManager(self.num_envs)
             self.profiler = StageProfiler(enabled=bool(config.get("profile_enabled", True)))
-            # V16 action query 默认走批量生成(analyze_action_queries_batch)快速
-            # 路径;旧逐动作 Python oracle 仍可通过 v16_batch_query=false 回退。
+            # V16 action query 只保留 Rust 紧凑事实与融合编码路径。
             self.bridge = BatchedStateBridge(
                 self.state_machine,
                 self.num_envs,
                 self.profiler,
-                batch_query=bool(config.get("v16_batch_query", True)),
-                rust_encoding=bool(config.get("v16_rust_encoding", False)),
             )
             self.observations = list(self.envs.reset())
             self.walls = list(self.envs.walls())

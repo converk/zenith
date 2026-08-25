@@ -6,7 +6,8 @@
 2. **学习者一次性物化**(已实现):`RolloutBuffer` SoA + `PPOLearner.update` 接入。
 3. **Rust 融合决策批**(已完成):`riichienv` core 粗粒度紧凑事实物化 +
    `riichi.encode_v16_batch` 融合 offense/defense/shanten/query row;query 热路径
-   消除 decode/canonical JSON 与逐动作 Observation 属性扫描。
+   消除 decode/canonical JSON 与逐动作 Observation 属性扫描;生产桥接只保留
+   该路径,没有 Python runtime 回退或配置分支。
 4. **direct action-id step + 紧凑 rollout buffer**:action id 由 Rust 直接应用;
    worker 内 pending 改 SoA;driver→learner 走 Ray 大数组/共享内存。
 5. **PPO update 深化**:pinned host slabs、non_blocking H2D、DDP static graph /

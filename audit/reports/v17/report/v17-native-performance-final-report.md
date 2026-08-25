@@ -138,9 +138,10 @@ T1(少 worker 大 env)理论上会减少并发编码并行度,风险较高未跑
 4. PPO update 深化:pinned host slabs、non_blocking H2D、DDP static graph /
    fused AdamW / torch.compile。
 
-## 10. 推荐正式训练配置(结合当前最优)
+## 10. 阶段性训练建议(已由第 17 节取代)
 
-- 启用 `update_use_soa: true`(默认)与 `v16_batch_query: true`(默认)。
+- 当时启用 `update_use_soa: true` 与 Python `v16_batch_query`;后者及其配置开关
+  已在 Rust-only 清理中删除。
 - 保持 `num_workers=12`、`envs_per_worker=32`、`inference_batch_wait_ms=8.0`、
   `inference_batch_target_rows=0`(即默认,不要用大 batch)。
 - 启动命令(标准基线验证):
@@ -159,7 +160,7 @@ Observation/Action(每个唯一对象只跨一次 PyO3)
   -> riichi.encode_v16_batch (GIL released)
        offense shared kernel + defense + simple shanten + kind dispatch
        -> query_rows int32[N,2,15] + wait_masks uint64[N]
-  -> 仅听牌行一次 riichienv yaku batch 回填 O4/O5
+  -> 仅听牌行由 riichienv Rust yaku batch 计算并回填 O4/O5
   -> 按 decision offset view/reshape -> V16 padding -> GPU inference
 ```
 
@@ -185,8 +186,9 @@ query 热路径不再执行 `decode_actions -> MJAI JSON -> canonical JSON -> Py
 - 真实 env 30 tick bridge 对照:history/snapshot/query/critic/legal mask 全字段全等。
 - 冻结 golden:15 组数组、69,733 个元素 byte-exact(`integer_exact=1`,
   `float_exact=1`),decode 与状态机边界 JSON 全等。
-- `riichi_ppo_v1/tests/unit`:164 passed;V16 bridge 集成 11 passed;Rust crate
-  10 passed;RiichiEnv 定向测试 14 passed。
+- 清理前验收:`riichi_ppo_v1/tests/unit` 164 passed;V16 bridge 集成 11 passed;
+  Rust crate 10 passed;RiichiEnv 定向测试 14 passed。移除 3 个旧路径专用测试后,
+  当前完整 unit 为 161 passed,集成与 bot 为 53 passed、1 个硬件测试 skipped。
 - V16 schema、GRP/PPO/GAE/value/entropy/SFT KL、current-only transition、
   opponent mix、checkpoint/DDP 数学均未修改;无需改协议文档。
 
@@ -198,6 +200,10 @@ CPU 真实决策批(8 env × 120 ticks,8,822 action rows):
 |---|---:|---:|
 | Python batch oracle | 1.493045s | 1.00× |
 | Rust compact+fused | 0.136433s | **10.94×** |
+| Rust-only 清理后复测 | 0.168479s | **8.86×** |
+
+清理后复测包含 Rust O4/O5 facts 重建与在线 Observation override 边界;仍远低于
+原 Python batch。GPU 三轮结果对应 Rust 融合主体,删除回退不会增加 rollout 分支。
 
 标准 GPU 基准中,worker throughput 从 Python batch 的约 378 transitions/s 提到
 计分轮约 731–734 transitions/s;inference rows/forward 从约 103 提到 173–176。
@@ -235,9 +241,9 @@ rollout **1.69×**、total **1.32×**;新轮 transitions 多 1.77%,update 的 4.
 
 - GPU inference/full-forward 与 queue wait 已成为 rollout 主瓶颈;此前 big-batch
   sweep 已证实简单增大等待窗口会变慢,不推荐重试。
-- history 继续由 Rust state-machine 提供;snapshot/critic 与少量听牌 yaku 回填
-  仍沿用既有批路径,没有伪称进入同一个 `encode_v16_batch`。它们已通过全字段
-  oracle,且 profiling 中不再是主导项;若继续融合应单列后续任务与收益基准。
+- history 继续由 Rust state-machine 提供;snapshot/critic 仍沿用既有批路径,
+  没有伪称进入同一个 `encode_v16_batch`;听牌 yaku facts 与计算已迁入 Rust。
+  全字段已通过 oracle,且 profiling 中不再是主导项。
 - direct action-id step、worker pending SoA/Ray 大数组、pinned slabs/DDP static
   graph 仍可深化,但不再是本次 ≥1.20× 验收的阻塞项。
 - 流水线/双缓冲未合入:融合路径已把 rollout 推到 1.78×,继续改异步状态机会增加
@@ -245,9 +251,9 @@ rollout **1.69×**、total **1.32×**;新轮 transitions 多 1.77%,update 的 4.
 
 ## 17. 推荐正式配置与启动命令
 
-使用自包含 `riichi_ppo_v1/configs/v17_ppo.yaml`,显式保持
-`v16_batch_query: true`,`v16_rust_encoding: true`,`update_use_soa` 默认 true,
-以及现有 12 worker × 32 env / 双 inference actor 拓扑:
+使用自包含 `riichi_ppo_v1/configs/v17_ppo.yaml`;Action Query 现在无运行时开关,
+固定使用 Rust 融合路径。保持 `update_use_soa` 默认 true,以及现有
+12 worker × 32 env / 双 inference actor 拓扑:
 
 ```
 env -C /mnt/disk1/hubowen/zenith \

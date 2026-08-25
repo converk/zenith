@@ -4,8 +4,9 @@
 
 ## 完成
 
-1. **V16 action query 批量生成设为默认热路径**:worker 默认 `v16_batch_query=true`
-   (旧逐动作 Python oracle 通过 `v16_batch_query=false` 回退)。
+1. **V16 action query 批量生成设为默认热路径(历史阶段)**:当时 worker 默认
+   `v16_batch_query=true`;该 Python 路径及回退开关后来已由 Rust-only 单路径
+   替代并删除。
 2. **`v17_ppo.yaml` 实际配置验证**(2048 局/update,2 epochs,target_kl=0.01,
    1 迭代):
 

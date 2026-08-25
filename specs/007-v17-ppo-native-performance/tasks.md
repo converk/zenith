@@ -15,7 +15,8 @@
       (`riichi_ppo_v1/model/action_query.py`)+ `bridge.prepare_v16` 的
       `batch_query` 开关 + `tests/unit/test_action_query_batch.py`。与逐动作
       oracle 逐元素一致;`analyze_action_queries` ~119→101 μs/action,
-      `prepare_v16` 端到端 ~1.14×。**仍待与 convolution 并发/GPU 深挖**。
+      `prepare_v16` 端到端 ~1.14×。该过渡实现已在 T12 清理,不再存在于 PPO
+      runtime。
 
 ## 本轮完成
 
@@ -29,6 +30,9 @@
       oracle 对照、golden trace 69,733 元素与 decode/边界 JSON 全等;
       `riichi_ppo_v1/tests/unit` 164 项通过。
 - [x] T11 三轮基准(标准 512g4e)+ 实际 2048 配置验证 + 最终报告。
+- [x] T12 Rust-only 单路径清理:删除 PPO Python batch/逐动作回退、配置开关与
+      旧路径测试;听牌 O4/O5 facts 重建迁入 Rust;golden/unit/integration/bot
+      全部回归通过。
 
 ## 后续可选深化(本次 rollout ≥1.20× 验收不再阻塞)
 
