@@ -11,10 +11,12 @@ import pytest
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
 import riichi
-from riichienv import BatchedRiichiEnv
+from riichienv import BatchedRiichiEnv, RiichiEnv
+from riichienv.action import Action, ActionType
 
 from riichi_ppo_v1.model.action_query import analyze_action_queries, encode_query_row
 from riichi_ppo_v1.model.bridge import BatchedStateBridge, Decision
+from riichi_ppo_v1.model.encoding_protocol import QUERY_ROW_ACTION_TYPE
 
 
 @pytest.fixture()
@@ -98,3 +100,15 @@ def test_native_bridge_has_no_runtime_fallback_switches() -> None:
     bridge = BatchedStateBridge(riichi.MjaiKyokuStateMachineManager(1), 1)
     assert not hasattr(bridge, "batch_query")
     assert not hasattr(bridge, "rust_encoding")
+
+
+def test_kyushu_kyuhai_compatibility_preserves_ryukyoku_code() -> None:
+    env = RiichiEnv(seed=0, game_mode="4p-red-half")
+    env.reset()
+    observation = env.get_observation(0)
+    offense, defense = analyze_action_queries(
+        observation, Action(ActionType.KYUSHU_KYUHAI), 240,
+    )
+    rows = np.stack((encode_query_row(offense), encode_query_row(defense)))
+    assert offense.action_type == defense.action_type == "ryukyoku"
+    np.testing.assert_array_equal(rows[:, QUERY_ROW_ACTION_TYPE], [10, 10])

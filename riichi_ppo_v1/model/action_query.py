@@ -40,6 +40,7 @@ def _action_kind_label(action: object) -> str:
         "discard": "dahai",
         "riichi": "reach",
         "pass": "none",
+        "kyushu_kyuhai": "ryukyoku",
         "kyushukyuhai": "ryukyoku",
     }.get(name, name)
 

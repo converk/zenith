@@ -84,6 +84,11 @@ class _EmptyEventsObservation:
     def new_events(self) -> list[str]:
         return []
 
+    @property
+    def native_observation(self) -> object:
+        """向 Rust 编码边界透明暴露底层原生 Observation。"""
+        return getattr(self._base, "native_observation", self._base)
+
     def __getattr__(self, name: str) -> object:
         return getattr(self._base, name)
 
