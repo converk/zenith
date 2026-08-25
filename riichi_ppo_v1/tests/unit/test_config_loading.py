@@ -57,6 +57,25 @@ class ConfigLoadingTest(unittest.TestCase):
         self.assertEqual(resumed["games_per_update"], 512)
         self.assertEqual(resumed["eval1v3_output_dir"], "audit/reports/v17/eval")
 
+    def test_v17_thread_and_worker_soa_benchmarks_are_self_contained(self) -> None:
+        configs = Path(__file__).resolve().parents[2] / "configs"
+        baseline = load_config(str(configs / "v17_ppo_perf_512g4e.yaml"))
+        expected = {
+            "v17_ppo_perf_512g4e_limit1.yaml": (4, False),
+            "v17_ppo_perf_512g4e_limit1_step2.yaml": (2, False),
+            "v17_ppo_perf_512g4e_limit1_step2_worker_soa.yaml": (2, True),
+        }
+        for name, (step_threads, worker_soa) in expected.items():
+            config = load_config(str(configs / name))
+            self.assertTrue(set(baseline).issubset(config))
+            self.assertEqual(config["games_per_update"], 512)
+            self.assertEqual(config["update_epochs"], 4)
+            self.assertEqual(config["target_kl"], 0.0)
+            self.assertEqual(config["env_step_threads"], step_threads)
+            self.assertEqual(config["rollout_worker_cpu_threads"], 1)
+            self.assertEqual(config["rollout_worker_num_cpus"], 2)
+            self.assertEqual(config["worker_return_soa"], worker_soa)
+
     def test_worker_partitioning_balances_workers_across_learners(self) -> None:
         self.assertEqual(partition_worker_indices(6, 2), [[0, 2, 4], [1, 3, 5]])
         self.assertEqual(partition_worker_indices(5, 2), [[0, 2, 4], [1, 3]])
