@@ -8,9 +8,21 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..model.encoding_protocol import (
+    ACTION_TYPE_CARDINALITY,
+    DEFENSE_SLOT_ORDER,
     ENCODED_FORMAT,
     ENCODING_PROTOCOL_VERSION,
+    OFFENSE_SLOT_ORDER,
+    QUERY_ROW_WIDTH,
+    QUERY_SLOT_COUNT,
+    SNAPSHOT_FACTOR_CARDINALITIES,
+    SNAPSHOT_FACTOR_WIDTH,
+    SNAPSHOT_FIELD_COUNT,
+    SNAPSHOT_FIELDS,
+    SNAPSHOT_NUMERIC_WIDTH,
+    SLOT_CARDINALITIES,
 )
+from ..model.schema import NUM_ACTIONS
 
 SFT_CONTRACT_VERSION = "riichi-sft-v18-1"
 RUNTIME_CONTRACT_ID = "riichi-runtime-v18-1"
@@ -23,10 +35,35 @@ TRAINING_MODES = frozenset({"actor_only", "actor_public_value", "joint_actor_cri
 SFT_CADENCE_STEPS = 3000
 SFT_FINAL_EVAL_HANCHAN_COUNT = 96
 
-# V18 协议契约的冻结内容哈希,数据集 manifest 与校验器共用此单一来源。
-ACTOR_INPUT_CONTRACT_SHA256 = (
-    "1faeeaf6c28eb4eb06a073dac05c9a44373c287135b02d401e7090b267e7acce"
-)
+# V18 输入契约的规范化载荷:协议版本、格式、Rust Schema 全表(字段 ID/名称/
+# 座次/域)、Query 行宽与槽位基数、动作空间维度。任何一项变化都会使哈希变化,
+# 旧数据集 manifest 会 fail closed。载荷只从 Rust 单一来源与协议常量生成,
+# 不允许手工冻结魔法字符串。
+_ACTOR_INPUT_CONTRACT_PAYLOAD = {
+    "protocol_version": ENCODING_PROTOCOL_VERSION,
+    "encoded_format": ENCODED_FORMAT,
+    "snapshot_field_count": SNAPSHOT_FIELD_COUNT,
+    "snapshot_schema": [
+        (
+            field.field_id, field.name, field.relative_seat,
+            field.categorical_max, field.tile_max, field.numeric,
+        )
+        for field in SNAPSHOT_FIELDS
+    ],
+    "snapshot_factor_cardinalities": tuple(SNAPSHOT_FACTOR_CARDINALITIES),
+    "snapshot_factor_width": SNAPSHOT_FACTOR_WIDTH,
+    "snapshot_numeric_width": SNAPSHOT_NUMERIC_WIDTH,
+    "query_row_width": QUERY_ROW_WIDTH,
+    "query_slot_count": QUERY_SLOT_COUNT,
+    "action_type_cardinality": ACTION_TYPE_CARDINALITY,
+    "num_actions": NUM_ACTIONS,
+    "offense_slot_order": OFFENSE_SLOT_ORDER,
+    "defense_slot_order": DEFENSE_SLOT_ORDER,
+    "slot_cardinalities": SLOT_CARDINALITIES,
+}
+ACTOR_INPUT_CONTRACT_SHA256 = hashlib.sha256(
+    json.dumps(_ACTOR_INPUT_CONTRACT_PAYLOAD, sort_keys=True, ensure_ascii=False).encode("utf-8")
+).hexdigest()
 
 
 def dataset_manifest_hash(dataset: Path) -> str:
