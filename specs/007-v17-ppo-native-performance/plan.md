@@ -2,16 +2,20 @@
 
 ## 阶段总览
 
-1. **冻结基线**(已启动):重新测量标准 512g4e 基线;生成 profiling 与 golden trace。
+1. **冻结基线**(已完成):重新测量标准 512g4e 基线;生成 profiling 与 golden trace。
 2. **学习者一次性物化**(已实现):`RolloutBuffer` SoA + `PPOLearner.update` 接入。
-3. **Rust 融合决策批**:V16 query/snapshot/critic 编码迁移到 `riichienv-state-machine`
-   (或新增 integration crate);消除 JSON/PyObject/Python dict 往返。
+3. **Rust 融合决策批**(已完成):`riichienv` core 粗粒度紧凑事实物化 +
+   `riichi.encode_v16_batch` 融合 offense/defense/shanten/query row;query 热路径
+   消除 decode/canonical JSON 与逐动作 Observation 属性扫描。
 4. **direct action-id step + 紧凑 rollout buffer**:action id 由 Rust 直接应用;
    worker 内 pending 改 SoA;driver→learner 走 Ray 大数组/共享内存。
 5. **PPO update 深化**:pinned host slabs、non_blocking H2D、DDP static graph /
    fused AdamW / torch.compile 评估。
 6. **并发拓扑 sweep**:T1(少 actor 大 vector)/T2(中)/T3(当前)三组对比。
-7. **完整测试与三轮基准 + 报告**。
+7. **完整测试与三轮基准 + 报告**(已完成,rollout 1.78× vs 129.374s 基线)。
+
+阶段 4–6 保留为后续可选深化;阶段 3 已使 rollout 验收目标达成,本轮不引入
+额外 direct-step/共享内存/DDP 风险。
 
 ## 依赖关系
 

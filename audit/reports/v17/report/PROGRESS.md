@@ -1,5 +1,22 @@
 # V17 进度记录
 
+## 2026-08-25 Rust Action Query 融合性能验收
+
+- 新增 `riichienv.prepare_v16_compact_facts` 与 `riichi.encode_v16_batch`,保持
+  `riichi` 不依赖 `riichienv`;完整 34 种摸牌 improving-mask 扫描与全部 action
+  row 均保留,旧 Python batch/逐动作路径保留为 oracle。
+- 正确性:全部 action kind 合成回归、真实 env bridge 全字段、golden 15 数组
+  69,733 元素及边界 JSON 全等;unit 164 passed、集成 11 passed、Rust 10 passed、
+  RiichiEnv 定向 14 passed。
+- 标准 512g4e 三轮(第 1 轮预热)后两轮 rollout 71.339/74.204s,均值
+  72.772s;相对 129.374s 基线为 1.78×。update/total 均值 151.021/225.044s,
+  相对基线为 1.39×/1.51×;epochs 4/4、minibatches 全部执行。
+- 真实 2048 配置:exit 0,2,092 games、1,640,549 transitions、2/2 epochs、
+  2,140/2,140 minibatches、3,281,098 executed samples;rollout/update/total
+  275.312/287.917/563.269s,未启动长期训练。
+- snapshot/critic 继续使用现有批路径并保持 oracle 全等;本轮未合入风险更高的
+  双缓冲/direct step,因为 action-query 融合已超过 rollout 1.20× 验收目标。
+
 ## 2026-08-19 V1run1 归档(update=100 全量完成)
 
 - 本次双卡 PPO 训练(2026-08-19 02:39 → 16:58,100 iterations,含 u060 起

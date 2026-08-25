@@ -1,6 +1,6 @@
-# V17 PPO 原生性能重构 · 阶段性报告
+# V17 PPO 原生性能重构 · 最终报告
 
-> 日期:2026-08-24 · 状态:阶段性(rollout 1.2× 未达成,update/total 已达成)
+> 日期:2026-08-25 · 状态:最终(Rust 融合后 rollout/update/total 均达到验收)
 > 相关产物:`specs/007-v17-ppo-native-performance/`、`audit/reports/v17/{design,eval,report,scripts}/`、`logs/v17/`
 
 ---
@@ -145,3 +145,118 @@ T1(少 worker 大 env)理论上会减少并发编码并行度,风险较高未跑
   `inference_batch_target_rows=0`(即默认,不要用大 batch)。
 - 启动命令(标准基线验证):
   `env -C /mnt/disk1/hubowen/zenith RAY_LOG_TO_STDERR=0 CUDA_DEVICE=0,1 PYTHONUNBUFFERED=1 python -m riichi_ppo_v1.training.train --config riichi_ppo_v1/configs/v17_ppo_perf_512g4e.yaml --device cuda --learner-gpus 2`
+
+---
+
+## 11. Round 5:Rust Action Query 融合快速路径(取代第 8–10 节的阶段性结论)
+
+### 11.1 新调用链
+
+```
+Observation/Action(每个唯一对象只跨一次 PyO3)
+  -> riichienv.prepare_v16_compact_facts
+       post-shape / remaining / rivers / meld+kan / kind / O7-O9 / defense SoA
+  -> riichi.encode_v16_batch (GIL released)
+       offense shared kernel + defense + simple shanten + kind dispatch
+       -> query_rows int32[N,2,15] + wait_masks uint64[N]
+  -> 仅听牌行一次 riichienv yaku batch 回填 O4/O5
+  -> 按 decision offset view/reshape -> V16 padding -> GPU inference
+```
+
+state-machine 在 `prepare_decisions` 时保存 action id→原始合法 Action 下标,
+query 热路径不再执行 `decode_actions -> MJAI JSON -> canonical JSON -> PyObject`
+代表动作匹配。`riichi` 公开模块仍不依赖 `riichienv`。
+
+### 11.2 Rust API 与 buffer layout
+
+- `CompactV16Facts`:20 个 C-contiguous SoA 数组,核心行为
+  `shape_counts/remaining/defense_counts uint8[N,34]`、
+  `opponent_rivers uint64[N,3]`、其余逐行动作/flag/slot 数组。
+- `encode_v16_batch`:输出 `query_rows int32[N,2,15]`;末维为
+  `[query_type, action_id, action_type, primary_tile_code, source_seat_code,
+  answer_0..answer_9]`;另输出 `wait_masks uint64[N]` 与批内唯一形状计数。
+- 向听 34 种摸牌扫描保持完整,但复用三个未变化牌组的 table-combine 中间结果;
+  这是等价公共子表达式消除,不删除任何候选牌或有效输入。
+
+## 12. 正确性证据
+
+- 全 kind 合成回归:tsumo/ron/reach/dahai/chi/pon/ankan/daiminkan/kakan/
+  none/pass/ryukyoku,新旧 `query_rows` 逐元素全等。
+- 真实 env 30 tick bridge 对照:history/snapshot/query/critic/legal mask 全字段全等。
+- 冻结 golden:15 组数组、69,733 个元素 byte-exact(`integer_exact=1`,
+  `float_exact=1`),decode 与状态机边界 JSON 全等。
+- `riichi_ppo_v1/tests/unit`:164 passed;V16 bridge 集成 11 passed;Rust crate
+  10 passed;RiichiEnv 定向测试 14 passed。
+- V16 schema、GRP/PPO/GAE/value/entropy/SFT KL、current-only transition、
+  opponent mix、checkpoint/DDP 数学均未修改;无需改协议文档。
+
+## 13. 独立收益与 profiling
+
+CPU 真实决策批(8 env × 120 ticks,8,822 action rows):
+
+| 路径 | `state/v16_query_assembly` | 相对 |
+|---|---:|---:|
+| Python batch oracle | 1.493045s | 1.00× |
+| Rust compact+fused | 0.136433s | **10.94×** |
+
+标准 GPU 基准中,worker throughput 从 Python batch 的约 378 transitions/s 提到
+计分轮约 731–734 transitions/s;inference rows/forward 从约 103 提到 173–176。
+新瓶颈排序:① GPU inference/full forward 与分布式排队;② PPO update 的最长序列/
+系统抖动;③ env step(计分轮仅 1.71–1.77s)。编码已不再是首要瓶颈。
+
+## 14. 标准 512g4e 三轮结果
+
+配置:`CUDA_DEVICE=0,1`,`learner_gpus=2`,`games_per_update=512`,
+`update_epochs=4`,`target_kl=0.0`,seed=1。第 1 轮预热:
+
+| 轮次 | rollout | update | total | epochs | minibatches |
+|---|---:|---:|---:|---:|---:|
+| 1(预热) | 90.143s | 145.470s | 235.627s | 4/4 | 1360/1360 |
+| 2 | 71.339s | 111.523s | 184.259s | 4/4 | 1024/1024 |
+| 3 | 74.204s | 190.518s | 265.829s | 4/4 | 1056/1056 |
+| 2/3 均值 | **72.772s** | **151.021s** | **225.044s** | 4/4 | 全部执行 |
+
+相对同条件 `noso` 基线 129.374/209.566/340.178s:
+**rollout 1.78× / update 1.39× / total 1.51×**。相对此前最优
+SoA+Python-batch 120.444/150.159/271.900s:Rust 融合的独立增益为
+**rollout 1.66× / update 0.99× / total 1.21×**。第三轮 update 190.518s
+为系统抖动,已原样计入均值,未剔除。
+
+## 15. 真实 2048 配置验证
+
+`games_per_update=2048`,`update_epochs=2`,`target_kl=0.01`:exit 0;
+2,092 games、1,640,549 transitions、2/2 epochs、2,140/2,140 minibatches、
+3,281,098 executed samples,`early_stop=False`。耗时 rollout 275.312s、
+update 287.917s、total 563.269s。相对旧同配置 464.087/276.544/740.673s:
+rollout **1.69×**、total **1.32×**;新轮 transitions 多 1.77%,update 的 4.1%
+差异与样本量/系统抖动一致,所有训练计算完整执行。
+
+## 16. 剩余瓶颈与后续项
+
+- GPU inference/full-forward 与 queue wait 已成为 rollout 主瓶颈;此前 big-batch
+  sweep 已证实简单增大等待窗口会变慢,不推荐重试。
+- history 继续由 Rust state-machine 提供;snapshot/critic 与少量听牌 yaku 回填
+  仍沿用既有批路径,没有伪称进入同一个 `encode_v16_batch`。它们已通过全字段
+  oracle,且 profiling 中不再是主导项;若继续融合应单列后续任务与收益基准。
+- direct action-id step、worker pending SoA/Ray 大数组、pinned slabs/DDP static
+  graph 仍可深化,但不再是本次 ≥1.20× 验收的阻塞项。
+- 流水线/双缓冲未合入:融合路径已把 rollout 推到 1.78×,继续改异步状态机会增加
+  current-only transition 与 action/state 对齐风险,本轮选择在正确性边界停下。
+
+## 17. 推荐正式配置与启动命令
+
+使用自包含 `riichi_ppo_v1/configs/v17_ppo.yaml`,显式保持
+`v16_batch_query: true`,`v16_rust_encoding: true`,`update_use_soa` 默认 true,
+以及现有 12 worker × 32 env / 双 inference actor 拓扑:
+
+```
+env -C /mnt/disk1/hubowen/zenith \
+  RAY_LOG_TO_STDERR=0 CUDA_DEVICE=0,1 PYTHONUNBUFFERED=1 \
+  /mnt/disk1/hubowen/miniconda3/envs/Mahjong-AI/bin/python \
+  -m riichi_ppo_v1.training.train \
+  --config riichi_ppo_v1/configs/v17_ppo.yaml \
+  --device cuda --learner-gpus 2 \
+  2>&1 | tee logs/v17/v17_ppo.log
+```
+
+本轮只做验证,未启动正式长期训练。

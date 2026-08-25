@@ -17,12 +17,21 @@
       oracle 逐元素一致;`analyze_action_queries` ~119→101 μs/action,
       `prepare_v16` 端到端 ~1.14×。**仍待与 convolution 并发/GPU 深挖**。
 
-## 待实现
+## 本轮完成
 
-- [ ] T4 Rust V16 批量编码(`riichienv-state-machine` 增加 `encode_v16_batch` /
+- [x] T4 Rust V16 批量编码(`riichienv-state-machine` 增加 `encode_v16_batch` /
       compact observation 入口),消除逐动作 PyO3 与 JSON 往返。
-- [ ] T5 消除 Observation PyObject:让 `BatchedRiichiEnv` 暴露紧凑观察快照
-      (flat array)供 Rust 编码器直接消费。
+- [x] T5 粗粒度 Observation/Action 边界:`riichienv.prepare_v16_compact_facts`
+      每个唯一 Observation 只跨一次 PyO3,在 core 内直接物化 20 个连续 SoA
+      buffer;state-machine 直接返回 action id→原始 Action 下标,删除 query 热路径
+      的 decode JSON→canonical JSON→PyObject 匹配往返。
+- [x] T10 完整正确性回归:全部 action kind 合成回归、真实 env bridge 全字段
+      oracle 对照、golden trace 69,733 元素与 decode/边界 JSON 全等;
+      `riichi_ppo_v1/tests/unit` 164 项通过。
+- [x] T11 三轮基准(标准 512g4e)+ 实际 2048 配置验证 + 最终报告。
+
+## 后续可选深化(本次 rollout ≥1.20× 验收不再阻塞)
+
 - [ ] T6 direct action-id step:`bridge.decode` 之后由 Rust 直接应用 action id
       驱动 `env.step_batch`。
 - [ ] T7 紧凑 rollout buffer:worker 内 pending 从 `list[Transition]` 改 SoA;
@@ -33,6 +42,3 @@
       两个 DDP rank 等量 shard。
 - [ ] T9 并发拓扑 sweep:T1/T2/T3 三组,测量 inference batch 分布、queue wait、
       GPU/actor idle、CPU run queue、线程过度订阅、active decision rows。
-- [ ] T10 完整正确性回归:golden trace 对比 + 新/旧通路逐元素一致;
-      协议契约同步。
-- [ ] T11 三轮基准(标准 512g4e)+ 实际 `v17_ppo.yaml` 验证 + 报告。
