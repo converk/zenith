@@ -1,4 +1,4 @@
-"""V16 SFT 输入编码与预计算样本读取。"""
+"""V18 SFT 输入编码与预计算样本读取。"""
 
 from __future__ import annotations
 
@@ -16,19 +16,18 @@ from ..model.bridge import (
     action_jsons_and_decision_flag,
     snapshot_json,
 )
-from ..model.encoding_protocol import ENCODED_FORMAT as V16_ENCODED_FORMAT
-from ..model.snapshot import build_snapshot_facts, encode_snapshot_rows
+from ..model.encoding_protocol import ENCODED_FORMAT
+from ..model.snapshot import encode_snapshot_rows
 
 
 @dataclass(slots=True)
-class V16Sample:
-    """V16 决策样本:Objective Facts + Snapshot + 每动作一对 Query。"""
+class EncodedSample:
+    """V18 决策样本:Objective Facts + Atomic Snapshot + 每动作一对 Query。"""
 
     history_factors: np.ndarray
     history_numeric: np.ndarray
-    snapshot_kinds: np.ndarray
-    snapshot_cat: np.ndarray
-    snapshot_num: np.ndarray
+    snapshot_factors: np.ndarray
+    snapshot_numeric: np.ndarray
     query_rows: np.ndarray
     action_ids: np.ndarray
     legal_mask: np.ndarray
@@ -45,7 +44,7 @@ class V16Sample:
 
     @property
     def snapshot_length(self) -> int:
-        return int(self.snapshot_kinds.shape[0])
+        return int(self.snapshot_factors.shape[0])
 
     @property
     def query_pair_count(self) -> int:
@@ -68,14 +67,14 @@ def _member_metadata(name: str) -> tuple[int, str, int]:
         return 0, stem, 0
 
 
-def encode_kyoku_v16(
+def encode_kyoku(
     content: str,
     *,
     year: int = 0,
     game_id: str = "",
     kyoku_index: int = 0,
-) -> list[V16Sample]:
-    """Replay 一局并编码 V16 输入(Objective Facts + Snapshot + Query 对)。"""
+) -> list[EncodedSample]:
+    """Replay 一局并编码 V18 输入(Objective Facts + Snapshot + Query 对)。"""
     from .contract import assert_runtime_contract
 
     assert_runtime_contract()
@@ -170,31 +169,28 @@ def encode_kyoku_v16(
                 query_rows.append(encode_query_row(offense))
                 query_rows.append(encode_query_row(defense))
                 action_ids.append(action_id_value)
-            kinds, categorical, numeric_snapshot = encode_snapshot_rows(
-                build_snapshot_facts(observation),
-            )
+            snapshot_factors, snapshot_numeric = encode_snapshot_rows(observation)
             pending.append((
                 seat, observation,
                 prepared_factors[row, :length].copy(),
                 prepared_numeric[row, :length].copy(),
-                kinds, categorical, numeric_snapshot,
+                snapshot_factors, snapshot_numeric,
                 np.asarray(query_rows, dtype=np.int32),
                 np.asarray(action_ids, dtype=np.int32),
                 legal.copy(), int(target_action),
             ))
     if not pending:
         return []
-    seat_samples: list[list[V16Sample]] = [[] for _ in range(4)]
+    seat_samples: list[list[EncodedSample]] = [[] for _ in range(4)]
     for (
-        seat, _observation, factors, numeric, kinds, categorical,
-        numeric_snapshot, rows, action_ids_array, legal, target_action,
+        seat, _observation, factors, numeric, snapshot_factors,
+        snapshot_numeric, rows, action_ids_array, legal, target_action,
     ) in pending:
-        seat_samples[seat].append(V16Sample(
+        seat_samples[seat].append(EncodedSample(
             history_factors=factors,
             history_numeric=numeric,
-            snapshot_kinds=kinds,
-            snapshot_cat=categorical,
-            snapshot_num=numeric_snapshot,
+            snapshot_factors=snapshot_factors,
+            snapshot_numeric=snapshot_numeric,
             query_rows=rows,
             action_ids=action_ids_array,
             legal_mask=legal,
@@ -223,23 +219,23 @@ def iter_split_samples(
     rank: int = 0,
     world_size: int = 1,
     include_critic: bool = True,
-) -> Iterator[V16Sample]:
-    """读取 V16 预计算数据集 split。"""
+) -> Iterator[EncodedSample]:
+    """读取 V18 预计算数据集 split。"""
     del gamma, shuffle_buffer_kyokus
     manifest_path = dataset / "manifest.json"
     if not manifest_path.is_file():
-        raise RuntimeError("SFT training requires a v16 encoded dataset manifest")
+        raise RuntimeError("SFT training requires a V18 encoded dataset manifest")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if str(manifest.get("format", "")) != V16_ENCODED_FORMAT:
-        raise RuntimeError("only the v16 encoded SFT format is supported")
-    from .contract import validate_v16_manifest
+    if str(manifest.get("format", "")) != ENCODED_FORMAT:
+        raise RuntimeError("only the V18 encoded SFT format is supported")
+    from .contract import validate_manifest
 
-    validate_v16_manifest(manifest)
+    validate_manifest(manifest)
     if include_critic:
-        raise ValueError("the v16 encoded subset is actor-only; set train_critic: false")
-    from .precompute import iter_precomputed_v16_samples
+        raise ValueError("the V18 encoded subset is actor-only; set train_critic: false")
+    from .precompute import iter_precomputed_samples
 
-    yield from iter_precomputed_v16_samples(
+    yield from iter_precomputed_samples(
         dataset,
         split,
         seed=seed,

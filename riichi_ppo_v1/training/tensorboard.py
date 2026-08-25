@@ -19,7 +19,7 @@ class ScalarWriter(Protocol):
 CURATED_SCALAR_TAGS = frozenset({
     # PPO policy/value optimisation and policy-drift diagnostics.
     "ppo/policy_loss",
-    # Rollout volume (V17: complete-hanchan based stopping).
+    # Rollout 规模使用完整半庄作为停止单位。
     "rollout/games",
     "rollout/kyokus",
     "rollout/grp_calls",

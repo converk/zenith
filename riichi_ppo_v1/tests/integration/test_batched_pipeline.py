@@ -21,7 +21,7 @@ from riichi_ppo_v1.model.architecture import KyokuTransformerActorCritic, ModelC
 from riichi_ppo_v1.model.bridge import BatchedStateBridge, Decision
 from riichi_ppo_v1.model.semantic_validation import (
     assert_critic_token_semantics,
-    assert_v16_actor_input_semantics,
+    assert_actor_input_semantics,
 )
 
 
@@ -47,20 +47,19 @@ class BatchedPipelineTest(unittest.TestCase):
                 if observation.legal_actions():
                     decisions.append(Decision(env_index, seat, observation))
         self.assertGreaterEqual(len(decisions), 2)
-        prepared = bridge.prepare_v16(decisions)
+        prepared = bridge.prepare(decisions, walls=list(envs.walls()))
         self.assertEqual(prepared.history_factors.shape, (len(decisions), prepared.history_factors.shape[1], 10))
         self.assertEqual(prepared.history_numeric.shape, (*prepared.history_factors.shape[:2], 8))
         self.assertEqual(prepared.critic_factors.shape, (len(decisions), prepared.critic_factors.shape[1], 10))
         self.assertEqual(prepared.critic_lengths.shape, (len(decisions),))
         self.assertEqual(prepared.legal_mask.shape, (len(decisions), 241))
         self.assertTrue(np.all(prepared.legal_mask.any(axis=1)))
-        assert_v16_actor_input_semantics(
+        assert_actor_input_semantics(
             prepared.history_factors,
             prepared.history_numeric,
             prepared.history_lengths,
-            prepared.snapshot_kinds,
-            prepared.snapshot_cat,
-            prepared.snapshot_num,
+            prepared.snapshot_factors,
+            prepared.snapshot_numeric,
             prepared.snapshot_lengths,
             prepared.query_rows,
             prepared.query_action_ids,
@@ -82,20 +81,19 @@ class BatchedPipelineTest(unittest.TestCase):
         self.assertEqual(end_kyoku.shape, (2,))
         self.assertEqual(end_game.shape, (2,))
 
-    def test_prepare_v16_critic_features_are_semantic_and_forwardable(self) -> None:
+    def test_prepare_critic_features_are_semantic_and_forwardable(self) -> None:
         envs = BatchedRiichiEnv(1, seed=101, step_threads=1)
         observations = list(envs.reset())
         bridge = BatchedStateBridge(riichi.MjaiKyokuStateMachineManager(1), 1)
         bridge.sync(observations)
         decisions = [Decision(0, int(seat), obs) for seat, obs in observations[0].items() if obs.legal_actions()]
-        prepared = bridge.prepare_v16(decisions)
-        assert_v16_actor_input_semantics(
+        prepared = bridge.prepare(decisions, walls=list(envs.walls()))
+        assert_actor_input_semantics(
             prepared.history_factors,
             prepared.history_numeric,
             prepared.history_lengths,
-            prepared.snapshot_kinds,
-            prepared.snapshot_cat,
-            prepared.snapshot_num,
+            prepared.snapshot_factors,
+            prepared.snapshot_numeric,
             prepared.snapshot_lengths,
             prepared.query_rows,
             prepared.query_action_ids,
@@ -108,16 +106,15 @@ class BatchedPipelineTest(unittest.TestCase):
         model = KyokuTransformerActorCritic(ModelConfig(
             layers=2, shared_layers=1, critic_layers=1, d_model=32,
             query_heads=2, kv_heads=1, head_dim=16, ffn_dim=64, context_tokens=4096,
-            policy_head_type="symmetric_action_query",
+            policy_head_type="isolated_action_query",
         )).eval()
         with torch.no_grad():
-            output = model.forward_v16(
+            output = model.forward(
                 torch.as_tensor(prepared.history_factors, dtype=torch.long),
                 torch.as_tensor(prepared.history_numeric),
                 torch.as_tensor(prepared.history_lengths),
-                torch.as_tensor(prepared.snapshot_kinds, dtype=torch.long),
-                torch.as_tensor(prepared.snapshot_cat, dtype=torch.long),
-                torch.as_tensor(prepared.snapshot_num),
+                torch.as_tensor(prepared.snapshot_factors, dtype=torch.long),
+                torch.as_tensor(prepared.snapshot_numeric),
                 torch.as_tensor(prepared.snapshot_lengths),
                 torch.as_tensor(prepared.query_rows, dtype=torch.long),
                 torch.as_tensor(prepared.query_action_ids, dtype=torch.long),

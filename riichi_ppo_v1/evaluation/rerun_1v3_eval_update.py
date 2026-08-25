@@ -1,4 +1,4 @@
-"""独立重跑某个 update 的固定 6000 半庄 1v3 评测。
+"""独立重跑某个 update 的固定 4000 半庄 1v3 评测。
 
 用途:训练循环中偶发分片失败(如 CUDA OOM)导致某个 update 的评测缺失时,
 不改动训练循环即可补齐该 update 的评测。参数全部取自版本配置,与
@@ -7,10 +7,10 @@
 
 用法:
     python -m riichi_ppo_v1.evaluation.rerun_1v3_eval_update \\
-        --config riichi_ppo_v1/configs/v17_ppo_resume.yaml \\
+        --config <自包含版本配置> \\
         --update 10
 
-若 ``--update`` 的汇总文件已存在,直接复用;否则重新运行全部 12 个分片
+若 ``--update`` 的汇总文件已存在,直接复用;否则重新运行全部 10 个分片
 (已有分片文件会被同种子确定性覆盖)。
 """
 

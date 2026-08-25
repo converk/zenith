@@ -1,11 +1,6 @@
 <!--
 Sync Impact Report
-- Version change: unset (placeholder) -> 1.0.0 (initial ratification)
-- Added sections: Core Principles, Additional Constraints, Development
-  Workflow & Quality Gates, Governance
-- Removed sections: none
-- Renamed principles: none
-- Deferred TODOs: none
+- Version change: 1.7.0 -> 1.8.0 (MINOR)
 - Amendment 2026-08-15: 1.0.0 -> 1.1.0 (MINOR). Modified Principle I
   (file naming + Chinese comments), Principle II (standalone configs, no
   overlay), Principle III (checkpoint directory convention), Principle IV
@@ -37,6 +32,15 @@ Sync Impact Report
   processes, 5 per GPU card on two cards, keep 5-update interval;
   per-shard internal batch size is an implementation detail supplied by
   the version config, not a mechanism constant).
+- Amendment 2026-08-25: 1.7.0 -> 1.8.0 (MINOR). Redefined Principle II
+  (single active encoding protocol and experiment generation become V18;
+  V16/V17 code contracts and experimental assets become cold storage with
+  no active compatibility requirement); updated Principle III (registered
+  the archived V16/V17 datasets and the fixed future V18 SFT dataset path).
+- Modified principles: II. 单一现行版本契约; III. 产物存储规范
+- Added sections: none
+- Removed sections: none
+- Deferred TODOs: none
 -->
 # Zenith Constitution
 
@@ -54,9 +58,13 @@ Sync Impact Report
 
 ### II. 单一现行版本契约(Single Active Contract)
 
-- 现行信息编码协议为 v16(单一版本,取代 token schema / feature schema 等多版本
-  拆分),token schema 仍为 13;v16 是当前活跃实验代,v17 为下一实验代(经
-  2026-08-19 宪法修订登记,PPO 采用 Mortal 式 GRP 纯奖励方案)。
+- 现行信息编码协议和活跃实验代均为 V18,且全仓只保留一个活跃的输入、schema、
+  模型与 checkpoint 契约。V16/V17 代码契约和实验资产均为冷存储,不得被活跃代码
+  引用,也不得为其保留协议适配、旧输入转换、双模型分支、legacy adapter、旧字段
+  fallback 或 state-dict 迁移。
+- V18 Actor 的公开信息边界和 Critic 的私有信息边界属于协议契约;任何扩大 Actor
+  可见信息、改变 Critic 私有输入或恢复 Q scorer/Q-boosting 的变更必须通过新的
+  feature 规范和宪法合规审查。
 - 彻底放弃 v11 checkpoint 兼容(2026-08-15 决策):移除 `legacy/v11` 适配器、
   `legacy_fixed` 模型头、`build_legacy_v11` 及相关测试;v11 权重仅作冷存储保留。
 - v14 实验资产保留为冷存储,不再被当前代码引用,也不恢复其训练。
@@ -72,9 +80,11 @@ Sync Impact Report
 - checkpoint 保存目录固定为 `checkpoints/train_riichi_<版本号>`,阶段产物放在其下
   的子目录(如 `train_riichi_v15/ppo`、`train_riichi_v15/sft/stage_a`);每个
   checkpoint 内部保存配置快照以便追溯。
-- 现行数据集为 `tenhou_sft_2024_2025_encoded_40pct_v13_v16` 与原始
-  `tenhou_sft_2024_2025`;`80pct_v11` 与 `tenhou-to-mjai` 中间产物删除
-  (2026-08-15 决策)。GRP 数据集按代际命名:`tenhou_grp_2024_2025_v17`。
+- 原始数据集 `datasets/tenhou_sft_2024_2025` 继续保留。V16 数据集
+  `datasets/tenhou_sft_2024_2025_encoded_60pct_v16` 与 V17 GRP 数据集
+  `datasets/tenhou_grp_2024_2025_v17` 均为归档资产。V18 后续正式 SFT 数据集路径
+  固定为 `datasets/tenhou_sft_2024_2025_encoded_60pct_v18`,并复用既定的
+  2024/2025 年 60% selection;创建该数据集不属于协议实现本身。
 - 所有运行日志(json、txt、log 等运行时信息)必须写入 `logs/<版本号>/`,禁止在
   `logs/` 根目录或他处单独生成日志文件。
 - `audit/reports/<版本号>/` 是每个版本的初始设计文档、实验报告、测试与验证脚本
@@ -85,7 +95,7 @@ Sync Impact Report
 ### IV. 固定训练评测机制(Fixed Evaluation Mechanisms)
 
 - PPO 唯一评测机制为 1v3 对抗:固定 10 进程 × 400 = 4000 hanchan(每进程
-  400,双卡各 5 进程),每 5 updates 一次;对手模型(如 V16 SFT)由配置或命令行
+  400,双卡各 5 进程),每 5 updates 一次;对手模型由配置或命令行
   参数指定,不得硬编码任何具体版本;输出到 `audit/reports/<run>/eval`。进程数
   (10)与单进程半庄数(400)是机制常量,间隔(5 updates)按宪法登记;分片内部
   并行度(每批半庄数)属实施细节,由版本配置提供,不属于机制常量。修改须走本
@@ -148,4 +158,4 @@ Sync Impact Report
 - 每次清理提交必须对照本宪法做合规检查。
 - AGENTS.md 保留为运行时指导文件,不得与本宪法矛盾。
 
-**Version**: 1.7.0 | **Ratified**: 2026-08-15 | **Last Amended**: 2026-08-20
+**Version**: 1.8.0 | **Ratified**: 2026-08-15 | **Last Amended**: 2026-08-25

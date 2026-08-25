@@ -1,15 +1,20 @@
 use std::collections::{HashMap, HashSet};
 
 use numpy::{
-    IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyUntypedArrayMethods, ndarray::Array2,
+    IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyUntypedArrayMethods,
+    ndarray::{Array2, Array3},
 };
 use pyo3::{exceptions::PyValueError, prelude::*};
 
+use riichi::atomic_snapshot::{
+    AtomicSnapshotInput, SNAPSHOT_FACTOR_WIDTH, SNAPSHOT_FIELD_COUNT, SNAPSHOT_NUMERIC_WIDTH,
+    encode as encode_atomic_snapshot,
+};
 use riichienv_core::{
     action::{Action, ActionType},
     observation::Observation,
-    offense_analysis::analyze_offense_v16_rows,
-    types::Meld,
+    offense_analysis::analyze_offense_rows,
+    types::{Meld, MeldType},
 };
 
 const TILE_KINDS: usize = 34;
@@ -32,8 +37,8 @@ struct ObservationFacts {
     menzen: bool,
 }
 
-#[pyclass(name = "CompactV16Facts", frozen)]
-pub struct CompactV16Facts {
+#[pyclass(name = "CompactEncodingFacts", frozen)]
+pub struct CompactEncodingFacts {
     #[pyo3(get)]
     action_ids: Py<PyArray1<u16>>,
     #[pyo3(get)]
@@ -76,12 +81,140 @@ pub struct CompactV16Facts {
     o9_values: Py<PyArray1<u8>>,
 }
 
-#[pyclass(name = "V16YakuValues", frozen)]
-pub struct V16YakuValues {
+#[pyclass(name = "EncodingYakuValues", frozen)]
+pub struct EncodingYakuValues {
     #[pyo3(get)]
     yaku_class: Py<PyArray1<u8>>,
     #[pyo3(get)]
     base_han: Py<PyArray1<u8>>,
+}
+
+#[pyclass(name = "AtomicSnapshotBatch", frozen)]
+pub struct AtomicSnapshotBatch {
+    #[pyo3(get)]
+    factors: Py<PyArray3<u8>>,
+    #[pyo3(get)]
+    numeric: Py<PyArray3<f32>>,
+    #[pyo3(get)]
+    lengths: Py<PyArray1<u8>>,
+}
+
+/// 从原生 Observation 批量派生固定 29 行原子 Snapshot。
+#[pyfunction]
+pub fn prepare_atomic_snapshots(
+    py: Python<'_>,
+    observations: Vec<Observation>,
+) -> PyResult<AtomicSnapshotBatch> {
+    if observations.is_empty() {
+        return Err(PyValueError::new_err("Snapshot 批次不能为空"));
+    }
+    let mut factor_values =
+        Vec::with_capacity(observations.len() * SNAPSHOT_FIELD_COUNT * SNAPSHOT_FACTOR_WIDTH);
+    let mut numeric_values =
+        Vec::with_capacity(observations.len() * SNAPSHOT_FIELD_COUNT * SNAPSHOT_NUMERIC_WIDTH);
+    for observation in &observations {
+        let observer = usize::from(observation.player_id);
+        if observer >= 4 {
+            return Err(PyValueError::new_err("观察者座次必须位于 0..3"));
+        }
+        let mut hand_counts = [0_u8; TILE_KINDS];
+        for &tile in &observation.hands[observer] {
+            if tile >= 136 {
+                return Err(PyValueError::new_err("手牌含非法实体牌 ID"));
+            }
+            hand_counts[tile as usize / 4] += 1;
+        }
+        let mut special_counts = hand_counts;
+        for meld in &observation.melds[observer] {
+            if meld.meld_type == MeldType::Ankan {
+                for &tile in &meld.tiles {
+                    special_counts[usize::from(tile) / 4] += 1;
+                }
+            }
+        }
+        let hand_is_open = observation.melds[observer].iter().any(|meld| meld.opened);
+        let meld_count = u8::try_from(observation.melds[observer].len())
+            .map_err(|_| PyValueError::new_err("面子数转换失败"))?;
+        let mut riichi_status = [1_u8; 3];
+        let mut riichi_turn = [0_u8; 3];
+        let mut open_meld_count = [0_u8; 3];
+        let mut tedashi_count = [0_u8; 3];
+        let mut tsumogiri_count = [0_u8; 3];
+        let mut latest_tedashi = [0_u8; 3];
+        let mut tsumogiri_streak = [0_u8; 3];
+        for (relative, opponent) in (1..=3).map(|relative| (relative, (observer + relative) % 4)) {
+            let index = relative - 1;
+            riichi_status[index] = if observation.riichi_accepted[opponent] {
+                3
+            } else if observation.riichi_declared[opponent] {
+                2
+            } else {
+                1
+            };
+            if riichi_status[index] != 1 {
+                let declaration = observation.riichi_declaration_indices[opponent]
+                    .ok_or_else(|| PyValueError::new_err("立直玩家缺少宣言河牌索引"))?;
+                riichi_turn[index] = declaration.saturating_add(1).min(25);
+            }
+            open_meld_count[index] = observation.melds[opponent]
+                .iter()
+                .filter(|meld| meld.opened)
+                .count()
+                .try_into()
+                .map_err(|_| PyValueError::new_err("副露数转换失败"))?;
+            let flags = &observation.tsumogiri_flags[opponent];
+            if flags.len() != observation.discards[opponent].len() {
+                return Err(PyValueError::new_err("牌河与摸切标记长度不一致"));
+            }
+            tsumogiri_count[index] = flags.iter().filter(|&&flag| flag).count().min(255) as u8;
+            tedashi_count[index] = flags.iter().filter(|&&flag| !flag).count().min(255) as u8;
+            latest_tedashi[index] = observation.last_tedashis[opponent]
+                .map(|tile| {
+                    riichienv_core::observation::sequence_features::tile_id_to_kan37(u32::from(
+                        tile,
+                    )) + 1
+                })
+                .unwrap_or(0);
+            tsumogiri_streak[index] =
+                flags.iter().rev().take_while(|&&flag| flag).count().min(4) as u8;
+        }
+        let encoded = encode_atomic_snapshot(&AtomicSnapshotInput {
+            observer: observation.player_id,
+            scores: observation.scores,
+            hand_counts,
+            special_counts,
+            meld_count,
+            hand_is_open,
+            riichi_status,
+            riichi_turn,
+            open_meld_count,
+            tedashi_count,
+            tsumogiri_count,
+            latest_tedashi,
+            tsumogiri_streak,
+        })
+        .map_err(PyValueError::new_err)?;
+        factor_values.extend(encoded.factors.into_iter().flatten());
+        numeric_values.extend(encoded.numeric.into_iter().flatten());
+    }
+    let batch = observations.len();
+    Ok(AtomicSnapshotBatch {
+        factors: Array3::from_shape_vec(
+            (batch, SNAPSHOT_FIELD_COUNT, SNAPSHOT_FACTOR_WIDTH),
+            factor_values,
+        )
+        .expect("原子 Snapshot factor 形状")
+        .into_pyarray(py)
+        .unbind(),
+        numeric: Array3::from_shape_vec(
+            (batch, SNAPSHOT_FIELD_COUNT, SNAPSHOT_NUMERIC_WIDTH),
+            numeric_values,
+        )
+        .expect("原子 Snapshot numeric 形状")
+        .into_pyarray(py)
+        .unbind(),
+        lengths: PyArray1::from_vec(py, vec![SNAPSHOT_FIELD_COUNT as u8; batch]).unbind(),
+    })
 }
 
 fn dora_type(indicator: u8) -> usize {
@@ -255,16 +388,31 @@ fn action_type_code(action_type: ActionType) -> u8 {
         ActionType::Daiminkan => 6,
         ActionType::Ankan => 7,
         ActionType::Kakan => 8,
-        ActionType::Tsumo | ActionType::Ron => 9,
-        ActionType::KyushuKyuhai => 10,
+        ActionType::Tsumo => 9,
+        ActionType::Ron => 10,
+        ActionType::KyushuKyuhai => 11,
         ActionType::Kita => 0,
     }
+}
+
+fn relative_source_code(observer: u8, source: u8) -> Result<i8, &'static str> {
+    if observer >= 4 || source >= 4 || observer == source {
+        return Err("供牌 actor 不是有效对手座次");
+    }
+    Ok(((i16::from(source) - i16::from(observer) + 3) % 4) as i8)
+}
+
+fn action_requires_supplier(action_type: ActionType) -> bool {
+    matches!(
+        action_type,
+        ActionType::Chi | ActionType::Pon | ActionType::Daiminkan | ActionType::Ron
+    )
 }
 
 /// 从唯一 Observation 与逐动作索引一次生成 Rust 融合编码器所需的连续事实。
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
-pub fn prepare_v16_compact_facts(
+pub fn prepare_encoding_facts(
     py: Python<'_>,
     observations: Vec<Observation>,
     observation_indices: PyReadonlyArray1<'_, u32>,
@@ -274,7 +422,7 @@ pub fn prepare_v16_compact_facts(
     missed_riichi_overrides: PyReadonlyArray1<'_, bool>,
     riichi_declared_overrides: PyReadonlyArray1<'_, bool>,
     drawn_tile_overrides: PyReadonlyArray1<'_, i16>,
-) -> PyResult<CompactV16Facts> {
+) -> PyResult<CompactEncodingFacts> {
     let rows = actions.len();
     if observation_indices.len() != rows || action_ids.len() != rows {
         return Err(PyValueError::new_err(
@@ -331,7 +479,7 @@ pub fn prepare_v16_compact_facts(
 
     let mut action_types = vec![0_u8; rows];
     let mut primary_types = vec![-1_i16; rows];
-    let source_seats = vec![-1_i8; rows];
+    let mut source_seats = vec![-1_i8; rows];
     let mut modes = vec![0_u8; rows];
     let mut shape_counts = vec![0_u8; rows * TILE_KINDS];
     let mut open_melds = vec![0_u8; rows];
@@ -367,6 +515,13 @@ pub fn prepare_v16_compact_facts(
         action_types[row] = action_type_code(action.action_type);
         if action_types[row] == 0 {
             return Err(PyValueError::new_err("unsupported four-player action type"));
+        }
+        if action_requires_supplier(action.action_type) {
+            let source = observation
+                .last_offer_actor()
+                .ok_or_else(|| PyValueError::new_err("供牌动作缺少最近的 dahai/kakan actor"))?;
+            source_seats[row] = relative_source_code(observation.player_id, source)
+                .map_err(PyValueError::new_err)?;
         }
         primary_types[row] = primary.map_or(-1, |value| value as i16);
         remaining[row * TILE_KINDS..(row + 1) * TILE_KINDS].copy_from_slice(&fact.remaining);
@@ -554,7 +709,7 @@ pub fn prepare_v16_compact_facts(
         .expect("opponent river shape")
         .into_pyarray(py)
         .unbind();
-    Ok(CompactV16Facts {
+    Ok(CompactEncodingFacts {
         action_ids: PyArray1::from_vec(py, action_ids_slice.to_vec()).unbind(),
         action_types: PyArray1::from_vec(py, action_types).unbind(),
         primary_types: PyArray1::from_vec(py, primary_types).unbind(),
@@ -578,16 +733,67 @@ pub fn prepare_v16_compact_facts(
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{action_requires_supplier, relative_source_code};
+    use riichienv_core::action::ActionType;
+
+    #[test]
+    fn supplier_seats_cover_all_three_relative_opponents() {
+        assert_eq!(relative_source_code(0, 1), Ok(0));
+        assert_eq!(relative_source_code(0, 2), Ok(1));
+        assert_eq!(relative_source_code(0, 3), Ok(2));
+        assert_eq!(relative_source_code(3, 0), Ok(0));
+    }
+
+    #[test]
+    fn supplier_seat_rejects_self_and_invalid_seats() {
+        assert!(relative_source_code(2, 2).is_err());
+        assert!(relative_source_code(0, 4).is_err());
+    }
+
+    #[test]
+    fn exactly_four_action_types_require_a_supplier() {
+        for action_type in [
+            ActionType::Chi,
+            ActionType::Pon,
+            ActionType::Daiminkan,
+            ActionType::Ron,
+        ] {
+            assert!(action_requires_supplier(action_type));
+        }
+        for action_type in [
+            ActionType::Discard,
+            ActionType::Riichi,
+            ActionType::Ankan,
+            ActionType::Kakan,
+            ActionType::Tsumo,
+            ActionType::Pass,
+            ActionType::KyushuKyuhai,
+            ActionType::Kita,
+        ] {
+            assert!(!action_requires_supplier(action_type));
+        }
+    }
+
+    #[test]
+    fn tsumo_and_ron_have_distinct_action_codes() {
+        assert_eq!(super::action_type_code(ActionType::Tsumo), 9);
+        assert_eq!(super::action_type_code(ActionType::Ron), 10);
+        assert_eq!(super::action_type_code(ActionType::KyushuKyuhai), 11);
+    }
+}
+
 /// 用 Rust Observation/Action 直接计算融合编码等待行的 O4/O5。
 #[pyfunction]
-pub fn analyze_v16_yaku_batch(
+pub fn analyze_encoding_yaku_batch(
     py: Python<'_>,
     observations: Vec<Observation>,
     observation_indices: PyReadonlyArray1<'_, u32>,
     actions: Vec<Action>,
     wait_masks: PyReadonlyArray1<'_, u64>,
     drawn_tile_overrides: PyReadonlyArray1<'_, i16>,
-) -> PyResult<V16YakuValues> {
+) -> PyResult<EncodingYakuValues> {
     let rows = actions.len();
     if observation_indices.len() != rows || wait_masks.len() != rows {
         return Err(PyValueError::new_err(
@@ -681,7 +887,7 @@ pub fn analyze_v16_yaku_batch(
 
     let selected = py
         .detach(|| {
-            analyze_offense_v16_rows(
+            analyze_offense_rows(
                 &concealed_tiles,
                 &melds,
                 &selected_wait_masks,
@@ -704,7 +910,7 @@ pub fn analyze_v16_yaku_batch(
     for array in [yaku_class.as_any(), base_han.as_any()] {
         array.call_method1("setflags", (false,))?;
     }
-    Ok(V16YakuValues {
+    Ok(EncodingYakuValues {
         yaku_class: yaku_class.unbind(),
         base_han: base_han.unbind(),
     })

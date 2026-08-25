@@ -1,4 +1,4 @@
-"""V17 PPO 奖励:纯 GRP reward(Mortal/Suphx 每小局 credit assignment)。
+"""PPO 纯 GRP reward(Mortal/Suphx 每小局 credit assignment)。
 
 排名 utility 为 [1, 1/3, -1/3, -1];每小局 reward = 下一小局开始时 expected
 rank utility - 本小局开始时 expected rank utility;最后一局 = 真实最终排名

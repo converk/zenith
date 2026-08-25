@@ -1,4 +1,4 @@
-//! V16 进攻「役/基础番」内核(Offense Query O4/O5)。
+//! 进攻「役/基础番」内核(Offense Query O4/O5)。
 //!
 //! 向听、有效牌与等待牌由 state-machine 的 `analyze_offense_v16` 计算(其 shanten
 //! 是既有生产路径);本模块只复用 `HandEvaluator` 对每个等待牌逐张计算是否有役
@@ -13,21 +13,21 @@ use crate::hand_evaluator::HandEvaluator;
 use crate::types::{Conditions, Meld, Wind};
 
 #[cfg(feature = "python")]
-#[pyclass(name = "YakuAnalysisV16", frozen)]
-pub struct YakuAnalysisV16 {
+#[pyclass(name = "YakuAnalysis", frozen)]
+pub struct YakuAnalysis {
     yaku_class: Py<PyArray1<u8>>,
     base_han: Py<PyArray1<u8>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct YakuRowV16 {
+pub struct YakuRow {
     pub yaku_class: u8,
     pub base_han: u8,
 }
 
-/// 对已经确定的等待牌批量计算 V16 O4/O5。
+/// 对已经确定的等待牌批量计算 O4/O5。
 #[allow(clippy::too_many_arguments)]
-pub fn analyze_offense_v16_rows(
+pub fn analyze_offense_rows(
     concealed_tiles: &[Vec<u8>],
     melds: &[Vec<Meld>],
     wait_masks: &[u64],
@@ -36,7 +36,7 @@ pub fn analyze_offense_v16_rows(
     round_wind: &[u8],
     honba: &[u8],
     riichi_sticks: &[u8],
-) -> Result<Vec<YakuRowV16>, String> {
+) -> Result<Vec<YakuRow>, String> {
     let rows = concealed_tiles.len();
     for (name, length) in [
         ("melds", melds.len()),
@@ -52,7 +52,7 @@ pub fn analyze_offense_v16_rows(
         }
     }
 
-    let mut output = vec![YakuRowV16::default(); rows];
+    let mut output = vec![YakuRow::default(); rows];
     for row in 0..rows {
         let mask = wait_masks[row];
         if mask >> 34 != 0 {
@@ -106,7 +106,7 @@ pub fn analyze_offense_v16_rows(
 
 #[cfg(feature = "python")]
 #[pymethods]
-impl YakuAnalysisV16 {
+impl YakuAnalysis {
     #[getter]
     fn yaku_class(&self, py: Python<'_>) -> Py<PyArray1<u8>> {
         self.yaku_class.clone_ref(py)
@@ -130,7 +130,7 @@ pub fn analyze_offense_v16(
     round_wind: PyReadonlyArray1<'_, u8>,
     honba: PyReadonlyArray1<'_, u8>,
     riichi_sticks: PyReadonlyArray1<'_, u8>,
-) -> PyResult<YakuAnalysisV16> {
+) -> PyResult<YakuAnalysis> {
     let rows = concealed_tiles.len();
     if melds.len() != rows || dora_indicators.len() != rows {
         return Err(PyValueError::new_err(
@@ -168,7 +168,7 @@ pub fn analyze_offense_v16(
 
     let output = py
         .detach(|| {
-            analyze_offense_v16_rows(
+            analyze_offense_rows(
                 &concealed_tiles,
                 &melds,
                 wait_values,
@@ -188,7 +188,7 @@ pub fn analyze_offense_v16(
     for array in [class_array.as_any(), han_array.as_any()] {
         array.call_method1("setflags", (false,))?;
     }
-    Ok(YakuAnalysisV16 {
+    Ok(YakuAnalysis {
         yaku_class: class_array.unbind(),
         base_han: han_array.unbind(),
     })

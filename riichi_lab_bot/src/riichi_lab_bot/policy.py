@@ -1,4 +1,4 @@
-"""V16/V17 checkpoint 加载与确定性策略推理。"""
+"""V18 checkpoint 加载与确定性策略推理。"""
 
 from __future__ import annotations
 
@@ -16,9 +16,10 @@ from riichi_ppo_v1.model.encoding_protocol import (
     QUERY_ROW_ACTION_ID,
     QUERY_ROW_ACTION_TYPE,
     QUERY_ROW_QUERY_TYPE,
+    SNAPSHOT_FIELDS,
 )
 from riichi_ppo_v1.model.semantic_validation import (
-    assert_v16_actor_input_semantics,
+    assert_actor_input_semantics,
 )
 
 from .bridge import PreparedDecision
@@ -26,8 +27,9 @@ from .model import (
     NUM_ACTIONS,
     NUMERIC_WIDTH,
     QUERY_ROW_WIDTH,
-    SNAPSHOT_CAT_WIDTH,
-    SNAPSHOT_NUM_WIDTH,
+    SNAPSHOT_FACTOR_WIDTH,
+    SNAPSHOT_FIELD_COUNT,
+    SNAPSHOT_NUMERIC_WIDTH,
     TOKEN_WIDTH,
     KyokuTransformerActorCritic,
     ModelConfig,
@@ -70,8 +72,8 @@ def _checkpoint_format(payload: dict[str, Any]) -> str:
     if ppo_format is not None:
         return f"ppo_v{int(ppo_format)}"
     if payload.get("sft_contract_version") is not None:
-        return "sft_v16"
-    return "v16_weights"
+        return "sft_v18"
+    return "v18_weights"
 
 
 def _warmup_inputs() -> tuple[
@@ -87,17 +89,23 @@ def _warmup_inputs() -> tuple[
     np.ndarray,
     np.ndarray,
 ]:
-    """构造一条最小但合法的 V16 policy-only 前向样本。"""
+    """构造一条最小但合法的 V18 policy-only 前向样本。"""
     history_factors = np.zeros((1, 1, TOKEN_WIDTH), dtype=np.uint8)
     history_factors[0, 0, 0] = 1
     history_factors[0, 0, 1] = 1
     history_numeric = np.zeros((1, 1, NUMERIC_WIDTH), dtype=np.float32)
     history_lengths = np.asarray([1], dtype=np.int64)
 
-    snapshot_kinds = np.zeros((1, 1), dtype=np.uint8)
-    snapshot_cat = np.zeros((1, 1, SNAPSHOT_CAT_WIDTH), dtype=np.uint8)
-    snapshot_num = np.zeros((1, 1, SNAPSHOT_NUM_WIDTH), dtype=np.float32)
-    snapshot_lengths = np.asarray([1], dtype=np.int64)
+    snapshot_factors = np.zeros(
+        (1, SNAPSHOT_FIELD_COUNT, SNAPSHOT_FACTOR_WIDTH), dtype=np.uint8,
+    )
+    for index, field in enumerate(SNAPSHOT_FIELDS):
+        snapshot_factors[0, index, 0] = field.field_id
+        snapshot_factors[0, index, 1] = field.relative_seat
+    snapshot_numeric = np.zeros(
+        (1, SNAPSHOT_FIELD_COUNT, SNAPSHOT_NUMERIC_WIDTH), dtype=np.float32,
+    )
+    snapshot_lengths = np.asarray([SNAPSHOT_FIELD_COUNT], dtype=np.int64)
 
     query_rows = np.zeros((1, 2, QUERY_ROW_WIDTH), dtype=np.int32)
     query_rows[0, 0, QUERY_ROW_QUERY_TYPE] = QUERY_OFFENSE
@@ -108,13 +116,12 @@ def _warmup_inputs() -> tuple[
     query_pair_counts = np.asarray([1], dtype=np.int64)
     legal_mask = np.zeros((1, NUM_ACTIONS), dtype=np.bool_)
     legal_mask[0, 0] = True
-    assert_v16_actor_input_semantics(
+    assert_actor_input_semantics(
         history_factors,
         history_numeric,
         history_lengths,
-        snapshot_kinds,
-        snapshot_cat,
-        snapshot_num,
+        snapshot_factors,
+        snapshot_numeric,
         snapshot_lengths,
         query_rows,
         query_action_ids,
@@ -125,9 +132,8 @@ def _warmup_inputs() -> tuple[
         history_factors,
         history_numeric,
         history_lengths,
-        snapshot_kinds,
-        snapshot_cat,
-        snapshot_num,
+        snapshot_factors,
+        snapshot_numeric,
         snapshot_lengths,
         query_rows,
         query_action_ids,
@@ -157,9 +163,9 @@ class PolicyEngine:
         raw_config = payload.get("model_config")
         if not isinstance(raw_config, dict):
             raise ValueError("checkpoint is missing model_config")
-        if raw_config.get("policy_head_type") != "symmetric_action_query":
+        if raw_config.get("policy_head_type") != "isolated_action_query":
             raise RuntimeError(
-                "V16/V17 bot requires policy_head_type=symmetric_action_query"
+                "V18 bot requires policy_head_type=isolated_action_query"
             )
         try:
             config = ModelConfig.from_mapping(dict(raw_config))
@@ -205,19 +211,18 @@ class PolicyEngine:
             dtype=self.autocast_dtype,
             enabled=self.autocast_dtype == torch.bfloat16,
         ):
-            self.model.forward_v16(*inputs, policy_only=True)
+            self.model(*inputs, policy_only=True)
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
         return (time.perf_counter() - started) * 1000.0
 
     def infer(self, prepared: PreparedDecision) -> InferenceResult:
-        assert_v16_actor_input_semantics(
+        assert_actor_input_semantics(
             prepared.history_factors[None],
             prepared.history_numeric[None],
             np.asarray([prepared.history_length], dtype=np.int64),
-            prepared.snapshot_kinds[None],
-            prepared.snapshot_cat[None],
-            prepared.snapshot_num[None],
+            prepared.snapshot_factors[None],
+            prepared.snapshot_numeric[None],
             np.asarray([prepared.snapshot_length], dtype=np.int64),
             prepared.query_rows[None],
             prepared.query_action_ids[None],
@@ -229,9 +234,8 @@ class PolicyEngine:
             self._tensor(prepared.history_factors[None]),
             self._tensor(prepared.history_numeric[None]),
             self._tensor(np.asarray([prepared.history_length], dtype=np.int64)),
-            self._tensor(prepared.snapshot_kinds[None]),
-            self._tensor(prepared.snapshot_cat[None]),
-            self._tensor(prepared.snapshot_num[None]),
+            self._tensor(prepared.snapshot_factors[None]),
+            self._tensor(prepared.snapshot_numeric[None]),
             self._tensor(np.asarray([prepared.snapshot_length], dtype=np.int64)),
             self._tensor(prepared.query_rows[None]),
             self._tensor(prepared.query_action_ids[None]),
@@ -244,7 +248,7 @@ class PolicyEngine:
             dtype=self.autocast_dtype,
             enabled=self.autocast_dtype == torch.bfloat16,
         ):
-            output = self.model.forward_v16(*inputs, policy_only=True)
+            output = self.model(*inputs, policy_only=True)
             chosen = output["policy_logits"].argmax(-1)
         action_id = int(chosen.item())
         elapsed_ms = (time.perf_counter() - started) * 1000.0

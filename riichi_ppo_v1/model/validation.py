@@ -152,8 +152,8 @@ def assert_observation_roundtrip(bridge: BatchedStateBridge, env_index: int, sea
     for action, template in zip(legal, templates, strict=True):
         expected_by_template[canonical(template)].append(action)
     expected = set(expected_by_template)
-    _factors, _numeric, _lengths, masks, _history_generations, *_critic = bridge.prepare([decision])
-    mask = masks[0]
+    prepared = bridge.prepare([decision])
+    mask = prepared.legal_mask[0]
     ids = set(np.flatnonzero(mask).tolist())
     if not ids:
         raise AssertionError(f"env={env_index} seat={seat_id} empty mask legal={list(map(str, legal))}")

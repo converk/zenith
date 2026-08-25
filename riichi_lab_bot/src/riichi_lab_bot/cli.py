@@ -8,7 +8,7 @@ import json
 import logging
 import os
 
-from .audit import V16InputAuditRecorder
+from .audit import InputAuditRecorder
 from .client import (
     RANKED_URL,
     VALIDATION_URL,
@@ -120,7 +120,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(message)s",
     )
     recorder = EventRecorder(args.jsonl_log)
-    audit_recorder = V16InputAuditRecorder(args.audit_log)
+    audit_recorder = InputAuditRecorder(args.audit_log)
     try:
         policy = _load_policy(args, recorder)
         if args.command == "local":

@@ -749,6 +749,7 @@ dependencies = [
  "numpy",
  "pyo3",
  "riichienv-core",
+ "riichienv-state-machine",
  "serde_json",
 ]
 

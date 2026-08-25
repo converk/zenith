@@ -3,11 +3,18 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import sys
+import atexit
+import tempfile
+
+import torch
 
 PROJECT = Path(__file__).resolve().parents[1]
 SRC = PROJECT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
+REPOSITORY = PROJECT.parent
+if str(REPOSITORY) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY))
 
 
 def repository_root() -> Path:
@@ -18,7 +25,18 @@ def default_checkpoint() -> Path:
     override = os.environ.get("BOT_TEST_CHECKPOINT")
     if override:
         return Path(override).expanduser().resolve()
-    return v17_ppo_checkpoint()
+    from riichi_ppo_v1.model import KyokuTransformerActorCritic
+
+    path = Path(tempfile.gettempdir()) / f"riichi_lab_bot_v18_{os.getpid()}.pt"
+    if not path.exists():
+        model = KyokuTransformerActorCritic()
+        torch.save({
+            "model_config": vars(model.config),
+            "model": model.state_dict(),
+            "token_schema_version": 18,
+        }, path)
+        atexit.register(path.unlink, missing_ok=True)
+    return path
 
 
 def v16_sft_checkpoint() -> Path:

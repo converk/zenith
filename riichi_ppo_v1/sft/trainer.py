@@ -1,7 +1,7 @@
-"""V16 actor-only SFT 从零训练入口。
+"""V18 actor-only SFT 从零训练入口。
 
-V16 输入为 Objective Facts + Compact Snapshot + 每动作一对 Query,网络为
-symmetric_action_query 策略头。节奏键(每 3000 steps 验证/保存、
+V18 输入为 Objective Facts + Atomic Snapshot + 每动作一对 Query,网络为
+isolated_action_query 策略头。节奏键(每 3000 steps 验证/保存、
 最终 96 半庄)只引用 ``sft/contract.py`` 的机制常量,禁止实验配置复制。
 """
 
@@ -33,15 +33,16 @@ import yaml
 from ..model import KyokuTransformerActorCritic, ModelConfig
 from ..model.schema import NUM_ACTIONS
 from .checkpoint import checkpoint_payload, load_exact_resume
+from .actor_bc import actor_parameters, freeze_critic
 from .contract import (
     SFT_CADENCE_STEPS,
     SFT_FINAL_EVAL_HANCHAN_COUNT,
     dataset_manifest_hash,
     load_manifest,
     training_mode,
-    validate_v16_manifest,
+    validate_manifest,
 )
-from .data import V16Sample, iter_split_samples
+from .data import EncodedSample, iter_split_samples
 from .tensorboard import SftMetricWindow, write_sft_scalars
 
 
@@ -49,9 +50,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "seed": 1,
     "device": "cuda",
     "learner_gpus": 2,
-    "model_size": "v16",
+    "model_size": "v18",
     "context_tokens": 4096,
-    "policy_head_type": "symmetric_action_query",
+    "policy_head_type": "isolated_action_query",
     "epochs": 1,
     "train_critic": False,
     "train_public_value": False,
@@ -92,7 +93,7 @@ def load_config(path: Path | None) -> dict[str, Any]:
         with path.open(encoding="utf-8") as file:
             overlay = yaml.safe_load(file)
         if not isinstance(overlay, dict):
-            raise ValueError("V16 SFT config must be a mapping")
+            raise ValueError("V18 SFT config must be a mapping")
         config.update(overlay)
     return config
 
@@ -101,18 +102,18 @@ def validate_config(config: dict[str, Any]) -> None:
     duplicated = set(_CADENCE_KEYS) & set(config)
     if duplicated:
         raise ValueError(
-            "v16 SFT cadence keys must stay single-sourced in sft/contract.py: "
+            "V18 SFT cadence keys must stay single-sourced in sft/contract.py: "
             + ", ".join(sorted(duplicated))
         )
-    if str(config.get("policy_head_type")) != "symmetric_action_query":
-        raise ValueError("v16 SFT requires policy_head_type=symmetric_action_query")
-    if str(config.get("model_size")) != "v16":
-        raise ValueError("v16 SFT requires model_size=v16")
+    if str(config.get("policy_head_type")) != "isolated_action_query":
+        raise ValueError("V18 SFT requires policy_head_type=isolated_action_query")
+    if str(config.get("model_size")) != "v18":
+        raise ValueError("V18 SFT requires model_size=v18")
     if bool(config.get("train_critic", False)) or bool(config.get("train_public_value", False)):
-        raise ValueError("v16 SFT is actor-only; critic training is not supported here")
+        raise ValueError("V18 SFT is actor-only; critic training is not supported here")
     dataset = Path(str(config["dataset"]))
     if not (dataset / "manifest.json").is_file():
-        raise FileNotFoundError(f"v16 SFT dataset manifest does not exist: {dataset}")
+        raise FileNotFoundError(f"V18 SFT dataset manifest does not exist: {dataset}")
     world_size = int(config["learner_gpus"]) if str(config["device"]).startswith("cuda") else 1
     if world_size <= 0:
         raise ValueError("learner_gpus must be positive")
@@ -124,7 +125,7 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("context_tokens must be positive")
 
 
-def _v16_model_config(config: dict[str, Any]) -> ModelConfig:
+def _model_config(config: dict[str, Any]) -> ModelConfig:
     base = ModelConfig.preset(str(config["model_size"]))
     values = {
         **base.__dict__,
@@ -133,7 +134,7 @@ def _v16_model_config(config: dict[str, Any]) -> ModelConfig:
     return ModelConfig(**values)
 
 
-def collate_v16(samples: list[V16Sample], device: torch.device) -> dict[str, torch.Tensor]:
+def collate_samples(samples: list[EncodedSample], device: torch.device) -> dict[str, torch.Tensor]:
     batch = len(samples)
     history_max = max(sample.history_length for sample in samples)
     snapshot_max = max(sample.snapshot_length for sample in samples)
@@ -141,9 +142,8 @@ def collate_v16(samples: list[V16Sample], device: torch.device) -> dict[str, tor
     history_factors = torch.zeros((batch, history_max, 10), dtype=torch.uint8)
     history_numeric = torch.zeros((batch, history_max, 8), dtype=torch.float32)
     history_lengths = torch.empty(batch, dtype=torch.long)
-    snapshot_kinds = torch.zeros((batch, snapshot_max), dtype=torch.long)
-    snapshot_cat = torch.zeros((batch, snapshot_max, 4), dtype=torch.long)
-    snapshot_num = torch.zeros((batch, snapshot_max, 7), dtype=torch.float32)
+    snapshot_factors = torch.zeros((batch, snapshot_max, 4), dtype=torch.long)
+    snapshot_numeric = torch.zeros((batch, snapshot_max, 1), dtype=torch.float32)
     snapshot_lengths = torch.empty(batch, dtype=torch.long)
     query_rows = torch.zeros((batch, 2 * action_max, 15), dtype=torch.long)
     action_ids = torch.zeros((batch, action_max), dtype=torch.long)
@@ -154,9 +154,8 @@ def collate_v16(samples: list[V16Sample], device: torch.device) -> dict[str, tor
         history_factors[row, : sample.history_length] = torch.from_numpy(sample.history_factors)
         history_numeric[row, : sample.history_length] = torch.from_numpy(sample.history_numeric)
         history_lengths[row] = sample.history_length
-        snapshot_kinds[row, : sample.snapshot_length] = torch.from_numpy(sample.snapshot_kinds)
-        snapshot_cat[row, : sample.snapshot_length] = torch.from_numpy(sample.snapshot_cat)
-        snapshot_num[row, : sample.snapshot_length] = torch.from_numpy(sample.snapshot_num)
+        snapshot_factors[row, : sample.snapshot_length] = torch.from_numpy(sample.snapshot_factors)
+        snapshot_numeric[row, : sample.snapshot_length] = torch.from_numpy(sample.snapshot_numeric)
         snapshot_lengths[row] = sample.snapshot_length
         query_rows[row, : sample.query_rows.shape[0]] = torch.from_numpy(sample.query_rows)
         action_ids[row, : sample.query_pair_count] = torch.from_numpy(sample.action_ids)
@@ -167,9 +166,8 @@ def collate_v16(samples: list[V16Sample], device: torch.device) -> dict[str, tor
         "history_factors": history_factors.to(device, non_blocking=True),
         "history_numeric": history_numeric.to(device, non_blocking=True),
         "history_lengths": history_lengths.to(device, non_blocking=True),
-        "snapshot_kinds": snapshot_kinds.to(device, non_blocking=True),
-        "snapshot_cat": snapshot_cat.to(device, non_blocking=True),
-        "snapshot_num": snapshot_num.to(device, non_blocking=True),
+        "snapshot_factors": snapshot_factors.to(device, non_blocking=True),
+        "snapshot_numeric": snapshot_numeric.to(device, non_blocking=True),
         "snapshot_lengths": snapshot_lengths.to(device, non_blocking=True),
         "query_rows": query_rows.to(device, non_blocking=True),
         "action_ids": action_ids.to(device, non_blocking=True),
@@ -179,17 +177,17 @@ def collate_v16(samples: list[V16Sample], device: torch.device) -> dict[str, tor
     }
 
 
-def length_bucketed_batches_v16(
-    samples: Iterable[V16Sample],
+def length_bucketed_batches(
+    samples: Iterable[EncodedSample],
     batch_size: int,
     *,
     window_batches: int,
     rng: random.Random | None = None,
-) -> Iterator[list[V16Sample]]:
-    window: list[V16Sample] = []
+) -> Iterator[list[EncodedSample]]:
+    window: list[EncodedSample] = []
     capacity = max(batch_size, batch_size * window_batches)
 
-    def drain(rows: list[V16Sample]) -> Iterator[list[V16Sample]]:
+    def drain(rows: list[EncodedSample]) -> Iterator[list[EncodedSample]]:
         rows.sort(key=lambda item: item.token_length)
         batches = [rows[index:index + batch_size] for index in range(0, len(rows), batch_size)]
         if rng is not None:
@@ -206,16 +204,15 @@ def length_bucketed_batches_v16(
         yield from drain(window)
 
 
-def _v16_forward(model: nn.Module, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+def _forward_actor(model: nn.Module, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     # 统一走 __call__/forward 分发,使 DistributedDataParallel 也能正确触发
-    # 梯度同步;DDP 包装后没有 forward_v16 方法。
+    # 梯度同步;统一走 forward 分发。
     return model(
         history_factors=batch["history_factors"],
         history_numeric=batch["history_numeric"],
         history_lengths=batch["history_lengths"],
-        snapshot_kinds=batch["snapshot_kinds"],
-        snapshot_cat=batch["snapshot_cat"],
-        snapshot_num=batch["snapshot_num"],
+        snapshot_factors=batch["snapshot_factors"],
+        snapshot_numeric=batch["snapshot_numeric"],
         snapshot_lengths=batch["snapshot_lengths"],
         query_rows=batch["query_rows"],
         query_action_ids=batch["action_ids"],
@@ -226,7 +223,7 @@ def _v16_forward(model: nn.Module, batch: dict[str, torch.Tensor]) -> dict[str, 
 
 
 @torch.no_grad()
-def evaluate_v16(
+def evaluate(
     model: nn.Module,
     dataset: Path,
     config: dict[str, Any],
@@ -243,7 +240,7 @@ def evaluate_v16(
     maximum = int(config.get("validation_max_samples", 0)) if max_samples is None else int(max_samples)
     if maximum:
         samples = itertools.islice(samples, maximum)
-    batches = length_bucketed_batches_v16(
+    batches = length_bucketed_batches(
         samples, local_batch, window_batches=int(config["length_bucket_window_batches"]),
     )
     use_bf16 = bool(
@@ -252,9 +249,9 @@ def evaluate_v16(
     )
     total = ce_sum = top1 = top3 = 0
     for rows in batches:
-        batch = collate_v16(rows, device)
+        batch = collate_samples(rows, device)
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
-            output = _v16_forward(model, batch)
+            output = _forward_actor(model, batch)
         logits = output["policy_logits"].float()
         targets = batch["actions"]
         ce_sum += float(F.cross_entropy(logits, targets, reduction="sum"))
@@ -272,7 +269,7 @@ def evaluate_v16(
     }
 
 
-def _save_checkpoint_v16(
+def _save_checkpoint(
     path: Path,
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -309,7 +306,7 @@ def _local_rng_state() -> dict[str, Any]:
     }
 
 
-def _train_v16_worker_impl(
+def _train_worker_impl(
     rank: int,
     world_size: int,
     config: dict[str, Any],
@@ -328,19 +325,16 @@ def _train_v16_worker_impl(
         torch.cuda.set_device(device)
     if distributed:
         dist.init_process_group("nccl", rank=rank, world_size=world_size, device_id=device)
-    model = KyokuTransformerActorCritic(_v16_model_config(config)).to(device)
+    model = KyokuTransformerActorCritic(_model_config(config)).to(device)
     if config.get("init_model"):
         initialized = torch.load(str(config["init_model"]), map_location="cpu")
         payload = initialized.get("model", initialized)
         model.load_state_dict(payload, strict=True)
         del initialized
-    critic_roots = {"critic_embedding", "critic_backbone", "value_head", "value_query"}
-    for name, parameter in model.named_parameters():
-        if name.split(".", 1)[0] in critic_roots:
-            parameter.requires_grad_(False)
-    optimized = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    freeze_critic(model)
+    optimized = list(actor_parameters(model))
     if not optimized:
-        raise RuntimeError("v16 SFT configuration leaves no trainable parameters")
+        raise RuntimeError("V18 SFT configuration leaves no trainable parameters")
     optimizer = torch.optim.AdamW(
         optimized,
         lr=float(config["learning_rate"]),
@@ -350,7 +344,7 @@ def _train_v16_worker_impl(
         fused=device.type == "cuda",
     )
     manifest = load_manifest(dataset)
-    validate_v16_manifest(manifest)
+    validate_manifest(manifest)
     manifest_hash = dataset_manifest_hash(dataset)
     train_decisions = int(manifest["counts"]["train_decisions"])
     estimated_steps = max(1, math.ceil(train_decisions / int(config["batch_size"])) * int(config["epochs"]))
@@ -420,7 +414,7 @@ def _train_v16_worker_impl(
                 shuffle_buffer_kyokus=int(config["shuffle_buffer_kyokus"]),
                 rank=rank, world_size=world_size, include_critic=False,
             )
-            batches = length_bucketed_batches_v16(
+            batches = length_bucketed_batches(
                 sample_stream, local_batch,
                 window_batches=int(config["length_bucket_window_batches"]),
                 rng=random.Random(int(config["seed"]) + epoch * 1_000_003 + rank),
@@ -435,12 +429,12 @@ def _train_v16_worker_impl(
                 if epoch == start_epoch and batch_index < skip_steps:
                     continue
                 step_started = time.perf_counter()
-                batch = collate_v16(rows, device)
+                batch = collate_samples(rows, device)
                 effective_tokens = sum(sample.token_length for sample in rows)
                 padded_tokens = len(rows) * max(sample.token_length for sample in rows)
                 optimizer.zero_grad(set_to_none=True)
                 with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
-                    model_output = _v16_forward(model, batch)
+                    model_output = _forward_actor(model, batch)
                     loss = F.cross_entropy(model_output["policy_logits"].float(), batch["actions"])
                     policy_ce = loss.detach()
                 loss.backward()
@@ -472,7 +466,7 @@ def _train_v16_worker_impl(
                     print(f"epoch={epoch} step={global_step} loss={float(loss):.4f}", flush=True)
                 if global_step % SFT_CADENCE_STEPS == 0 and rank == 0 and metric_window is not None:
                     metrics = metric_window.scalars()
-                    validation = evaluate_v16(
+                    validation = evaluate(
                         model.module if isinstance(model, DistributedDataParallel) else model,
                         dataset, config, device,
                         max_samples=int(config["validation_samples_per_run"]),
@@ -482,14 +476,14 @@ def _train_v16_worker_impl(
                     progress = [steps_in_epoch] * world_size
                     if validation["validation/policy_ce"] < best_validation_loss:
                         best_validation_loss = float(validation["validation/policy_ce"])
-                    _save_checkpoint_v16(
+                    _save_checkpoint(
                         output / "latest.pt", model, optimizer, scheduler,
                         config=config, manifest_hash=manifest_hash, epoch=epoch,
                         global_step=global_step, rank_batches_consumed=progress,
                         best_validation_loss=best_validation_loss, metrics=metrics,
                     )
                     if float(validation["validation/policy_ce"]) <= best_validation_loss:
-                        _save_checkpoint_v16(
+                        _save_checkpoint(
                             output / "best.pt", model, optimizer, scheduler,
                             config=config, manifest_hash=manifest_hash, epoch=epoch,
                             global_step=global_step, rank_batches_consumed=progress,
@@ -509,14 +503,14 @@ def _train_v16_worker_impl(
                 break
         if rank == 0:
             metrics = metric_window.scalars() if metric_window is not None and metric_window.steps else {}
-            final_metrics = evaluate_v16(
+            final_metrics = evaluate(
                 model.module if isinstance(model, DistributedDataParallel) else model,
                 dataset, config, device,
                 max_samples=int(config["validation_samples_per_run"]),
             )
             metrics.update(final_metrics)
             metrics["validation/loss"] = final_metrics["validation/policy_ce"]
-            _save_checkpoint_v16(
+            _save_checkpoint(
                 output / "latest.pt", model, optimizer, scheduler,
                 config=config, manifest_hash=manifest_hash, epoch=start_epoch,
                 global_step=global_step, rank_batches_consumed=[steps_in_epoch] * world_size,
@@ -532,15 +526,15 @@ def _train_v16_worker_impl(
         dist.barrier()
         dist.destroy_process_group()
     elapsed = time.perf_counter() - started
-    print(f"rank={rank} v16 SFT finished steps={global_step} elapsed={elapsed:.1f}s", flush=True)
+    print(f"rank={rank} V18 SFT finished steps={global_step} elapsed={elapsed:.1f}s", flush=True)
 
 
-def train_v16_worker(
+def train_worker(
     rank: int, world_size: int, config: dict[str, Any], dataset: Path, output: Path,
 ) -> None:
     writers: list[SummaryWriter] = []
     try:
-        _train_v16_worker_impl(rank, world_size, config, dataset, output, writers)
+        _train_worker_impl(rank, world_size, config, dataset, output, writers)
     finally:
         for writer in writers:
             writer.flush()
@@ -574,10 +568,10 @@ def main(config: dict[str, Any], dataset: Path | None = None, output: Path | Non
         os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
         os.environ.setdefault("MASTER_PORT", str(_free_port()))
         torch.multiprocessing.spawn(
-            train_v16_worker,
+            train_worker,
             args=(world_size, config, dataset, output),
             nprocs=world_size,
             join=True,
         )
     else:
-        train_v16_worker(0, 1, config, dataset, output)
+        train_worker(0, 1, config, dataset, output)

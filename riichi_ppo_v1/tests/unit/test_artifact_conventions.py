@@ -94,12 +94,12 @@ def test_packaged_configs_are_current_and_neutral() -> None:
     from riichi_ppo_v1.training.train import load_config
 
     training = load_config()
-    assert training["policy_head_type"] == "symmetric_action_query"
-    assert training["model_size"] == "v16"
+    assert training["policy_head_type"] == "isolated_action_query"
+    assert training["model_size"] == "v18"
     assert training["checkpoint_dir"] == "checkpoints/train_riichi_current"
     sft = load_sft_config(CONFIG_DIR / "sft.yaml")
-    assert sft["policy_head_type"] == "symmetric_action_query"
-    assert sft["model_size"] == "v16"
+    assert sft["policy_head_type"] == "isolated_action_query"
+    assert sft["model_size"] == "v18"
     assert sft["checkpoint_dir"] == "checkpoints/train_riichi_current/sft"
 
 
@@ -178,7 +178,6 @@ def test_no_historical_locks_in_active_sources() -> None:
     """活跃源码/配置/文档不得再引用旧实验路径或旧 SFT API。"""
     needles = "|".join(
         (
-            "isolated_" + "action_query",
             "riichi-sft-" + "audit",
             "validate_" + "v13_manifest",
             "validate_" + "v15_reused_manifest",

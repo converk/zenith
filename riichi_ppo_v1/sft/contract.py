@@ -1,4 +1,4 @@
-"""V16 SFT 路径的唯一 fail-closed 契约边界。"""
+"""V18 SFT 路径的唯一 fail-closed 契约边界。"""
 
 from __future__ import annotations
 
@@ -8,14 +8,12 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..model.encoding_protocol import (
-    ENCODED_FORMAT as V16_ENCODED_FORMAT,
+    ENCODED_FORMAT,
     ENCODING_PROTOCOL_VERSION,
 )
 
-SFT_CONTRACT_VERSION = "riichi-sft-v16-1"
-# 早期 V16 checkpoint 曾沿用旧字符串;只在精确 resume 边界做兼容校验。
-LEGACY_V16_SFT_CONTRACT_VERSION = "riichi-sft-" + "v" + "13-1"
-RUNTIME_CONTRACT_ID = "riichi-runtime-v16-1"
+SFT_CONTRACT_VERSION = "riichi-sft-v18-1"
+RUNTIME_CONTRACT_ID = "riichi-runtime-v18-1"
 DATA_PLAN_VERSION = 1
 DATA_CURSOR_VERSION = 1
 TRAINING_MODES = frozenset({"actor_only", "actor_public_value", "joint_actor_critic"})
@@ -25,10 +23,9 @@ TRAINING_MODES = frozenset({"actor_only", "actor_public_value", "joint_actor_cri
 SFT_CADENCE_STEPS = 3000
 SFT_FINAL_EVAL_HANCHAN_COUNT = 96
 
-# V16 协议契约的冻结内容哈希(specs/003-v16-model-rework/contracts/
-# actor-input-v16.md),数据集 manifest 与校验器共用此单一来源。
-V16_ACTOR_INPUT_CONTRACT_SHA256 = (
-    "56874dfb4738af3a506221c1001083ac67fe5188aa2042ae1576f5a852a7ed3b"
+# V18 协议契约的冻结内容哈希,数据集 manifest 与校验器共用此单一来源。
+ACTOR_INPUT_CONTRACT_SHA256 = (
+    "1faeeaf6c28eb4eb06a073dac05c9a44373c287135b02d401e7090b267e7acce"
 )
 
 
@@ -47,20 +44,20 @@ def load_manifest(dataset: Path) -> dict[str, Any]:
     return value
 
 
-def validate_v16_manifest(manifest: Mapping[str, Any]) -> None:
-    """Fail closed on the V16 单协议版本 manifest 契约。"""
-    if manifest.get("format") != V16_ENCODED_FORMAT:
-        raise RuntimeError("only the v16 encoded SFT format is supported")
+def validate_manifest(manifest: Mapping[str, Any]) -> None:
+    """对 V18 单协议版本 manifest 执行 fail-closed 校验。"""
+    if manifest.get("format") != ENCODED_FORMAT:
+        raise RuntimeError("only the V18 encoded SFT format is supported")
     if manifest.get("encoding_protocol_version") != ENCODING_PROTOCOL_VERSION:
         raise RuntimeError(
-            f"v16 SFT manifest requires encoding_protocol_version={ENCODING_PROTOCOL_VERSION}"
+            f"V18 SFT manifest requires encoding_protocol_version={ENCODING_PROTOCOL_VERSION}"
         )
-    if manifest.get("encoding_contract_sha256") != V16_ACTOR_INPUT_CONTRACT_SHA256:
+    if manifest.get("encoding_contract_sha256") != ACTOR_INPUT_CONTRACT_SHA256:
         raise RuntimeError(
-            "encoded dataset carries an unknown v16 protocol contract hash"
+            "encoded dataset carries an unknown V18 protocol contract hash"
         )
     if not isinstance(manifest.get("source_manifest_sha256"), str) or not manifest["source_manifest_sha256"]:
-        raise RuntimeError("v16 SFT manifest lacks source_manifest_sha256")
+        raise RuntimeError("V18 SFT manifest lacks source_manifest_sha256")
     counts = manifest.get("counts")
     if not isinstance(counts, Mapping) or any(
         int(counts.get(name, 0)) <= 0
@@ -70,7 +67,7 @@ def validate_v16_manifest(manifest: Mapping[str, Any]) -> None:
         )
     ):
         raise RuntimeError(
-            "v16 SFT requires positive train/validation kyoku and decision counts"
+            "V18 SFT requires positive train/validation kyoku and decision counts"
         )
 
 
@@ -83,7 +80,7 @@ def training_mode(config: Mapping[str, Any]) -> str:
 
 
 def assert_runtime_contract() -> None:
-    """检查 V16 输入边界依赖的两个原生扩展版本。"""
+    """检查 V18 输入边界依赖的两个原生扩展版本。"""
     import riichi
     import riichienv
 
@@ -91,3 +88,5 @@ def assert_runtime_contract() -> None:
         raise RuntimeError(f"installed riichi extension violates {RUNTIME_CONTRACT_ID}")
     if getattr(riichienv, "REPLAY_SEMANTICS_VERSION", None) != 1:
         raise RuntimeError(f"installed RiichiEnv extension violates {RUNTIME_CONTRACT_ID}")
+    if getattr(riichi, "ENCODING_PROTOCOL_VERSION", None) != ENCODING_PROTOCOL_VERSION:
+        raise RuntimeError(f"installed riichi extension violates {RUNTIME_CONTRACT_ID}")

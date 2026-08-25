@@ -1,4 +1,4 @@
-"""确定性 1v3 评测的 V16/V17 策略边界。"""
+"""确定性 1v3 评测的 V18 策略边界。"""
 
 from __future__ import annotations
 
@@ -14,13 +14,12 @@ from ..model.bridge import BatchedStateBridge, Decision
 
 
 @dataclass(frozen=True)
-class V16PreparedPolicyBatch:
+class PreparedPolicyBatch:
     history_factors: np.ndarray
     history_numeric: np.ndarray
     history_lengths: np.ndarray
-    snapshot_kinds: np.ndarray
-    snapshot_cat: np.ndarray
-    snapshot_num: np.ndarray
+    snapshot_factors: np.ndarray
+    snapshot_numeric: np.ndarray
     snapshot_lengths: np.ndarray
     query_rows: np.ndarray
     query_action_ids: np.ndarray
@@ -35,17 +34,17 @@ class PolicyAdapter(Protocol):
 
     def prepare(
         self, bridge: BatchedStateBridge, decisions: list[Decision], analysis: Any | None = None,
-    ) -> V16PreparedPolicyBatch: ...
+    ) -> PreparedPolicyBatch: ...
 
-    def masked_logits(self, batch: V16PreparedPolicyBatch) -> torch.Tensor: ...
+    def masked_logits(self, batch: PreparedPolicyBatch) -> torch.Tensor: ...
 
     def metadata(self) -> dict[str, Any]: ...
 
 
-class V16PolicyAdapter:
-    """V16 三段编码的策略边界:评测只做 policy-only 前向。"""
+class V18PolicyAdapter:
+    """V18 三段编码的策略边界:评测只做 policy-only 前向。"""
 
-    contract_id = "riichi-runtime-v16"
+    contract_id = "riichi-runtime-v18"
     requires_decision_analysis = False
 
     def __init__(self, model: torch.nn.Module, device: torch.device, checkpoint: Path) -> None:
@@ -55,16 +54,15 @@ class V16PolicyAdapter:
 
     def prepare(
         self, bridge: BatchedStateBridge, decisions: list[Decision], analysis: Any | None = None,
-    ) -> V16PreparedPolicyBatch:
+    ) -> PreparedPolicyBatch:
         del analysis
-        batch = bridge.prepare_v16(decisions)
-        return V16PreparedPolicyBatch(
+        batch = bridge.prepare(decisions)
+        return PreparedPolicyBatch(
             batch.history_factors,
             batch.history_numeric,
             batch.history_lengths,
-            batch.snapshot_kinds,
-            batch.snapshot_cat,
-            batch.snapshot_num,
+            batch.snapshot_factors,
+            batch.snapshot_numeric,
             batch.snapshot_lengths,
             batch.query_rows,
             batch.query_action_ids,
@@ -73,7 +71,7 @@ class V16PolicyAdapter:
         )
 
     @torch.inference_mode()
-    def masked_logits(self, batch: V16PreparedPolicyBatch) -> torch.Tensor:
+    def masked_logits(self, batch: PreparedPolicyBatch) -> torch.Tensor:
         def tensor(value: np.ndarray) -> torch.Tensor:
             return torch.from_numpy(value).to(
                 self.device, non_blocking=self.device.type == "cuda",
@@ -81,13 +79,12 @@ class V16PolicyAdapter:
 
         use_bf16 = self.device.type == "cuda" and torch.cuda.is_bf16_supported()
         with torch.autocast(self.device.type, dtype=torch.bfloat16, enabled=use_bf16):
-            output = self.model.forward_v16(
+            output = self.model(
                 tensor(batch.history_factors),
                 tensor(batch.history_numeric),
                 tensor(batch.history_lengths),
-                tensor(batch.snapshot_kinds),
-                tensor(batch.snapshot_cat),
-                tensor(batch.snapshot_num),
+                tensor(batch.snapshot_factors),
+                tensor(batch.snapshot_numeric),
                 tensor(batch.snapshot_lengths),
                 tensor(batch.query_rows),
                 tensor(batch.query_action_ids),
@@ -108,7 +105,7 @@ class V16PolicyAdapter:
 def load_policy_adapter(
     path: str | Path, *, device: torch.device | str,
 ) -> PolicyAdapter:
-    """加载 V16/V17 symmetric_action_query checkpoint。"""
+    """加载严格 V18 isolated_action_query checkpoint。"""
     checkpoint = Path(path)
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
     if not isinstance(payload, dict):
@@ -120,8 +117,8 @@ def load_policy_adapter(
         config = ModelConfig.from_mapping(dict(raw_config))
     except (TypeError, ValueError) as exc:
         raise RuntimeError("policy checkpoint has an invalid model_config") from exc
-    if config.policy_head_type != "symmetric_action_query":
-        raise RuntimeError("only V16/V17 symmetric_action_query checkpoints are supported")
+    if config.policy_head_type != "isolated_action_query":
+        raise RuntimeError("only V18 isolated_action_query checkpoints are supported")
     state = payload.get("model")
     if not isinstance(state, dict):
         raise RuntimeError("policy checkpoint is missing model weights")
@@ -133,4 +130,4 @@ def load_policy_adapter(
     device_obj = torch.device(device)
     model.to(device_obj)
     model.eval()
-    return V16PolicyAdapter(model, device_obj, checkpoint)
+    return V18PolicyAdapter(model, device_obj, checkpoint)

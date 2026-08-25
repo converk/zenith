@@ -1,15 +1,19 @@
-"""V16 信息编码协议单一来源。
+"""现行 V18 信息编码协议的 Python 消费边界。
 
-2026-08-16 澄清:输入编码收敛为单一协议版本 v16,废弃 token schema / feature
-schema / rust-analysis / decision-analysis 多版本拆分与 `_v<A>_v<B>` 组合命名。
-本模块是协议版本、数据集格式标识、全部 query slot 语义/基数/bucket 边界的唯一
-权威来源;其余模块与测试一律引用本模块常量,禁止散落魔法数字。
+29 个 Snapshot 字段的顺序与域只在 Rust ``atomic_snapshot`` 定义一次,本模块
+直接读取其机器可读 schema。Query 行与 answer slot 的存储契约仍在本模块单点定义。
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+import riichi
+
 # 唯一协议版本与派生的格式标识。
-ENCODING_PROTOCOL_VERSION = 16
+ENCODING_PROTOCOL_VERSION = int(riichi.ENCODING_PROTOCOL_VERSION)
+if ENCODING_PROTOCOL_VERSION != 18:
+    raise RuntimeError("installed riichi extension does not provide encoding protocol V18")
 ENCODED_FORMAT = f"riichi-sft-encoded-v{ENCODING_PROTOCOL_VERSION}"
 
 # 每个合法动作固定一对 query;每个 query 固定 10 个 answer slot。
@@ -28,7 +32,7 @@ QUERY_ROW_PRIMARY_TILE = 3
 QUERY_ROW_SOURCE_SEAT = 4
 QUERY_ROW_ANSWER_START = 5
 
-# 动作类型 → 编码(0 保留给 padding;和牌自摸/荣和归一为同一类型)。
+# 动作类型 → 编码(0 保留给 padding;自摸与荣和必须区分 supplier 语义)。
 ACTION_TYPE_CODES: dict[str, int] = {
     "none": 1,
     "pass": 1,
@@ -40,30 +44,44 @@ ACTION_TYPE_CODES: dict[str, int] = {
     "ankan": 7,
     "kakan": 8,
     "tsumo": 9,
-    "ron": 9,
-    "hora": 9,
-    "ryukyoku": 10,
+    "ron": 10,
+    "hora": 10,
+    "ryukyoku": 11,
 }
-ACTION_TYPE_CARDINALITY = 11
+ACTION_TYPE_CARDINALITY = 12
+SUPPLIER_REQUIRED_ACTION_TYPES = frozenset(
+    ACTION_TYPE_CODES[name] for name in ("chi", "pon", "daiminkan", "ron")
+)
 
-# Compact Snapshot 行类型(单一来源)。
-SNAPSHOT_KIND_BASE = 0
-SNAPSHOT_KIND_DORA = 1
-SNAPSHOT_KIND_SCORE = 2
-SNAPSHOT_KIND_SUMMARY = 3
-SNAPSHOT_KIND_COUNT = 4
-SNAPSHOT_CAT_WIDTH = 4
-SNAPSHOT_NUM_WIDTH = 7
+@dataclass(frozen=True)
+class SnapshotField:
+    field_id: int
+    name: str
+    relative_seat: int
+    categorical_max: int
+    tile_max: int
+    numeric: bool
 
-# Snapshot 连续字段的固定归一化刻度(编码期一次性应用,训练期不再动态缩放)。
-SNAPSHOT_SCORE_SCALE = 25_000.0
-SNAPSHOT_PRESSURE_SCALE = 25_000.0
-SNAPSHOT_HONBA_SCALE = 10.0
-SNAPSHOT_STICKS_SCALE = 10.0
-SNAPSHOT_TILES_LEFT_SCALE = 136.0
-SNAPSHOT_TURN_SCALE = 20.0
-SNAPSHOT_MELD_SCALE = 4.0
-SNAPSHOT_RIVER_SCALE = 20.0
+
+SNAPSHOT_FIELDS: tuple[SnapshotField, ...] = tuple(
+    SnapshotField(*row) for row in riichi.atomic_snapshot_schema()
+)
+SNAPSHOT_FIELD_COUNT = int(riichi.SNAPSHOT_FIELD_COUNT)
+SNAPSHOT_FACTOR_WIDTH = 4
+SNAPSHOT_NUMERIC_WIDTH = 1
+if len(SNAPSHOT_FIELDS) != SNAPSHOT_FIELD_COUNT:
+    raise RuntimeError("Rust Snapshot schema length does not match exported field count")
+if tuple(field.field_id for field in SNAPSHOT_FIELDS) != tuple(
+    range(1, SNAPSHOT_FIELD_COUNT + 1)
+):
+    raise RuntimeError("Rust Snapshot field ids are not contiguous")
+SNAPSHOT_FACTOR_CARDINALITIES = (
+    max(field.field_id for field in SNAPSHOT_FIELDS) + 1,
+    max(field.relative_seat for field in SNAPSHOT_FIELDS) + 1,
+    max(field.categorical_max for field in SNAPSHOT_FIELDS) + 1,
+    max(field.tile_max for field in SNAPSHOT_FIELDS) + 1,
+)
+SNAPSHOT_FIELD_BY_NAME = {field.name: field for field in SNAPSHOT_FIELDS}
 
 # slot 的规范顺序(嵌入与审计共用,禁止依赖 dict 的隐式迭代顺序)。
 OFFENSE_SLOT_ORDER: tuple[str, ...] = (

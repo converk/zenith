@@ -5,11 +5,12 @@
 //! reproducible for the RiichiEnv PPO integration.
 
 mod analysis;
+pub mod atomic_snapshot;
 #[path = "MjaiKyokuStateMachine/mod.rs"]
 mod mjai_kyoku_state_machine;
+mod query_encoding;
 mod shanten;
 mod shanten_table;
-mod v16_encoding;
 
 use pyo3::prelude::*;
 
@@ -22,7 +23,8 @@ const SHANTEN_UNAVAILABLE: i8 = 127;
 fn riichi(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<MjaiKyokuStateMachineManager>()?;
     analysis::register(m)?;
-    v16_encoding::register(m)?;
+    atomic_snapshot::register(m)?;
+    query_encoding::register(m)?;
     m.add("ANALYSIS_VERSION", HAND_ANALYSIS_VERSION)?;
     Ok(())
 }

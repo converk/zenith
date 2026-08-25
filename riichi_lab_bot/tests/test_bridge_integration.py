@@ -12,18 +12,17 @@ from riichi_lab_bot.policy import PolicyEngine
 from riichi_lab_bot.safety import choose_safe_response
 
 from riichi_ppo_v1.model.semantic_validation import (
-    assert_v16_actor_input_semantics,
+    assert_actor_input_semantics,
 )
 
 
-def _assert_prepared_v16_semantics(prepared) -> None:
-    assert_v16_actor_input_semantics(
+def _assert_prepared_semantics(prepared) -> None:
+    assert_actor_input_semantics(
         prepared.history_factors[None],
         prepared.history_numeric[None],
         np.asarray([prepared.history_length], dtype=np.int64),
-        prepared.snapshot_kinds[None],
-        prepared.snapshot_cat[None],
-        prepared.snapshot_num[None],
+        prepared.snapshot_factors[None],
+        prepared.snapshot_numeric[None],
         np.asarray([prepared.snapshot_length], dtype=np.int64),
         prepared.query_rows[None],
         prepared.query_action_ids[None],
@@ -32,7 +31,7 @@ def _assert_prepared_v16_semantics(prepared) -> None:
     )
 
 
-def _assert_matches_training_v16(prepared, batch) -> None:
+def _assert_matches_training(prepared, batch) -> None:
     assert prepared.history_length == int(batch.history_lengths[0])
     assert prepared.snapshot_length == int(batch.snapshot_lengths[0])
     assert prepared.query_pair_count == int(batch.query_pair_counts[0])
@@ -45,16 +44,12 @@ def _assert_matches_training_v16(prepared, batch) -> None:
         batch.history_numeric[0, : prepared.history_length],
     )
     assert np.array_equal(
-        prepared.snapshot_kinds,
-        batch.snapshot_kinds[0, : prepared.snapshot_length],
+        prepared.snapshot_factors,
+        batch.snapshot_factors[0, : prepared.snapshot_length],
     )
     assert np.array_equal(
-        prepared.snapshot_cat,
-        batch.snapshot_cat[0, : prepared.snapshot_length],
-    )
-    assert np.array_equal(
-        prepared.snapshot_num,
-        batch.snapshot_num[0, : prepared.snapshot_length],
+        prepared.snapshot_numeric,
+        batch.snapshot_numeric[0, : prepared.snapshot_length],
     )
     assert np.array_equal(
         prepared.query_rows,
@@ -88,7 +83,7 @@ def test_serialized_observation_model_action_roundtrip() -> None:
             obs = observation_with_events(original, pending[seat])
             pending[seat].clear()
             prepared = bridges[seat].prepare(obs)
-            _assert_prepared_v16_semantics(prepared)
+            _assert_prepared_semantics(prepared)
             inference = engine.infer(prepared)
             primary = bridges[seat].decode(
                 prepared, inference.action_id
@@ -113,7 +108,7 @@ def test_serialized_observation_model_action_roundtrip() -> None:
     assert decision_count > 100
 
 
-def test_bot_reuses_training_v16_bridge_helpers() -> None:
+def test_bot_reuses_training_bridge_helpers() -> None:
     import riichi_lab_bot.bridge as bot_bridge
     import riichi_ppo_v1.model.bridge as training_bridge
 
@@ -150,14 +145,14 @@ def test_single_seat_bridge_matches_training_bridge() -> None:
             if not observation.legal_actions():
                 continue
             decision = training_bridge.Decision(0, int(seat), observation)
-            expected = reference.prepare_v16([decision])
+            expected = reference.prepare([decision])
             server_observation = observation_with_events(
                 observation, pending[seat]
             )
             pending[seat].clear()
             actual = online[seat].prepare(server_observation)
-            _assert_prepared_v16_semantics(actual)
-            _assert_matches_training_v16(actual, expected)
+            _assert_prepared_semantics(actual)
+            _assert_matches_training(actual, expected)
             compared[seat] += 1
             last_prepared[seat] = actual
         actions = {

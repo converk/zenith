@@ -1,4 +1,4 @@
-"""Centralized-value critic features for V16/V17 training."""
+"""V18 centralized-value Critic 的严格私有事实。"""
 
 from __future__ import annotations
 
@@ -180,14 +180,14 @@ def encode_opponent_hand_tokens(table_state: TableState, observer: int) -> list[
 def encode_future_wall_tokens(wall: Iterable[int]) -> list[tuple[int, ...]]:
     """Encode the next five live-wall tiles as ordered critic-only tokens.
 
-    ``wall`` is the full remaining wall returned by ``BatchedRiichiEnv.walls()``
-    (live wall first, 14 dead-wall tiles last); only the first five live tiles
-    are used.  Tiles are encoded in draw order as position 1..5 so the value
-    branch can rely on ``next_wall_1`` preceding ``next_wall_5``.  Missing tiles
-    simply produce fewer tokens; an invalid tile id is a hard error.
+    ``wall`` 必须已截取为后五张活牌。牌按摸牌顺序编码为 position 1..5;
+    缺失、数量不符或非法牌号均为硬错误。
     """
+    tiles = tuple(wall)
+    if len(tiles) != FUTURE_WALL_TILE_COUNT:
+        raise ValueError("future wall must contain exactly five ordered tiles")
     rows: list[tuple[int, ...]] = []
-    for position, tile in enumerate(wall[:FUTURE_WALL_TILE_COUNT], start=1):
+    for position, tile in enumerate(tiles, start=1):
         if tile is None:
             raise ValueError("future wall contains a missing tile id")
         value = int(tile)

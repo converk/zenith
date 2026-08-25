@@ -14,10 +14,10 @@ from riichi_ppo_v1.training.train import (
 
 
 class ConfigLoadingTest(unittest.TestCase):
-    def test_packaged_groups_provide_v16_neutral_defaults(self) -> None:
+    def test_packaged_groups_provide_v18_neutral_defaults(self) -> None:
         config = load_config()
-        self.assertEqual(config["model_size"], "v16")
-        self.assertEqual(config["policy_head_type"], "symmetric_action_query")
+        self.assertEqual(config["model_size"], "v18")
+        self.assertEqual(config["policy_head_type"], "isolated_action_query")
         self.assertEqual(config["game_mode"], "4p-red-half")
         self.assertEqual(config["envs_per_worker"], 32)
         self.assertEqual(config["update_epochs"], 4)
@@ -26,7 +26,6 @@ class ConfigLoadingTest(unittest.TestCase):
         self.assertEqual(config["checkpoint_dir"], "checkpoints/train_riichi_current")
         self.assertIsNone(config["resume"])
         self.assertIsNone(config["init_model"])
-        self.assertNotIn("isolated_" + "action_query", str(config))
         self.assertNotIn("offense_" + "fusion", config)
         self.assertNotIn("critic_" + "head_type", config)
 

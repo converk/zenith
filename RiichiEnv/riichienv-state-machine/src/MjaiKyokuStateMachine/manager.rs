@@ -175,7 +175,7 @@ impl MjaiKyokuStateMachineManager {
 
     /// 返回固定 action id 到调用方合法动作列表下标的直接映射。
     ///
-    /// prepare_v16 可据此复用原始 Action 对象,无需把 MJAI JSON 解码后再解析匹配。
+    /// prepare 可据此复用原始 Action 对象,无需把 MJAI JSON 解码后再解析匹配。
     fn action_ids_with_source_indices(
         &self,
         batch_indices: Vec<usize>,

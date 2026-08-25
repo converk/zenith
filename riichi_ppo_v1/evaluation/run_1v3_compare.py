@@ -3,16 +3,15 @@
 所有候选共享同一个 seed_base(相同的牌山与候选座位轮转),对手固定为
 ``model_b``;每个候选独立跑 ``--processes`` 个分片,分片种子区间互不相交且
 逐候选完全一致,保证候选之间除了策略本身外没有任何随机差异。进程数与每进程
-半庄数由 CLI 指定,不触碰宪法固定的训练例行 1v3 机制常量(12 进程 × 500)。
+半庄数由 CLI 指定,不触碰宪法固定的训练例行 1v3 机制常量(10 进程 × 400)。
 
 用法示例:
     python -m riichi_ppo_v1.evaluation.run_1v3_compare \\
-        --model-b checkpoints/train_riichi_v16/sft/best.pt \\
-        --candidate checkpoints/train_riichi_v16/sft/best.pt --label v16_base \\
-        --candidate checkpoints/train_riichi_v17/ppo/checkpoint_00060.pt \\
-            --label v17_best \\
-        --hanchans 4000 --processes 10 --seed-base 2026082000 \\
-        --devices 2 3 --output-dir audit/reports/v17/eval/vs_v16_base_1v3_4000
+        --model-b <对手-checkpoint> \\
+        --candidate <候选-a-checkpoint> --label candidate_a \\
+        --candidate <候选-b-checkpoint> --label candidate_b \\
+        --hanchans 4000 --processes 10 --seed-base <种子基数> \\
+        --devices 0 1 --output-dir audit/reports/<版本号>/eval/compare_1v3_4000
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""bot bridge 的 V16 在线 Observation 语义边界矩阵。"""
+"""bot bridge 的 V18 在线 Observation 语义边界矩阵。"""
 
 from __future__ import annotations
 
@@ -16,12 +16,8 @@ from riichi_lab_bot.observation import (
     missing_observation_fields,
     normalize_observation_base64,
 )
-from riichi_ppo_v1.model.encoding_protocol import (
-    SNAPSHOT_KIND_SUMMARY,
-    SNAPSHOT_RIVER_SCALE,
-)
 from riichi_ppo_v1.model.semantic_validation import (
-    assert_v16_actor_input_semantics,
+    assert_actor_input_semantics,
 )
 
 _FURITEN_TEHAIS_JSON = (
@@ -32,14 +28,13 @@ _FURITEN_TEHAIS_JSON = (
 )
 
 
-def _assert_v16(prepared) -> None:
-    assert_v16_actor_input_semantics(
+def _assert_v18(prepared) -> None:
+    assert_actor_input_semantics(
         prepared.history_factors[None],
         prepared.history_numeric[None],
         np.asarray([prepared.history_length], dtype=np.int64),
-        prepared.snapshot_kinds[None],
-        prepared.snapshot_cat[None],
-        prepared.snapshot_num[None],
+        prepared.snapshot_factors[None],
+        prepared.snapshot_numeric[None],
         np.asarray([prepared.snapshot_length], dtype=np.int64),
         prepared.query_rows[None],
         prepared.query_action_ids[None],
@@ -48,15 +43,14 @@ def _assert_v16(prepared) -> None:
     )
 
 
-def _assert_same_v16(left, right) -> None:
+def _assert_same(left, right) -> None:
     assert left.history_length == right.history_length
     assert left.snapshot_length == right.snapshot_length
     assert left.query_pair_count == right.query_pair_count
     assert np.array_equal(left.history_factors, right.history_factors)
     assert np.array_equal(left.history_numeric, right.history_numeric)
-    assert np.array_equal(left.snapshot_kinds, right.snapshot_kinds)
-    assert np.array_equal(left.snapshot_cat, right.snapshot_cat)
-    assert np.array_equal(left.snapshot_num, right.snapshot_num)
+    assert np.array_equal(left.snapshot_factors, right.snapshot_factors)
+    assert np.array_equal(left.snapshot_numeric, right.snapshot_numeric)
     assert np.array_equal(left.query_rows, right.query_rows)
     assert np.array_equal(left.query_action_ids, right.query_action_ids)
     assert np.array_equal(left.legal_mask, right.legal_mask)
@@ -67,7 +61,7 @@ def _prepare(env, seat: int) -> tuple[OnlineStateBridge, object]:
     observation = env.get_observation(seat)
     events = list(observation.new_events())
     prepared = bridge.prepare(observation_with_events(observation, events))
-    _assert_v16(prepared)
+    _assert_v18(prepared)
     return bridge, prepared
 
 
@@ -265,9 +259,8 @@ def test_unknown_events_and_fields_are_ignored_without_token_drift() -> None:
     assert modified.query_pair_count == baseline.query_pair_count
     assert np.array_equal(modified.history_factors, baseline.history_factors)
     assert np.array_equal(modified.history_numeric, baseline.history_numeric)
-    assert np.array_equal(modified.snapshot_kinds, baseline.snapshot_kinds)
-    assert np.array_equal(modified.snapshot_cat, baseline.snapshot_cat)
-    assert np.array_equal(modified.snapshot_num, baseline.snapshot_num)
+    assert np.array_equal(modified.snapshot_factors, baseline.snapshot_factors)
+    assert np.array_equal(modified.snapshot_numeric, baseline.snapshot_numeric)
     assert np.array_equal(modified.query_rows, baseline.query_rows)
     assert np.array_equal(modified.query_action_ids, baseline.query_action_ids)
     assert np.array_equal(modified.legal_mask, baseline.legal_mask)
@@ -315,9 +308,8 @@ def test_server_observation_with_missing_snapshot_fields_prepares() -> None:
     assert prepared.query_pair_count == full.query_pair_count
     assert np.array_equal(prepared.history_factors, full.history_factors)
     assert np.array_equal(prepared.history_numeric, full.history_numeric)
-    assert np.array_equal(prepared.snapshot_kinds, full.snapshot_kinds)
-    assert np.array_equal(prepared.snapshot_cat, full.snapshot_cat)
-    assert np.array_equal(prepared.snapshot_num, full.snapshot_num)
+    assert np.array_equal(prepared.snapshot_factors, full.snapshot_factors)
+    assert np.array_equal(prepared.snapshot_numeric, full.snapshot_numeric)
     assert np.array_equal(prepared.query_rows, full.query_rows)
     assert np.array_equal(prepared.query_action_ids, full.query_action_ids)
     assert np.array_equal(prepared.legal_mask, full.legal_mask)
@@ -361,8 +353,8 @@ def test_missing_server_fields_match_full_observation_across_hanchan() -> None:
             pending[int(seat)].clear()
             full = full_bridges[int(seat)].prepare(full_observation)
             server = server_bridges[int(seat)].prepare(server_observation)
-            _assert_v16(server)
-            _assert_same_v16(server, full)
+            _assert_v18(server)
+            _assert_same(server, full)
             action = rng.choice(observation.legal_actions())
             payload = json.loads(action.to_mjai())
             full_bridges[int(seat)].record_response(full, payload)
@@ -536,14 +528,10 @@ def test_present_empty_server_tsumogiri_flags_are_overridden() -> None:
     prepared = OnlineStateBridge(0).prepare(server_observation)
 
     assert prepared.observation.tsumogiri_flags[1] == [False, True, True]
-    summary_rows = np.flatnonzero(
-        prepared.snapshot_kinds == SNAPSHOT_KIND_SUMMARY
-    )
-    assert len(summary_rows) == 3
-    shimocha = prepared.snapshot_num[summary_rows[0]]
-    assert float(shimocha[2]) == pytest.approx(3 / SNAPSHOT_RIVER_SCALE)
-    assert float(shimocha[3]) == pytest.approx(1 / SNAPSHOT_RIVER_SCALE)
-    assert float(shimocha[4]) == pytest.approx(2 / SNAPSHOT_RIVER_SCALE)
+    # 下家三次弃牌中 1 次手切、2 次摸切,当前连续摸切为 2。
+    assert int(prepared.snapshot_factors[7, 2]) == 1
+    assert int(prepared.snapshot_factors[8, 2]) == 2
+    assert int(prepared.snapshot_factors[26, 2]) == 2
 
 
 def test_reach_declared_without_declaration_tile_is_normalized() -> None:
@@ -575,7 +563,7 @@ def test_reach_declared_without_declaration_tile_is_normalized() -> None:
     )
     bridge = OnlineStateBridge(0)
     prepared = bridge.prepare(server_observation)
-    _assert_v16(prepared)
+    _assert_v18(prepared)
 
 
 def test_server_riichi_snapshot_with_stale_sutehai_and_accepted_missing_prepares(
@@ -618,5 +606,5 @@ def test_server_riichi_snapshot_with_stale_sutehai_and_accepted_missing_prepares
         bridge.threats, "apply_events", lambda _events: None
     )
     prepared = bridge.prepare(server_observation)
-    _assert_v16(prepared)
+    _assert_v18(prepared)
     assert prepared.history_length > 0

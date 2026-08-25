@@ -17,8 +17,8 @@ from .critic_features import (
     pad_critic_feature_rows,
 )
 from .schema import NUM_ACTIONS, TID_COUNT
-from .snapshot import build_snapshot_facts, encode_snapshot_rows
-from .v16_rust_encoding import encode_action_queries_batch_native
+from .snapshot import encode_snapshot_batch
+from .native_encoding import encode_action_queries_batch_native
 
 NUM_PLAYERS = 4
 _DECISION_ACTION_TYPES = frozenset({"dahai", "reach", "ankan", "kakan", "ryukyoku"})
@@ -36,8 +36,8 @@ class Decision:
 
 
 @dataclass(frozen=True)
-class V16PreparedBatch:
-    """V16 输入编码的批量化装配结果。
+class PreparedBatch:
+    """现行 V18 输入编码的批量化装配结果。
 
     目标序列 = Objective Facts(history)+ Compact Snapshot + 每动作一对
     Offense/Defense Query;Critic 特权输入(三家对手手牌 + 后 5 牌山)单独保存,
@@ -47,9 +47,8 @@ class V16PreparedBatch:
     history_factors: np.ndarray
     history_numeric: np.ndarray
     history_lengths: np.ndarray
-    snapshot_kinds: np.ndarray
-    snapshot_cat: np.ndarray
-    snapshot_num: np.ndarray
+    snapshot_factors: np.ndarray
+    snapshot_numeric: np.ndarray
     snapshot_lengths: np.ndarray
     query_rows: np.ndarray
     query_action_ids: np.ndarray
@@ -174,7 +173,7 @@ class BatchedStateBridge:
         self.num_envs = int(num_envs)
         self.profiler = profiler or StageProfiler(enabled=False)
         self.critic_include_public_state = bool(critic_include_public_state)
-        self.last_v16_rust_stats: dict[str, int] = {}
+        self.last_rust_stats: dict[str, int] = {}
         self.last_events: list[list[list[str]]] = [[[] for _ in range(NUM_PLAYERS)] for _ in range(num_envs)]
         self.observations_by_env: list[dict[int, Any]] | None = None
 
@@ -194,81 +193,6 @@ class BatchedStateBridge:
         with self.profiler.stage("state/boundary_array_convert"):
             return np.asarray(end_kyoku, dtype=np.bool_), np.asarray(end_game, dtype=np.bool_)
 
-    def prepare(
-        self,
-        decisions: list[Decision],
-        analysis: Any | None = None,
-        walls: list[list[int]] | None = None,
-    ) -> tuple[
-        np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray
-    ]:
-        if not decisions:
-            raise ValueError("cannot prepare an empty decision batch")
-        batch_indices = [decision.batch_index for decision in decisions]
-        with self.profiler.stage("state/legal_action_json"):
-            action_rows = [action_jsons_and_decision_flag(decision.observation) for decision in decisions]
-            legal_actions = [actions for actions, _flag in action_rows]
-        with self.profiler.stage("state/snapshot_json"):
-            snapshots = [
-                snapshot_json(decision.observation, decision_flag)
-                for decision, (_actions, decision_flag) in zip(decisions, action_rows, strict=True)
-            ]
-        with self.profiler.stage("state/rust_prepare_decisions"):
-            factors, numeric, token_lengths, mask, history_generations = self.state_machine.prepare_decisions(batch_indices, legal_actions, snapshots)
-        with self.profiler.stage("state/critic_feature_encode"):
-            if self.observations_by_env is None:
-                critic_features = [empty_critic_features() for _decision in decisions]
-            else:
-                table_cache = {
-                    env_index: collect_visible_table_state(
-                        self.observations_by_env[env_index],
-                        include_public_state=self.critic_include_public_state,
-                    )
-                    for env_index in {decision.env_index for decision in decisions}
-                }
-                critic_features = [
-                    encode_critic_features(
-                        table_cache[decision.env_index],
-                        decision.seat_id,
-                        future_wall_tiles=(
-                            walls[decision.env_index][:5]
-                            if walls is not None
-                            else ()
-                        ),
-                    )
-                    for decision in decisions
-                ]
-            critic_factors, critic_lengths = pad_critic_feature_rows(critic_features)
-        with self.profiler.stage("state/numpy_array_convert"):
-            factors_a = np.asarray(factors, dtype=np.uint8)
-            numeric_a = np.asarray(numeric, dtype=np.float32)
-            token_lengths_a = np.asarray(token_lengths, dtype=np.int64)
-            mask_a = np.asarray(mask, dtype=np.bool_)
-            history_generations_a = np.asarray(history_generations, dtype=np.int64)
-            critic_factors_a = np.asarray(critic_factors, dtype=np.uint8)
-            critic_lengths_a = np.asarray(critic_lengths, dtype=np.int64)
-        if analysis is not None:
-            raise RuntimeError("decision-analysis augmentation has been removed; use prepare_v16")
-        if factors_a.ndim != 3 or factors_a.shape[0] != len(decisions) or factors_a.shape[2] != 10:
-            raise RuntimeError(f"invalid token factor shape {factors_a.shape}")
-        if numeric_a.shape != (*factors_a.shape[:2], 8):
-            raise RuntimeError(f"invalid token numeric shape {numeric_a.shape}")
-        if mask_a.shape != (len(decisions), NUM_ACTIONS) or not np.all(mask_a.any(axis=1)):
-            raise RuntimeError("state machine returned an empty or malformed decision mask")
-        if token_lengths_a.shape != (len(decisions),) or history_generations_a.shape != (len(decisions),):
-            raise RuntimeError("state machine returned malformed cache metadata")
-        if np.any(token_lengths_a < 0) or np.any(token_lengths_a > factors_a.shape[1]):
-            raise RuntimeError("invalid token length")
-        return (
-            factors_a,
-            numeric_a,
-            token_lengths_a,
-            mask_a,
-            history_generations_a,
-            critic_factors_a,
-            critic_lengths_a,
-        )
-
     def decode(self, decisions: list[Decision], action_ids: list[int]) -> list[Any]:
         if len(decisions) != len(action_ids):
             raise ValueError("decisions and action_ids must have the same length")
@@ -285,12 +209,12 @@ class BatchedStateBridge:
                 result.append(action)
         return result
 
-    def prepare_v16(
+    def prepare(
         self,
         decisions: list[Decision],
         walls: list[list[int]] | None = None,
-    ) -> V16PreparedBatch:
-        """装配 V16 输入:Objective Facts + Snapshot + 每动作一对 Query。
+    ) -> PreparedBatch:
+        """装配 V18 输入:Objective Facts + Atomic Snapshot + 每动作一对 Query。
 
         每个唯一 action id(合法掩码内)生成一对 query,重复物理动作按同一
         action id 取代表动作;Critic 只保留三家对手手牌与后 5 张牌山。
@@ -338,10 +262,9 @@ class BatchedStateBridge:
                     raise RuntimeError("state machine action-index mapping disagrees with legal mask")
                 ids_by_row.append(ids)
                 per_row_actions.append(actions_by_id)
-        with self.profiler.stage("state/v16_query_assembly"):
+        with self.profiler.stage("state/query_assembly"):
             query_rows: list[np.ndarray] = []
             action_id_rows: list[np.ndarray] = []
-            snapshot_rows: list[np.ndarray] = []
             # 生产路径只保留 Rust 融合编码,不再携带 Python 逐动作或 batch 回退。
             triples: list[tuple[Any, Any, int]] = []
             row_offsets: list[int] = [0]
@@ -352,20 +275,19 @@ class BatchedStateBridge:
                     )
                 row_offsets.append(len(triples))
             encoded = encode_action_queries_batch_native(triples)
-            self.last_v16_rust_stats = {
+            self.last_rust_stats = {
                 "actions": len(triples),
                 "unique_offense_rows": encoded.unique_offense_rows,
                 "unique_shanten_rows": encoded.unique_shanten_rows,
             }
-            for row, decision in enumerate(decisions):
+            for row, _decision in enumerate(decisions):
                 start, end = row_offsets[row], row_offsets[row + 1]
                 value = encoded.query_rows[start:end]
                 query_rows.append(value.reshape(-1, value.shape[-1]))
                 action_id_rows.append(np.asarray(ids_by_row[row], dtype=np.int32))
-                kinds, categorical, numeric = encode_snapshot_rows(
-                    build_snapshot_facts(decision.observation)
-                )
-                snapshot_rows.append((kinds, categorical, numeric))
+            snapshot_factors, snapshot_numeric, snapshot_lengths = encode_snapshot_batch(
+                [decision.observation for decision in decisions]
+            )
         with self.profiler.stage("state/critic_feature_encode"):
             if self.observations_by_env is None:
                 critic_features = [empty_critic_features() for _decision in decisions]
@@ -398,30 +320,19 @@ class BatchedStateBridge:
             mask_a = np.asarray(mask, dtype=np.bool_)
             if mask_a.shape != (len(decisions), NUM_ACTIONS) or not np.all(mask_a.any(axis=1)):
                 raise RuntimeError("state machine returned an empty or malformed decision mask")
-        with self.profiler.stage("state/v16_padding"):
+        with self.profiler.stage("state/input_padding"):
             batch = len(decisions)
             history_width = int(history_lengths.max())
-            snapshot_count = max(len(rows[0]) for rows in snapshot_rows)
-            snapshot_kinds = np.zeros((batch, snapshot_count), dtype=np.uint8)
-            snapshot_cat = np.zeros((batch, snapshot_count, 4), dtype=np.uint8)
-            snapshot_num = np.zeros((batch, snapshot_count, 7), dtype=np.float32)
-            snapshot_lengths = np.zeros(batch, dtype=np.int64)
-            for row, (kinds, categorical, numeric) in enumerate(snapshot_rows):
-                length = len(kinds)
-                snapshot_kinds[row, :length] = kinds
-                snapshot_cat[row, :length] = categorical
-                snapshot_num[row, :length] = numeric
-                snapshot_lengths[row] = length
             action_capacity = max(len(ids) for ids in action_id_rows)
             if action_capacity < 1:
-                raise RuntimeError("v16 batch requires at least one legal action per row")
+                raise RuntimeError("V18 batch requires at least one legal action per row")
             query_array = np.zeros((batch, 2 * action_capacity, 15), dtype=np.int32)
             action_ids_array = np.zeros((batch, action_capacity), dtype=np.int32)
             pair_counts = np.zeros(batch, dtype=np.int64)
             for row, (rows_value, ids_value) in enumerate(zip(query_rows, action_id_rows, strict=True)):
                 count = len(ids_value)
                 if rows_value.shape[0] != 2 * count:
-                    raise RuntimeError("v16 query rows must be one offense/defense pair per action")
+                    raise RuntimeError("query rows must be one offense/defense pair per action")
                 query_array[row, : rows_value.shape[0]] = rows_value
                 action_ids_array[row, :count] = ids_value
                 pair_counts[row] = count
@@ -429,13 +340,12 @@ class BatchedStateBridge:
                 raise RuntimeError("prepared history factors are shorter than declared lengths")
             history_factors = history_factors[:, :history_width]
             history_numeric = history_numeric[:, :history_width]
-        return V16PreparedBatch(
+        return PreparedBatch(
             history_factors=history_factors,
             history_numeric=history_numeric,
             history_lengths=history_lengths,
-            snapshot_kinds=snapshot_kinds,
-            snapshot_cat=snapshot_cat,
-            snapshot_num=snapshot_num,
+            snapshot_factors=snapshot_factors,
+            snapshot_numeric=snapshot_numeric,
             snapshot_lengths=snapshot_lengths,
             query_rows=query_array,
             query_action_ids=action_ids_array,

@@ -57,20 +57,18 @@ def test_future_wall_encodes_five_ordered_tokens() -> None:
     assert [row[3] for row in rows] == [1, 2, 3, 4, 5]
 
 
-def test_future_wall_skips_missing_tiles_without_losing_order() -> None:
-    rows = encode_future_wall_tokens([16, 52])
-    assert len(rows) == 2
-    assert [row[3] for row in rows] == [1, 2]
-    assert [row[4:6] for row in rows] == [(1, 5), (2, 5)]
+def test_future_wall_rejects_missing_tiles() -> None:
+    with pytest.raises(ValueError, match="exactly five"):
+        encode_future_wall_tokens([16, 52])
 
 
 def test_future_wall_rejects_invalid_tile_ids() -> None:
     with pytest.raises(ValueError, match="invalid RiichiEnv tile id"):
-        encode_future_wall_tokens([136])
+        encode_future_wall_tokens([136, 0, 4, 8, 12])
     with pytest.raises(ValueError, match="invalid RiichiEnv tile id"):
-        encode_future_wall_tokens([-1])
+        encode_future_wall_tokens([-1, 0, 4, 8, 12])
     with pytest.raises(ValueError, match="missing tile id"):
-        encode_future_wall_tokens([None])
+        encode_future_wall_tokens([None, 0, 4, 8, 12])
 
 
 def test_critic_features_append_future_wall_after_opponent_hands() -> None:

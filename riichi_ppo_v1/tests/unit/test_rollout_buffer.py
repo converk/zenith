@@ -9,31 +9,33 @@ import torch
 from riichi_ppo_v1.training.learner import PPOLearner, rollout_update_targets
 from riichi_ppo_v1.training.rollout_buffer import RolloutBuffer
 from riichi_ppo_v1.training.trajectory import Transition
+from riichi_ppo_v1.model.encoding_protocol import SNAPSHOT_FIELDS
 
 
 def _random_transition(rng: np.random.Generator) -> Transition:
     history_length = int(rng.integers(20, 60))
-    snapshot_length = int(rng.integers(2, 8))
+    snapshot_length = 29
     pair_count = int(rng.integers(1, 8))
-    critic_length = int(rng.integers(0, 30))
-    action_ids = rng.integers(0, 10, size=(pair_count,)).astype(np.int32)
+    critic_length = 8
+    action_ids = rng.choice(30, size=(pair_count,), replace=False).astype(np.int32)
     query_rows = np.zeros((2 * pair_count, 15), dtype=np.int32)
     for pair, action_id in enumerate(action_ids):
         query_rows[2 * pair, 0] = 1
         query_rows[2 * pair + 1, 0] = 2
         query_rows[2 * pair, 1] = int(action_id)
         query_rows[2 * pair + 1, 1] = int(action_id)
-        query_rows[2 * pair, 5:] = rng.integers(0, 6, size=(10,))
-        query_rows[2 * pair + 1, 5:] = rng.integers(0, 6, size=(10,))
+        query_rows[2 * pair:2 * pair + 2, 2] = 1
     legal_mask = np.zeros(241, dtype=np.bool_)
     legal_mask[action_ids] = True
     return Transition(
         history_factors=rng.integers(0, 4, (history_length, 10)).astype(np.uint8),
         history_numeric=rng.random((history_length, 8)).astype(np.float32),
         history_length=history_length,
-        snapshot_kinds=rng.integers(0, 4, (snapshot_length,)).astype(np.uint8),
-        snapshot_cat=rng.integers(0, 4, (snapshot_length, 4)).astype(np.uint8),
-        snapshot_num=rng.random((snapshot_length, 7)).astype(np.float32),
+        snapshot_factors=np.asarray([
+            (field.field_id, field.relative_seat, 0, 0)
+            for field in SNAPSHOT_FIELDS
+        ], dtype=np.uint8),
+        snapshot_numeric=np.zeros((snapshot_length, 1), dtype=np.float32),
         snapshot_length=snapshot_length,
         query_rows=query_rows,
         query_action_ids=action_ids,
@@ -46,11 +48,12 @@ def _random_transition(rng: np.random.Generator) -> Transition:
         kyoku_reward=float(np.float32(rng.random())),
         done=bool(rng.integers(0, 2)),
         advantage=float(np.float32(rng.random())),
-        critic_factors=(
-            rng.integers(0, 4, (critic_length, 10)).astype(np.uint8)
-            if critic_length
-            else None
-        ),
+        critic_factors=np.asarray([
+            (4, 4, 2, 2, 1, 1, 0, 4, 0, 1),
+            (4, 4, 2, 3, 1, 2, 0, 4, 0, 1),
+            (4, 4, 2, 4, 1, 3, 0, 4, 0, 1),
+            *((5, 6, 3, pos, 1, pos, 0, 1, 0, 1) for pos in range(1, 6)),
+        ], dtype=np.uint8),
         critic_length=critic_length,
     )
 
@@ -95,9 +98,8 @@ def test_collate_preserves_all_segments_and_padding() -> None:
         item = transitions[int(index)]
         _assert_row_prefix_and_zero_padding(batch["history_factors"], row, item.history_factors)
         _assert_row_prefix_and_zero_padding(batch["history_numeric"], row, item.history_numeric)
-        _assert_row_prefix_and_zero_padding(batch["snapshot_kinds"], row, item.snapshot_kinds)
-        _assert_row_prefix_and_zero_padding(batch["snapshot_cat"], row, item.snapshot_cat)
-        _assert_row_prefix_and_zero_padding(batch["snapshot_num"], row, item.snapshot_num)
+        _assert_row_prefix_and_zero_padding(batch["snapshot_factors"], row, item.snapshot_factors)
+        _assert_row_prefix_and_zero_padding(batch["snapshot_numeric"], row, item.snapshot_numeric)
         _assert_row_prefix_and_zero_padding(batch["query_rows"], row, item.query_rows)
         _assert_row_prefix_and_zero_padding(
             batch["query_action_ids"], row, item.query_action_ids,
@@ -196,7 +198,7 @@ def test_learner_accepts_only_rollout_buffer() -> None:
         "gamma": 1.0,
         "critic_bootstrap_updates": 0,
     }
-    learner = PPOLearner("v16", "cpu", **kwargs)
+    learner = PPOLearner("v18", "cpu", **kwargs)
     metrics = learner.update(RolloutBuffer(transitions), shuffle_seed=123)
     for name in ("loss", "policy_loss", "value_loss", "entropy", "approx_kl"):
         assert np.isfinite(metrics[name]), name

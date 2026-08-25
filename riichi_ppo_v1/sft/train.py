@@ -1,28 +1,28 @@
-"""V16 actor-only SFT CLI 入口。"""
+"""V18 actor-only SFT CLI 入口。"""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
-from .train_v16 import (
+from .trainer import (
     DEFAULT_CONFIG,
-    collate_v16,
-    evaluate_v16,
-    length_bucketed_batches_v16,
+    collate_samples,
+    evaluate,
+    length_bucketed_batches,
     load_config,
-    main as train_v16_main,
-    train_v16_worker,
+    main as train_main,
+    train_worker,
     validate_config,
 )
 
 __all__ = (
     "DEFAULT_CONFIG",
-    "collate_v16",
-    "evaluate_v16",
-    "length_bucketed_batches_v16",
+    "collate_samples",
+    "evaluate",
+    "length_bucketed_batches",
     "load_config",
-    "train_v16_worker",
+    "train_worker",
     "validate_config",
     "main",
 )
@@ -48,7 +48,7 @@ def main() -> None:
     if "checkpoint_dir" not in config:
         raise SystemExit("--output is required when the config does not define checkpoint_dir")
     validate_config(config)
-    train_v16_main(config, dataset=args.dataset, output=args.output)
+    train_main(config, dataset=args.dataset, output=args.output)
 
 
 if __name__ == "__main__":

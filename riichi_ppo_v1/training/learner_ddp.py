@@ -243,7 +243,7 @@ def _learner_worker(
             learner.load_model_weights(init_model_path)
         else:
             raise ValueError(
-                "V16 PPO DDP learner requires --init-model or a resume checkpoint"
+                "V18 PPO DDP learner requires --init-model or a resume checkpoint"
             )
         result_queue.put({"kind": "ready", "iteration": learner.iteration})
         while True:

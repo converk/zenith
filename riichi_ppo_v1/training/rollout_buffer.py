@@ -2,7 +2,7 @@
 
 worker 在 GAE 完成后把 ``list[Transition]`` 一次性物化成扁平 SoA 数组(变长字段
 使用 offset 索引),driver、learner 与 DDP 分片全程只传递该结构。``collate``
-把 minibatch 下标向量化 gather 成 V16 padded host 张量。
+把 minibatch 下标向量化 gather 成 V18 padded host 张量。
 
 边界说明:
 - 所有变长字段都存成「flat 数组 + offset(长度 N+1)」;collate 用一次性 gather
@@ -21,11 +21,11 @@ import torch
 from ..model.schema import NUM_ACTIONS
 from .trajectory import Transition, transition_sequence_length
 
-# V16 各段的固定通道宽(与 model/action_query.py / snapshot.py / critic_features.py 一致)。
+# V18 各段的固定通道宽(与 model/action_query.py / snapshot.py / critic_features.py 一致)。
 _HISTORY_W = 10
 _NUMERIC_W = 8
-_SNAPSHOT_CAT_W = 4
-_SNAPSHOT_NUM_W = 7
+_SNAPSHOT_FACTOR_W = 4
+_SNAPSHOT_NUMERIC_W = 1
 _QUERY_W = 15
 _CRITIC_W = 10
 
@@ -119,25 +119,18 @@ class RolloutBuffer:
             transitions, lambda item: item.history_numeric.astype(np.float32, copy=False)
         )
         (
-            self.snapshot_kinds_offsets,
-            self.snapshot_kinds_flat,
+            self.snapshot_factors_offsets,
+            self.snapshot_factors_flat,
             _,
         ) = self._concat_var(
-            transitions, lambda item: item.snapshot_kinds.astype(np.uint8, copy=False)
+            transitions, lambda item: item.snapshot_factors.astype(np.uint8, copy=False)
         )
         (
-            self.snapshot_cat_offsets,
-            self.snapshot_cat_flat,
+            self.snapshot_numeric_offsets,
+            self.snapshot_numeric_flat,
             _,
         ) = self._concat_var(
-            transitions, lambda item: item.snapshot_cat.astype(np.uint8, copy=False)
-        )
-        (
-            self.snapshot_num_offsets,
-            self.snapshot_num_flat,
-            _,
-        ) = self._concat_var(
-            transitions, lambda item: item.snapshot_num.astype(np.float32, copy=False)
+            transitions, lambda item: item.snapshot_numeric.astype(np.float32, copy=False)
         )
         (
             self.query_rows_offsets,
@@ -211,9 +204,8 @@ class RolloutBuffer:
         variable_fields = (
             ("history_offsets", "history_factors", result.history_lengths),
             ("history_numeric_offsets", "history_numeric_flat", result.history_lengths),
-            ("snapshot_kinds_offsets", "snapshot_kinds_flat", result.snapshot_lengths),
-            ("snapshot_cat_offsets", "snapshot_cat_flat", result.snapshot_lengths),
-            ("snapshot_num_offsets", "snapshot_num_flat", result.snapshot_lengths),
+            ("snapshot_factors_offsets", "snapshot_factors_flat", result.snapshot_lengths),
+            ("snapshot_numeric_offsets", "snapshot_numeric_flat", result.snapshot_lengths),
             ("query_rows_offsets", "query_rows_flat", 2 * result.query_pair_counts),
             ("query_ids_offsets", "query_ids_flat", result.query_pair_counts),
             ("critic_offsets", "critic_factors_flat", result.critic_lengths),
@@ -263,9 +255,8 @@ class RolloutBuffer:
         variable_fields = (
             ("history_offsets", "history_factors"),
             ("history_numeric_offsets", "history_numeric_flat"),
-            ("snapshot_kinds_offsets", "snapshot_kinds_flat"),
-            ("snapshot_cat_offsets", "snapshot_cat_flat"),
-            ("snapshot_num_offsets", "snapshot_num_flat"),
+            ("snapshot_factors_offsets", "snapshot_factors_flat"),
+            ("snapshot_numeric_offsets", "snapshot_numeric_flat"),
             ("query_rows_offsets", "query_rows_flat"),
             ("query_ids_offsets", "query_ids_flat"),
             ("critic_offsets", "critic_factors_flat"),
@@ -300,7 +291,7 @@ class RolloutBuffer:
         return np.asarray(offsets, dtype=np.int64), flat, (flat.shape[1] if flat.ndim >= 2 else 0)
 
     def collate(self, indices: Sequence[int]) -> dict[str, torch.Tensor]:
-        """把一个 minibatch 的下标数组 gather 成 V16 padded host 张量(CPU)。"""
+        """把一个 minibatch 的下标数组 gather 成 V18 padded host 张量(CPU)。"""
         idx = np.asarray([int(index) for index in indices], dtype=np.int64)
         if len(idx) == 0:
             raise ValueError("cannot collate an empty minibatch")
@@ -332,28 +323,21 @@ class RolloutBuffer:
             0.0,
             width=_NUMERIC_W,
         )
-        snapshot_kinds = _gather_padded(
-            self.snapshot_kinds_flat,
-            self.snapshot_kinds_offsets[idx],
+        snapshot_factors = _gather_padded(
+            self.snapshot_factors_flat,
+            self.snapshot_factors_offsets[idx],
             snap_lens,
             max_snapshot,
             0,
+            width=_SNAPSHOT_FACTOR_W,
         )
-        snapshot_cat = _gather_padded(
-            self.snapshot_cat_flat,
-            self.snapshot_cat_offsets[idx],
-            snap_lens,
-            max_snapshot,
-            0,
-            width=_SNAPSHOT_CAT_W,
-        )
-        snapshot_num = _gather_padded(
-            self.snapshot_num_flat,
-            self.snapshot_num_offsets[idx],
+        snapshot_numeric = _gather_padded(
+            self.snapshot_numeric_flat,
+            self.snapshot_numeric_offsets[idx],
             snap_lens,
             max_snapshot,
             0.0,
-            width=_SNAPSHOT_NUM_W,
+            width=_SNAPSHOT_NUMERIC_W,
         )
         query_rows = _gather_padded(
             self.query_rows_flat,
@@ -396,9 +380,8 @@ class RolloutBuffer:
             "history_factors": torch.from_numpy(np.ascontiguousarray(history_factors)),
             "history_numeric": torch.from_numpy(np.ascontiguousarray(history_numeric)),
             "history_lengths": history_lengths,
-            "snapshot_kinds": torch.from_numpy(np.ascontiguousarray(snapshot_kinds)),
-            "snapshot_cat": torch.from_numpy(np.ascontiguousarray(snapshot_cat)),
-            "snapshot_num": torch.from_numpy(np.ascontiguousarray(snapshot_num)),
+            "snapshot_factors": torch.from_numpy(np.ascontiguousarray(snapshot_factors)),
+            "snapshot_numeric": torch.from_numpy(np.ascontiguousarray(snapshot_numeric)),
             "snapshot_lengths": snapshot_lengths,
             "query_rows": torch.from_numpy(np.ascontiguousarray(query_rows)),
             "query_action_ids": torch.from_numpy(np.ascontiguousarray(query_action_ids)),

@@ -6,7 +6,7 @@
 
 from .encoding_protocol import ENCODING_PROTOCOL_VERSION
 
-# 与信息编码协议 v16 保持一致(单一版本,单一来源)。
+# 与现行信息编码协议保持一致(单一版本,单一来源)。
 TOKEN_SCHEMA_VERSION = ENCODING_PROTOCOL_VERSION
 # 固定 241 维动作空间(协议维度,不随实验版本变化)。
 NUM_ACTIONS = 241

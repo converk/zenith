@@ -1,4 +1,8 @@
-# V16 Actor 输入协议(encoding_protocol_version = 16)
+# V16 Actor 输入协议（冷存储，encoding_protocol_version = 16）
+
+> 本文仅记录归档 V16 契约，不是活跃运行文档。现行实现只接受 V18，见
+> [v18_input_protocol.md](v18_input_protocol.md)；不得据本文为新数据或 checkpoint
+> 增加兼容入口。
 
 本协议取代旧 token schema / feature schema / rust-analysis /
 decision-analysis 多版本拆分,是 V16 Actor 输入的唯一权威版本,与

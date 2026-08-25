@@ -119,8 +119,8 @@ impl HandAnalysis {
 pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<HandAnalysis>()?;
     module.add_class::<FeatureAnalysis>()?;
-    module.add_class::<DefenseAnalysisV16>()?;
-    module.add_class::<OffenseAnalysisV16>()?;
+    module.add_class::<DefenseAnalysis>()?;
+    module.add_class::<OffenseAnalysis>()?;
     module.add_function(wrap_pyfunction!(analyze_hands, module)?)?;
     module.add_function(wrap_pyfunction!(analyze_features, module)?)?;
     module.add_function(wrap_pyfunction!(analyze_defense_v16, module)?)?;
@@ -129,13 +129,13 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-/// V16 进攻事实内核(O0–O3、O6、O8)。
+/// 进攻事实内核(O0–O3、O6、O8)。
 ///
 /// 只评价「动作后形状」(暗牌计数 + 3×副露数 = 13);役/基础番(O4/O5)由 core 的
 /// `riichienv.analyze_offense_v16` 按等待牌计算。向听复用本 crate 的既有
 /// shanten 实现(生产路径)。
-#[pyclass(name = "OffenseAnalysisV16", frozen)]
-pub struct OffenseAnalysisV16 {
+#[pyclass(name = "OffenseAnalysis", frozen)]
+pub struct OffenseAnalysis {
     shanten: Py<PyArray1<i8>>,
     effective_kinds: Py<PyArray1<u8>>,
     effective_remaining: Py<PyArray1<u16>>,
@@ -146,7 +146,7 @@ pub struct OffenseAnalysisV16 {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct OffenseRowV16 {
+pub(crate) struct OffenseRow {
     pub shanten: i8,
     pub effective_kinds: u8,
     pub effective_remaining: u16,
@@ -156,11 +156,11 @@ pub(crate) struct OffenseRowV16 {
     pub can_riichi: u8,
 }
 
-/// 计算单个 13 张动作后形状的 V16 进攻事实。
+/// 计算单个 13 张动作后形状的 进攻事实。
 ///
 /// Python 批接口与融合编码器共用这一实现,避免两条热路径的语义漂移。
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn offense_row_v16(
+pub(crate) fn offense_row(
     counts: &[u8; TILE_KINDS],
     open_melds: u8,
     remaining: &[u8; TILE_KINDS],
@@ -169,7 +169,7 @@ pub(crate) fn offense_row_v16(
     missed_riichi: bool,
     riichi_declared: bool,
     score: i32,
-) -> Result<OffenseRowV16, String> {
+) -> Result<OffenseRow, String> {
     let total: u16 =
         counts.iter().map(|&value| u16::from(value)).sum::<u16>() + 3 * u16::from(open_melds);
     if total != 13 {
@@ -231,7 +231,7 @@ pub(crate) fn offense_row_v16(
         .map(|tile| u16::from(remaining[tile]))
         .sum::<u16>();
 
-    Ok(OffenseRowV16 {
+    Ok(OffenseRow {
         shanten: shanten_value,
         effective_kinds: improving.count_ones() as u8,
         effective_remaining,
@@ -243,7 +243,7 @@ pub(crate) fn offense_row_v16(
 }
 
 #[pymethods]
-impl OffenseAnalysisV16 {
+impl OffenseAnalysis {
     #[getter]
     fn shanten(&self, py: Python<'_>) -> Py<PyArray1<i8>> {
         self.shanten.clone_ref(py)
@@ -286,7 +286,7 @@ pub fn analyze_offense_v16(
     missed_riichi: PyReadonlyArray1<'_, bool>,
     riichi_declared: PyReadonlyArray1<'_, bool>,
     scores: PyReadonlyArray1<'_, i32>,
-) -> PyResult<OffenseAnalysisV16> {
+) -> PyResult<OffenseAnalysis> {
     let shape = shape_counts.shape();
     if shape.len() != 2 || shape[1] != TILE_KINDS {
         return Err(PyValueError::new_err(format!(
@@ -355,7 +355,7 @@ pub fn analyze_offense_v16(
             let remaining_row: [u8; TILE_KINDS] =
                 remaining_row.try_into().expect("remaining row width");
             let river = river_values[row];
-            let value = offense_row_v16(
+            let value = offense_row(
                 &counts,
                 meld_values[row],
                 &remaining_row,
@@ -397,7 +397,7 @@ pub fn analyze_offense_v16(
     ] {
         array.call_method1("setflags", (false,))?;
     }
-    Ok(OffenseAnalysisV16 {
+    Ok(OffenseAnalysis {
         shanten: shanten_array.unbind(),
         effective_kinds: kinds_array.unbind(),
         effective_remaining: remaining_array.unbind(),
@@ -408,7 +408,7 @@ pub fn analyze_offense_v16(
     })
 }
 
-/// V16 对手 7 项摘要:是否立直、立直巡目、副露数、是否门清、舍牌数、手切次数、
+/// 对手公开摘要:是否立直、立直巡目、副露数、是否门清、舍牌数、手切次数、
 /// 摸切次数。输入为公开 MJAI 状态逐座位事实,输出每对手一行的归一化编码。
 ///
 /// 立直巡目 N/A(-1)编码为 255;计数按契约边界截断(副露 0..4,其余 0..24)。
@@ -481,8 +481,8 @@ pub fn public_opponent_summary(
     Ok(array.unbind())
 }
 
-#[pyclass(name = "DefenseAnalysisV16", frozen)]
-pub struct DefenseAnalysisV16 {
+#[pyclass(name = "DefenseAnalysis", frozen)]
+pub struct DefenseAnalysis {
     genbutsu: Py<PyArray2<u8>>,
     suji: Py<PyArray2<u8>>,
     stock: Py<PyArray2<u8>>,
@@ -490,7 +490,7 @@ pub struct DefenseAnalysisV16 {
 }
 
 #[pymethods]
-impl DefenseAnalysisV16 {
+impl DefenseAnalysis {
     #[getter]
     fn genbutsu(&self, py: Python<'_>) -> Py<PyArray2<u8>> {
         self.genbutsu.clone_ref(py)
@@ -509,7 +509,7 @@ impl DefenseAnalysisV16 {
     }
 }
 
-/// V16 防守事实内核(D0–D9)。
+/// 防守事实内核(D0–D9)。
 ///
 /// 编码值与 `model/encoding_protocol.py` 的 DEFENSE_SLOT_LABELS 下标一致:
 /// GENBUTSU=0/NOT_GENBUTSU=1/N/A=2;SUJI=0/NOT_SUJI=1/N/A=2;库存 0..4(4+);
@@ -521,7 +521,7 @@ pub fn analyze_defense_v16(
     river_masks: PyReadonlyArray2<'_, u64>,
     hand_counts: PyReadonlyArray2<'_, u8>,
     remaining: PyReadonlyArray2<'_, u8>,
-) -> PyResult<DefenseAnalysisV16> {
+) -> PyResult<DefenseAnalysis> {
     let rows = discard_types.len();
     if river_masks.shape() != [rows, 3] {
         return Err(PyValueError::new_err(
@@ -609,7 +609,7 @@ pub fn analyze_defense_v16(
     ] {
         array.call_method1("setflags", (false,))?;
     }
-    Ok(DefenseAnalysisV16 {
+    Ok(DefenseAnalysis {
         genbutsu: genbutsu_array.unbind(),
         suji: suji_array.unbind(),
         stock: stock_array.unbind(),

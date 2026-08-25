@@ -1,12 +1,12 @@
-# 中性 PPO 默认配置:现行拓扑为 V16 输入 + symmetric_action_query。
-# 版本化长训参数请使用自包含的 v16_*/v17_* 配置。
+# 中性 PPO 默认配置:现行拓扑为 V18 输入 + isolated_action_query。
+# 本文件仅提供实现默认值,本次升级不启动正式 PPO。
 seed: 1
 device: cuda
 learner_gpus: 2
 iterations: 5000
-model_size: v16
+model_size: v18
 context_tokens: 4096
-policy_head_type: symmetric_action_query
+policy_head_type: isolated_action_query
 critic_layers: 2
 inference_dtype: bf16
 game_mode: 4p-red-half

@@ -1,4 +1,4 @@
-"""V16 Action Query 的唯一 Rust 融合编码边界。"""
+"""现行动作 Query 的唯一 Rust 融合编码边界。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from .encoding_protocol import QUERY_ROW_ANSWER_START
 
 
 @dataclass(frozen=True)
-class RustV16QueryBatch:
+class NativeQueryBatch:
     """逐动作连续 query 行及融合内核的去重统计。"""
 
     query_rows: np.ndarray
@@ -76,12 +76,12 @@ def _native_batch_inputs(
 
 def encode_action_queries_batch_native(
     rows: list[tuple[object, object, int]],
-) -> RustV16QueryBatch:
+) -> NativeQueryBatch:
     """Observation/Action 只各跨一次 PyO3,其余语义全部由 Rust 计算。"""
     if not rows:
-        return RustV16QueryBatch(np.zeros((0, 2, 15), dtype=np.int32), 0, 0)
+        return NativeQueryBatch(np.zeros((0, 2, 15), dtype=np.int32), 0, 0)
     inputs = _native_batch_inputs(rows)
-    facts = riichienv.prepare_v16_compact_facts(
+    facts = riichienv.prepare_encoding_facts(
         inputs.observations,
         inputs.observation_indices,
         inputs.actions,
@@ -91,7 +91,7 @@ def encode_action_queries_batch_native(
         inputs.riichi_declared,
         inputs.drawn_tiles,
     )
-    encoded = riichi.encode_v16_batch(
+    encoded = riichi.encode_query_batch(
         facts.action_ids,
         facts.action_types,
         facts.primary_types,
@@ -116,7 +116,7 @@ def encode_action_queries_batch_native(
     query_rows = np.asarray(encoded.query_rows, dtype=np.int32)
     wait_masks = np.asarray(encoded.wait_masks, dtype=np.uint64)
     if np.any(wait_masks):
-        yaku = riichienv.analyze_v16_yaku_batch(
+        yaku = riichienv.analyze_encoding_yaku_batch(
             inputs.observations,
             inputs.observation_indices,
             inputs.actions,
@@ -130,7 +130,7 @@ def encode_action_queries_batch_native(
         query_rows[wait_rows, 0, QUERY_ROW_ANSWER_START + 5] = np.asarray(
             yaku.base_han, dtype=np.uint8,
         )[wait_rows]
-    return RustV16QueryBatch(
+    return NativeQueryBatch(
         query_rows=query_rows,
         unique_offense_rows=int(encoded.unique_offense_rows),
         unique_shanten_rows=int(encoded.unique_shanten_rows),

@@ -1,4 +1,4 @@
-"""V17 GRP(全局排名预测)模型与输入契约常量(Mortal 方案)。
+"""GRP(全局排名预测)模型与输入契约常量(Mortal 方案)。
 
 输入为每个 StartKyoku 的 7 维全局状态
 ``[grand_kyoku, honba, kyotaku, s0/1e4, s1/1e4, s2/1e4, s3/1e4]``;

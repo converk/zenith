@@ -7,7 +7,7 @@ pub(crate) mod mjai_select;
 #[cfg(feature = "python")]
 mod python;
 #[cfg(feature = "python")]
-pub(crate) mod sequence_features;
+pub mod sequence_features;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
@@ -72,6 +72,16 @@ pub struct Observation {
 
 /// Pure Rust methods (no PyO3 dependency).
 impl Observation {
+    /// 返回最近一次可供吃碰杠荣响应的公开事件 actor。
+    pub fn last_offer_actor(&self) -> Option<u8> {
+        self.events.iter().rev().find_map(|event| {
+            let value = serde_json::from_str::<serde_json::Value>(event).ok()?;
+            matches!(value["type"].as_str(), Some("dahai") | Some("kakan"))
+                .then(|| value["actor"].as_u64().map(|actor| actor as u8))
+                .flatten()
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         player_id: u8,

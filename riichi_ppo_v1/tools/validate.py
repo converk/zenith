@@ -6,6 +6,8 @@ import argparse
 import json
 
 from ..model.validation import run_random_coverage, write_coverage
+from ..model import KyokuTransformerActorCritic
+from ..model.parameter_count import assert_v18_parameter_contract
 
 
 def main() -> None:
@@ -14,7 +16,11 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-steps", type=int, default=2500)
     parser.add_argument("--output", default="riichi_ppo_v1_coverage.json")
+    parser.add_argument("--parameter-contract", action="store_true")
     args = parser.parse_args()
+    if args.parameter_contract:
+        print(json.dumps(assert_v18_parameter_contract(KyokuTransformerActorCritic()), indent=2, sort_keys=True))
+        return
     summary = run_random_coverage(args.games, args.seed, args.max_steps)
     write_coverage(summary, args.output)
     print(json.dumps(summary, indent=2, sort_keys=True))

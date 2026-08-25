@@ -1,4 +1,4 @@
-"""单席位在线 Observation 到 V16 Actor 输入的桥接。"""
+"""单席位在线 Observation 到 V18 Actor 输入的桥接。"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from riichi_ppo_v1.model.bridge import (
     action_jsons_and_decision_flag,
 )
 from riichi_ppo_v1.model.semantic_validation import (
-    assert_v16_actor_input_semantics,
+    assert_actor_input_semantics,
 )
 
 from .observation import ObservationView, ThreatSnapshotTracker
@@ -47,8 +47,6 @@ _ALWAYS_REBUILT_FIELDS = frozenset(
         "riichi_accepted",
         "riichi_declaration_indices",
         "riichi_sutehais",
-        "last_tedashis",
-        "tsumogiri_flags",
         "tiles_left",
     }
 )
@@ -68,9 +66,8 @@ class PreparedDecision:
     history_factors: np.ndarray
     history_numeric: np.ndarray
     history_length: int
-    snapshot_kinds: np.ndarray
-    snapshot_cat: np.ndarray
-    snapshot_num: np.ndarray
+    snapshot_factors: np.ndarray
+    snapshot_numeric: np.ndarray
     snapshot_length: int
     query_rows: np.ndarray
     query_action_ids: np.ndarray
@@ -113,7 +110,7 @@ def _accepted_model_events(raw_events: list[str]) -> tuple[list[str], bool]:
 
 
 class OnlineStateBridge:
-    """一个连接、一个 bot 席位的有状态 V16 桥接器。"""
+    """一个连接、一个 bot 席位的有状态 V18 桥接器。"""
 
     def __init__(self, seat: int) -> None:
         if not 0 <= int(seat) < NUM_PLAYERS:
@@ -166,19 +163,18 @@ class OnlineStateBridge:
         legal_jsons, _decision_flag = action_jsons_and_decision_flag(
             observation
         )
-        batch = self.training_bridge.prepare_v16(
+        batch = self.training_bridge.prepare(
             [Decision(0, self.seat, observation)]
         )
         history_length = int(batch.history_lengths[0])
         snapshot_length = int(batch.snapshot_lengths[0])
         query_pair_count = int(batch.query_pair_counts[0])
-        assert_v16_actor_input_semantics(
+        assert_actor_input_semantics(
             batch.history_factors,
             batch.history_numeric,
             batch.history_lengths,
-            batch.snapshot_kinds,
-            batch.snapshot_cat,
-            batch.snapshot_num,
+            batch.snapshot_factors,
+            batch.snapshot_numeric,
             batch.snapshot_lengths,
             batch.query_rows,
             batch.query_action_ids,
@@ -191,9 +187,8 @@ class OnlineStateBridge:
             history_factors=batch.history_factors[0, :history_length].copy(),
             history_numeric=batch.history_numeric[0, :history_length].copy(),
             history_length=history_length,
-            snapshot_kinds=batch.snapshot_kinds[0, :snapshot_length].copy(),
-            snapshot_cat=batch.snapshot_cat[0, :snapshot_length].copy(),
-            snapshot_num=batch.snapshot_num[0, :snapshot_length].copy(),
+            snapshot_factors=batch.snapshot_factors[0, :snapshot_length].copy(),
+            snapshot_numeric=batch.snapshot_numeric[0, :snapshot_length].copy(),
             snapshot_length=snapshot_length,
             query_rows=batch.query_rows[0, : 2 * query_pair_count].copy(),
             query_action_ids=batch.query_action_ids[
@@ -207,21 +202,52 @@ class OnlineStateBridge:
 
     def _with_rebuilt_fields(self, observation: Any) -> Any:
         rebuilt = self.threats.fields()
+        discards = getattr(observation, "discards", ((), (), (), ()))
+        rebuilt_flags = rebuilt["tsumogiri_flags"]
+        if all(
+            len(discard_row) == len(flag_row)
+            for discard_row, flag_row in zip(discards, rebuilt_flags, strict=True)
+        ):
+            rebuilt["last_tedashis"] = [
+                next(
+                    (
+                        int(tile)
+                        for tile, tsumogiri in zip(
+                            reversed(discard_row), reversed(flag_row), strict=True,
+                        )
+                        if not tsumogiri
+                    ),
+                    None,
+                )
+                for discard_row, flag_row in zip(discards, rebuilt_flags, strict=True)
+            ]
         if isinstance(observation, ObservationView):
             missing = set(observation.missing_fields)
+            flags = getattr(observation, "tsumogiri_flags", ((), (), (), ()))
+            malformed_flags = any(
+                len(discard_row) != len(flag_row)
+                for discard_row, flag_row in zip(discards, flags, strict=True)
+            )
             observation.set_fields(
                 {
                     name: value
                     for name, value in rebuilt.items()
-                    if name in missing or name in _ALWAYS_REBUILT_FIELDS
+                    if name in missing
+                    or name in _ALWAYS_REBUILT_FIELDS
+                    or (name == "tsumogiri_flags" and malformed_flags)
                 }
             )
             return observation
 
+        flags = getattr(observation, "tsumogiri_flags", ((), (), (), ()))
+        malformed_flags = any(
+            len(discard_row) != len(flag_row)
+            for discard_row, flag_row in zip(discards, flags, strict=True)
+        )
         overrides = {
             name: value
             for name, value in rebuilt.items()
-            if name in _ALWAYS_REBUILT_FIELDS
+            if (name in _ALWAYS_REBUILT_FIELDS or (name == "tsumogiri_flags" and malformed_flags))
             and getattr(observation, name, None) != value
         }
         if overrides:

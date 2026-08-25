@@ -824,15 +824,7 @@ impl Observation {
 
     /// Find the actor of the last discard (for chi/pon/kan/ron response).
     fn find_last_discard_actor(&self) -> Option<u8> {
-        for event_str in self.events.iter().rev() {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(event_str) {
-                let event_type = v["type"].as_str().unwrap_or("");
-                if event_type == "dahai" || event_type == "kakan" {
-                    return v["actor"].as_u64().map(|a| a as u8);
-                }
-            }
-        }
-        None
+        self.last_offer_actor()
     }
 }
 

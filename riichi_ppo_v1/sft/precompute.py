@@ -1,4 +1,4 @@
-"""物化确定性的 V16 actor-only SFT 子集以加速训练。"""
+"""物化确定性的 V18 actor-only SFT 子集以加速训练。"""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ import numpy as np
 
 from ..model.encoding_protocol import (
     DEFENSE_SLOT_ORDER,
-    ENCODED_FORMAT as V16_ENCODED_FORMAT,
+    ENCODED_FORMAT,
     ENCODING_PROTOCOL_VERSION,
     OFFENSE_SLOT_ORDER,
     QUERY_ROW_ANSWER_START,
@@ -30,10 +30,10 @@ from ..model.encoding_protocol import (
 )
 from ..model.schema import NUM_ACTIONS
 from .contract import (
-    V16_ACTOR_INPUT_CONTRACT_SHA256,
-    validate_v16_manifest,
+    ACTOR_INPUT_CONTRACT_SHA256,
+    validate_manifest,
 )
-from .data import V16Sample, _member_metadata, encode_kyoku_v16
+from .data import EncodedSample, _member_metadata, encode_kyoku
 
 
 def _selection_bucket(game_id: str, namespace: str, denominator: int) -> int:
@@ -133,8 +133,8 @@ def _require_complete_action_coverage(statistics: dict[str, np.ndarray]) -> None
         )
 
 
-def _write_chunk_v16(path: Path, samples: list[V16Sample]) -> int:
-    """物化一批 V16 样本:history/snapshot/query 三段 + 身份元数据。"""
+def _write_chunk(path: Path, samples: list[EncodedSample]) -> int:
+    """物化一批 V18 样本:history/snapshot/query 三段 + 身份元数据。"""
     count = len(samples)
     history_offsets = np.zeros(count + 1, dtype=np.int64)
     history_offsets[1:] = np.cumsum([sample.history_length for sample in samples], dtype=np.int64)
@@ -151,9 +151,8 @@ def _write_chunk_v16(path: Path, samples: list[V16Sample]) -> int:
         history_factors=np.concatenate([sample.history_factors for sample in samples], axis=0),
         history_numeric=np.concatenate([sample.history_numeric for sample in samples], axis=0).astype(np.float16),
         snapshot_offsets=snapshot_offsets,
-        snapshot_kinds=np.concatenate([sample.snapshot_kinds for sample in samples], axis=0),
-        snapshot_cat=np.concatenate([sample.snapshot_cat for sample in samples], axis=0),
-        snapshot_num=np.concatenate([sample.snapshot_num for sample in samples], axis=0).astype(np.float16),
+        snapshot_factors=np.concatenate([sample.snapshot_factors for sample in samples], axis=0),
+        snapshot_numeric=np.concatenate([sample.snapshot_numeric for sample in samples], axis=0).astype(np.float16),
         query_offsets=query_offsets,
         action_offsets=action_offsets,
         query_rows=np.concatenate([sample.query_rows for sample in samples], axis=0),
@@ -170,7 +169,7 @@ def _write_chunk_v16(path: Path, samples: list[V16Sample]) -> int:
     return count
 
 
-def _empty_v16_field_statistics() -> dict[str, np.ndarray]:
+def _empty_field_statistics() -> dict[str, np.ndarray]:
     return {
         "query_answer_out_of_range": np.zeros(1, dtype=np.int64),
         "snapshot_numeric_out_of_range": np.zeros(1, dtype=np.int64),
@@ -179,8 +178,8 @@ def _empty_v16_field_statistics() -> dict[str, np.ndarray]:
     }
 
 
-def _accumulate_v16_field_statistics(
-    target: dict[str, np.ndarray], samples: list[V16Sample],
+def _accumulate_field_statistics(
+    target: dict[str, np.ndarray], samples: list[EncodedSample],
 ) -> None:
     """累计 query answer 越界、snapshot 数值越界与动作覆盖率。"""
     for sample in samples:
@@ -198,39 +197,25 @@ def _accumulate_v16_field_statistics(
             target["query_answer_out_of_range"][0] += np.count_nonzero(
                 (codes < 0) | (codes >= SLOT_CARDINALITIES[slot])
             )
-        kinds = sample.snapshot_kinds
-        numeric = sample.snapshot_num
-        if len(kinds):
-            base = numeric[kinds == 0, :3]
-            score = numeric[kinds == 2, :7]
-            summary = numeric[kinds == 3, :5]
-            bad = np.count_nonzero((base < 0.0) | (base > 1.0))
-            bad += np.count_nonzero(np.abs(score) > 5.0)
-            bad += np.count_nonzero((summary < 0.0) | (summary > 1.0))
+        numeric = sample.snapshot_numeric
+        if len(numeric):
+            bad = np.count_nonzero(np.abs(numeric) > 1.0)
             bad += np.count_nonzero(~np.isfinite(numeric))
             target["snapshot_numeric_out_of_range"][0] += bad
         target["legal_actions"] += sample.legal_mask.astype(np.int64)
         target["expert_actions"][int(sample.action)] += 1
 
 
-def _assert_v16_public_history(samples: list[V16Sample], source: str) -> None:
-    """拒绝公开河牌存在但历史事件缺失的重放输出。"""
+def _assert_public_history(samples: list[EncodedSample], source: str) -> None:
+    """拒绝 Actor 历史中混入隐藏信息。"""
     for sample in samples:
-        summary = sample.snapshot_num[sample.snapshot_kinds == 3]
-        has_river = bool(summary.size and np.any(summary[:, 2] > 0.0))
-        discard_history = np.count_nonzero(
-            (sample.history_factors[:, 0] == 1)
-            & (sample.history_factors[:, 1] == 1)
-            & (sample.history_factors[:, 2] == 4)
-        )
-        if has_river and not discard_history:
+        if np.any(sample.history_factors[:, 9] == 2):
             raise RuntimeError(
-                f"replay history is missing despite public river facts: {source}; "
-                "rebuild the RiichiEnv extension before preprocessing"
+                f"replay history contains hidden information: {source}"
             )
 
 
-def _precompute_source_shard_v16(
+def _precompute_source_shard(
     split: str,
     source_shard: str,
     destination: str,
@@ -243,12 +228,12 @@ def _precompute_source_shard_v16(
     progress_queue: Any | None = None,
     progress_every_kyokus: int = 32,
 ) -> tuple[str, int, int, int, dict[str, list[int]]]:
-    """独立进程内编码一个源 tar 为 V16 chunk。"""
+    """独立进程内编码一个源 tar 为 V18 chunk。"""
     shard = Path(source_shard)
     target_dir = Path(destination)
-    buffered: list[V16Sample] = []
+    buffered: list[EncodedSample] = []
     kyokus = decisions = chunk_index = reported_kyokus = reported_decisions = 0
-    statistics = _empty_v16_field_statistics()
+    statistics = _empty_field_statistics()
 
     def report_progress(*, force: bool = False) -> None:
         nonlocal reported_kyokus, reported_decisions
@@ -268,11 +253,11 @@ def _precompute_source_shard_v16(
             if file is None:
                 raise RuntimeError(f"cannot read {shard}:{member.name}")
             year, game_id, kyoku_index = _member_metadata(member.name)
-            samples = encode_kyoku_v16(
+            samples = encode_kyoku(
                 _decode(file.read()), year=year, game_id=game_id, kyoku_index=kyoku_index,
             )
-            _assert_v16_public_history(samples, f"{shard}:{member.name}")
-            _accumulate_v16_field_statistics(statistics, samples)
+            _assert_public_history(samples, f"{shard}:{member.name}")
+            _accumulate_field_statistics(statistics, samples)
             buffered.extend(samples)
             kyokus += 1
             decisions += len(samples)
@@ -281,14 +266,14 @@ def _precompute_source_shard_v16(
                 name = f"{shard.stem}-{chunk_index:03d}.npz"
                 if chunk_name_suffix:
                     name = f"{shard.stem}-{chunk_name_suffix}-{chunk_index:03d}.npz"
-                _write_chunk_v16(target_dir / name, buffered)
+                _write_chunk(target_dir / name, buffered)
                 buffered.clear()
                 chunk_index += 1
     if buffered:
         name = f"{shard.stem}-{chunk_index:03d}.npz"
         if chunk_name_suffix:
             name = f"{shard.stem}-{chunk_name_suffix}-{chunk_index:03d}.npz"
-        _write_chunk_v16(target_dir / name, buffered)
+        _write_chunk(target_dir / name, buffered)
         chunk_index += 1
     report_progress(force=True)
     return split, kyokus, decisions, chunk_index, {
@@ -296,12 +281,12 @@ def _precompute_source_shard_v16(
     }
 
 
-def precompute_v16(
+def precompute(
     source: Path,
     output: Path,
     *,
     denominator: int = 5,
-    remainders: tuple[int, ...] = (0, 1),
+    remainders: tuple[int, ...] = (0, 1, 2),
     kyokus_per_shard: int = 256,
     workers: int = 8,
     progress_every_kyokus: int = 32,
@@ -310,7 +295,7 @@ def precompute_v16(
     require_complete_action_coverage: bool = False,
     base_encoded: Path | None = None,
 ) -> None:
-    """V16 子集的确定性重编码,可复用已有 V16 编码缓存。"""
+    """V18 子集的确定性重编码,可复用已有 V18 编码缓存。"""
     remainders = tuple(sorted(set(remainders)))
     if denominator <= 0 or not remainders or any(not 0 <= value < denominator for value in remainders):
         raise ValueError("subset remainder must be in [0, subset denominator)")
@@ -329,7 +314,7 @@ def precompute_v16(
         if not manifest_path.is_file():
             raise FileNotFoundError(f"reuse base encoded manifest does not exist: {manifest_path}")
         reused_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        validate_v16_manifest(reused_manifest)
+        validate_manifest(reused_manifest)
         if int(reused_manifest.get("subset_denominator", -1)) != denominator:
             raise ValueError("base_encoded subset_denominator differs from requested denominator")
         if (
@@ -375,7 +360,7 @@ def precompute_v16(
         f"preflight: target_kyokus={total} encode_kyokus={encode_total} "
         f"train={remaining_kyokus['train']} validation={remaining_kyokus['validation']}", flush=True,
     )
-    field_statistics = _empty_v16_field_statistics()
+    field_statistics = _empty_field_statistics()
     counts: dict[str, int] = {
         "train_kyokus": 0, "validation_kyokus": 0,
         "train_decisions": 0, "validation_decisions": 0,
@@ -432,7 +417,7 @@ def precompute_v16(
         with ProcessPoolExecutor(max_workers=workers) as executor:
             pending = {
                 executor.submit(
-                    _precompute_source_shard_v16, *task, progress_queue, progress_every_kyokus,
+                    _precompute_source_shard, *task, progress_queue, progress_every_kyokus,
                 ) for task in tasks
             }
             while pending:
@@ -468,9 +453,9 @@ def precompute_v16(
     if require_complete_action_coverage:
         _require_complete_action_coverage(field_statistics)
     if int(field_statistics["query_answer_out_of_range"][0]) != 0:
-        raise RuntimeError("v16 encoding produced out-of-range query answers")
+        raise RuntimeError("V18 encoding produced out-of-range query answers")
     if int(field_statistics["snapshot_numeric_out_of_range"][0]) != 0:
-        raise RuntimeError("v16 encoding produced out-of-range snapshot numerics")
+        raise RuntimeError("V18 encoding produced out-of-range snapshot numerics")
     for split in ("train", "validation"):
         if int(counts[f"{split}_kyokus"]) != int(total_kyokus[split]):
             raise RuntimeError(
@@ -478,9 +463,9 @@ def precompute_v16(
                 f"preflight {total_kyokus[split]}"
             )
     manifest = {
-        "format": V16_ENCODED_FORMAT,
+        "format": ENCODED_FORMAT,
         "encoding_protocol_version": ENCODING_PROTOCOL_VERSION,
-        "encoding_contract_sha256": V16_ACTOR_INPUT_CONTRACT_SHA256,
+        "encoding_contract_sha256": ACTOR_INPUT_CONTRACT_SHA256,
         "source_manifest_sha256": source_manifest_sha256,
         "subset_denominator": denominator,
         "subset_remainders": list(remainders),
@@ -509,7 +494,7 @@ def precompute_v16(
     print(json.dumps(manifest, ensure_ascii=False), flush=True)
 
 
-def iter_precomputed_v16_samples(
+def iter_precomputed_samples(
     dataset: Path,
     split: str,
     *,
@@ -517,10 +502,10 @@ def iter_precomputed_v16_samples(
     shuffle: bool,
     rank: int = 0,
     world_size: int = 1,
-) -> Iterator[V16Sample]:
-    """按确定性全局行流读取 V16 编码 chunk。"""
+) -> Iterator[EncodedSample]:
+    """按确定性全局行流读取 V18 编码 chunk。"""
     manifest = json.loads((dataset / "manifest.json").read_text(encoding="utf-8"))
-    validate_v16_manifest(manifest)
+    validate_manifest(manifest)
     paths = sorted((dataset / split).glob(f"{split}-*.npz"))
     rng = random.Random(seed)
     if shuffle:
@@ -554,12 +539,12 @@ def iter_precomputed_v16_samples(
             continue
         with np.load(path, allow_pickle=False) as data:
             (history_offsets, history_factors, history_numeric,
-             snapshot_offsets, snapshot_kinds, snapshot_cat, snapshot_num,
+             snapshot_offsets, snapshot_factors, snapshot_numeric,
              query_offsets, action_offsets, query_rows, action_ids,
              legal, actions) = (
                 data[name] for name in (
                     "history_offsets", "history_factors", "history_numeric",
-                    "snapshot_offsets", "snapshot_kinds", "snapshot_cat", "snapshot_num",
+                    "snapshot_offsets", "snapshot_factors", "snapshot_numeric",
                     "query_offsets", "action_offsets", "query_rows", "action_ids",
                     "legal", "actions",
                 )
@@ -571,14 +556,13 @@ def iter_precomputed_v16_samples(
             )
             order = list(range(len(actions)))
             if shuffle:
-                random.Random(f"riichi-sft-v16-row-order\0{seed}\0{path.name}").shuffle(order)
+                random.Random(f"riichi-sft-v18-row-order\0{seed}\0{path.name}").shuffle(order)
             for row in order[selected_start:selected_end]:
-                yield V16Sample(
+                yield EncodedSample(
                     history_factors[history_offsets[row]:history_offsets[row + 1]].copy(),
                     history_numeric[history_offsets[row]:history_offsets[row + 1]].astype(np.float32),
-                    snapshot_kinds[snapshot_offsets[row]:snapshot_offsets[row + 1]].copy(),
-                    snapshot_cat[snapshot_offsets[row]:snapshot_offsets[row + 1]].copy(),
-                    snapshot_num[snapshot_offsets[row]:snapshot_offsets[row + 1]].astype(np.float32),
+                    snapshot_factors[snapshot_offsets[row]:snapshot_offsets[row + 1]].copy(),
+                    snapshot_numeric[snapshot_offsets[row]:snapshot_offsets[row + 1]].astype(np.float32),
                     query_rows[query_offsets[row]:query_offsets[row + 1]].copy(),
                     action_ids[action_offsets[row]:action_offsets[row + 1]].copy(),
                     np.unpackbits(legal[row], bitorder="little", count=NUM_ACTIONS).astype(np.bool_),
@@ -592,7 +576,7 @@ def iter_precomputed_v16_samples(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=Path("datasets/tenhou_sft_2024_2025"))
-    parser.add_argument("--output", type=Path, required=True, help="V16 编码缓存输出目录(必填)")
+    parser.add_argument("--output", type=Path, required=True, help="V18 编码缓存输出目录(必填)")
     parser.add_argument("--subset-denominator", type=int, default=5)
     parser.add_argument("--subset-remainder", type=int, default=None)
     parser.add_argument(
@@ -601,7 +585,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--reuse-encoded", type=Path, default=None,
-        help="复用已有 V16 编码缓存,只追加本次 remainders 的新数据",
+        help="复用已有 V18 编码缓存,只追加本次 remainders 的新数据",
     )
     parser.add_argument("--kyokus-per-shard", type=int, default=256)
     parser.add_argument("--workers", type=int, default=8, help="independent tar-shard encoder processes")
@@ -618,8 +602,8 @@ def main() -> None:
     elif args.subset_remainder is not None:
         selected_remainders = (int(args.subset_remainder),)
     else:
-        selected_remainders = (0, 1)
-    precompute_v16(
+        selected_remainders = (0, 1, 2)
+    precompute(
         args.source, args.output, denominator=args.subset_denominator,
         remainders=selected_remainders,
         kyokus_per_shard=args.kyokus_per_shard, workers=args.workers,

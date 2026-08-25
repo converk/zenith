@@ -322,8 +322,21 @@ class ObservationView:
 
     @property
     def native_observation(self) -> Any:
-        """返回供 Rust 编码器消费的原始 RiichiEnv Observation。"""
-        return object.__getattribute__(self, "_observation")
+        """物化覆盖字段,供 Rust 编码器读取在线重建后的公开状态。"""
+        observation = object.__getattribute__(self, "_observation")
+        fields = object.__getattribute__(self, "_fields")
+        if not fields:
+            return observation
+        from riichienv import Observation
+
+        payload = json.loads(
+            base64.b64decode(observation.serialize_to_base64()).decode("utf-8")
+        )
+        payload.update(fields)
+        encoded = base64.b64encode(
+            json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii")
+        return Observation.deserialize_from_base64(encoded)
 
     def set_fields(self, fields: dict[str, Any]) -> None:
         merged = dict(object.__getattribute__(self, "_fields"))

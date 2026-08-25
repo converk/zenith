@@ -1,4 +1,4 @@
-"""V16 在线输入审计记录器。"""
+"""V18 在线输入审计记录器。"""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ import numpy as np
 from .bridge import PreparedDecision
 
 
-class V16InputAuditRecorder:
-    """把每次线上决策实际送入模型的 V16 输入落到本地 JSONL。"""
+class InputAuditRecorder:
+    """把每次线上决策实际送入模型的 V18 输入落到本地 JSONL。"""
 
     def __init__(self, path: str | None = None) -> None:
         self.path = Path(path).expanduser() if path else None
@@ -39,7 +39,7 @@ class V16InputAuditRecorder:
         observation = prepared.observation
         fields = getattr(observation, "_fields", {})
         record = {
-            "event": "v16_input_audit",
+            "event": "input_audit",
             "request_id": int(request_id),
             "seat": int(prepared.seat),
             "observation_base64": observation_base64,
@@ -71,9 +71,8 @@ class V16InputAuditRecorder:
             },
             "snapshot": {
                 "length": int(prepared.snapshot_length),
-                "kinds": prepared.snapshot_kinds.tolist(),
-                "cat": prepared.snapshot_cat.tolist(),
-                "num": _round_float_rows(prepared.snapshot_num),
+                "factors": prepared.snapshot_factors.tolist(),
+                "numeric": _round_float_rows(prepared.snapshot_numeric),
             },
             "query": {
                 "pair_count": int(prepared.query_pair_count),

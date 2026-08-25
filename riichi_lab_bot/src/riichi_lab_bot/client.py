@@ -8,7 +8,7 @@ import json
 import time
 from typing import Any
 
-from .audit import V16InputAuditRecorder
+from .audit import InputAuditRecorder
 from .bridge import OnlineStateBridge
 from .observation import (
     ObservationView,
@@ -58,7 +58,7 @@ async def play_connection(
     token: str,
     policy: PolicyEngine,
     recorder: EventRecorder,
-    audit_recorder: V16InputAuditRecorder | None = None,
+    audit_recorder: InputAuditRecorder | None = None,
     deadline_margin_ms: int = 250,
 ) -> SessionResult:
     from websockets.asyncio.client import connect

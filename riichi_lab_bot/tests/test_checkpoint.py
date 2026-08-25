@@ -11,24 +11,19 @@ from riichi_lab_bot.bridge import OnlineStateBridge
 from riichi_lab_bot.policy import PolicyEngine
 
 
-@pytest.mark.parametrize(
-    ("checkpoint", "checkpoint_format"),
-    [
-        (v16_sft_checkpoint, "sft_v16"),
-        (v17_ppo_checkpoint, "ppo_v3"),
-    ],
-)
-def test_real_v16_v17_checkpoint_loads_strictly_and_warms_up(
-    checkpoint, checkpoint_format: str,
-) -> None:
-    engine = PolicyEngine(
-        checkpoint(), device="cpu", dtype="fp32"
-    )
+def test_v18_checkpoint_loads_strictly_and_warms_up() -> None:
+    engine = PolicyEngine(default_checkpoint(), device="cpu", dtype="fp32")
     assert engine.config.context_tokens == 4096
-    assert engine.metadata["checkpoint_format"] == checkpoint_format
-    assert engine.metadata["token_schema_version"] == 16
-    assert engine.metadata["policy_head_type"] == "symmetric_action_query"
+    assert engine.metadata["checkpoint_format"] == "v18_weights"
+    assert engine.metadata["token_schema_version"] == 18
+    assert engine.metadata["policy_head_type"] == "isolated_action_query"
     assert engine.warmup() >= 0.0
+
+
+@pytest.mark.parametrize("checkpoint", [v16_sft_checkpoint, v17_ppo_checkpoint])
+def test_legacy_checkpoint_is_rejected(checkpoint) -> None:
+    with pytest.raises(RuntimeError, match="V18"):
+        PolicyEngine(checkpoint(), device="cpu", dtype="fp32")
 
 
 def test_missing_model_config_fails_before_model_load(
@@ -41,7 +36,7 @@ def test_missing_model_config_fails_before_model_load(
         PolicyEngine(path, device="cpu", dtype="fp32")
 
 
-def test_non_symmetric_policy_head_is_rejected(
+def test_non_isolated_policy_head_is_rejected(
     monkeypatch: pytest.MonkeyPatch, tmp_path,
 ) -> None:
     path = tmp_path / "bad_head.pt"
@@ -53,7 +48,7 @@ def test_non_symmetric_policy_head_is_rejected(
             "model": {},
         },
     )
-    with pytest.raises(RuntimeError, match="symmetric_action_query"):
+    with pytest.raises(RuntimeError, match="isolated_action_query"):
         PolicyEngine(path, device="cpu", dtype="fp32")
 
 

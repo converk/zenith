@@ -1,4 +1,4 @@
-"""V16 PPO 优化器:V16 批 collate、PPO clip + value Huber + GAE value advantage。
+"""V18 PPO 优化器:V18 批 collate、PPO clip + value Huber + GAE value advantage。
 
 ``PPOLearner`` 同时支持单卡(默认)与双卡 DDP:传 ``rank``/``world_size``
 后模型由 ``DistributedDataParallel`` 包装,update 内所有梯度 collective 与
@@ -26,19 +26,19 @@ from ..model.schema import TOKEN_SCHEMA_VERSION
 from .profiling import StageProfiler
 from .rollout_buffer import RolloutBuffer
 
-# V16 参数分支:actor/critic/shared 三组独立调度,gradient 按参数根分发。
+# V18 参数分支:actor/critic/shared 三组独立调度,gradient 按参数根分发。
 ACTOR_ROOTS = {"actor_backbone", "query_embedding", "action_fusion", "policy_mlp"}
-CRITIC_ROOTS = {"critic_embedding", "critic_backbone", "value_head", "value_query", "q_scorer"}
+CRITIC_ROOTS = {"critic_embedding", "critic_backbone", "value_head", "value_query"}
 SHARED_ROOTS = {"token_embedding", "snapshot_embeddings", "public_backbone"}
 
 
 def validate_fresh_model_checkpoint_contract(payload: dict[str, Any]) -> None:
-    """校验用作 V16 PPO 初始化的 SFT/模型 checkpoint 契约。"""
+    """校验用作 V18 PPO 初始化的 SFT/模型 checkpoint 契约。"""
     if not isinstance(payload, dict) or not isinstance(payload.get("model"), dict):
-        raise RuntimeError("V16 PPO requires a checkpoint with model weights")
+        raise RuntimeError("V18 PPO requires a checkpoint with model weights")
     raw_config = payload.get("model_config")
-    if not isinstance(raw_config, dict) or raw_config.get("policy_head_type") != "symmetric_action_query":
-        raise RuntimeError("V16 PPO requires a symmetric_action_query model checkpoint")
+    if not isinstance(raw_config, dict) or raw_config.get("policy_head_type") != "isolated_action_query":
+        raise RuntimeError("V18 PPO requires an isolated_action_query model checkpoint")
 
 
 def scheduled_learning_rate(
@@ -217,7 +217,7 @@ def transition_length_metrics(
     transitions: RolloutBuffer,
     prefix: str = "update/buffer",
 ) -> dict[str, float]:
-    """描述 V16 语义序列长度与全量 padding 基线。"""
+    """描述 V18 语义序列长度与全量 padding 基线。"""
     lengths = np.asarray(transitions.sequence_lengths, dtype=np.int64)
     if np.any(lengths < 0):
         raise ValueError("sequence length cannot be negative")
@@ -274,7 +274,7 @@ def transfer_batch_to_device(
 
 
 class PPOLearner:
-    """V16 Actor-Critic 的 PPO 优化器(单卡或双卡 DDP)。"""
+    """V18 Actor-Critic 的 PPO 优化器(单卡或双卡 DDP)。"""
 
     def __init__(
         self,
@@ -285,8 +285,8 @@ class PPOLearner:
         world_size: int | None = None,
         **hyperparameters: Any,
     ) -> None:
-        if model_size != "v16":
-            raise ValueError("PPOLearner only supports model_size='v16'")
+        if model_size != "v18":
+            raise ValueError("PPOLearner only supports model_size='v18'")
         self.device = torch.device(device)
         self.rank = rank
         self.world_size = int(world_size) if world_size is not None else 1
@@ -300,7 +300,7 @@ class PPOLearner:
         if self.device.type == "cuda":
             torch.cuda.set_device(self.device)
         self.hp = hyperparameters
-        preset = ModelConfig.preset("v16")
+        preset = ModelConfig.preset("v18")
         self.config = replace(
             preset,
             context_tokens=int(hyperparameters.get("context_tokens", preset.context_tokens)),
@@ -352,7 +352,7 @@ class PPOLearner:
                 device_ids=[self.device.index],
                 broadcast_buffers=False,
                 # 移除 Q 后必须允许未使用参数:bootstrap 期只训 critic(actor/
-                # shared 不进 loss),且保留的 q_scorer 不再参与任何 loss;DDP
+                # shared 不进 loss);DDP
                 # 会在每次 backward 额外扫描未使用参数,模型仅约 3M 参数,
                 # 开销可忽略。
                 find_unused_parameters=True,
@@ -428,9 +428,8 @@ class PPOLearner:
             history_factors=batch["history_factors"],
             history_numeric=batch["history_numeric"],
             history_lengths=batch["history_lengths"],
-            snapshot_kinds=batch["snapshot_kinds"],
-            snapshot_cat=batch["snapshot_cat"],
-            snapshot_num=batch["snapshot_num"],
+            snapshot_factors=batch["snapshot_factors"],
+            snapshot_numeric=batch["snapshot_numeric"],
             snapshot_lengths=batch["snapshot_lengths"],
             query_rows=batch["query_rows"],
             query_action_ids=batch["query_action_ids"],
@@ -614,13 +613,12 @@ class PPOLearner:
                         if sft_kl_coef > 0.0:
                             assert self.reference_model is not None
                             with torch.no_grad():
-                                reference_output = self.reference_model.forward_v16(
+                                reference_output = self.reference_model(
                                     batch["history_factors"],
                                     batch["history_numeric"],
                                     batch["history_lengths"],
-                                    batch["snapshot_kinds"],
-                                    batch["snapshot_cat"],
-                                    batch["snapshot_num"],
+                                    batch["snapshot_factors"],
+                                    batch["snapshot_numeric"],
                                     batch["snapshot_lengths"],
                                     batch["query_rows"],
                                     batch["query_action_ids"],
@@ -893,7 +891,7 @@ class PPOLearner:
         # 单卡路径也保存 rank_rng_states,使旧格式与双卡 resume 共享同一入口。
         merged_extra.setdefault("rank_rng_states", [self.rng_state()])
         payload = {
-            "ppo_format_version": 3,
+            "ppo_format_version": 4,
             "model": self.weights(),
             "optimizer": self.optimizer.state_dict(),
             "model_config": asdict(self.config),
@@ -917,7 +915,7 @@ class PPOLearner:
         os.replace(temporary, destination)
 
     def load(self, path: str | Path) -> None:
-        """精确 resume:校验 v16 契约后恢复 model/optimizer/iteration/RNG。"""
+        """精确 resume:校验 V18 契约后恢复 model/optimizer/iteration/RNG。"""
         payload = torch.load(path, map_location=self.device, weights_only=False)
         required = {
             "model", "optimizer", "model_config", "iteration", "torch_rng",
@@ -926,8 +924,8 @@ class PPOLearner:
         missing = sorted(required - payload.keys())
         if missing:
             raise RuntimeError("PPO exact resume checkpoint is missing: " + ", ".join(missing))
-        if int(payload.get("ppo_format_version", 0)) != 3:
-            raise RuntimeError("only V16 PPO checkpoints (format 3) can be resumed")
+        if int(payload.get("ppo_format_version", 0)) != 4:
+            raise RuntimeError("only V18 PPO checkpoints (format 4) can be resumed")
         if int(payload.get("token_schema_version", 0)) != TOKEN_SCHEMA_VERSION:
             raise RuntimeError(
                 f"checkpoint token schema {payload.get('token_schema_version')} is "
@@ -939,7 +937,7 @@ class PPOLearner:
             raise RuntimeError("PPO checkpoint has an invalid model_config") from exc
         if checkpoint_config != self.config:
             raise RuntimeError(
-                "PPO exact resume model_config differs from the active V16 topology"
+                "PPO exact resume model_config differs from the active V18 topology"
             )
         self.model.load_state_dict(payload["model"], strict=True)
         self.optimizer.load_state_dict(payload["optimizer"])
@@ -970,7 +968,7 @@ class PPOLearner:
             if state.get("cuda") is not None and torch.cuda.is_available():
                 torch.cuda.set_rng_state(state["cuda"].cpu(), device=self.device)
         else:
-            # 旧格式单卡 checkpoint:两个 rank 都恢复同一份 RNG(继续作为双卡训练)。
+            # 单卡 checkpoint:两个 rank 都恢复同一份 RNG(继续作为双卡训练)。
             torch.set_rng_state(payload["torch_rng"].cpu())
             random.setstate(payload["python_rng"])
             np.random.set_state(payload["numpy_rng"])
@@ -980,13 +978,13 @@ class PPOLearner:
                 ])
 
     def load_model_weights(self, path: str | Path) -> None:
-        """从 v16 SFT checkpoint 初始化全新 PPO(iteration 归零、optimizer 全新)。"""
+        """从 V18 SFT checkpoint 初始化全新 PPO(iteration 归零、optimizer 全新)。"""
         payload = torch.load(path, map_location=self.device, weights_only=False)
         validate_fresh_model_checkpoint_contract(payload)
         checkpoint_config = ModelConfig.from_mapping(dict(payload["model_config"]))
         if checkpoint_config != self.config:
             raise RuntimeError(
-                "V16 SFT checkpoint model_config differs from the active PPO topology"
+                "V18 SFT checkpoint model_config differs from the active PPO topology"
             )
         self.model.load_state_dict(payload["model"], strict=True)
         self.reference_model = KyokuTransformerActorCritic(self.config).to(self.device)

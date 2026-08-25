@@ -908,3 +908,17 @@ __all__ = [
     "get_yaku_by_id",
     "get_all_yaku",
 ]
+class AtomicSnapshotBatch:
+    """固定 29 行原子 Snapshot 的批量 PyO3 返回值。"""
+
+    factors: Any
+    numeric: Any
+    lengths: Any
+
+class CompactEncodingFacts: ...
+
+class EncodingYakuValues: ...
+
+def prepare_atomic_snapshots(observations: list[Observation]) -> AtomicSnapshotBatch: ...
+def prepare_encoding_facts(*args: Any, **kwargs: Any) -> CompactEncodingFacts: ...
+def analyze_encoding_yaku_batch(*args: Any, **kwargs: Any) -> EncodingYakuValues: ...

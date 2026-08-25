@@ -1,8 +1,8 @@
-"""V16 单协议 GQA 演员-评论家。
+"""V18 单协议 GQA Actor-Critic。
 
-Actor 输入固定为 Objective Facts + Compact Snapshot + 每动作一对
-Offense/Defense Query,输出固定 241 维动作空间。旧 isolated-action-query
-模型头与历史兼容分支已移除。
+Actor 输入固定为 Objective Facts + Atomic Snapshot + 每动作一对
+Offense/Defense Query,动作对由结构化注意力隔离。Critic 仅在共享公开表示后
+读取三家真实手牌与未来五张牌。
 """
 
 from __future__ import annotations
@@ -17,14 +17,13 @@ from torch import Tensor, nn
 from .encoding_protocol import (
     DEFENSE_SLOT_ORDER,
     OFFENSE_SLOT_ORDER,
+    ACTION_TYPE_CARDINALITY,
     QUERY_ROW_WIDTH,
     SLOT_CARDINALITIES,
-    SNAPSHOT_CAT_WIDTH,
-    SNAPSHOT_KIND_BASE,
-    SNAPSHOT_KIND_DORA,
-    SNAPSHOT_KIND_SCORE,
-    SNAPSHOT_KIND_SUMMARY,
-    SNAPSHOT_NUM_WIDTH,
+    SNAPSHOT_FACTOR_CARDINALITIES,
+    SNAPSHOT_FACTOR_WIDTH,
+    SNAPSHOT_FIELD_COUNT,
+    SNAPSHOT_NUMERIC_WIDTH,
 )
 from .schema import NUM_ACTIONS
 
@@ -38,15 +37,15 @@ class ModelConfig:
     layers: int = 4
     shared_layers: int = 3
     critic_layers: int = 2
-    d_model: int = 192
-    query_heads: int = 8
-    kv_heads: int = 2
-    head_dim: int = 24
-    ffn_dim: int = 576
+    d_model: int = 256
+    query_heads: int = 16
+    kv_heads: int = 4
+    head_dim: int = 16
+    ffn_dim: int = 704
     context_tokens: int = 4096
     rope_base: float = 10_000.0
     eps: float = 1e-6
-    policy_head_type: str = "symmetric_action_query"
+    policy_head_type: str = "isolated_action_query"
 
     def __post_init__(self) -> None:
         if self.d_model != self.query_heads * self.head_dim:
@@ -61,42 +60,19 @@ class ModelConfig:
             raise ValueError("shared_layers must be positive and leave at least one actor-only layer")
         if self.critic_layers < 1:
             raise ValueError("critic_layers must be positive")
-        if self.policy_head_type != "symmetric_action_query":
-            raise ValueError("policy_head_type must be symmetric_action_query")
+        if self.policy_head_type != "isolated_action_query":
+            raise ValueError("policy_head_type must be isolated_action_query")
 
     @classmethod
     def preset(cls, size: str) -> "ModelConfig":
-        configs = {
-            "mid": cls(),
-            "large": cls(
-                d_model=384, query_heads=12, kv_heads=3, head_dim=32,
-                ffn_dim=1152,
-            ),
-            # V16-small:版本命名保持 V16,只调整隐藏层容量,输入/输出协议不变。
-            "v16": cls(
-                layers=4,
-                shared_layers=3,
-                critic_layers=2,
-                d_model=192,
-                query_heads=12,
-                kv_heads=3,
-                head_dim=16,
-                ffn_dim=576,
-                policy_head_type="symmetric_action_query",
-            ),
-        }
-        try:
-            return configs[size]
-        except KeyError as exc:
-            raise ValueError("model size must be 'mid', 'large' or 'v16'") from exc
+        if size != "v18":
+            raise ValueError("model size must be 'v18'")
+        return cls()
 
     @classmethod
     def from_mapping(cls, values: dict[str, object]) -> "ModelConfig":
-        """从 checkpoint/config 映射恢复现行 V16 拓扑。"""
-        filtered = dict(values)
-        for key in ("offense_" + "fusion", "critic_" + "head_type"):
-            filtered.pop(key, None)
-        return cls(**filtered)
+        """从纯 V18 checkpoint/config 映射恢复精确拓扑。"""
+        return cls(**dict(values))
 
 
 class FactorEmbedding(nn.Module):
@@ -133,7 +109,7 @@ class FactorEmbedding(nn.Module):
 
 
 class QueryEmbedding(nn.Module):
-    """V16 动作 Query 的单 token 聚合嵌入。
+    """V18 动作 Query 的 metadata 与 answer slot 聚合嵌入。
 
     ``E_q = E_action + E_queryType + Σ_i E_{type,i}(answer_i)``,再经
     LayerNorm/Projection 到 d_model。Offense 与 Defense 使用各自独立、结构对称
@@ -144,6 +120,9 @@ class QueryEmbedding(nn.Module):
         super().__init__()
         self.action = nn.Embedding(NUM_ACTIONS, d_model)
         self.query_type = nn.Embedding(3, d_model)
+        self.action_type = nn.Embedding(ACTION_TYPE_CARDINALITY, d_model)
+        self.primary_tile = nn.Embedding(35, d_model)
+        self.source_seat = nn.Embedding(4, d_model)
         self.offense_slots = nn.ModuleList(
             nn.Embedding(SLOT_CARDINALITIES[slot], d_model) for slot in OFFENSE_SLOT_ORDER
         )
@@ -152,7 +131,15 @@ class QueryEmbedding(nn.Module):
         )
         self.norm = nn.RMSNorm(d_model)
         self.projection = nn.Linear(d_model, d_model, bias=False)
-        for embedding in (self.action, self.query_type, *self.offense_slots, *self.defense_slots):
+        for embedding in (
+            self.action,
+            self.query_type,
+            self.action_type,
+            self.primary_tile,
+            self.source_seat,
+            *self.offense_slots,
+            *self.defense_slots,
+        ):
             nn.init.normal_(embedding.weight, std=1.0 / math.sqrt(d_model))
 
     def forward(self, rows: Tensor) -> Tensor:
@@ -162,12 +149,27 @@ class QueryEmbedding(nn.Module):
         rows = rows.long()
         query_type = rows[..., 0]
         action_ids = rows[..., 1]
+        action_types = rows[..., 2]
+        primary_tiles = rows[..., 3]
+        source_seats = rows[..., 4]
         answers = rows[..., 5:]
         if torch.any(action_ids < 0) or torch.any(action_ids >= NUM_ACTIONS):
             raise ValueError("query action_id is outside the fixed action space")
         if torch.any(query_type < 0) or torch.any(query_type > 2):
             raise ValueError("query_type must be 0..2")
-        embedded = self.action(action_ids) + self.query_type(query_type)
+        if torch.any(action_types < 0) or torch.any(action_types >= ACTION_TYPE_CARDINALITY):
+            raise ValueError("query action_type is outside its domain")
+        if torch.any(primary_tiles < 0) or torch.any(primary_tiles >= 35):
+            raise ValueError("query primary_tile is outside its domain")
+        if torch.any(source_seats < 0) or torch.any(source_seats >= 4):
+            raise ValueError("query source_seat is outside its domain")
+        embedded = (
+            self.action(action_ids)
+            + self.query_type(query_type)
+            + self.action_type(action_types)
+            + self.primary_tile(primary_tiles)
+            + self.source_seat(source_seats)
+        )
         offense = torch.zeros_like(embedded)
         defense = torch.zeros_like(embedded)
         for index, embedding in enumerate(self.offense_slots):
@@ -184,53 +186,29 @@ class QueryEmbedding(nn.Module):
 
 
 class SnapshotEmbedding(nn.Module):
-    """V16 Compact Snapshot 的分段混合嵌入。
-
-    快照存储为统一形状的行(kind + 4 列 categorical + 7 列连续),每种 kind 使用
-    独立的 categorical 基数与连续宽度,产出各自的一条 d_model token:
-    base(场况)、dora(每张宝牌指示一条)、score(点数/分差)、summary(3×7 对手摘要)。
-    """
+    """29 个原子字段共用的 factor/numeric 嵌入。"""
 
     def __init__(self, d_model: int) -> None:
         super().__init__()
-        self.d_model = d_model
-        # 场风 E/S(2)、局数 E1..S4(8)、庄家相对(4)、自身顺位(4)。
-        self.base = FactorEmbedding((2, 8, 4, 4), d_model, 3)
-        self.dora = FactorEmbedding((34,), d_model, 0)
-        self.score = FactorEmbedding((), d_model, SNAPSHOT_NUM_WIDTH)
-        self.summary = FactorEmbedding((2, 2), d_model, 5)
-
-    def forward(self, kinds: Tensor, categorical: Tensor, numeric: Tensor) -> Tensor:
-        """``kinds`` [B,S]、``categorical`` [B,S,4]、``numeric`` [B,S,7]。"""
-        if kinds.ndim != 2 or categorical.ndim != 3 or numeric.ndim != 3:
-            raise ValueError("snapshot kinds/categorical/numeric shapes are malformed")
-        if categorical.shape[-1] != SNAPSHOT_CAT_WIDTH or numeric.shape[-1] != SNAPSHOT_NUM_WIDTH:
-            raise ValueError(
-                f"snapshot rows must be {SNAPSHOT_CAT_WIDTH} categorical + "
-                f"{SNAPSHOT_NUM_WIDTH} numeric columns"
-            )
-        if categorical.shape[:2] != kinds.shape or numeric.shape[:2] != kinds.shape:
-            raise ValueError("snapshot kind/categorical/numeric row counts differ")
-        if torch.any(kinds < 0) or torch.any(kinds >= 4):
-            raise ValueError("snapshot kind must be 0..3")
-        batch, rows, _width = numeric.shape
-        device = numeric.device
-        output = numeric.new_zeros((batch, rows, self.d_model))
-        kind = kinds.unsqueeze(-1)
-        routes = (
-            (SNAPSHOT_KIND_BASE, self.base, 4, 3, 7),
-            (SNAPSHOT_KIND_DORA, self.dora, 1, 0, 33),
-            (SNAPSHOT_KIND_SCORE, self.score, 0, SNAPSHOT_NUM_WIDTH, 0),
-            (SNAPSHOT_KIND_SUMMARY, self.summary, 2, 5, 1),
+        self.embedding = FactorEmbedding(
+            SNAPSHOT_FACTOR_CARDINALITIES,
+            d_model,
+            SNAPSHOT_NUMERIC_WIDTH,
         )
-        for kind_code, module, cat_width, num_width, cat_max in routes:
-            # 每个模块会在全量行上求值,非本 kind 行的取值被 where 丢弃;先按该
-            # 模块的基数截断,避免非本 kind 行越界触发 Embedding 索引错误。
-            factors = categorical[:, :, :cat_width].long().clamp(0, cat_max)
-            values = numeric[:, :, :num_width] if num_width else None
-            embedded = module(factors, values)
-            output = torch.where(kind.eq(kind_code), embedded, output)
-        return output
+
+    def forward(self, factors: Tensor, numeric: Tensor) -> Tensor:
+        if factors.ndim != 3 or factors.shape[1:] != (
+            SNAPSHOT_FIELD_COUNT,
+            SNAPSHOT_FACTOR_WIDTH,
+        ):
+            raise ValueError("snapshot_factors must be [batch,29,4]")
+        if numeric.shape != (
+            factors.shape[0],
+            SNAPSHOT_FIELD_COUNT,
+            SNAPSHOT_NUMERIC_WIDTH,
+        ):
+            raise ValueError("snapshot_numeric must be [batch,29,1]")
+        return self.embedding(factors, numeric)
 
 
 def _rope_values(position_ids: Tensor, head_dim: int, dtype: torch.dtype, base: float) -> tuple[Tensor, Tensor]:
@@ -257,6 +235,44 @@ def _attention_layout(lengths: Tensor, tokens: int) -> tuple[Tensor, Tensor]:
     first_key = torch.zeros_like(mask)
     first_key[..., 0] = True
     return (mask & valid_query) | (first_key & ~valid_query), valid
+
+
+def _isolated_action_layout(
+    public_lengths: Tensor,
+    pair_counts: Tensor,
+    tokens: int,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """构造公共 causal、动作对内双向、动作对之间隔离的注意力布局。"""
+    device = public_lengths.device
+    batch = public_lengths.shape[0]
+    positions = torch.arange(tokens, device=device)[None, :]
+    total_lengths = public_lengths + 2 * pair_counts
+    valid = positions < total_lengths[:, None]
+    query_pos = positions[:, :, None]
+    key_pos = positions[:, None, :]
+    public_query = query_pos < public_lengths[:, None, None]
+    public_key = key_pos < public_lengths[:, None, None]
+    public_causal = public_query & public_key & (key_pos <= query_pos)
+    query_local = query_pos - public_lengths[:, None, None]
+    key_local = key_pos - public_lengths[:, None, None]
+    query_pair = torch.div(query_local.clamp_min(0), 2, rounding_mode="floor")
+    key_pair = torch.div(key_local.clamp_min(0), 2, rounding_mode="floor")
+    action_query = ~public_query
+    own_pair = action_query & ~public_key & query_pair.eq(key_pair)
+    action_to_public = action_query & public_key
+    mask = (public_causal | action_to_public | own_pair)[:, None]
+    valid_query = valid[:, None, :, None]
+    valid_key = valid[:, None, None, :]
+    mask = mask & valid_query & valid_key
+    first_key = torch.zeros_like(mask)
+    first_key[..., 0] = True
+    mask = mask | (first_key & ~valid_query)
+
+    position_ids = positions.expand(batch, -1).clone()
+    query_slots = (positions - public_lengths[:, None]).clamp_min(0) % 2
+    local_positions = public_lengths[:, None] + query_slots
+    position_ids = torch.where(positions >= public_lengths[:, None], local_positions, position_ids)
+    return mask, valid, position_ids
 
 
 class CausalGQA(nn.Module):
@@ -331,18 +347,14 @@ class KyokuTransformerActorCritic(nn.Module):
 
     def __init__(self, config: ModelConfig | None = None) -> None:
         super().__init__()
-        self.config = config or ModelConfig.preset("mid")
+        self.config = config or ModelConfig.preset("v18")
         self.token_embedding = FactorEmbedding(TOKEN_CARDINALITIES, self.config.d_model, NUMERIC_WIDTH)
         self.critic_embedding = FactorEmbedding(TOKEN_CARDINALITIES, self.config.d_model)
         self.value_query = nn.Parameter(torch.empty(self.config.d_model))
-        # The policy traverses ``layers`` public/actor blocks.  The centralized
-        # value branch then gets its own ``critic_layers`` blocks after private
-        # opponent-hand tokens are appended.
+        # 三层 shared 只处理公共前缀,Actor-only 层再读取隔离的动作对。
         self.public_backbone = Decoder(self.config, layers=self.config.shared_layers, final_norm=False)
         self.actor_backbone = Decoder(self.config, layers=self.config.layers - self.config.shared_layers)
         self.critic_backbone = Decoder(self.config, layers=self.config.critic_layers)
-        # V16:Offense/Defense 对称融合(concat 384→192→SiLU→Policy MLP),
-        # 普通初始化、无 zero-init 分支、无 241 维 Q head。
         self.snapshot_embeddings = SnapshotEmbedding(self.config.d_model)
         self.query_embedding = QueryEmbedding(self.config.d_model)
         self.action_fusion = nn.Sequential(
@@ -356,28 +368,44 @@ class KyokuTransformerActorCritic(nn.Module):
             nn.Linear(self.config.d_model, 1),
         )
         self.value_head = nn.Linear(self.config.d_model, 1)
-        # Top-3 Q scorer:输入 [z_critic; detach(h_a)] →384→192→SiLU→1。
-        self.q_scorer = nn.Sequential(
-            nn.Linear(2 * self.config.d_model, self.config.d_model),
-            nn.SiLU(),
-            nn.Linear(self.config.d_model, 1),
-        )
         nn.init.normal_(self.value_query, std=self.config.d_model ** -0.5)
 
-    def forward(self, *args, **kwargs):
-        """DDP 兼容的 V16 前向分发。"""
-        if args:
-            raise TypeError("V16 forward only accepts keyword arguments")
-        return self.forward_v16(**kwargs)
+    def forward_actor(
+        self,
+        *,
+        history_factors: Tensor,
+        history_numeric: Tensor,
+        history_lengths: Tensor,
+        snapshot_factors: Tensor,
+        snapshot_numeric: Tensor,
+        snapshot_lengths: Tensor,
+        query_rows: Tensor,
+        query_action_ids: Tensor,
+        query_pair_counts: Tensor,
+        legal_mask: Tensor,
+    ) -> dict[str, Tensor]:
+        """只接受 Actor 可见输入并返回合法动作 logits。"""
+        return self.forward(
+            history_factors=history_factors,
+            history_numeric=history_numeric,
+            history_lengths=history_lengths,
+            snapshot_factors=snapshot_factors,
+            snapshot_numeric=snapshot_numeric,
+            snapshot_lengths=snapshot_lengths,
+            query_rows=query_rows,
+            query_action_ids=query_action_ids,
+            query_pair_counts=query_pair_counts,
+            legal_mask=legal_mask,
+            policy_only=True,
+        )
 
-    def forward_v16(
+    def forward(
         self,
         history_factors: Tensor,
         history_numeric: Tensor,
         history_lengths: Tensor,
-        snapshot_kinds: Tensor,
-        snapshot_cat: Tensor,
-        snapshot_num: Tensor,
+        snapshot_factors: Tensor,
+        snapshot_numeric: Tensor,
         snapshot_lengths: Tensor,
         query_rows: Tensor,
         query_action_ids: Tensor,
@@ -390,23 +418,25 @@ class KyokuTransformerActorCritic(nn.Module):
         critic_public_grad_scale: float = 1.0,
         policy_only: bool = False,
     ) -> dict[str, Tensor]:
-        """V16 前向:Objective Facts + Compact Snapshot + 每动作一对 Query。
+        """V18 前向:Objective Facts + Atomic Snapshot + 隔离动作对。
 
         Query token 加入主序列末尾(每动作 Offense/Defense 相邻),策略头对每一
         对做对称融合;Critic 公共前缀只含 Objective Facts + Snapshot(不追加
         Action Query Token),其后拼接特权输入(三家手牌 + 后 5 牌山)与 Value
         Query。
         """
-        if self.config.policy_head_type != "symmetric_action_query":
-            raise ValueError("forward_v16 requires the v16 symmetric policy head")
+        if self.config.policy_head_type != "isolated_action_query":
+            raise ValueError("V18 forward requires isolated_action_query")
         if history_factors.ndim != 3 or history_factors.shape[-1] != TOKEN_WIDTH:
             raise ValueError(f"history_factors must be [batch, tokens, {TOKEN_WIDTH}]")
         if history_numeric.shape != (*history_factors.shape[:2], NUMERIC_WIDTH):
             raise ValueError(f"history_numeric must be [batch, tokens, {NUMERIC_WIDTH}]")
-        if snapshot_kinds.ndim != 2 or snapshot_cat.shape != (*snapshot_kinds.shape, SNAPSHOT_CAT_WIDTH):
-            raise ValueError("snapshot categorical shape is malformed")
-        if snapshot_num.shape != (*snapshot_kinds.shape, SNAPSHOT_NUM_WIDTH):
-            raise ValueError("snapshot numeric shape is malformed")
+        if snapshot_factors.shape[1:] != (SNAPSHOT_FIELD_COUNT, SNAPSHOT_FACTOR_WIDTH):
+            raise ValueError("snapshot_factors must be [batch,29,4]")
+        if snapshot_numeric.shape != (
+            snapshot_factors.shape[0], SNAPSHOT_FIELD_COUNT, SNAPSHOT_NUMERIC_WIDTH,
+        ):
+            raise ValueError("snapshot_numeric must be [batch,29,1]")
         if query_rows.ndim != 3 or query_rows.shape[-1] != QUERY_ROW_WIDTH:
             raise ValueError(f"query_rows must be [batch, queries, {QUERY_ROW_WIDTH}]")
         if query_action_ids.ndim != 2 or query_rows.shape[1] != 2 * query_action_ids.shape[1]:
@@ -424,8 +454,10 @@ class KyokuTransformerActorCritic(nn.Module):
 
         history_lengths = lengths(history_lengths, history_capacity, "history_lengths")
         snapshot_lengths = lengths(
-            snapshot_lengths, snapshot_kinds.shape[1], "snapshot_lengths",
+            snapshot_lengths, SNAPSHOT_FIELD_COUNT, "snapshot_lengths",
         )
+        if torch.any(snapshot_lengths != SNAPSHOT_FIELD_COUNT):
+            raise ValueError("snapshot_lengths must all equal 29")
         pair_counts = lengths(
             query_pair_counts, query_action_ids.shape[1], "query_pair_counts",
         )
@@ -433,58 +465,91 @@ class KyokuTransformerActorCritic(nn.Module):
             raise ValueError(f"legal_mask must be [batch, {NUM_ACTIONS}]")
         if torch.any(query_action_ids < 0) or torch.any(query_action_ids >= NUM_ACTIONS):
             raise ValueError("query_action_ids are outside the fixed action space")
+        action_capacity = query_action_ids.shape[1]
+        pair_positions = torch.arange(action_capacity, device=device)[None].expand(batch, -1)
+        pair_valid = pair_positions < pair_counts[:, None]
+        pair_rows = query_rows.view(batch, action_capacity, 2, QUERY_ROW_WIDTH)
+        if torch.any(pair_rows[:, :, 0, 0][pair_valid] != 1) or torch.any(
+            pair_rows[:, :, 1, 0][pair_valid] != 2
+        ):
+            raise ValueError("each action must contain one Offense row followed by one Defense row")
+        expected_ids = query_action_ids.to(device=device, dtype=pair_rows.dtype)
+        if torch.any(pair_rows[:, :, 0, 1][pair_valid] != expected_ids[pair_valid]) or torch.any(
+            pair_rows[:, :, 1, 1][pair_valid] != expected_ids[pair_valid]
+        ):
+            raise ValueError("query pair action ids disagree with query_action_ids")
+        if torch.any(
+            pair_rows[:, :, 0, 2:5][pair_valid]
+            != pair_rows[:, :, 1, 2:5][pair_valid]
+        ):
+            raise ValueError("Offense/Defense metadata must match within each action pair")
+        represented = torch.zeros_like(legal_mask, dtype=torch.bool, device=device)
+        represented_rows = torch.arange(batch, device=device)[:, None].expand_as(query_action_ids)
+        represented[
+            represented_rows[pair_valid],
+            query_action_ids.to(device=device, dtype=torch.long)[pair_valid],
+        ] = True
+        if torch.any(represented.sum(dim=1) != pair_counts):
+            raise ValueError("query action ids must be unique within each sample")
+        if torch.any(represented != legal_mask.to(device=device, dtype=torch.bool)):
+            raise ValueError("query action ids must be unique and equal the legal action set")
         if torch.any(history_lengths + snapshot_lengths + 2 * pair_counts > self.config.context_tokens):
-            raise ValueError("v16 context overflow: history + snapshot + queries exceed context_tokens")
+            raise ValueError("V18 context overflow: history + snapshot + queries exceed context_tokens")
 
         history = self.token_embedding(history_factors, history_numeric)
-        snapshot = self.snapshot_embeddings(snapshot_kinds, snapshot_cat, snapshot_num)
+        snapshot = self.snapshot_embeddings(snapshot_factors, snapshot_numeric)
         queries = self.query_embedding(query_rows)
-        total_lengths = history_lengths + snapshot_lengths + 2 * pair_counts
-        # 三个段必须按每行自身长度左对齐打包成一条序列。直接把整段 padding
-        # 的 tensor cat 起来,会让短行的 snapshot/query 落在 padding 空隙里、
-        # 真实内容反而超出 valid 区间,导致同一行的输出随 batchmates 变化
-        # (rollout 与 update 重算的 logprob 因此不一致)。
-        capacity = int(total_lengths.max().item())
-        tokens = history.new_zeros((batch, capacity, self.config.d_model))
         rows = torch.arange(batch, device=device)
 
-        def scatter(segment: Tensor, start: Tensor, count: Tensor) -> None:
+        def scatter(target: Tensor, segment: Tensor, start: Tensor, count: Tensor) -> None:
             local = torch.arange(segment.shape[1], device=device)[None, :]
             valid = local < count[:, None]
             destination = start[:, None] + local
             rows_expanded = rows[:, None].expand_as(destination)
-            tokens[rows_expanded[valid], destination[valid]] = segment[valid].to(
-                tokens.dtype
+            target[rows_expanded[valid], destination[valid]] = segment[valid].to(
+                target.dtype
             )
 
-        scatter(history, torch.zeros(batch, device=device, dtype=torch.long), history_lengths)
-        scatter(snapshot, history_lengths, snapshot_lengths)
-        scatter(queries, history_lengths + snapshot_lengths, 2 * pair_counts)
-        attention_mask, valid = _attention_layout(total_lengths, tokens.shape[1])
-        position_ids = torch.arange(tokens.shape[1], device=device)[None].expand(batch, -1)
+        public_lengths = history_lengths + snapshot_lengths
+        public_capacity = int(public_lengths.max().item())
+        public_tokens = history.new_zeros((batch, public_capacity, self.config.d_model))
+        scatter(
+            public_tokens, history,
+            torch.zeros(batch, device=device, dtype=torch.long), history_lengths,
+        )
+        scatter(public_tokens, snapshot, history_lengths, snapshot_lengths)
+        attention_mask, valid = _attention_layout(public_lengths, public_capacity)
+        position_ids = torch.arange(public_capacity, device=device)[None].expand(batch, -1)
         shared = self.public_backbone(
-            tokens, total_lengths, attention_mask=attention_mask, valid=valid,
+            public_tokens, public_lengths, attention_mask=attention_mask, valid=valid,
             position_ids=position_ids,
         )
+
+        total_lengths = public_lengths + 2 * pair_counts
+        actor_capacity = int(total_lengths.max().item())
+        actor_tokens = history.new_zeros((batch, actor_capacity, self.config.d_model))
+        scatter(actor_tokens, shared, torch.zeros_like(public_lengths), public_lengths)
+        scatter(actor_tokens, queries, public_lengths, 2 * pair_counts)
+        actor_mask, actor_valid, actor_positions = _isolated_action_layout(
+            public_lengths, pair_counts, actor_capacity,
+        )
         actor = self.actor_backbone(
-            shared, total_lengths, attention_mask=attention_mask, valid=valid,
-            position_ids=position_ids,
+            actor_tokens, total_lengths, attention_mask=actor_mask, valid=actor_valid,
+            position_ids=actor_positions,
         )
 
         # 对称融合策略头:同一动作的 offense/defense 表示 concat 后共享投影。
-        action_capacity = query_action_ids.shape[1]
         rows = torch.arange(batch, device=device)
-        pair_offsets = torch.arange(action_capacity, device=device)[None].expand(batch, -1)
+        pair_offsets = pair_positions
         public_prefix = (history_lengths + snapshot_lengths)[:, None]
         # 打包后序列容量 = 本 batch 最大 total_lengths;padding pair 的位置可能
         # 超出容量,先 clamp,其取值随后被 pair_valid 丢弃。
         offense_positions = torch.clamp(
-            public_prefix + 2 * pair_offsets, max=tokens.shape[1] - 1,
+            public_prefix + 2 * pair_offsets, max=actor_tokens.shape[1] - 1,
         )
         defense_positions = torch.clamp(
-            public_prefix + 2 * pair_offsets + 1, max=tokens.shape[1] - 1,
+            public_prefix + 2 * pair_offsets + 1, max=actor_tokens.shape[1] - 1,
         )
-        pair_valid = pair_offsets < pair_counts[:, None]
         offense_hidden = actor[rows[:, None], offense_positions]
         defense_hidden = actor[rows[:, None], defense_positions]
         action_hiddens = self.action_fusion(
@@ -505,7 +570,6 @@ class KyokuTransformerActorCritic(nn.Module):
             return output
 
         # Critic:公共前缀打包(不含 query token)+ 特权输入 + Value Query。
-        public_lengths = history_lengths + snapshot_lengths
         public_capacity = max(int(public_lengths.max().item()), 1)
         packed_public = shared.new_zeros((batch, public_capacity, self.config.d_model))
         public_positions = torch.arange(public_capacity, device=device)[None, :].expand(batch, -1)
@@ -521,6 +585,26 @@ class KyokuTransformerActorCritic(nn.Module):
         critic_lengths = lengths(critic_lengths, critic_factors.shape[1], "critic_lengths")
         if critic_factors.ndim != 3 or critic_factors.shape[0] != batch or critic_factors.shape[-1] != TOKEN_WIDTH:
             raise ValueError(f"critic_factors must be [batch, critic_tokens, {TOKEN_WIDTH}]")
+        # 每行必须先给出三家真实手牌分段,再给出严格有序的后五张牌山。
+        for row_index in range(batch):
+            private = critic_factors[row_index, :critic_lengths[row_index]]
+            segments = private[:, 0]
+            if torch.any((segments != 4) & (segments != 5)):
+                raise ValueError("critic input contains a public/query/unknown segment")
+            future = private[segments == 5]
+            if future.shape[0] != 5 or torch.any(
+                future[:, 3].to(dtype=torch.long)
+                != torch.arange(1, 6, device=device)
+            ):
+                raise ValueError("critic input must end with ordered future-wall positions 1..5")
+            private_hands = private[segments == 4]
+            for relative in (2, 3, 4):
+                if not torch.any(private_hands[:, 3] == relative):
+                    raise ValueError("critic input must contain all three opponent hands")
+            if private_hands.shape[0] and torch.any(
+                segments[:private_hands.shape[0]] != 4
+            ):
+                raise ValueError("critic opponent hands must precede future-wall tokens")
         critic_sequence_lengths = public_lengths + critic_lengths + 1
         if torch.any(critic_sequence_lengths > self.config.context_tokens):
             raise ValueError(
@@ -554,83 +638,3 @@ class KyokuTransformerActorCritic(nn.Module):
         output["critic_hidden"] = critic_hidden
         output["action_hiddens"] = action_hiddens
         return output
-
-    def q_scores_v16(
-        self,
-        critic_hidden: Tensor,
-        action_hiddens: Tensor,
-        action_ids: Tensor,
-        pair_counts: Tensor,
-        candidate_ids: Tensor,
-    ) -> Tensor:
-        """对候选动作输出原始优势评分 u:输入 [z_critic; detach(h_a)] →
-        384→192→SiLU→1。
-
-        ``action_hiddens`` 在进入 scorer 前强制 detach,保证 Q loss 不会经动作
-        表示直接更新 Actor;无效候选(越界/缺失)返回 -inf。这里只输出未做
-        Dueling 约束的原始评分,最终 Q 由 ``dueling_candidate_q`` 合成。
-        """
-        batch, action_capacity = action_ids.shape
-        if candidate_ids.ndim != 2 or candidate_ids.shape[0] != batch:
-            raise ValueError("candidate_ids must be [batch, candidates]")
-        device = action_ids.device
-        pair_positions = torch.arange(action_capacity, device=device)[None].expand(batch, -1)
-        valid_pairs = pair_positions < pair_counts[:, None]
-        # action→pair 索引必须用高级索引只写有效 pair。scatter_ 会把 padding 的
-        # action_id(编码阶段以 0 补齐)重复写进 action 0 所在列,污染候选索引。
-        pair_index = action_ids.new_full((batch, NUM_ACTIONS), -1)
-        rows = torch.arange(batch, device=device)[:, None].expand_as(action_ids)
-        pair_index[
-            rows[valid_pairs], action_ids.to(device=device, dtype=torch.long)[valid_pairs]
-        ] = pair_positions[valid_pairs].to(pair_index.dtype)
-        # -1 补齐的候选不能直接进 gather(负数索引越界);先 clamp 后按原始 id
-        # 判定有效性,无效候选统一返回 -inf。
-        safe_ids = candidate_ids.clamp(min=0)
-        candidate_positions = pair_index.gather(1, safe_ids.to(device=device, dtype=torch.long))
-        valid = (candidate_ids >= 0) & (candidate_positions >= 0)
-        safe = candidate_positions.clamp(min=0)
-        rows = torch.arange(batch, device=device)[:, None].expand_as(candidate_ids)
-        hidden = action_hiddens[rows, safe].detach()
-        critic = critic_hidden[:, None, :].expand(batch, candidate_ids.shape[1], -1)
-        scores = self.q_scorer(torch.cat((critic, hidden), dim=-1)).squeeze(-1).float()
-        return torch.where(valid, scores, scores.new_full((), float("-inf")))
-
-
-def dueling_candidate_q(
-    raw_scores: Tensor,
-    candidate_probs: Tensor,
-    value: Tensor,
-    *,
-    detach_value: bool = False,
-) -> tuple[Tensor, Tensor]:
-    """Dueling-style 候选 Q 合成:u_i → A_i、Q_i = V(s) + A_i。
-
-    对候选集合内的概率重新归一化得到 p_i,再计算均值基线
-    ``A_i = u_i - sum(p_j * u_j)``,最终 ``Q_i = V(s) + A_i``。由构造恒有
-    ``sum(p_i * Q_i) = V(s)``:Value 只负责绝对局面价值,Top-3 Q 只编码候选
-    之间的相对差异。无效候选(评分为 -inf 或 padding 位置)不参与归一化,
-    对应 Q 保持 -inf。
-
-    ``detach_value=True`` 时 Q loss 不向 ``value_head`` 回传梯度,Value 仍由
-    独立的 return-target loss 训练。
-    """
-    if raw_scores.shape != candidate_probs.shape:
-        raise ValueError("raw_scores and candidate_probs must share the same shape")
-    if value.ndim != 1 or value.shape[0] != raw_scores.shape[0]:
-        raise ValueError("value must be [batch]")
-    valid = torch.isfinite(raw_scores) & (candidate_probs >= 0)
-    safe_scores = torch.where(valid, raw_scores, torch.zeros_like(raw_scores))
-    safe_probs = torch.where(
-        valid, candidate_probs, torch.zeros_like(candidate_probs)
-    )
-    total = safe_probs.sum(dim=-1, keepdim=True)
-    normalized = safe_probs / total.clamp_min(1e-12)
-    baseline = (normalized * safe_scores).sum(dim=-1, keepdim=True)
-    advantages = torch.where(
-        valid, safe_scores - baseline, torch.zeros_like(safe_scores)
-    )
-    value_term = value.detach() if detach_value else value
-    q_values = value_term.unsqueeze(-1) + advantages
-    return advantages, torch.where(
-        valid, q_values, q_values.new_full((), float("-inf"))
-    )

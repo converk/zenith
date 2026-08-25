@@ -16,7 +16,15 @@ from riichi_ppo_v1.training.learner_ddp import (
 )
 from riichi_ppo_v1.training.rollout_buffer import RolloutBuffer
 
-from .test_v16_learner import transition
+from .test_rollout_buffer import _random_transition
+
+
+def transition(reward: float, action: int = 0):
+    item = _random_transition(np.random.default_rng(action + 17))
+    item.reward = float(reward)
+    item.advantage = float(reward)
+    item.action = int(item.query_action_ids[0])
+    return item
 
 
 def _pdeathsig_probe(queue) -> None:
@@ -104,15 +112,17 @@ def test_aggregate_metrics_weights_samples_and_steps() -> None:
     assert aggregated["gpu/torch_memory_peak_allocated_mb"] == 100.0
     # buffer/advantage 统计按完整 rollout 精确重算。
     assert aggregated["advantage_mean"] == pytest.approx(0.05)
-    assert aggregated["update/buffer_transition_tokens_mean"] == 8.0
+    assert aggregated["update/buffer_transition_tokens_mean"] == pytest.approx(
+        np.mean([row.history_length + row.snapshot_length + 2 * row.query_pair_counts for row in rows])
+    )
 
 
 def test_learner_ddp_rejects_non_cuda_or_small_world_size() -> None:
     config = {"minibatch_size": 512, "seed": 1}
     with pytest.raises(ValueError, match="world_size"):
-        LearnerDDP("v16", "cuda", 1, config=config)
+        LearnerDDP("v18", "cuda", 1, config=config)
     with pytest.raises(ValueError, match="CUDA"):
-        LearnerDDP("v16", "cpu", 2, config=config)
+        LearnerDDP("v18", "cpu", 2, config=config)
 
 
 def test_enable_parent_death_signal_sets_pdeathsig() -> None:

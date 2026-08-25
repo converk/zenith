@@ -1,4 +1,4 @@
-"""GPU PPO 推理 actor:V16 输入的跨 worker 批处理与 Top-3 Q 输出。"""
+"""GPU PPO 推理 actor:V18 输入的跨 worker 批处理。"""
 
 from __future__ import annotations
 
@@ -49,9 +49,8 @@ def collate_request_rows(
 ) -> tuple[
     np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
     np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
-    np.ndarray,
 ]:
-    """把选中请求行按 V16 分段 host-padding,保留请求/行映射。"""
+    """把选中请求行按 V18 分段 host-padding,保留请求/行映射。"""
     if not group:
         raise ValueError("cannot collate an empty inference group")
 
@@ -72,9 +71,8 @@ def collate_request_rows(
     batch = len(group)
     history_factors = np.zeros((batch, max_history, 10), dtype=np.uint8)
     history_numeric = np.zeros((batch, max_history, 8), dtype=np.float32)
-    snapshot_kinds = np.zeros((batch, max_snapshot), dtype=np.uint8)
-    snapshot_cat = np.zeros((batch, max_snapshot, 4), dtype=np.uint8)
-    snapshot_num = np.zeros((batch, max_snapshot, 7), dtype=np.float32)
+    snapshot_factors = np.zeros((batch, max_snapshot, 4), dtype=np.uint8)
+    snapshot_numeric = np.zeros((batch, max_snapshot, 1), dtype=np.float32)
     query_rows = np.zeros((batch, 2 * max_pairs, 15), dtype=np.int32)
     query_action_ids = np.zeros((batch, max_pairs), dtype=np.int32)
     critic_factors = np.zeros((batch, max_critic, 10), dtype=np.uint8)
@@ -85,9 +83,8 @@ def collate_request_rows(
         history_factors[index, :history_length] = request["history_factors"][row, :history_length]
         history_numeric[index, :history_length] = request["history_numeric"][row, :history_length]
         snapshot_length = int(snapshot_lengths[index])
-        snapshot_kinds[index, :snapshot_length] = request["snapshot_kinds"][row, :snapshot_length]
-        snapshot_cat[index, :snapshot_length] = request["snapshot_cat"][row, :snapshot_length]
-        snapshot_num[index, :snapshot_length] = request["snapshot_num"][row, :snapshot_length]
+        snapshot_factors[index, :snapshot_length] = request["snapshot_factors"][row, :snapshot_length]
+        snapshot_numeric[index, :snapshot_length] = request["snapshot_numeric"][row, :snapshot_length]
         pair_count = int(pair_counts[index])
         query_rows[index, : 2 * pair_count] = request["query_rows"][row, : 2 * pair_count]
         query_action_ids[index, :pair_count] = request["query_action_ids"][row, :pair_count]
@@ -99,9 +96,8 @@ def collate_request_rows(
         history_factors,
         history_numeric,
         history_lengths,
-        snapshot_kinds,
-        snapshot_cat,
-        snapshot_num,
+        snapshot_factors,
+        snapshot_numeric,
         snapshot_lengths,
         query_rows,
         query_action_ids,
@@ -168,7 +164,7 @@ if ray is not None:
             )
 
         def _model_config(self) -> ModelConfig:
-            values = vars(ModelConfig.preset("v16"))
+            values = vars(ModelConfig.preset("v18"))
             values["context_tokens"] = int(self.config.get("context_tokens", 4096))
             return ModelConfig(**values)
 
@@ -311,9 +307,8 @@ if ray is not None:
             history_factors: np.ndarray,
             history_numeric: np.ndarray,
             history_lengths: np.ndarray,
-            snapshot_kinds: np.ndarray,
-            snapshot_cat: np.ndarray,
-            snapshot_num: np.ndarray,
+            snapshot_factors: np.ndarray,
+            snapshot_numeric: np.ndarray,
             snapshot_lengths: np.ndarray,
             query_rows: np.ndarray,
             query_action_ids: np.ndarray,
@@ -326,9 +321,8 @@ if ray is not None:
             if len(batch_indices) != len(history_lengths) or history_factors.shape[0] != len(batch_indices):
                 raise ValueError("decision metadata batch dimensions differ")
             if (
-                snapshot_kinds.shape[0] != len(batch_indices)
-                or snapshot_cat.shape[0] != len(batch_indices)
-                or snapshot_num.shape[0] != len(batch_indices)
+                snapshot_factors.shape[0] != len(batch_indices)
+                or snapshot_numeric.shape[0] != len(batch_indices)
             ):
                 raise ValueError("snapshot metadata batch dimensions differ")
             if (
@@ -353,9 +347,8 @@ if ray is not None:
                 "history_factors": history_factors,
                 "history_numeric": history_numeric,
                 "history_lengths": history_lengths,
-                "snapshot_kinds": snapshot_kinds,
-                "snapshot_cat": snapshot_cat,
-                "snapshot_num": snapshot_num,
+                "snapshot_factors": snapshot_factors,
+                "snapshot_numeric": snapshot_numeric,
                 "snapshot_lengths": snapshot_lengths,
                 "query_rows": query_rows,
                 "query_action_ids": query_action_ids,
@@ -465,9 +458,8 @@ if ray is not None:
                     history_factors,
                     history_numeric,
                     history_lengths,
-                    snapshot_kinds,
-                    snapshot_cat,
-                    snapshot_num,
+                    snapshot_factors,
+                    snapshot_numeric,
                     snapshot_lengths,
                     query_rows,
                     query_action_ids,
@@ -495,9 +487,8 @@ if ray is not None:
                         ("history_factors", history_factors.astype(np.int64)),
                         ("history_numeric", history_numeric),
                         ("history_lengths", history_lengths),
-                        ("snapshot_kinds", snapshot_kinds.astype(np.int64)),
-                        ("snapshot_cat", snapshot_cat.astype(np.int64)),
-                        ("snapshot_num", snapshot_num),
+                        ("snapshot_factors", snapshot_factors.astype(np.int64)),
+                        ("snapshot_numeric", snapshot_numeric),
                         ("snapshot_lengths", snapshot_lengths),
                         ("query_rows", query_rows.astype(np.int64)),
                         ("query_action_ids", query_action_ids.astype(np.int64)),
@@ -523,13 +514,12 @@ if ray is not None:
                     device_type="cuda", dtype=torch.bfloat16,
                     enabled=torch.cuda.is_bf16_supported(),
                 ):
-                    output = model.forward_v16(
+                    output = model(
                         device_tensors["history_factors"],
                         device_tensors["history_numeric"],
                         device_tensors["history_lengths"],
-                        device_tensors["snapshot_kinds"],
-                        device_tensors["snapshot_cat"],
-                        device_tensors["snapshot_num"],
+                        device_tensors["snapshot_factors"],
+                        device_tensors["snapshot_numeric"],
                         device_tensors["snapshot_lengths"],
                         device_tensors["query_rows"],
                         device_tensors["query_action_ids"],

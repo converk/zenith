@@ -1,4 +1,4 @@
-"""Ray rollout actors:V16 编码装配、V17 纯 GRP 边界奖励与 Top-3 Q 推理。"""
+"""Ray rollout actors:V18 编码装配与纯 GRP 边界奖励推理。"""
 
 from __future__ import annotations
 
@@ -359,7 +359,7 @@ if ray is not None:
             )
             self.state_machine = riichi.MjaiKyokuStateMachineManager(self.num_envs)
             self.profiler = StageProfiler(enabled=bool(config.get("profile_enabled", True)))
-            # V16 action query 只保留 Rust 紧凑事实与融合编码路径。
+            # V18 action query 只保留 Rust 紧凑事实与融合编码路径。
             self.bridge = BatchedStateBridge(
                 self.state_machine,
                 self.num_envs,
@@ -484,7 +484,7 @@ if ray is not None:
             greedy: bool,
         ) -> tuple[Any, dict[str, np.ndarray]]:
             with self.profiler.stage("rollout/model_state_prepare"):
-                batch = self.bridge.prepare_v16(decisions, walls=self.walls)
+                batch = self.bridge.prepare(decisions, walls=self.walls)
             request = self.inference.infer.remote(
                 worker_id=self.worker_id,
                 namespace=namespace,
@@ -494,9 +494,8 @@ if ray is not None:
                 history_factors=batch.history_factors,
                 history_numeric=batch.history_numeric,
                 history_lengths=batch.history_lengths,
-                snapshot_kinds=batch.snapshot_kinds,
-                snapshot_cat=batch.snapshot_cat,
-                snapshot_num=batch.snapshot_num,
+                snapshot_factors=batch.snapshot_factors,
+                snapshot_numeric=batch.snapshot_numeric,
                 snapshot_lengths=batch.snapshot_lengths,
                 query_rows=batch.query_rows,
                 query_action_ids=batch.query_action_ids,
@@ -510,9 +509,8 @@ if ray is not None:
                 "history_factors": batch.history_factors,
                 "history_numeric": batch.history_numeric,
                 "history_lengths": batch.history_lengths,
-                "snapshot_kinds": batch.snapshot_kinds,
-                "snapshot_cat": batch.snapshot_cat,
-                "snapshot_num": batch.snapshot_num,
+                "snapshot_factors": batch.snapshot_factors,
+                "snapshot_numeric": batch.snapshot_numeric,
                 "snapshot_lengths": batch.snapshot_lengths,
                 "query_rows": batch.query_rows,
                 "query_action_ids": batch.query_action_ids,
@@ -547,9 +545,8 @@ if ray is not None:
                             prepared["history_factors"][row, :history_length].copy(),
                             prepared["history_numeric"][row, :history_length].copy(),
                             history_length,
-                            prepared["snapshot_kinds"][row, :snapshot_length].copy(),
-                            prepared["snapshot_cat"][row, :snapshot_length].copy(),
-                            prepared["snapshot_num"][row, :snapshot_length].copy(),
+                            prepared["snapshot_factors"][row, :snapshot_length].copy(),
+                            prepared["snapshot_numeric"][row, :snapshot_length].copy(),
                             snapshot_length,
                             prepared["query_rows"][row, : 2 * pair_count].copy(),
                             prepared["query_action_ids"][row, :pair_count].copy(),
@@ -748,7 +745,7 @@ if ray is not None:
         ) -> tuple[RolloutBuffer, dict[str, float]]:
             if update is not None:
                 self.set_rollout_context(int(update))
-            # V17:rollout 停止条件为「完整半庄数」,不再使用 kyokus_per_worker。
+            # 现行 rollout 停止条件为「完整半庄数」,不再使用按局计数。
             # ``games_per_update`` 是全局每 update 完整半庄目标,按 worker 数
             # 分摊;原生环境并行推进各桌,可因一波在途结算而小幅超额,这一有界
             # 超额优于丢弃半局。若配置只提供旧的 kyokus_per_worker(历史版本

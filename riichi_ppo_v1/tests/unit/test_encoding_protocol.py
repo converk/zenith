@@ -1,4 +1,4 @@
-"""信息编码协议 v16 单一来源的契约测试。"""
+"""信息编码协议 V18 单一来源的契约测试。"""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from riichi_ppo_v1.model.schema import TOKEN_SCHEMA_VERSION
 
 def test_single_protocol_version() -> None:
     """协议版本唯一且数据集格式标识由同一常量派生。"""
-    assert protocol.ENCODING_PROTOCOL_VERSION == 16
-    assert protocol.ENCODED_FORMAT == "riichi-sft-encoded-v16"
+    assert protocol.ENCODING_PROTOCOL_VERSION == 18
+    assert protocol.ENCODED_FORMAT == "riichi-sft-encoded-v18"
     assert TOKEN_SCHEMA_VERSION == protocol.ENCODING_PROTOCOL_VERSION
 
 
 def test_slot_cardinalities_match_contract() -> None:
-    """20 个 slot 的基数与 contracts/actor-input-v16.md 逐项一致。"""
+    """20 个 slot 的基数与 V18 输入契约逐项一致。"""
     expected = {
         "O0": 7, "O1": 11, "O2": 7, "O3": 14, "O4": 4, "O5": 6,
         "O6": 4, "O7": 2, "O8": 3, "O9": 6,

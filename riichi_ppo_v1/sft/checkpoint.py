@@ -1,4 +1,4 @@
-"""V16 SFT 精确恢复 checkpoint 边界。"""
+"""V18 SFT 精确恢复 checkpoint 边界。"""
 
 from __future__ import annotations
 
@@ -14,16 +14,9 @@ from ..model.encoding_protocol import ENCODING_PROTOCOL_VERSION
 from .contract import (
     DATA_CURSOR_VERSION,
     DATA_PLAN_VERSION,
-    LEGACY_V16_SFT_CONTRACT_VERSION,
     SFT_CONTRACT_VERSION,
     TRAINING_MODES,
 )
-
-_ACCEPTED_SFT_CONTRACTS = {
-    SFT_CONTRACT_VERSION,
-    LEGACY_V16_SFT_CONTRACT_VERSION,
-}
-
 
 def _require_mapping(payload: Mapping[str, Any], field: str) -> Mapping[str, Any]:
     value = payload.get(field)
@@ -49,7 +42,7 @@ def load_exact_resume(
     world_size: int,
     trainable_scope: str | None = None,
 ) -> dict[str, Any]:
-    """加载完整训练状态;除惰性旧配置字段外不做任何迁移。"""
+    """加载完整 V18 训练状态,不接受迁移或旧契约。"""
     payload = torch.load(Path(path), map_location="cpu", weights_only=False)
     if not isinstance(payload, dict):
         raise RuntimeError("invalid SFT checkpoint payload")
@@ -61,7 +54,7 @@ def load_exact_resume(
     missing = sorted(required - payload.keys())
     if missing:
         raise RuntimeError("exact resume checkpoint is missing: " + ", ".join(missing))
-    if payload["sft_contract_version"] not in _ACCEPTED_SFT_CONTRACTS:
+    if payload["sft_contract_version"] != SFT_CONTRACT_VERSION:
         raise RuntimeError("exact resume checkpoint has an incompatible SFT contract")
     if payload["data_plan_version"] != DATA_PLAN_VERSION:
         raise RuntimeError("exact resume checkpoint has an incompatible data plan")

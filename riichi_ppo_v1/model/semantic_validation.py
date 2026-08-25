@@ -35,13 +35,12 @@ from .encoding_protocol import (
     QUERY_ROW_SOURCE_SEAT,
     QUERY_ROW_WIDTH,
     SLOT_CARDINALITIES,
-    SNAPSHOT_CAT_WIDTH,
-    SNAPSHOT_KIND_BASE,
-    SNAPSHOT_KIND_COUNT,
-    SNAPSHOT_KIND_DORA,
-    SNAPSHOT_KIND_SCORE,
-    SNAPSHOT_KIND_SUMMARY,
-    SNAPSHOT_NUM_WIDTH,
+    SNAPSHOT_FACTOR_CARDINALITIES,
+    SNAPSHOT_FACTOR_WIDTH,
+    SNAPSHOT_FIELD_COUNT,
+    SNAPSHOT_FIELDS,
+    SNAPSHOT_NUMERIC_WIDTH,
+    SUPPLIER_REQUIRED_ACTION_TYPES,
 )
 from .schema import NUM_ACTIONS
 
@@ -71,7 +70,7 @@ def _assert_factor_ranges(rows: np.ndarray, *, label: str) -> None:
 
 
 def _assert_history_token_semantics(factors: np.ndarray, numeric: np.ndarray, lengths: np.ndarray) -> None:
-    """校验 V16 history 行的可见性与基础形状。"""
+    """校验 Objective Facts 行的可见性与基础形状。"""
     factors = np.asarray(factors)
     numeric = np.asarray(numeric)
     lengths = np.asarray(lengths)
@@ -97,20 +96,19 @@ def _assert_lengths(
     capacity: int,
     label: str,
 ) -> None:
-    """校验 V16 分段长度是一行一个、左对齐且不越界。"""
+    """校验分段长度是一行一个、左对齐且不越界。"""
     if lengths.shape != (batch,):
         raise AssertionError(f"{label} must have one entry per batch row")
     if np.any(lengths < 0) or np.any(lengths > capacity):
         raise AssertionError(f"{label} exceed supplied rows")
 
 
-def assert_v16_actor_input_semantics(
+def assert_actor_input_semantics(
     history_factors: np.ndarray,
     history_numeric: np.ndarray,
     history_lengths: np.ndarray,
-    snapshot_kinds: np.ndarray,
-    snapshot_cat: np.ndarray,
-    snapshot_num: np.ndarray,
+    snapshot_factors: np.ndarray,
+    snapshot_numeric: np.ndarray,
     snapshot_lengths: np.ndarray,
     query_rows: np.ndarray,
     query_action_ids: np.ndarray,
@@ -119,7 +117,7 @@ def assert_v16_actor_input_semantics(
     *,
     context_tokens: int = 4096,
 ) -> None:
-    """校验 V16 Actor 输入三段结构与业务可见性。
+    """校验 V18 Actor 输入三段结构、固定 Snapshot 与动作集合。
 
     本函数只验证输入协议不变量,不重新计算麻将业务事实;事实正确性由
     bridge 等价测试与 query/snapshot oracle 测试覆盖。
@@ -127,9 +125,8 @@ def assert_v16_actor_input_semantics(
     history_factors = np.asarray(history_factors)
     history_numeric = np.asarray(history_numeric)
     history_lengths = np.asarray(history_lengths)
-    snapshot_kinds = np.asarray(snapshot_kinds)
-    snapshot_cat = np.asarray(snapshot_cat)
-    snapshot_num = np.asarray(snapshot_num)
+    snapshot_factors = np.asarray(snapshot_factors)
+    snapshot_numeric = np.asarray(snapshot_numeric)
     snapshot_lengths = np.asarray(snapshot_lengths)
     query_rows = np.asarray(query_rows)
     query_action_ids = np.asarray(query_action_ids)
@@ -143,14 +140,11 @@ def assert_v16_actor_input_semantics(
     batch, history_capacity, _width = history_factors.shape
     if history_numeric.shape != (*history_factors.shape[:2], 8):
         raise AssertionError("history_numeric shape is malformed")
-    if snapshot_kinds.ndim != 2:
-        raise AssertionError("snapshot_kinds must be [batch, rows]")
-    if snapshot_kinds.shape[0] != batch:
-        raise AssertionError("snapshot batch size differs from history")
-    if snapshot_cat.shape != (*snapshot_kinds.shape, SNAPSHOT_CAT_WIDTH):
-        raise AssertionError("snapshot_cat shape is malformed")
-    if snapshot_num.shape != (*snapshot_kinds.shape, SNAPSHOT_NUM_WIDTH):
-        raise AssertionError("snapshot_num shape is malformed")
+    expected_snapshot = (batch, SNAPSHOT_FIELD_COUNT, SNAPSHOT_FACTOR_WIDTH)
+    if snapshot_factors.shape != expected_snapshot:
+        raise AssertionError(f"snapshot_factors must be {expected_snapshot}")
+    if snapshot_numeric.shape != (batch, SNAPSHOT_FIELD_COUNT, SNAPSHOT_NUMERIC_WIDTH):
+        raise AssertionError("snapshot_numeric shape is malformed")
     if query_rows.ndim != 3 or query_rows.shape[-1] != QUERY_ROW_WIDTH:
         raise AssertionError(
             f"query_rows must be [batch, rows, {QUERY_ROW_WIDTH}]"
@@ -173,7 +167,7 @@ def assert_v16_actor_input_semantics(
     _assert_lengths(
         snapshot_lengths,
         batch=batch,
-        capacity=snapshot_kinds.shape[1],
+        capacity=SNAPSHOT_FIELD_COUNT,
         label="snapshot_lengths",
     )
     _assert_lengths(
@@ -187,44 +181,37 @@ def assert_v16_actor_input_semantics(
     total_lengths = history_lengths + snapshot_lengths + 2 * query_pair_counts
     if np.any(total_lengths > int(context_tokens)):
         raise AssertionError(
-            f"v16 actor context overflow: max={int(total_lengths.max())} "
+            f"V18 actor context overflow: max={int(total_lengths.max())} "
             f"limit={int(context_tokens)}"
         )
 
     _assert_history_token_semantics(
         history_factors, history_numeric, history_lengths,
     )
-    if np.any(~np.isfinite(snapshot_num)):
+    if np.any(snapshot_lengths != SNAPSHOT_FIELD_COUNT):
+        raise AssertionError("snapshot_lengths must all equal 29")
+    if np.any(~np.isfinite(snapshot_numeric)):
         raise AssertionError("snapshot numeric contains non-finite values")
 
     for row in range(batch):
-        snapshot_length = int(snapshot_lengths[row])
-        kinds = snapshot_kinds[row, :snapshot_length]
-        cat = snapshot_cat[row, :snapshot_length]
-        if np.any(kinds < 0) or np.any(kinds >= SNAPSHOT_KIND_COUNT):
-            raise AssertionError(f"snapshot[{row}] kind is outside 0..3")
-        base = kinds == SNAPSHOT_KIND_BASE
-        if np.any(base):
-            values = cat[base]
-            if (
-                np.any(values[:, 0] >= 2)
-                or np.any(values[:, 1] >= 8)
-                or np.any(values[:, 2] >= 4)
-                or np.any(values[:, 3] >= 4)
-            ):
-                raise AssertionError(f"snapshot[{row}] base categorical out of range")
-        dora = kinds == SNAPSHOT_KIND_DORA
-        if np.any(dora) and np.any(cat[dora, 0] >= 34):
-            raise AssertionError(f"snapshot[{row}] dora tile out of range")
-        summary = kinds == SNAPSHOT_KIND_SUMMARY
-        if np.any(summary) and (
-            np.any(cat[summary, 0] >= 2)
-            or np.any(cat[summary, 1] >= 2)
-        ):
-            raise AssertionError(f"snapshot[{row}] summary categorical out of range")
-        score = kinds == SNAPSHOT_KIND_SCORE
-        # score 行没有 categorical 语义,但必须仍是有限数值;上方已统一检查。
-        del score
+        factors = snapshot_factors[row].astype(np.int64, copy=False)
+        if np.any(factors < 0):
+            raise AssertionError(f"snapshot[{row}] contains negative factors")
+        for column, cardinality in enumerate(SNAPSHOT_FACTOR_CARDINALITIES):
+            if np.any(factors[:, column] >= cardinality):
+                raise AssertionError(f"snapshot[{row}] factor {column} out of range")
+        expected_ids = np.arange(1, SNAPSHOT_FIELD_COUNT + 1)
+        if not np.array_equal(factors[:, 0], expected_ids):
+            raise AssertionError(f"snapshot[{row}] field order differs from Rust schema")
+        for index, field in enumerate(SNAPSHOT_FIELDS):
+            values = factors[index]
+            if values[1] != field.relative_seat:
+                raise AssertionError(f"snapshot[{row}] relative seat differs for {field.name}")
+            if values[2] > field.categorical_max or values[3] > field.tile_max:
+                raise AssertionError(f"snapshot[{row}] domain violation for {field.name}")
+            numeric_value = float(snapshot_numeric[row, index, 0])
+            if (not field.numeric and numeric_value != 0.0) or abs(numeric_value) > 1.0:
+                raise AssertionError(f"snapshot[{row}] numeric violation for {field.name}")
 
         pair_count = int(query_pair_counts[row])
         legal_ids = np.flatnonzero(legal_mask[row]).astype(np.int32)
@@ -236,8 +223,8 @@ def assert_v16_actor_input_semantics(
         action_ids = query_action_ids[row, :pair_count].astype(np.int32)
         if np.any(action_ids < 0) or np.any(action_ids >= NUM_ACTIONS):
             raise AssertionError(f"query[{row}] action id outside action space")
-        if not np.array_equal(action_ids, legal_ids):
-            raise AssertionError(f"query[{row}] action ids do not match legal mask")
+        if len(np.unique(action_ids)) != pair_count or set(action_ids) != set(legal_ids):
+            raise AssertionError(f"query[{row}] action ids do not equal legal-mask set")
         rows = query_rows[row, : 2 * pair_count].astype(np.int64, copy=False)
         if pair_count == 0:
             raise AssertionError(f"query[{row}] has no legal action pairs")
@@ -252,12 +239,24 @@ def assert_v16_actor_input_semantics(
             or not np.array_equal(rows[1::2, QUERY_ROW_ACTION_ID], action_ids)
         ):
             raise AssertionError(f"query[{row}] paired action ids differ")
+        if not np.array_equal(rows[0::2, 2:5], rows[1::2, 2:5]):
+            raise AssertionError(f"query[{row}] paired metadata differs")
         if np.any(rows[:, QUERY_ROW_ACTION_TYPE] >= ACTION_TYPE_CARDINALITY):
             raise AssertionError(f"query[{row}] action type out of range")
         if np.any(rows[:, QUERY_ROW_PRIMARY_TILE] > 34):
             raise AssertionError(f"query[{row}] primary tile out of range")
         if np.any(rows[:, QUERY_ROW_SOURCE_SEAT] > 4):
             raise AssertionError(f"query[{row}] source seat out of range")
+        pair_action_types = rows[0::2, QUERY_ROW_ACTION_TYPE]
+        pair_source_seats = rows[0::2, QUERY_ROW_SOURCE_SEAT]
+        supplier_required = np.isin(
+            pair_action_types,
+            tuple(SUPPLIER_REQUIRED_ACTION_TYPES),
+        )
+        if np.any(pair_source_seats[supplier_required] == 0):
+            raise AssertionError(f"query[{row}] supplier action lacks source seat")
+        if np.any(pair_source_seats[~supplier_required] != 0):
+            raise AssertionError(f"query[{row}] non-supplier action has source seat")
 
         offense_answers = rows[0::2, QUERY_ROW_ANSWER_START:]
         defense_answers = rows[1::2, QUERY_ROW_ANSWER_START:]
@@ -291,6 +290,8 @@ def assert_critic_token_semantics(factors: np.ndarray, lengths: np.ndarray, *, i
                 raise AssertionError(f"critic[{index}] contains an unknown tile-count field")
             if np.any(~np.isin(private[:, 3], (2, 3, 4))):
                 raise AssertionError(f"critic[{index}] has malformed opponent hands")
+            if set(private[:, 3].tolist()) != {2, 3, 4}:
+                raise AssertionError(f"critic[{index}] must contain all three opponent hands")
         future = rows[rows[:, 0] == SEGMENT_CRITIC_FUTURE_WALL]
         if future.size:
             if np.any(future[:, 1] != TOKEN_KIND_FUTURE_WALL):
@@ -309,6 +310,10 @@ def assert_critic_token_semantics(factors: np.ndarray, lengths: np.ndarray, *, i
             if len(set(positions.tolist())) != len(positions):
                 raise AssertionError(
                     f"critic[{index}] repeats a future-wall position"
+                )
+            if not np.array_equal(positions, np.arange(1, 6)):
+                raise AssertionError(
+                    f"critic[{index}] must contain exactly ordered future-wall positions 1..5"
                 )
             if np.any(future[:, 7] != 1) or np.any(future[:, 8] != 0):
                 raise AssertionError(
@@ -330,6 +335,12 @@ def assert_critic_token_semantics(factors: np.ndarray, lengths: np.ndarray, *, i
                 raise AssertionError(
                     f"critic[{index}] marks a non-red-five future-wall tile"
                 )
+        if len(future) != 5 or not len(private):
+            raise AssertionError(
+                f"critic[{index}] requires three hands and exactly five future tiles"
+            )
+        if np.any(rows[:len(private), 0] != SEGMENT_CRITIC_PRIVATE):
+            raise AssertionError(f"critic[{index}] private hands must precede future wall")
 
 
 def summarize_tokens(factors: np.ndarray, length: int) -> dict[str, Any]:

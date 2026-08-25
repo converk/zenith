@@ -11,10 +11,18 @@ except ImportError:  # pragma: no cover
     riichi = None
 
 from riichi_ppo_v1.model.validation import all_action_templates, assert_full_action_space, canonical, fixture_snapshot
+from riichi_ppo_v1.model.encoding_protocol import ACTION_TYPE_CODES, SUPPLIER_REQUIRED_ACTION_TYPES
 
 
 @unittest.skipUnless(riichi is not None, "local riichi extension is not installed")
 class ActionSpaceExhaustiveTest(unittest.TestCase):
+    def test_query_action_types_lock_supplier_domains(self) -> None:
+        self.assertNotEqual(ACTION_TYPE_CODES["tsumo"], ACTION_TYPE_CODES["ron"])
+        self.assertEqual(
+            SUPPLIER_REQUIRED_ACTION_TYPES,
+            {ACTION_TYPE_CODES[name] for name in ("chi", "pon", "daiminkan", "ron")},
+        )
+
     def test_every_fixed_action_id_roundtrips(self) -> None:
         assert_full_action_space(riichi.MjaiKyokuStateMachineManager(1))
 

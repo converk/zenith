@@ -1,7 +1,7 @@
-"""V16 Action Query 的 Rust 语义兼容接口。
+"""V18 Action Query 的 Rust 语义接口。
 
-牌形、动作分派、向听、有效牌、防守与役种均由 Rust 单一实现计算。本模块只保留
-历史 Python 调用方需要的 ``ActionQuery`` 返回类型与固定宽度行转换。
+牌形、动作分派、向听、有效牌、防守与役种均由 Rust 单一实现计算。本模块定义
+SFT 样本构造使用的 ``ActionQuery`` 返回类型与固定宽度行转换。
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from .encoding_protocol import (
     QUERY_ROW_SOURCE_SEAT,
     QUERY_ROW_WIDTH,
 )
-from .v16_rust_encoding import encode_action_queries_batch_native
+from .native_encoding import encode_action_queries_batch_native
 
 
 @dataclass(frozen=True)
@@ -34,7 +34,7 @@ class ActionQuery:
 
 
 def _action_kind_label(action: object) -> str:
-    """把原生 ActionType 名称规范为 V16 兼容标签,不参与语义计算。"""
+    """把原生 ActionType 名称规范为协议标签,不参与语义计算。"""
     name = str(getattr(action, "action_type", "")).lower().rsplit(".", 1)[-1]
     return {
         "discard": "dahai",
@@ -46,7 +46,7 @@ def _action_kind_label(action: object) -> str:
 
 
 def _decode_query_row(row: np.ndarray, action_type: str) -> ActionQuery:
-    """把 Rust 连续行恢复为旧调用方使用的不可变对象。"""
+    """把 Rust 连续行恢复为 SFT 使用的不可变对象。"""
     primary_code = int(row[QUERY_ROW_PRIMARY_TILE])
     source_code = int(row[QUERY_ROW_SOURCE_SEAT])
     return ActionQuery(
@@ -78,7 +78,7 @@ def analyze_action_queries(
 
 
 def encode_query_row(query: ActionQuery) -> np.ndarray:
-    """把兼容对象编码为固定宽度存储行。"""
+    """把 Query 对象编码为固定宽度存储行。"""
     if len(query.answers) != 10:
         raise ValueError(f"action query must have 10 answers, got {len(query.answers)}")
     row = np.zeros(QUERY_ROW_WIDTH, dtype=np.int32)

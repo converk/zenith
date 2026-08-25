@@ -6,7 +6,7 @@ use numpy::{
 };
 use pyo3::{exceptions::PyValueError, prelude::*};
 
-use crate::analysis::{defense_row, offense_row_v16, OffenseRowV16};
+use crate::analysis::{defense_row, offense_row, OffenseRow};
 use crate::mjai_kyoku_state_machine::TILE_KINDS;
 use crate::shanten;
 
@@ -38,8 +38,8 @@ struct ShantenKey {
     mode: u8,
 }
 
-#[pyclass(name = "V16BatchEncoding", frozen)]
-pub struct V16BatchEncoding {
+#[pyclass(name = "QueryBatchEncoding", frozen)]
+pub struct QueryBatchEncoding {
     query_rows: Py<PyArray3<i32>>,
     wait_masks: Py<PyArray1<u64>>,
     #[pyo3(get)]
@@ -51,7 +51,7 @@ pub struct V16BatchEncoding {
 }
 
 #[pymethods]
-impl V16BatchEncoding {
+impl QueryBatchEncoding {
     #[getter]
     fn query_rows(&self, py: Python<'_>) -> Py<PyArray3<i32>> {
         self.query_rows.clone_ref(py)
@@ -64,8 +64,8 @@ impl V16BatchEncoding {
 }
 
 pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_class::<V16BatchEncoding>()?;
-    module.add_function(wrap_pyfunction!(encode_v16_batch, module)?)?;
+    module.add_class::<QueryBatchEncoding>()?;
+    module.add_function(wrap_pyfunction!(encode_query_batch, module)?)?;
     Ok(())
 }
 
@@ -133,13 +133,13 @@ fn simple_shanten(counts: &[u8; TILE_KINDS], open_melds: u8, mode: u8) -> Result
     }
 }
 
-/// 把紧凑的逐动作事实融合编码成 V16 O0..O9 / D0..D9 连续行。
+/// 把紧凑的逐动作事实融合编码成 V18 O0..O9 / D0..D9 连续行。
 ///
 /// `modes`:0=完整进攻分析,1=仅向听,2=和牌固定值,3=14 张逐牌型弃牌取最小向听。
 /// `o8_values` 的 255 表示从完整进攻分析读取可立直状态,其余值直接写入 O8。
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
-pub fn encode_v16_batch(
+pub fn encode_query_batch(
     py: Python<'_>,
     action_ids: PyReadonlyArray1<'_, u16>,
     action_types: PyReadonlyArray1<'_, u8>,
@@ -161,7 +161,7 @@ pub fn encode_v16_batch(
     o7_values: PyReadonlyArray1<'_, u8>,
     o8_values: PyReadonlyArray1<'_, u8>,
     o9_values: PyReadonlyArray1<'_, u8>,
-) -> PyResult<V16BatchEncoding> {
+) -> PyResult<QueryBatchEncoding> {
     let rows = action_ids.len();
     for (name, length) in [
         ("action_types", action_types.len()),
@@ -266,7 +266,7 @@ pub fn encode_v16_batch(
 
     let mut query_rows = vec![0_i32; rows * QUERY_ROWS_PER_ACTION * QUERY_ROW_WIDTH];
     let mut wait_masks = vec![0_u64; rows];
-    let mut offense_cache: HashMap<OffenseKey, OffenseRowV16> = HashMap::new();
+    let mut offense_cache: HashMap<OffenseKey, OffenseRow> = HashMap::new();
     let mut shanten_cache: HashMap<ShantenKey, i8> = HashMap::new();
 
     let encoding_result: Result<(), String> = py.detach(|| {
@@ -284,7 +284,7 @@ pub fn encode_v16_batch(
             let rivers: [u64; 3] = opponent_rivers[row * 3..row * 3 + 3]
                 .try_into()
                 .expect("opponent river row width");
-            if !(1..=10).contains(&action_types[row]) {
+            if !(1..=11).contains(&action_types[row]) {
                 return Err(format!("row {row} action type is out of range"));
             }
             if !(-1..TILE_KINDS as i16).contains(&primary_types[row]) {
@@ -334,7 +334,7 @@ pub fn encode_v16_batch(
                     let value = if let Some(value) = offense_cache.get(&key) {
                         *value
                     } else {
-                        let value = offense_row_v16(
+                        let value = offense_row(
                             &key.counts,
                             key.open_melds,
                             &key.remaining,
@@ -429,7 +429,7 @@ pub fn encode_v16_batch(
             .into_pyarray(py);
     let wait_masks = PyArray1::from_vec(py, wait_masks);
     wait_masks.call_method1("setflags", (false,))?;
-    Ok(V16BatchEncoding {
+    Ok(QueryBatchEncoding {
         query_rows: query_rows.unbind(),
         wait_masks: wait_masks.unbind(),
         row_count: rows,

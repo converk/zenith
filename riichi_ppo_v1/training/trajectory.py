@@ -1,4 +1,4 @@
-"""V16 rollout 记录与小局内 value-based GAE advantage 结算。"""
+"""V18 rollout 记录与小局内 value-based GAE advantage 结算。"""
 
 from __future__ import annotations
 
@@ -10,18 +10,17 @@ import numpy as np
 
 @dataclass
 class Transition:
-    """一个 V16 决策点:Objective Facts + Compact Snapshot + 每动作 Query 对。
+    """一个 V18 决策点:Objective Facts + Atomic Snapshot + 每动作 Query 对。
 
     历史段(Objective Facts)、快照段与 query 段在 rollout 时一次性编码并随决策
-    一起保留;训练更新时按同段 padding 重组回 ``forward_v16`` 的输入。
+    一起保留;训练更新时按同段 padding 重组回模型输入。
     """
 
     history_factors: np.ndarray
     history_numeric: np.ndarray
     history_length: int
-    snapshot_kinds: np.ndarray
-    snapshot_cat: np.ndarray
-    snapshot_num: np.ndarray
+    snapshot_factors: np.ndarray
+    snapshot_numeric: np.ndarray
     snapshot_length: int
     query_rows: np.ndarray
     query_action_ids: np.ndarray

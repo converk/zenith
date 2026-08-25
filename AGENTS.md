@@ -14,8 +14,8 @@
   模块名保持 `riichi`,且不依赖 `riichienv`。
 - `riichi_ppo_v1/` 是本项目的主训练代码框架。
 - 无需与 `evaluations/` 兼容;该组件将被整体重写。
-- 默认的性能与训练测试必须显式使用 `target_kl=0.0`、`update_epochs=4`;V16 及
-  以前使用 `kyokus_per_worker=16`,自 V17 起改为每 update 收集 512 个完整半庄
+- 默认的性能与训练测试必须显式使用 `target_kl=0.0`、`update_epochs=4`;历史 V16
+  及以前使用 `kyokus_per_worker=16`,V17 起改为每 update 收集 512 个完整半庄
   (`games_per_update=512`)。该测试基线与长期训练的默认值相互独立。
 - 运行测试时默认打印耗时监控和所有相关性能指标。默认运行三轮;将第一轮视为
   潜在预热,并单独报告后续轮次的性能统计。
@@ -30,10 +30,10 @@
 
 # 治理与版本契约
 
-- 最高治理文档是 `.specify/memory/constitution.md`(当前 v1.7.0)。本文件是运行时
+- 最高治理文档是 `.specify/memory/constitution.md`(当前 v1.8.0)。本文件是运行时
   指导,与其冲突时以宪法为准。
-- 现行版本契约:encoding protocol 为 V16;活跃训练代为 V16/V17。更早实验资产
-  仅作冷存储,不再被当前代码引用。
+- 现行版本契约:encoding protocol 与活跃训练代均为 V18。V16/V17 的 checkpoint、
+  数据集、配置、日志和历史报告仅作冷存储,不再被活跃代码加载或迁移。
 
 # 目录与组件职责
 
@@ -65,7 +65,7 @@
 # 产物存储与命名约定
 
 - checkpoint 目录固定为 `checkpoints/train_riichi_<版本号>/`,阶段产物放其下子目录
-  (如 `train_riichi_v17/ppo`、`train_riichi_v16/sft`);每个 checkpoint 内部
+  (现行为 `train_riichi_v18/sft` 与后续 `train_riichi_v18/ppo`);每个 checkpoint 内部
   保存配置快照以便追溯。现有 checkpoint 一律只归档移动,禁止删除。
 - 所有运行日志(json、txt、log 等)写入 `logs/<版本号>/`,禁止在 `logs/` 根目录或
   他处单独生成日志文件。
@@ -73,9 +73,9 @@
   的唯一存放位置,固定子目录:`design/`(设计文档)、`eval/`(评测输出)、
   `report/`(实验报告与 `PROGRESS.md` 进度记录)、`scripts/`(运行与验证脚本);
   禁止随意命名或散落其他目录。
-- 现行数据集为 `datasets/tenhou_sft_2024_2025_encoded_60pct_v16`、GRP 的
-  `datasets/tenhou_grp_2024_2025_v17` 与原始
-  `datasets/tenhou_sft_2024_2025`。
+- 现行原始数据集为 `datasets/tenhou_sft_2024_2025`;下一份编码数据集固定写入
+  `datasets/tenhou_sft_2024_2025_encoded_60pct_v18`。归档 V16 编码数据与 V17
+  GRP 数据只允许只读统计,不得覆盖或作为活跃训练输入。
 - 文件名必须自描述,能从名称看出职责与版本;CLI 默认路径与 README/docs 必须与
   实际产物路径一致。
 
