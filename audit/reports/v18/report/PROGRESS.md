@@ -560,3 +560,21 @@ conda run -n Mahjong-AI python audit/reports/v18/scripts/v18_model_structure_aud
    （V13 已停用；断言本机必须存在 `train_riichi_v13/v14/v15` 属环境资产项）。`rg` 确认仅测试自身与
    历史报告/归档 spec 引用（保留原貌）；测试文件重跑 11 passed。
 3. 报告更新：`V18输入链路复审与性能审查报告.md` §2.2/§4/§5/§7 已同步；全部改动已提交。
+
+## V18 precompute 性能优化（PERF-2/PERF-5，2026-08-27 后续）
+
+生成正式数据集前按审查发现实施两项低风险 Python 热路径优化并全量验证：
+
+1. **PERF-5**：`sft/data.py::encode_kyoku` 改用 `manager.action_ids_with_source_indices`
+   （Rust 直接映射）索引 `legal_actions()`，替代 `decode_actions` + 每动作 Python JSON
+   canonical 匹配；并消除每决策第二次 `action_jsons` 调用。
+   cProfile（2 kyoku）：函数调用 86,722→39,642；`json.dumps 2610→219`、`json.loads 2740→349`、
+   `action_jsons 262→131`。
+2. **PERF-2**：`precompute._accumulate_field_statistics` 的 actor 行域检查按 kind 预计算
+   列区间/基数上界后用 numpy 批量比较，替代逐 token × 逐字段 Python 循环。
+   862 决策 95,291 token：273 ms → **113.7 ms**（≈1.2 µs/token，约 2.4×）。
+
+验证：pytest unit+protocol+integration 183 passed / 1 failed（仅 PPO 待迁移断点）；
+`v18_decode_roundtrip.py`（走生产 encode_kyoku）B1/B2 全 PASS；端到端冒烟
+（`--game-sample-denominator 100000`，33 kyoku / 1,911 决策）precompute 成功，
+manifest/offsets/field_statistics（越界 0/0）正常；冒烟产物已清理。
