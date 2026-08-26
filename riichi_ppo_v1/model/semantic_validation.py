@@ -81,7 +81,10 @@ def _assert_actor_canonical_order(kinds: np.ndarray, rows: np.ndarray) -> None:
         if values[cursor] != expected_sep or values[cursor + 1] != next_kind:
             raise AssertionError(f"position {cursor} must be {expected_sep} then {next_kind}")
         break
-    cursor += 2
+    # 只 +1：SEP 校验已确认下一个 kind 是 SELF_HAND，光标应停在第一行 SELF_HAND 上，
+    # 由下方 while 从它开始消费（原 +2 会跳过第一行，导致四副露+对子（恰好 1 行
+    # SELF_HAND）的合法和牌决策被误判为“无手牌”）。
+    cursor += 1
     # SELF_HAND 若干（非零牌种，升序）。
     self_kinds = []
     while cursor < len(values) and values[cursor] == KIND_SELF_HAND:
