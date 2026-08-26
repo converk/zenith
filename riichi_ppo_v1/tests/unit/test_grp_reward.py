@@ -1,4 +1,4 @@
-"""V17 纯 GRP reward 公式、无点差分量与边界调用次数的契约测试。"""
+"""GRP reward 公式、每小局 credit assignment 与边界调用次数的契约测试(Mortal 方案)。"""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ def test_grp_boundary_calls_equal_boundary_count() -> None:
             matrix.fill_(0.25)
             return matrix
 
-    tracker = GrpRollout(StubGRP())
+    tracker = GrpRollout(StubGRP(), game_type=1)
     tracker.start_match(0, Boundary(0, 0, 0, 0, 0, (25_000, 25_000, 25_000, 25_000), None))
     # 首局边界 1 次 GRP 调用(全 4 玩家同一次前向)。
     assert tracker.calls == 1

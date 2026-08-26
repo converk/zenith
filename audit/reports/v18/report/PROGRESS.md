@@ -254,3 +254,79 @@ conda run -n Mahjong-AI python -m riichi_ppo_v1.tools.validate --parameter-contr
   (新增 `test_v18_sft_contract.py` 断言确定性与 fail-closed),旧值不再保留。
 - `git diff --check` 通过;spec(FR-002/004/005/008a/008d)、research(Decision 14)、
   plan(Phase G)、tasks(Phase 11)、协议文档与 quickstart 全部同步。
+
+## V18 GRP 输入扩展与重新训练准备(21 维/96×2/40%×全部 shard)
+
+- 2026-08-26: 以 `specs/009-v18-grp/` 立项(spec/plan/tasks)。GRP 输入从 7 维
+  扩展到 21 维:新增局风类型(东风/半庄/西风)、上一小局结果类型、各玩家累计
+  和了/放铳/听牌流局次数(4×3);全部只来自公开小局结果与局风(边界状态),
+  不含手牌/牌河/未来信息。模型 7→64×2 层 GRU 提升为 21→96×2 层
+  (fc 192→192→24),参数量 131,832(≈2.25×)。数据从 40%×280 shard
+  (43,407 半庄)扩到 40%×全部 930 shard(约 14.5 万半庄,≈3.3×),维持与
+  SFT 60% 子集零重叠。
+- 事实核查(40 shard 抽样):庄位 `oya` 恒等于 `(kyoku-1) mod 4`,是
+  `grand_kyoku` 的纯推导,不作为新特征;局类型分布东风 88,957 / 半庄 74,011 /
+  西风 872 局——7 维输入无法区分同一 (风,局) 下的东风与半庄(剩余局数不同),
+  是本次扩展修复的核心信息缺口;运行时环境只有 `4p-red-half`,在线
+  `game_type` 恒为 1。
+- 实现: `model/grp.py`(21 维布局常量、GRP_HIDDEN=96、GRPModel 可配置构造)、
+  `training/grp/prepare.py`(`game_type_from_content`/`game_type_from_mode`/
+  `result_increment`/`feature_row`/离线按边界链推进计数、dataset.json
+  `riichi-grp-v18`)、`training/grp/train.py`(快照用常量,去硬编码 64/2)、
+  `training/worker.py`(GrpRollout 每环境维护累计计数、按 checkpoint
+  `model_config` 构造、与离线共用 `feature_row` 保证逐位一致;结果类型常量
+  收敛到 `model/grp.py` 单一来源)、`configs/v18_grp.yaml`、
+  `audit/reports/v18/scripts/run_v18_grp_prepare_and_train.sh`(prepare → train,
+  `--skip-prepare`)、`riichi_ppo_v1/docs/v18_grp.md` 协议文档、
+  `audit/reports/v18/design/V18-GRP 输入扩展设计.md`。
+- 测试: GRP 契约测试重写(21 维布局、局风映射、三类结果计数推进、离线/在线
+  `np.array_equal` 逐位一致、参数预算 110K–150K、v18 dataset.json 格式);
+  `test_v17_reward.py` 更名为 `test_grp_reward.py`。临时目录 prepare→train→
+  冻结→`model_config` 构造全链路冒烟通过。`pytest riichi_ppo_v1/tests`:
+  151 passed,0 failed。`git diff --check` 通过。
+- 训练执行: 由维护者运行
+  `bash audit/reports/v18/scripts/run_v18_grp_prepare_and_train.sh`
+  (CUDA_DEVICE=0,1,产物 `checkpoints/train_riichi_v18/grp/best.pt`、
+  `logs/v18/grp_prepare.log`、`logs/v18/grp_train.log`);训练完成后的 GRP
+  供 V18 PPO 冻结只读。
+- 数据准备并行化: `prepare` 改为按 tar shard 多进程解析(`--workers`,默认
+  6,spawn 上下文),记录按 shard 顺序拼接,输出与串行处理逐位一致。新增
+  单测 `test_prepare_grp_dataset_parallel_matches_serial`(workers=1 vs
+  workers=3 全部 npz 数组 `np.array_equal`)。
+- **线上事故与修复(半庄跨 shard)**: 首次真实运行在早期即因 fail-closed
+  校验崩溃——`RuntimeError: game '2024010212gm-00a9-0000-90717c18' spans
+  multiple shards`。实测确认 shard 边界普遍切断半庄(该局 10 个小局分居
+  shard 1 尾与 shard 2 头;此前"整局为单位分 shard"的抽样核验结论有误,
+  已更正)。修复: 解析前先做一次只读 tar 头的预扫描,按 game_id 归属用
+  并查集把相邻 shard 合并为分组,worker 在组内跨 tar 聚合,每场半庄完整且
+  只产出一条记录;新增单测
+  `test_prepare_grp_dataset_merges_games_spanning_shards` 与真实数据
+  max_shards=4 冒烟(4 个 train shard → 1 分组,603 局记录)。
+  `pytest riichi_ppo_v1/tests`: 153 passed,0 failed。失败运行残留目录
+  `datasets/tenhou_grp_2024_2025_v18`(空产物)已清理。
+
+## 训练超参与数据量调整(batch 2048 / 66.7% 子集)
+
+- 2026-08-26: 首次训练(40% 数据,batch 512)在 step 22,900 由维护者
+  Ctrl+C 终止并删除全部训练产物(checkpoints/train_riichi_v18/grp、
+  logs/v18/grp_train.log);该次已验证 21 维模型收敛:val loss 在
+  step 22,600 已达 2.5570(低于 V17 的 2.6038)。
+- `configs/v18_grp.yaml` batch_size 512 → 2048(lr 保持 1e-5,batch 增大
+  不线性放大 LR;15 epochs 下步数约 1.9 万量级);train.py 默认值与文档同步。
+- GRP 数据集子集从 40%(0,1/5)扩到 **66.7%(0,1,2,3/6)**——相比 40% 版
+  新增约 9.6 万半庄(train 143,802 → 约 239,670;validation → 约 2,435),
+  ≈5.5× V17。扩围进入 SFT 60% 区域,60/40 无重叠惯例主动放弃(GRP 为
+  冻结奖励模型,无策略污染)。一键脚本 prepare 参数同步更新,旧 40% 数据集
+  已移除以待重建。文档:protocol/design/spec/plan 全部同步。
+
+## 全量数据 + 30 epochs 再训练(batch 2048)
+
+- 2026-08-26: 66.7% 子集版(240,151 train 半庄,batch 2048,15 epochs)
+  完整训练结束:**best val loss 2.5191 @ step 18,600**(validation 25,759
+  样本),显著优于 V17(2.6038)与 40% 中途值(2.5570)。
+- 决策:GRP 改用**全量数据**(denominator=1,与 SFT 60% 完全重叠,冻结
+  奖励模型无策略污染)+ **epochs 30**(仍处欠拟合区间,长训练收益为正)。
+  训练产物与 66.7% 数据集已按维护者要求清除;脚本 prepare 参数改为
+  `--subset-denominator 1 --subset-remainders 0`,`configs/v18_grp.yaml`
+  epochs 15 → 30;protocol/design/spec/plan 全部同步。预期 train 约 36 万
+  半庄、约 5.6 万步(1–2 小时)。

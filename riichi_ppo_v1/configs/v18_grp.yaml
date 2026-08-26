@@ -1,0 +1,17 @@
+# V18 GRP 离线训练(Mortal 方案扩展):自包含完整配置,不与打包默认叠加。
+# 数据集由 audit/reports/v18/scripts/run_v18_grp_prepare_and_train.sh 的
+# prepare 命令先行构造(全量数据,与 SFT 60% 子集完全重叠——GRP 是冻结的
+# 奖励模型,仅用于评分,不参与策略训练);
+# 输入契约与结构超参以 model/grp.py 为单一来源(input_size=21、hidden=96、
+# layers=2),此处只配置训练超参与产物路径。训练后 GRP 完全冻结,PPO 阶段只读。
+seed: 1
+device: cuda
+epochs: 30
+batch_size: 2048
+learning_rate: 0.00001
+weight_decay: 0.0
+max_grad_norm: 1.0
+shuffle_buffer_samples: 65536
+log_interval_steps: 100
+val_interval_steps: 200
+checkpoint_dir: checkpoints/train_riichi_v18/grp

@@ -1,7 +1,10 @@
-"""V17 GRP 离线训练入口(Mortal 方案):24 类排列 CE、validation-loss best。
+"""GRP 离线训练入口(Mortal 方案,V18 契约):24 类排列 CE、validation-loss best。
 
-每半庄的全部 prefix 独立监督最终排列标签;批次 512、AdamW、lr=1e-5;
-validation loss 最低的 checkpoint 才落盘(best.pt),训练完成后完全冻结。
+输入为 21 维边界状态(见 ``model.grp.GRP_INPUT_LAYOUT``);每半庄的全部 prefix
+独立监督最终排列标签;batch、AdamW 与 lr 等由配置提供(DEFAULT_CONFIG 默认
+batch 512、lr=1e-5);validation loss 最低的
+checkpoint 才落盘(best.pt),训练完成后完全冻结。模型结构超参只取自
+``model.grp`` 常量,配置快照随 checkpoint 保存。
 """
 
 from __future__ import annotations
@@ -21,7 +24,15 @@ from torch import nn
 from torch.nn import functional as F
 import yaml
 
-from ...model.grp import GRPModel, GRP_INPUT_SIZE, GRP_NUM_CLASSES, GRP_UTILITY
+from ...model.grp import (
+    GRPModel,
+    GRP_HIDDEN,
+    GRP_INPUT_LAYOUT,
+    GRP_INPUT_SIZE,
+    GRP_LAYERS,
+    GRP_NUM_CLASSES,
+    GRP_UTILITY,
+)
 from .prepare import iter_grp_samples
 
 
@@ -36,7 +47,7 @@ DEFAULT_CONFIG = {
     "shuffle_buffer_samples": 65536,
     "log_interval_steps": 100,
     "val_interval_steps": 500,
-    "checkpoint_dir": "checkpoints/train_riichi_v17/grp",
+    "checkpoint_dir": "checkpoints/train_riichi_current/grp",
 }
 
 
@@ -186,8 +197,9 @@ def train_grp(dataset: Path, config: dict) -> None:
         json.dumps({
             "model_config": {
                 "input_size": GRP_INPUT_SIZE,
-                "hidden": 64,
-                "layers": 2,
+                "hidden": GRP_HIDDEN,
+                "layers": GRP_LAYERS,
+                "feature_layout": list(GRP_INPUT_LAYOUT),
                 "num_classes": GRP_NUM_CLASSES,
                 "utility": list(GRP_UTILITY),
             },
@@ -214,8 +226,9 @@ def _write_best_checkpoint(
         "config": config,
         "model_config": {
             "input_size": GRP_INPUT_SIZE,
-            "hidden": 64,
-            "layers": 2,
+            "hidden": GRP_HIDDEN,
+            "layers": GRP_LAYERS,
+            "feature_layout": list(GRP_INPUT_LAYOUT),
             "num_classes": GRP_NUM_CLASSES,
             "utility": list(GRP_UTILITY),
         },
@@ -278,7 +291,7 @@ def _train_step(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", type=Path, default=Path("datasets/tenhou_grp_2024_2025_v17"))
+    parser.add_argument("--dataset", type=Path, default=Path("datasets/tenhou_grp_2024_2025_v18"))
     parser.add_argument("--config", type=Path)
     parser.add_argument("--device")
     parser.add_argument("--epochs", type=int)

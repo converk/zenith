@@ -1,10 +1,21 @@
-"""GRP(全局排名预测)模型与输入契约常量(Mortal 方案)。
+"""GRP(全局排名预测)模型与输入契约常量(Mortal 方案,V18 扩展)。
 
-输入为每个 StartKyoku 的 7 维全局状态
-``[grand_kyoku, honba, kyotaku, s0/1e4, s1/1e4, s2/1e4, s3/1e4]``;
-每个半庄的完整 prefix 序列监督最终四人排名的 4! = 24 类全排列标签。
-模型结构:7 → 2 层 GRU(hidden=64) → concat hidden → Linear(128,128) → ReLU →
-Linear(128,24)。训练完成后完全冻结,PPO 阶段只读。
+输入为每个 StartKyoku 的 21 维全局状态(V18 契约,字段顺序单一来源):
+
+``[0]  grand_kyoku     0..7(E1..E4=0..3、S/W1..4=4..7)
+ [1]  honba
+ [2]  kyotaku
+ [3:7]  s0..s3 / 1e4
+ [7]  game_type        0=东风、1=半庄、2=西风(整局经历风数 - 1)
+ [8]  prev_result_type 0=首局、1=荣和、2=自摸、3=流局、4=中止
+ [9:13]  wins0..3      各玩家截至本小局开始的累计和了次数
+ [13:17] dealins0..3   各玩家累计放铳次数
+ [17:21] tenpai0..3    各玩家累计听牌流局次数]``
+
+全部新增字段只来自公开小局结果与局风(边界状态),不包含手牌、牌河、未来牌等
+局内发展信息。每个半庄的完整 prefix 序列监督最终四人排名的 4! = 24 类全排列标签。
+模型结构:21 → 2 层 GRU(hidden=96) → concat hidden(192) → Linear(192,192) → ReLU →
+Linear(192,24)。训练完成后完全冻结,PPO 阶段只读。
 """
 
 from __future__ import annotations
@@ -14,11 +25,31 @@ from itertools import permutations
 import torch
 from torch import Tensor, nn
 
-# 输入契约与结构超参(单一来源)。
-GRP_INPUT_SIZE = 7  # [grand_kyoku, honba, kyotaku, s0/1e4, s1/1e4, s2/1e4, s3/1e4]
-GRP_HIDDEN = 64
+# 输入契约与结构超参(单一来源;构造参数默认值取此处常量)。
+GRP_INPUT_SIZE = 21
+GRP_INPUT_LAYOUT = (
+    "grand_kyoku", "honba", "kyotaku",
+    "s0", "s1", "s2", "s3",
+    "game_type", "prev_result_type",
+    "wins0", "wins1", "wins2", "wins3",
+    "dealins0", "dealins1", "dealins2", "dealins3",
+    "tenpai0", "tenpai1", "tenpai2", "tenpai3",
+)
+GRP_HIDDEN = 96
 GRP_LAYERS = 2
 GRP_NUM_CLASSES = 24  # 4! 四人最终排名全排列
+
+# 局风类型(整局经历的风数 - 1;与离线 bakaze 集合、在线 game_mode 映射一致)。
+GAME_TYPE_EAST = 0
+GAME_TYPE_HALF = 1
+GAME_TYPE_WEST = 2
+
+# 上一小局结果类型(0=首局/无结果,与 KyokuResult.result_type 对齐)。
+PREV_RESULT_NONE = 0  # 首局
+PREV_RESULT_RON = 1
+PREV_RESULT_TSUMO = 2
+PREV_RESULT_RYUKYOKU = 3
+PREV_RESULT_ABORT = 4
 
 # 排名 utility(Mortal pts [3,1,-1,-3] 按 1/3 归一化)。
 GRP_UTILITY: tuple[float, float, float, float] = (
@@ -45,34 +76,51 @@ def expected_rank_utility(matrix: Tensor) -> Tensor:
 
 
 class GRPModel(nn.Module):
-    """Mortal 式 GRP:GRU(7→64, 2 层) + fc(128→128→24)。"""
+    """Mortal 式 GRP:GRU(21→96, 2 层) + fc(192→192→24)。
 
-    def __init__(self, hidden_size: int = GRP_HIDDEN, num_layers: int = GRP_LAYERS) -> None:
+    构造参数带默认常量,PPO 加载时按 checkpoint 的 ``model_config`` 传入,
+    避免与离线训练形状硬编码耦合。
+    """
+
+    def __init__(
+        self,
+        input_size: int = GRP_INPUT_SIZE,
+        hidden_size: int = GRP_HIDDEN,
+        num_layers: int = GRP_LAYERS,
+        num_classes: int = GRP_NUM_CLASSES,
+    ) -> None:
         super().__init__()
+        self.input_size = int(input_size)
+        self.hidden_size = int(hidden_size)
+        self.num_layers = int(num_layers)
+        self.num_classes = int(num_classes)
         self.rnn = nn.GRU(
-            GRP_INPUT_SIZE, hidden_size, num_layers=num_layers, batch_first=True,
+            self.input_size, self.hidden_size, num_layers=self.num_layers,
+            batch_first=True,
         )
         self.fc = nn.Sequential(
-            nn.Linear(hidden_size * num_layers, hidden_size * num_layers),
+            nn.Linear(self.hidden_size * self.num_layers, self.hidden_size * self.num_layers),
             nn.ReLU(),
-            nn.Linear(hidden_size * num_layers, GRP_NUM_CLASSES),
+            nn.Linear(self.hidden_size * self.num_layers, self.num_classes),
         )
         perms, perms_t = _make_permutations()
         self.register_buffer("perms", perms)
         self.register_buffer("perms_t", perms_t)
 
     def forward(self, features: Tensor, lengths: Tensor) -> Tensor:
-        """``features`` [B,T,7] float32、``lengths`` [B] long → logits [B,24]。
+        """``features`` [B,T,input_size] float32、``lengths`` [B] long → logits [B,24]。
 
         只使用 GRU 末层 hidden 拼接(与 Mortal ``forward_packed`` 一致)。
         """
-        if features.ndim != 3 or features.shape[-1] != GRP_INPUT_SIZE:
-            raise ValueError(f"GRP features must be [batch, steps, {GRP_INPUT_SIZE}]")
+        if features.ndim != 3 or features.shape[-1] != self.input_size:
+            raise ValueError(
+                f"GRP features must be [batch, steps, {self.input_size}]"
+            )
         packed = nn.utils.rnn.pack_padded_sequence(
             features.float(), lengths.cpu(), batch_first=True, enforce_sorted=False,
         )
         _output, state = self.rnn(packed)
-        state = state.transpose(0, 1).flatten(1)  # [B, hidden*layers]=[B,128]
+        state = state.transpose(0, 1).flatten(1)  # [B, hidden*layers]=[B,192]
         return self.fc(state)
 
     @torch.inference_mode()
