@@ -46,7 +46,7 @@ struct ObservationFacts {
 }
 
 /// 当前宝牌指示牌所对应的牌种,只依赖已翻开的指示牌。
-fn dora_kind(indicator: u32) -> Result<usize, String> {
+pub(crate) fn dora_kind(indicator: u32) -> Result<usize, String> {
     if indicator >= PHYSICAL_TILE_COUNT {
         return Err("宝牌指示牌含非法实体牌 ID".to_string());
     }
@@ -66,7 +66,7 @@ fn dora_kind(indicator: u32) -> Result<usize, String> {
 }
 
 /// 前六张舍牌按花色与幺九字牌归类;不足六张自然以零补足。
-fn first_six_discard_counts(discards: &[u32]) -> Result<[u8; 4], String> {
+pub(crate) fn first_six_discard_counts(discards: &[u32]) -> Result<[u8; 4], String> {
     let mut result = [0_u8; 4];
     for &tile in discards.iter().take(SNAPSHOT_FIRST_DISCARD_LIMIT) {
         if tile >= PHYSICAL_TILE_COUNT {
@@ -91,7 +91,7 @@ fn first_six_discard_counts(discards: &[u32]) -> Result<[u8; 4], String> {
 }
 
 /// 开放副露中已确认的役牌番数;连风刻按场风与自风分别累计。
-fn open_meld_yakuhai_han(melds: &[Meld], player_wind: u8, round_wind: u8) -> Result<u8, String> {
+pub(crate) fn open_meld_yakuhai_han(melds: &[Meld], player_wind: u8, round_wind: u8) -> Result<u8, String> {
     if player_wind >= WIND_TILE_COUNT as u8 || round_wind >= WIND_TILE_COUNT as u8 {
         return Err("场风或自风超出范围".to_string());
     }
@@ -124,7 +124,7 @@ fn open_meld_yakuhai_han(melds: &[Meld], player_wind: u8, round_wind: u8) -> Res
 }
 
 /// 已表示于副露的宝牌与赤宝牌番数;暗杠不改变门清,但其牌面可在本统计中出现。
-fn visible_meld_dora_aka_han(
+pub(crate) fn visible_meld_dora_aka_han(
     melds: &[Meld],
     dora_multiplicity: &[u8; TILE_KINDS],
 ) -> Result<u8, String> {
@@ -143,7 +143,7 @@ fn visible_meld_dora_aka_han(
 }
 
 /// 观察者合法已知区域的四张可见牌种与不同宝牌种未知实体牌数。
-fn global_visible_facts(observation: &Observation) -> Result<(u8, u8, [u8; TILE_KINDS]), String> {
+pub(crate) fn global_visible_facts(observation: &Observation) -> Result<(u8, u8, [u8; TILE_KINDS]), String> {
     let observer = usize::from(observation.player_id);
     if observer >= 4 {
         return Err("观察者座次必须位于 0..3".to_string());
@@ -188,7 +188,7 @@ fn global_visible_facts(observation: &Observation) -> Result<(u8, u8, [u8; TILE_
 /// 自身进张与听牌和牌张数:把当前手牌归一为十三张形,分别摸入 34 类后只统计
 /// 能降低综合向听的剩余实体牌;听牌(综合向听为 0)时统计摸入即和牌的剩余张数。
 /// 只依赖观察者合法已知区域(自身手牌/副露、四家牌河、公开副露牌、宝牌指示牌)。
-fn self_progress_facts(
+pub(crate) fn self_progress_facts(
     observation: &Observation,
     visible: &[u8; TILE_KINDS],
 ) -> Result<(u8, u8), String> {
@@ -226,7 +226,7 @@ fn self_progress_facts(
 
 /// 立直宣言牌与立直后摸切数:宣言牌取河中的实体牌,立直后摸切数从宣言下标
 /// 之后逐张统计(宣言牌本身必为手切,天然不计入)。
-fn opponent_riichi_traits(
+pub(crate) fn opponent_riichi_traits(
     observation: &Observation,
     opponent: usize,
 ) -> Result<(u8, u8), String> {
@@ -479,7 +479,7 @@ fn dora_type(indicator: u8) -> usize {
     }
 }
 
-fn tile_counts(tiles: &[u8]) -> [u8; TILE_KINDS] {
+pub(crate) fn tile_counts(tiles: &[u8]) -> [u8; TILE_KINDS] {
     let mut counts = [0_u8; TILE_KINDS];
     for &tile in tiles {
         counts[usize::from(tile) / 4] += 1;
@@ -565,7 +565,7 @@ fn observation_facts(
     })
 }
 
-fn decompose_melds(melds: &[Meld]) -> (u8, Vec<usize>) {
+pub(crate) fn decompose_melds(melds: &[Meld]) -> (u8, Vec<usize>) {
     let mut three_melds = 0_u8;
     let mut kans = Vec::new();
     for meld in melds {
@@ -578,7 +578,7 @@ fn decompose_melds(melds: &[Meld]) -> (u8, Vec<usize>) {
     (three_melds, kans)
 }
 
-fn kernel_shape(
+pub(crate) fn kernel_shape(
     concealed: &[u8],
     three_melds: u8,
     kan_types: &[usize],
@@ -620,7 +620,7 @@ fn physical_tiles(hand: &[u8], melds: &[Meld]) -> Vec<u8> {
     out
 }
 
-fn count_dora_aka(tiles: &[u8], multiplicity: &[u8; TILE_KINDS]) -> u8 {
+pub(crate) fn count_dora_aka(tiles: &[u8], multiplicity: &[u8; TILE_KINDS]) -> u8 {
     tiles
         .iter()
         .map(|&tile| multiplicity[usize::from(tile) / 4] + u8::from(matches!(tile, 16 | 52 | 88)))

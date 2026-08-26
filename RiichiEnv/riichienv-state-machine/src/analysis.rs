@@ -7,7 +7,7 @@ use pyo3::{exceptions::PyValueError, prelude::*};
 use crate::mjai_kyoku_state_machine::{NUM_ACTIONS, TILE_KINDS};
 use crate::{shanten, HAND_ANALYSIS_VERSION, SHANTEN_UNAVAILABLE};
 
-fn suji_safe(tile: usize, river: u64) -> bool {
+pub fn suji_safe(tile: usize, river: u64) -> bool {
     if tile >= 27 {
         return false;
     }
@@ -23,7 +23,7 @@ fn suji_safe(tile: usize, river: u64) -> bool {
         .all(|anchor| river & (1_u64 << anchor) != 0)
 }
 
-fn wall_class(tile: usize, remaining: &[u8]) -> u8 {
+pub fn wall_class(tile: usize, remaining: &[u8]) -> u8 {
     if tile >= 27 {
         return 0;
     }

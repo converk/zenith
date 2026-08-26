@@ -1,5 +1,6 @@
 use pyo3::prelude::*;
 
+mod current_state_encoding;
 mod encoding_facts;
 mod env;
 
@@ -82,6 +83,7 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<encoding_facts::CompactEncodingFacts>()?;
     m.add_class::<encoding_facts::EncodingYakuValues>()?;
     m.add_class::<encoding_facts::AtomicSnapshotBatch>()?;
+    m.add_class::<current_state_encoding::CurrentStateBatch>()?;
 
     m.add_function(wrap_pyfunction!(calculate_score_py, m)?)?;
     m.add_function(wrap_pyfunction!(parse_hand_py, m)?)?;
@@ -96,6 +98,10 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(
         encoding_facts::prepare_atomic_snapshots,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        current_state_encoding::prepare_current_state_batch,
         m
     )?)?;
     m.add_function(wrap_pyfunction!(

@@ -4,7 +4,7 @@
 //! this crate any more.  Keeping this surface small makes the extension
 //! reproducible for the RiichiEnv PPO integration.
 
-mod analysis;
+pub mod analysis;
 pub mod atomic_snapshot;
 #[path = "MjaiKyokuStateMachine/mod.rs"]
 mod mjai_kyoku_state_machine;
