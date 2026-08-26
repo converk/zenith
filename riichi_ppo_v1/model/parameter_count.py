@@ -25,6 +25,7 @@ def parameter_report(model: nn.Module) -> dict[str, Any]:
         or "snapshot_embeddings" in key or "query_embedding" in key or "history" in key
     )
     # 分项：嵌入 / shared / actor / critic / head。
+    # 分组与 sft/actor_bc.py 的 _CRITIC_ROOTS 保持一致：value_head 属于 critic 冻结组。
     grouped: dict[str, int] = {"embedding": 0, "shared": 0, "actor": 0, "critic": 0, "head": 0}
     for name, parameter in model.named_parameters():
         count = int(parameter.numel())
@@ -34,7 +35,7 @@ def parameter_report(model: nn.Module) -> dict[str, Any]:
             grouped["shared"] += count
         elif name.startswith("actor_backbone"):
             grouped["actor"] += count
-        elif name.startswith("critic_backbone") or name.startswith("value_query"):
+        elif name.startswith("critic_backbone") or name.startswith("value_query") or name.startswith("value_head"):
             grouped["critic"] += count
         else:
             grouped["head"] += count

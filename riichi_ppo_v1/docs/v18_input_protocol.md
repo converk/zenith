@@ -67,18 +67,22 @@ SELF_STATE_ANALYSIS 无损承载。
   杠数、是否门清、牌河长度、立直状态/巡目/宣言牌/立直后舍牌数、副露确定役牌番与可见
   宝牌赤牌数。
 - **RIVER_DISCARD**：相对座次、本地 river index、牌种/赤牌、手切/摸切、立直前/宣言/立直后
-  三态、是否作为吃碰杠供牌、相对最新舍牌的年龄桶。每对手前后各一个六槽摘要
+  三态、是否恰好作为被鸣供牌（按被鸣下标精确标记，同牌种多张只标被鸣那一张）、相对最新
+  舍牌的年龄桶。每对手前后各一个六槽摘要
   （FIRST_SIX / RECENT_SIX，槽位顺序保留、有效长度显式、padding 严格零贡献）。
 - **MELD**：拥有者、chi/pon/daiminkan/ankan/kakan、完整构成牌与赤牌、被鸣牌、供牌相对座次、
   开放/暗置、当前副露序号、确定役牌番与可见宝牌赤牌数（kakan 不重复历史 pon）。
-- **TILE_STATE**（34 个）：自己暗手/舍牌张数、总公开/已知/未知/四张全见、宝牌倍率、
+- **TILE_STATE**（34 个）：自己暗手/舍牌张数、总公开/已知/未知/四张全见（实体口径：被鸣
+  河牌只计在副露一次）、宝牌倍率、
   场风/自风/赤五对应、当前进张/和牌、对三家现物、对三家筋类别（非筋/单侧/双侧/不适用）、
   壁类别（无壁/one-chance/no-chance）、宝牌邻张。
 - **OPPONENT_ANALYSIS**：立直状态/巡目/宣言牌、门清、暗牌数、副露数、杠数、确定役牌番与
   可见宝牌赤牌数、立直后手切/摸切数、最近六张手切/摸切数、自己手中对该家现物牌种/实体数、
   牌河长度。三个 Analysis 位于 Actor 分支、Action Query 之前，参与 action logits。
-- **ACTION_QUERY**：O0–O9 / D0–D9 语义不变；chi/pon/daiminkan/ron 的 supplier 相对座次
-  为 1..3，其余为 N/A。
+- **ACTION_QUERY**：共 15 个嵌入特征（action_type / primary_tile / source_seat /
+  tsumogiri_mode / action_id / O0–O9 或 D0–D9）；`action_id`（0..240）进入专用 241 维
+  嵌入表，是完整 consume 组合 + 赤牌身份 + tsumogiri 的规范编码，因此不同 consume/赤牌
+  的合法动作在 token 级可区分；chi/pon/daiminkan/ron 的 supplier 相对座次为 1..3，其余为 N/A。
 
 ## 4. RoPE、分隔符与结构化注意力
 
@@ -87,8 +91,9 @@ SELF_STATE_ANALYSIS 无损承载。
   Critic 分支从 P 续接；分隔符占位，不在类别边界重置。动作对不再复用局部 position ID。
 - 分隔符为类别专属 learned separator，集合单点定义，顺序严格校验 fail closed。
 - Shared 公共 backbone 使用**双向 GQA**（不作 causal）；
-  Actor-only 层：Shared 只读 Shared；三个 Analysis 读 Shared ∪ Analysis；每个 Action
-  Query 读 Shared ∪ Analysis ∪ 自己动作对；不同动作对互不可见；padding 不可见。
+  Actor-only 层：Shared 只读 Shared；三个 Analysis 读 Shared ∪ Analysis；SEP_ACTIONS
+  独立角色（只可读自己，Action 行可读 SEP_ACTIONS）；每个 Action
+  Query 读 Shared ∪ Analysis ∪ SEP_ACTIONS ∪ 自己动作对；不同动作对互不可见；padding 不可见。
 - Critic 分支读 Shared 表示 + 三家闭手 + 未来五张 + Value Query（Value 可读全部）；
   Analysis/Action token 不进入 Critic shape/length/embedding/mask。
 
@@ -97,7 +102,7 @@ SELF_STATE_ANALYSIS 无损承载。
 固定拓扑：`d_model=256`、16 Q heads / 4 KV heads（GQA）、`head_dim=16`、`ffn_dim=704`、
 3 Shared + 1 Actor + 2 Critic 层，`dense_slot_dim=32`、`dense_fusion_dim=512`，
 `context_tokens=256`；RMSNorm/RoPE/gated FFN。密集类别使用槽位独立 embedding 表 +
-共享输入投影（512）+ 共享 gated MLP；总参数 ≤6.0M（当前约 5.76M）。无 MHA 双分支、
+共享输入投影（512）+ 共享 gated MLP；总参数 ≤6.0M（当前约 5.764M）。无 MHA 双分支、
 无 Q scorer/Q boost、无 history/54 行 Snapshot adapter。checkpoint 只接受 V18
 `current_state_snapshot` 配置与精确 state keys；Actor-only SFT artifact 仅保存 Actor
 范围参数并 strict load，不提供旧版本兼容。

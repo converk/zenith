@@ -319,6 +319,8 @@ pub struct AtomicSnapshotBatch {
 }
 
 /// 从原生 Observation 批量派生固定 49 行原子 Snapshot。
+/// 注意：这是 V16/V17 旧输入契约（PPO/rollout 待迁移项）；V18 活跃编码入口为
+/// `prepare_current_state_batch`（当前局面快照），不经过本函数。
 #[pyfunction]
 pub fn prepare_atomic_snapshots(
     py: Python<'_>,

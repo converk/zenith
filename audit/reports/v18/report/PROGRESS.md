@@ -393,3 +393,52 @@ conda run -n Mahjong-AI python -m riichi_ppo_v1.tools.validate --parameter-contr
   与提示词参考（早巡 85–105 / 中巡 105–135 / 晚巡 130–165 / 极端 185–215）一致；
   严格上界 `context_tokens=256` 保持成立（Actor ≤204、Critic ≤185，见
   `specs/010/.../research.md §2.7`），无截断。
+
+## V18 当前局面输入审查缺陷修复（audit/reports/v18/design/V18当前局面输入审查缺陷修复提示词.md）
+
+- 2026-08-27：按审查提示词完成 4 项 P1（V18-A1+A3 被鸣牌双计/supplied 失真、A2 concealed_count、
+  A4 action_id 不进入嵌入）与 P2（B1–B11）修复。提交粒度：每个根因一个可回滚 commit。
+- **P1 修复**：
+  - `Meld` 新增 `called_tile_index`（serde default，记录被鸣牌在供牌者牌河中的 0 基下标）；
+    状态机 `state/mod.rs`、`state/event_handler.rs`（apply_log_action）、3P 等价路径与
+    `_resolve_kan` 全部写入；
+  - `current_state_encoding.rs`：`entity_public_counts` 实体去重、`is_supplied` 按
+    (from_who, called_tile_index) 精确标记、`concealed_count` 改为
+    `13+pending-3×三张副露-4×杠`、`pending_draw_actor` 覆盖 tsumo/pon/chi/daiminkan/ankan/kakan；
+  - Action Query 新增 `action_id`（241 维专用离散表）进入 token embedding
+    （`encoding_protocol.py`/`current_state.py`/`semantic_validation.py`/`v18_fixtures.py`）。
+- **模型/结构**：内容 token 保留 segment/kind 基础向量（相加而非覆盖）；RIVER_SUMMARY 槽内
+  4 字段改 concat（每槽 5×dense_slot_dim）；SEP_ACTIONS 独立角色（只读自己，Action 行可读）；
+  critic 空输入抛清晰 ValueError；重复 action_id 拒绝。
+- **校验 fail-closed**：`semantic_validation.py` 增加 action_id 升序、summary valid_length 与
+  河长一致、critic 字段域、TABLE 保留列恒 0、TILE_STATE 实体守恒、SELF_HAND 升序/域/is_drawn
+  一致性、drawn_is_current==(mode==0)；`sft/contract.py::validate_manifest` 增加 storage 字段
+  域校验并与运行时常量一致；`sft/precompute.py::iter_precomputed_samples` 增加三组 offsets
+  严格校验；`trainer.py` collate 前默认执行 `assert_actor_input_semantics`（可显式关闭），
+  BC loss 前重验 `target ∈ legal_mask`。
+- **契约与参数**：`encoding_contract_sha256` 由 schema 自动更新为
+  **`c60f867fec94b66f4a42d97fc1214685a78946bb618cf58fee597b2dd7caade0`**（旧 manifest/checkpoint
+  fail closed）；总参数 **5,804,914（≤6.0M）**：embedding 1,376,112 / shared 2,115,072 /
+  actor 705,280 / critic 1,410,817 / head 197,633；state keys 258。
+- **oracle 转 PASS**（`v18_audit_oracle.py`，862 决策）：
+  `concealed_bad=0`、`public_bad=0`、`known_bad=0`、`supplied_bad(real)=0`、
+  合成反例 `river_marks=[(1,1),(2,0),(3,0)]`、`exact_collisions=0`；结论 PASS。
+  `v18_model_structure_audit.py`：mask 逐格 `synthetic_mismatch=0` / `real_mismatch=0`、
+  RoPE/padding/batch PASS、内容 token segment 变化输出 diff=0.258（相加保留）、
+  critic 空输入 `ValueError: critic rows must not be empty`、重复 action_id 被拒。
+- **测试结果**：Rust workspace `cargo test`：**148 passed, 0 failed**；
+  `pytest riichi_ppo_v1/tests/unit + protocol + integration`：**182 passed, 2 failed**
+  （仅既有两项：`test_historical_audit_and_logs_are_removed_but_checkpoints_remain` 环境性差异、
+  `test_learner_accepts_only_rollout_buffer` PPO 待迁移断点）；`pytest RiichiEnv/tests`：
+  **284 passed, 2 skipped**；`validate --parameter-contract` 通过（total 5,804,914）。
+  新增永久化测试：`tests/unit/test_v18_buckets.py`、`tests/integration/test_v18_action_discriminability.py`、
+  `tests/integration/test_v18_meld_fields.py`（红五/chi 三形状/kakan/ankan/daiminkan/supplied 精确标记），
+  及 Rust `current_state_encoding.rs` bucket/entity/concealed 单测、`query_encoding.rs` bucket_o2 单测。
+- **文档**：契约 separator 编号统一 101..111、valid_length `i<=valid_length`、§3.10 action_id
+  进入 embedding、§5 SEP_ACTIONS 可见性；`data-model.md` 111/13/14；`v18_input_protocol.md`
+  参数 5.80M、ACTION 字段说明；README 参数同步。
+- **清理**：`logs/v18/` 调试脚本（audit_slots.py、debug_encoder.py、probe_*.py、smoke_encode.py）
+  与 `smoke_out.txt`、`/tmp/dbg_riichi/` 已删除（全仓 rg 零引用）。
+- **边界确认**：未修改 PPO/rollout/1v3/riichi_lab_bot 旧输入契约（仅包级 import 兼容）；
+  未删除/覆盖任何 checkpoint、数据集、历史报告；未生成 60% 全量编码数据集；
+  V16/V17 资产保持只读归档。

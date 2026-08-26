@@ -70,7 +70,7 @@ backbone。
 |---|---|
 | opponent_hands | 相对座次 1..3，各 ≥1 行（kind/tile/red/count） |
 | future_wall | 恰 5 行，position 1..5 升序 |
-| has no analysis/action rows | segment ∈ {4,5} 且 kind ∈ {110,13,14} |
+| has no analysis/action rows | segment ∈ {4,5} 且 kind ∈ {111,13,14} |
 
 ## DenseEmbeddingReport
 

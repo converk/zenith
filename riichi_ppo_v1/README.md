@@ -19,7 +19,7 @@ python -m pytest riichi_ppo_v1/tests
 参数契约固定为 `d_model=256`、16 Q heads、4 KV heads、`head_dim=16`、
 `ffn_dim=704`、3 Shared + 1 Actor + 2 Critic，密集槽位 `dense_slot_dim=32`、
 `dense_fusion_dim=512`，`context_tokens=256`，完整 Actor-Critic 参数量 ≤6.0M（当前
-约 5.76M）。模型不包含 Q scorer、candidate-Q 输出、MHA 双分支或旧协议兼容 key。
+约 5.80M）。模型不包含 Q scorer、candidate-Q 输出、MHA 双分支或旧协议兼容 key。
 
 ## V18 SFT-ready 路径
 
