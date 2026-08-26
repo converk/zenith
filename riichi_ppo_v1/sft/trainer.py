@@ -358,6 +358,10 @@ def _train_worker_impl(
         model.load_state_dict(payload, strict=True)
         del initialized
     freeze_critic(model)
+    # 可选的 torch.compile 快速路径：在 DDP 包装前编译原始模块
+    # （配置 torch_compile: true 开启；首次迭代编译较慢，需重启训练生效）。
+    if bool(config.get("torch_compile", False)):
+        model = torch.compile(model)
     optimized = list(actor_parameters(model))
     if not optimized:
         raise RuntimeError("V18 SFT configuration leaves no trainable parameters")

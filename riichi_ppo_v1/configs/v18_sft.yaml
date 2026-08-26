@@ -42,6 +42,9 @@ log_interval_steps: 100
 # offsets/_assert_targets_legal 与模型 _assert_structure 兜底；如需重新开启
 # 可改回 true（仅调试用，勿用于长跑）。
 validate_semantics: false
+# torch.compile 可选加速（单卡约 +20%）：DDP 双卡下会因 unused-参数图遍历
+# 严重退化（实测 8s/步），请勿在 learner_gpus>=2 时开启。
+torch_compile: false
 validation_max_samples: 0
 validation_samples_per_run: 150000
 checkpoint_dir: checkpoints/train_riichi_v18/sft
