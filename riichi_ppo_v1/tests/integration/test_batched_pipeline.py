@@ -1,4 +1,4 @@
-"""Batch-native state and environment contracts used by the PPO worker."""
+"""Batch-native state and environment contracts used by the input pipeline."""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ except ImportError:  # pragma: no cover
 from riichi_ppo_v1.model.architecture import KyokuTransformerActorCritic, ModelConfig
 from riichi_ppo_v1.model.bridge import BatchedStateBridge, Decision
 from riichi_ppo_v1.model.semantic_validation import (
-    assert_critic_token_semantics,
     assert_actor_input_semantics,
+    assert_critic_token_semantics,
 )
 
 
@@ -48,25 +48,22 @@ class BatchedPipelineTest(unittest.TestCase):
                     decisions.append(Decision(env_index, seat, observation))
         self.assertGreaterEqual(len(decisions), 2)
         prepared = bridge.prepare(decisions, walls=list(envs.walls()))
-        self.assertEqual(prepared.history_factors.shape, (len(decisions), prepared.history_factors.shape[1], 10))
-        self.assertEqual(prepared.history_numeric.shape, (*prepared.history_factors.shape[:2], 8))
-        self.assertEqual(prepared.critic_factors.shape, (len(decisions), prepared.critic_factors.shape[1], 10))
+        self.assertEqual(prepared.actor_factors.shape, (len(decisions), prepared.actor_factors.shape[1], 32))
+        self.assertEqual(prepared.actor_numeric.shape, (*prepared.actor_factors.shape[:2], 8))
+        self.assertEqual(prepared.critic_factors.shape, (len(decisions), prepared.critic_factors.shape[1], 32))
         self.assertEqual(prepared.critic_lengths.shape, (len(decisions),))
         self.assertEqual(prepared.legal_mask.shape, (len(decisions), 241))
         self.assertTrue(np.all(prepared.legal_mask.any(axis=1)))
         assert_actor_input_semantics(
-            prepared.history_factors,
-            prepared.history_numeric,
-            prepared.history_lengths,
-            prepared.snapshot_factors,
-            prepared.snapshot_numeric,
-            prepared.snapshot_lengths,
+            prepared.actor_factors,
+            prepared.actor_numeric,
+            prepared.actor_lengths,
             prepared.query_rows,
             prepared.query_action_ids,
             prepared.query_pair_counts,
             prepared.legal_mask,
         )
-        assert_critic_token_semantics(prepared.critic_factors, prepared.critic_lengths, include_public_state=False)
+        assert_critic_token_semantics(prepared.critic_factors, prepared.critic_lengths)
 
         action_ids = [int(np.flatnonzero(mask)[0]) for mask in prepared.legal_mask]
         decoded = bridge.decode(decisions, action_ids)
@@ -89,34 +86,28 @@ class BatchedPipelineTest(unittest.TestCase):
         decisions = [Decision(0, int(seat), obs) for seat, obs in observations[0].items() if obs.legal_actions()]
         prepared = bridge.prepare(decisions, walls=list(envs.walls()))
         assert_actor_input_semantics(
-            prepared.history_factors,
-            prepared.history_numeric,
-            prepared.history_lengths,
-            prepared.snapshot_factors,
-            prepared.snapshot_numeric,
-            prepared.snapshot_lengths,
+            prepared.actor_factors,
+            prepared.actor_numeric,
+            prepared.actor_lengths,
             prepared.query_rows,
             prepared.query_action_ids,
             prepared.query_pair_counts,
             prepared.legal_mask,
         )
-        assert_critic_token_semantics(prepared.critic_factors, prepared.critic_lengths, include_public_state=False)
+        assert_critic_token_semantics(prepared.critic_factors, prepared.critic_lengths)
         self.assertTrue(np.all(prepared.legal_mask.any(axis=1)))
 
         model = KyokuTransformerActorCritic(ModelConfig(
             layers=2, shared_layers=1, critic_layers=1, d_model=32,
-            query_heads=2, kv_heads=1, head_dim=16, ffn_dim=64, context_tokens=4096,
-            policy_head_type="isolated_action_query",
+            query_heads=2, kv_heads=1, head_dim=16, ffn_dim=64, context_tokens=256,
+            dense_slot_dim=8, dense_fusion_dim=64,
+            policy_head_type="current_state_snapshot",
         )).eval()
         with torch.no_grad():
-            output = model.forward(
-                torch.as_tensor(prepared.history_factors, dtype=torch.long),
-                torch.as_tensor(prepared.history_numeric),
-                torch.as_tensor(prepared.history_lengths),
-                torch.as_tensor(prepared.snapshot_factors, dtype=torch.long),
-                torch.as_tensor(prepared.snapshot_numeric),
-                torch.as_tensor(prepared.snapshot_lengths),
-                torch.as_tensor(prepared.query_rows, dtype=torch.long),
+            output = model(
+                torch.as_tensor(prepared.actor_factors, dtype=torch.long),
+                torch.as_tensor(prepared.actor_numeric),
+                torch.as_tensor(prepared.actor_lengths),
                 torch.as_tensor(prepared.query_action_ids, dtype=torch.long),
                 torch.as_tensor(prepared.query_pair_counts),
                 torch.as_tensor(prepared.legal_mask),

@@ -9,7 +9,11 @@ import torch
 from riichi_ppo_v1.training.learner import PPOLearner, rollout_update_targets
 from riichi_ppo_v1.training.rollout_buffer import RolloutBuffer
 from riichi_ppo_v1.training.trajectory import Transition
-from riichi_ppo_v1.model.encoding_protocol import SNAPSHOT_FIELD_COUNT, SNAPSHOT_FIELDS
+from types import SimpleNamespace
+
+# PPO 旧契约字段名保留（本测试只验证 buffer 扁平化，不验证编码语义）。
+SNAPSHOT_FIELD_COUNT = 34
+SNAPSHOT_FIELDS = [SimpleNamespace(field_id=index, relative_seat=0) for index in range(1, SNAPSHOT_FIELD_COUNT + 1)]
 
 
 def _random_transition(rng: np.random.Generator) -> Transition:

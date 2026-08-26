@@ -1,45 +1,56 @@
 """V18 Actor/Critic 信息边界测试。"""
 
+from __future__ import annotations
+
 import torch
 
 from riichi_ppo_v1.model import KyokuTransformerActorCritic
-from riichi_ppo_v1.tests.v18_fixtures import actor_inputs
+from riichi_ppo_v1.model.semantic_validation import assert_critic_token_semantics
+from riichi_ppo_v1.tests.v18_fixtures import actor_inputs, critic_inputs
 
 
-def test_actor_api_has_no_private_input_and_is_deterministic() -> None:
-    model = KyokuTransformerActorCritic().eval()
-    inputs = actor_inputs(batch=1)
-    with torch.no_grad():
-        first = model.forward_actor(**inputs)["raw_policy_logits"]
-        second = model.forward_actor(**inputs)["raw_policy_logits"]
-    torch.testing.assert_close(first, second)
-    assert "critic_factors" not in model.forward_actor.__annotations__
+def _forward(model, inputs, critic=None):
+    kwargs = {
+        "actor_factors": inputs["actor_factors"],
+        "actor_numeric": inputs["actor_numeric"],
+        "actor_lengths": inputs["actor_lengths"],
+        "query_action_ids": inputs["action_ids"],
+        "query_pair_counts": inputs["query_pair_counts"],
+        "legal_mask": inputs["legal_mask"],
+    }
+    if critic is not None:
+        kwargs["critic_factors"] = critic["critic_factors"]
+        kwargs["critic_lengths"] = critic["critic_lengths"]
+    return model(**kwargs, policy_only=(critic is None))
 
 
-def _critic_inputs() -> tuple[torch.Tensor, torch.Tensor]:
-    rows = torch.tensor([[
-        [4, 4, 2, 2, 1, 1, 0, 4, 0, 1],
-        [4, 4, 2, 3, 2, 2, 0, 4, 0, 1],
-        [4, 4, 2, 4, 3, 3, 0, 4, 0, 1],
-        [5, 6, 3, 1, 1, 1, 0, 1, 0, 1],
-        [5, 6, 3, 2, 1, 2, 0, 1, 0, 1],
-        [5, 6, 3, 3, 1, 3, 0, 1, 0, 1],
-        [5, 6, 3, 4, 1, 4, 0, 1, 0, 1],
-        [5, 6, 3, 5, 1, 5, 0, 1, 0, 1],
-    ]], dtype=torch.long)
-    return rows, torch.tensor([8])
+def test_actor_ignores_critic_private_input() -> None:
+    model = KyokuTransformerActorCritic()
+    inputs = actor_inputs(batch=2, action_ids=(1, 7, 12))
+    without = _forward(model, inputs)
+    # 仅添加 critic 输入（同时复用同一 actor 输入）不会改变 actor logits。
+    critic = critic_inputs(batch=2)
+    with_private = _forward(model, inputs, critic)
+    assert torch.allclose(
+        without["raw_policy_logits"], with_private["raw_policy_logits"], atol=1e-6, rtol=1e-6
+    )
 
 
-def test_private_mutation_changes_critic_but_not_actor_logits() -> None:
-    torch.manual_seed(19)
-    model = KyokuTransformerActorCritic().eval()
-    inputs = actor_inputs(batch=1)
-    critic, lengths = _critic_inputs()
-    changed = critic.clone()
-    changed[0, 0, 5] = 9
-    changed[0, 3, 5] = 7
-    with torch.no_grad():
-        first = model(**inputs, critic_factors=critic, critic_lengths=lengths)
-        second = model(**inputs, critic_factors=changed, critic_lengths=lengths)
-    torch.testing.assert_close(first["raw_policy_logits"], second["raw_policy_logits"])
-    assert not torch.equal(first["value"], second["value"])
+def test_critic_value_changes_with_private_input() -> None:
+    model = KyokuTransformerActorCritic()
+    inputs = actor_inputs(batch=2, action_ids=(1, 7))
+    critic = critic_inputs(batch=2)
+    output = _forward(model, inputs, critic)
+    # 修改三家闭手的 count。
+    changed = critic["critic_factors"].clone()
+    changed[0, 1, 5] = 2
+    output_changed = _forward(model, inputs, {"critic_factors": changed, "critic_lengths": critic["critic_lengths"]})
+    assert output["value"].shape == (2,)
+    assert not torch.allclose(output["value"], output_changed["value"])
+
+
+def test_critic_rows_exclude_analysis_and_action() -> None:
+    critic = critic_inputs(batch=2)
+    assert_critic_token_semantics(critic["critic_factors"], critic["critic_lengths"])
+    segments = critic["critic_factors"][:, :, 0].unique().tolist()
+    assert set(segments) <= {4, 5}

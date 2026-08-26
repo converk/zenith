@@ -4,7 +4,7 @@ from riichi_ppo_v1.model.bridge import (
     tile_id_to_mjai,
 )
 from riichi_ppo_v1.model.critic_features import (
-    SEGMENT_CRITIC_FUTURE_WALL,
+    SEGMENT_CRITIC_FUTURE,
     SEGMENT_CRITIC_PRIVATE,
     TableState,
     encode_critic_features,
@@ -53,9 +53,9 @@ def test_critic_appends_ordered_future_wall_after_three_hands() -> None:
     table = TableState(((0, 1, 2), (16, 17), (52,), (108,)))
     wall = [134, 41, 119, 67, 90]
     critic = encode_critic_features(table, observer=0, future_wall_tiles=wall)
-    assert critic.length == 4 + 5
+    assert critic.length == 1 + 4 + 5
     segments = critic.factors[:, 0].tolist()
-    assert segments[:4] == [SEGMENT_CRITIC_PRIVATE] * 4
-    assert segments[4:] == [SEGMENT_CRITIC_FUTURE_WALL] * 5
-    positions = critic.factors[4:9, 3].tolist()
+    assert segments[:5] == [SEGMENT_CRITIC_PRIVATE] * 5
+    assert segments[5:] == [SEGMENT_CRITIC_FUTURE] * 5
+    positions = critic.factors[5:10, 2].tolist()
     assert positions == [1, 2, 3, 4, 5]

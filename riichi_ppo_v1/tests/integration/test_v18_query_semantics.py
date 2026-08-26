@@ -1,79 +1,59 @@
-"""V18 Query metadata、动作 ID 集合与 supplier 域测试。"""
+"""V18 Query metadata、动作 ID 集合、supplier 域与 O0-O9/D0-D9 域测试。"""
+
+from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from riichi_ppo_v1.model.encoding_protocol import (
     QUERY_ROW_ACTION_ID,
+    QUERY_ROW_ACTION_TYPE,
+    QUERY_ROW_ANSWER_START,
     QUERY_ROW_PRIMARY_TILE,
+    QUERY_ROW_QUERY_TYPE,
     QUERY_ROW_SOURCE_SEAT,
+    SLOT_CARDINALITIES,
+    SUPPLIER_REQUIRED_ACTION_TYPES,
 )
-from riichi_ppo_v1.model.semantic_validation import assert_actor_input_semantics
-from riichi_ppo_v1.tests.v18_fixtures import actor_inputs
+from riichi_ppo_v1.sft.data import encode_kyoku
+from riichi_ppo_v1.tests.v18_fixtures import first_kyoku_record
 
 
-def _numpy_inputs() -> dict[str, np.ndarray]:
-    return {name: value.numpy() for name, value in actor_inputs(batch=1).items()}
+def test_query_rows_pair_and_order() -> None:
+    record, _game_id = first_kyoku_record()
+    samples = encode_kyoku(record, year=2024, game_id="test-1", kyoku_index=0)
+    for sample in samples[:8]:
+        rows = sample.query_rows
+        ids = sample.action_ids
+        assert rows.shape[0] == 2 * len(ids)
+        assert rows[0::2, QUERY_ROW_QUERY_TYPE].tolist() == [1] * len(ids)
+        assert rows[1::2, QUERY_ROW_QUERY_TYPE].tolist() == [2] * len(ids)
+        assert rows[0::2, QUERY_ROW_ACTION_ID].tolist() == ids.tolist()
+        assert rows[1::2, QUERY_ROW_ACTION_ID].tolist() == ids.tolist()
+        assert np.all(np.diff(ids) > 0)  # 升序唯一
 
 
-def test_action_metadata_and_unordered_legal_set_are_accepted() -> None:
-    inputs = _numpy_inputs()
-    rows = inputs["query_rows"]
-    rows[:, :, 2] = 4
-    rows[:, :, QUERY_ROW_PRIMARY_TILE] = 34
-    rows[:, :, QUERY_ROW_SOURCE_SEAT] = 3
-    assert_actor_input_semantics(**inputs)
-    assert set(inputs["query_action_ids"][0]) == set(np.flatnonzero(inputs["legal_mask"][0]))
+def test_supplier_and_answer_domains() -> None:
+    record, _game_id = first_kyoku_record()
+    samples = encode_kyoku(record, year=2024, game_id="test-1", kyoku_index=0)
+    for sample in samples[:12]:
+        rows = sample.query_rows
+        action_types = rows[:, QUERY_ROW_ACTION_TYPE]
+        source_seats = rows[:, QUERY_ROW_SOURCE_SEAT]
+        supplier = np.isin(action_types, tuple(SUPPLIER_REQUIRED_ACTION_TYPES))
+        assert np.all(source_seats[supplier] >= 1)
+        assert np.all(source_seats[~supplier] == 0)
+        for slot_index, slot in enumerate(("O0", "O1", "O2", "O3", "O4", "O5", "O6", "O7", "O8", "O9")):
+            codes = rows[0::2, QUERY_ROW_ANSWER_START + slot_index]
+            assert np.all(codes < SLOT_CARDINALITIES[slot])
+        for slot_index, slot in enumerate(("D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9")):
+            codes = rows[1::2, QUERY_ROW_ANSWER_START + slot_index]
+            assert np.all(codes < SLOT_CARDINALITIES[slot])
 
 
-def test_pair_metadata_disagreement_and_duplicate_ids_are_rejected() -> None:
-    inputs = _numpy_inputs()
-    inputs["query_rows"][0, 1, QUERY_ROW_PRIMARY_TILE] = 1
-    with pytest.raises(AssertionError):
-        assert_actor_input_semantics(**inputs)
-
-
-def test_supplier_applicability_is_fail_closed() -> None:
-    inputs = _numpy_inputs()
-    inputs["query_rows"][0, 0:2, 2] = 10
-    with pytest.raises(AssertionError, match="lacks source"):
-        assert_actor_input_semantics(**inputs)
-
-    inputs = _numpy_inputs()
-    inputs["query_rows"][0, 0:2, QUERY_ROW_SOURCE_SEAT] = 1
-    with pytest.raises(AssertionError, match="non-supplier"):
-        assert_actor_input_semantics(**inputs)
-
-
-def test_native_supplier_metadata_and_non_supplier_na() -> None:
-    from RiichiEnv.tests.env.helper import helper_setup_env
-    from riichienv import Action, ActionType
-    import riichi
-
-    from riichi_ppo_v1.model.bridge import BatchedStateBridge, Decision
-
-    env = helper_setup_env(
-        hands=[
-            [0, 4, 8, 12, 16, 20, 24, 36, 40, 44, 48, 52, 56],
-            [1, 2, 3, 6, 10, 14, 18, 22, 26, 30, 34, 38, 42], [], [],
-        ],
-        current_player=0,
-        active_players=[0],
-        drawn_tile=108,
-        wall=list(range(136)),
-    )
-    observation = env.step({0: Action(ActionType.DISCARD, tile=0)})[1]
-    bridge = BatchedStateBridge(riichi.MjaiKyokuStateMachineManager(1), 1)
-    bridge.sync([{seat: env.get_observation(seat) for seat in range(4)}])
-    prepared = bridge.prepare([Decision(0, 1, observation)])
-    rows = prepared.query_rows[0, :2 * int(prepared.query_pair_counts[0])]
-    action_types = rows[0::2, 2]
-    source_codes = rows[0::2, QUERY_ROW_SOURCE_SEAT]
-    assert np.all(source_codes[action_types == 1] == 0)
-    # 观察者 1 响应观察者 0 的供牌,相对座次为上家,协议编码为 3。
-    assert np.all(source_codes[np.isin(action_types, (5, 6))] == 3)
-    inputs = _numpy_inputs()
-    inputs["query_action_ids"][0, 1] = inputs["query_action_ids"][0, 0]
-    inputs["query_rows"][0, 2:4, QUERY_ROW_ACTION_ID] = inputs["query_action_ids"][0, 0]
-    with pytest.raises(AssertionError, match="legal-mask set"):
-        assert_actor_input_semantics(**inputs)
+def test_primary_tile_and_source_domains() -> None:
+    record, _game_id = first_kyoku_record()
+    samples = encode_kyoku(record, year=2024, game_id="test-1", kyoku_index=0)
+    for sample in samples[:12]:
+        rows = sample.query_rows
+        assert np.all(rows[:, QUERY_ROW_PRIMARY_TILE] <= 34)
+        assert np.all(rows[:, QUERY_ROW_SOURCE_SEAT] <= 3)

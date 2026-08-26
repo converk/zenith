@@ -1,28 +1,39 @@
-"""真实 MJAI 文件经 replay 生成固定 V18 Snapshot。"""
+"""真实 MJAI replay → 当前局面编码一致性。"""
 
-from pathlib import Path
+from __future__ import annotations
 
-from riichienv import MjaiReplay
+import numpy as np
 
-from riichi_ppo_v1.model.snapshot import encode_snapshot_rows
-from riichi_ppo_v1.model.encoding_protocol import (
-    SNAPSHOT_FACTOR_WIDTH,
-    SNAPSHOT_FIELD_COUNT,
-    SNAPSHOT_NUMERIC_WIDTH,
-)
+from riichi_ppo_v1.sft.data import encode_kyoku
+from riichi_ppo_v1.model.semantic_validation import assert_actor_input_semantics
+from riichi_ppo_v1.tests.v18_fixtures import first_kyoku_record
 
 
-def test_real_mjai_replay_decisions_encode_v18() -> None:
-    path = Path("RiichiEnv/tests/data/126_204_0_mjai.jsonl")
-    replay = MjaiReplay.from_jsonl(str(path))
-    kyoku = list(replay.take_kyokus())[0]
-    checked = 0
-    for seat in range(4):
-        for observation, _expert in kyoku.steps(seat=seat, skip_single_action=False):
-            factors, numeric = encode_snapshot_rows(observation)
-            assert factors.shape == (SNAPSHOT_FIELD_COUNT, SNAPSHOT_FACTOR_WIDTH)
-            assert numeric.shape == (SNAPSHOT_FIELD_COUNT, SNAPSHOT_NUMERIC_WIDTH)
-            checked += 1
-            if checked >= 16:
-                break
-    assert checked >= 4
+def test_real_mjai_replay_decisions_encode() -> None:
+    record, _game_id = first_kyoku_record()
+    samples = encode_kyoku(record, year=2024, game_id="test-1", kyoku_index=0)
+    assert len(samples) > 0
+    for sample in samples[:8]:
+        assert sample.token_length <= 256
+        assert sample.query_pair_count > 0
+        assert 0 <= sample.action < 241
+        assert sample.legal_mask[sample.action]
+        assert_actor_input_semantics(
+            sample.actor_factors[None],
+            sample.actor_numeric[None],
+            np.asarray([sample.token_length]),
+            sample.query_rows[None],
+            sample.action_ids[None],
+            np.asarray([sample.query_pair_count]),
+            sample.legal_mask[None],
+        )
+
+
+def test_replay_samples_have_no_critic_or_history_fields() -> None:
+    record, _game_id = first_kyoku_record()
+    samples = encode_kyoku(record, year=2024, game_id="test-1", kyoku_index=0)
+    for sample in samples[:8]:
+        segments = sample.actor_factors[:, 0].astype(int)
+        kinds = sample.actor_factors[:, 1].astype(int)
+        assert not np.any(np.isin(segments, (4, 5)))
+        assert not np.any((kinds >= 20) & (kinds < 100))

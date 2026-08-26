@@ -1,47 +1,89 @@
-"""V18 schema 顺序与领域契约。"""
+"""V18 当前局面协议单点来源测试。"""
+
+from __future__ import annotations
 
 from riichi_ppo_v1.model.encoding_protocol import (
+    ACTION_TYPE_CARDINALITY,
+    CATEGORY_SCHEMAS,
+    CONTEXT_TOKENS,
+    DEFENSE_SLOT_ORDER,
     ENCODED_FORMAT,
     ENCODING_PROTOCOL_VERSION,
-    SNAPSHOT_FACTOR_CARDINALITIES,
-    SNAPSHOT_FIELD_COUNT,
-    SNAPSHOT_FIELDS,
+    KIND_BOS,
+    KIND_CRITIC_FUTURE,
+    KIND_CRITIC_HAND,
+    KIND_SEP_ACTIONS,
+    KIND_SEP_CRITIC,
+    KIND_SEP_OPPONENT_ANALYSIS,
+    KIND_TABLE,
+    KIND_TILE_STATE,
+    NUM_SEPARATORS,
+    OFFENSE_SLOT_ORDER,
+    QUERY_ROW_WIDTH,
+    QUERY_SLOT_COUNT,
+    SEPARATOR_IDS,
+    SEPARATOR_KINDS,
+    SEPARATOR_SEGMENTS,
+    SEGMENT_ACTIONS,
+    SEGMENT_ANALYSIS,
+    SEGMENT_CRITIC_FUTURE,
+    SEGMENT_CRITIC_PRIVATE,
+    SEGMENT_SHARED,
+    SLOT_CARDINALITIES,
+    STATE_PROTOCOL_VERSION,
+    TOKEN_NUMERIC_WIDTH,
+    TOKEN_ROW_WIDTH,
 )
 
 
-def test_v18_protocol_and_exact_field_order() -> None:
+def test_protocol_version_and_widths() -> None:
     assert ENCODING_PROTOCOL_VERSION == 18
     assert ENCODED_FORMAT == "riichi-sft-encoded-v18"
-    assert SNAPSHOT_FIELD_COUNT == 54
-    assert tuple(field.field_id for field in SNAPSHOT_FIELDS) == tuple(range(1, 55))
-    assert len({field.name for field in SNAPSHOT_FIELDS}) == 54
-    assert tuple(field.name for field in SNAPSHOT_FIELDS[4:17]) == (
-        "opponent_1_riichi_status", "opponent_1_riichi_turn", "opponent_1_open_meld_count",
-        "opponent_1_tedashi_count", "opponent_1_tsumogiri_count",
-        "opponent_1_post_riichi_tsumogiri_count",
-        "opponent_1_first_six_man_count", "opponent_1_first_six_pin_count",
-        "opponent_1_first_six_sou_count", "opponent_1_first_six_terminal_honor_count",
-        "opponent_1_open_meld_yakuhai_han", "opponent_1_visible_meld_dora_aka_han",
-        "opponent_1_riichi_declaration_tile",
-    )
-    assert tuple(field.name for field in SNAPSHOT_FIELDS[47:51]) == (
-        "fully_visible_tile_kind_count", "unknown_distinct_dora_copy_count",
-        "self_improve_tile_count", "self_win_tile_count",
-    )
+    assert STATE_PROTOCOL_VERSION.startswith("riichi-current-state-v18")
+    assert TOKEN_ROW_WIDTH == 32
+    assert TOKEN_NUMERIC_WIDTH == 8
+    assert CONTEXT_TOKENS == 256
+    assert QUERY_ROW_WIDTH == 15
+    assert QUERY_SLOT_COUNT == 10
 
 
-def test_domains_derive_from_rust_schema() -> None:
-    assert SNAPSHOT_FACTOR_CARDINALITIES[0] == 55
-    assert all(0 <= field.relative_seat <= 3 for field in SNAPSHOT_FIELDS)
-    assert all(field.categorical_max >= 0 and field.tile_max >= 0 for field in SNAPSHOT_FIELDS)
-    assert sum(field.numeric for field in SNAPSHOT_FIELDS) == 3
-    assert all(field.categorical_max == 6 for field in SNAPSHOT_FIELDS if "first_six" in field.name)
-    assert all(field.categorical_max == 8 for field in SNAPSHOT_FIELDS if "dora_aka" in field.name)
-    assert all(
-        field.categorical_max == 16
-        for field in SNAPSHOT_FIELDS if "post_riichi_tsumogiri" in field.name
-    )
-    assert all(
-        field.categorical_max == 40
-        for field in SNAPSHOT_FIELDS if field.name in ("self_improve_tile_count", "self_win_tile_count")
-    )
+def test_separators_single_source() -> None:
+    assert len(SEPARATOR_IDS) == 11
+    assert NUM_SEPARATORS == 11
+    for name, separator_id in SEPARATOR_IDS.items():
+        assert SEPARATOR_KINDS[name] == 100 + separator_id
+    assert SEPARATOR_SEGMENTS[KIND_SEP_OPPONENT_ANALYSIS] == SEGMENT_ANALYSIS
+    assert SEPARATOR_SEGMENTS[KIND_SEP_ACTIONS] == SEGMENT_ACTIONS
+    assert SEPARATOR_SEGMENTS[KIND_SEP_CRITIC] == SEGMENT_CRITIC_PRIVATE
+
+
+def test_category_schema_domains() -> None:
+    assert set(CATEGORY_SCHEMAS) == {
+        KIND_BOS, KIND_TABLE, 3, 4, 5, 6, 7, 8, KIND_TILE_STATE, 10, 11, 12,
+        KIND_CRITIC_HAND, KIND_CRITIC_FUTURE,
+    }
+    for kind, schema in CATEGORY_SCHEMAS.items():
+        assert schema.kind == kind
+        assert schema.segment in (1, 2, 3, 4, 5)
+        assert schema.cls in ("SIMPLE", "DENSE", "SEPARATOR")
+        assert all(field.cardinality > 0 for field in schema.discrete)
+    assert CATEGORY_SCHEMAS[KIND_TABLE].segment == SEGMENT_SHARED
+    assert CATEGORY_SCHEMAS[KIND_TILE_STATE].segment == SEGMENT_SHARED
+
+
+def test_query_slot_orders_and_cardinalities() -> None:
+    assert OFFENSE_SLOT_ORDER == tuple(f"O{i}" for i in range(10))
+    assert DEFENSE_SLOT_ORDER == tuple(f"D{i}" for i in range(10))
+    assert ACTION_TYPE_CARDINALITY == 12
+    for slot in OFFENSE_SLOT_ORDER + DEFENSE_SLOT_ORDER:
+        assert SLOT_CARDINALITIES[slot] > 0
+
+
+def test_no_legacy_snapshot_constants() -> None:
+    import riichi_ppo_v1.model.encoding_protocol as module
+
+    for legacy in (
+        "SNAPSHOT_FIELD_COUNT", "SNAPSHOT_FACTOR_WIDTH", "SNAPSHOT_NUMERIC_WIDTH",
+        "SNAPSHOT_FIELDS", "SNAPSHOT_FACTOR_CARDINALITIES",
+    ):
+        assert not hasattr(module, legacy), legacy
