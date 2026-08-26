@@ -21,6 +21,7 @@ from .encoding_protocol import (
     KIND_BOS,
     KIND_CRITIC_FUTURE,
     KIND_CRITIC_HAND,
+    KIND_SEP_ACTIONS,
     KIND_SEP_CRITIC,
     SEGMENT_ACTIONS,
     SEGMENT_ANALYSIS,
@@ -156,9 +157,8 @@ def _actor_structured_layout(
     positions = torch.arange(tokens, device=device)[None, :]
     valid = positions < lengths[:, None]
     is_shared = segments.eq(SEGMENT_SHARED)
-    is_analysis = segments.eq(SEGMENT_ANALYSIS) | (
-        segments.eq(SEGMENT_ACTIONS) & ~kinds.eq(11) & ~kinds.eq(12)
-    )
+    is_analysis = segments.eq(SEGMENT_ANALYSIS)
+    is_sep_actions = segments.eq(SEGMENT_ACTIONS) & kinds.eq(KIND_SEP_ACTIONS)
     is_action = kinds.eq(11) | kinds.eq(12)
     action_mask = is_action & valid
     action_ranks = action_mask.long().cumsum(dim=1) - 1
@@ -166,10 +166,11 @@ def _actor_structured_layout(
     same_pair = pair_id[:, :, None].eq(pair_id[:, None, :]) & is_action[:, :, None] & is_action[:, None, :]
     from_shared = is_shared[:, :, None] & is_shared[:, None, :]
     from_analysis = is_analysis[:, :, None] & (is_shared[:, None, :] | is_analysis[:, None, :])
+    from_sep_actions = is_sep_actions[:, :, None] & is_sep_actions[:, None, :]
     from_action = is_action[:, :, None] & (
-        is_shared[:, None, :] | is_analysis[:, None, :] | same_pair
+        is_shared[:, None, :] | is_analysis[:, None, :] | is_sep_actions[:, None, :] | same_pair
     )
-    mask = from_shared | from_analysis | from_action
+    mask = from_shared | from_analysis | from_sep_actions | from_action
     mask = mask & valid[:, :, None] & valid[:, None, :]
     return _first_key_escape(mask, valid[:, :, None]), valid
 

@@ -70,25 +70,25 @@ kind = 100 + separator_id。
 ```
 1  BOS(kind 1)
 2  TABLE(2)
-3  SEP_SELF_HAND(100)
+3  SEP_SELF_HAND(101)
 4  SELF_HAND × K(3)           # K=自身暗手非零牌种数，按 tile_type 升序
 5  SELF_STATE_ANALYSIS(4)
-6  SEP_PLAYERS(101)
+6  SEP_PLAYERS(102)
 7  PLAYER × 4(5)             # SELF, SHIMOCHA, TOIMEN, KAMICHA
-8  SEP_RIVERS(102)
-9  SEP_SHIMOCHA_RIVER(103)
+8  SEP_RIVERS(103)
+9  SEP_SHIMOCHA_RIVER(104)
 10 RIVER_SUMMARY first_six(6)
 11 RIVER_DISCARD × N_shimo(7) # 本地 index 1..N 升序（旧→新）
 12 RIVER_SUMMARY recent_six(6)
-13 SEP_TOIMEN_RIVER(104) → 同上
-14 SEP_KAMICHA_RIVER(105) → 同上
-15 SEP_MELDS(106)
+13 SEP_TOIMEN_RIVER(105) → 同上
+14 SEP_KAMICHA_RIVER(106) → 同上
+15 SEP_MELDS(107)
 16 MELD × M(8)               # 拥有者 SELF→SHIMO→TOI→KAMI，同一拥有者按 meld_index 升序
-17 SEP_TILE_STATE(107)
+17 SEP_TILE_STATE(108)
 18 TILE_STATE × 34(9)        # tile_type 1..34 升序
-19 SEP_OPPONENT_ANALYSIS(108)
+19 SEP_OPPONENT_ANALYSIS(109)
 20 OPPONENT_ANALYSIS × 3(10) # SHIMOCHA, TOIMEN, KAMICHA
-21 SEP_ACTIONS(109)
+21 SEP_ACTIONS(110)
 22 ACTION_OFFENSE_QUERY/ACTION_DEFENSE_QUERY ×(2 per action)  # action_id 升序，先 Offense 后 Defense
 ```
 
@@ -97,7 +97,7 @@ kind = 100 + separator_id。
 ### 2.2 Critic 序列（`critic_factors` 行；模型在共享前缀后拼接）
 
 ```
-1 SEP_CRITIC(110, segment 4)
+1 SEP_CRITIC(111, segment 4)
 2 CRITIC_HAND × H(13, segment 4)   # 相对座次 1,2,3 顺序；同座次按 tile_type 升序
 3 CRITIC_FUTURE × 5(14, segment 5) # position 1..5 升序（摸牌顺序）
 + 模型自动追加 Value Query（不属于存储行）
@@ -202,7 +202,7 @@ numeric：0 = 点数/100000（clip）；1 = 相对观察者点差/100000（clip�
 | 5+4*(i-1) | slot_i cut | 0=手切,1=摸切,2=N/A |
 | 6+4*(i-1) | slot_i riichi_stage | 0=立直前,1=宣言牌,2=立直后,3=N/A |
 
-i=1..6；slot_i 有效当且仅当 i < valid_length（first_six：discards[0..min(6,N)]；recent_six：
+i=1..6；slot_i 有效当且仅当 i <= valid_length（first_six：discards[0..min(6,N)]；recent_six：
 discards[max(0,N-6)..N]，内部由旧到新）。padding 槽全部 0。
 
 ### 3.6 RIVER_DISCARD（kind 7, SIMPLE）
@@ -215,7 +215,7 @@ discards[max(0,N-6)..N]，内部由旧到新）。padding 槽全部 0。
 | 5 | red | 0/1 |
 | 6 | cut | 0=手切,1=摸切 |
 | 7 | riichi_stage | 0=立直前,1=宣言牌,2=立直后 |
-| 8 | supplied | 0/1（存在某副露 from_who==该对手且 called_tile==该实体牌） |
+| 8 | supplied | 0/1（存在某副露 from_who==该对手且 called_tile_index 命中本河牌下标；被鸣河牌只标记恰好那一张） |
 | 9 | age_bucket | 0=最新,1=1-2张前,2=3-5张前,3=6+张前 |
 
 ### 3.7 MELD（kind 8, DENSE）
@@ -241,7 +241,7 @@ discards[max(0,N-6)..N]，内部由旧到新）。padding 槽全部 0。
 | 3 | self_concealed_count | 0..4 |
 | 4 | self_discard_count | 0..4 |
 | 5 | self_ever_discarded | 0/1 |
-| 6 | public_count | 0..4（四家牌河+公开副露+宝牌指示牌中该 kind 的数量，cap 4） |
+| 6 | public_count | 0..4（实体口径：四家牌河 + 公开副露 + 宝牌指示牌中该 kind 的数量，被鸣河牌只计一次（计在副露），cap 4） |
 | 7 | known_count | 0..4（public + self_concealed，cap 4） |
 | 8 | unknown_count | 0..4 = 4-known |
 | 9 | all_seen | 0/1（unknown==0） |
@@ -282,13 +282,16 @@ discards[max(0,N-6)..N]，内部由旧到新）。padding 槽全部 0。
 
 ### 3.10 ACTION_QUERY（kind 11/12, DENSE）
 
-actor 行字段 = 14 个嵌入特征（order 即 schema 顺序）：
+actor 行字段 = 15 个嵌入特征（order 即 schema 顺序）：
 `fields[2]=action_type_code(1..11)、fields[3]=primary_tile_code(0=N/A,1..34)、
 fields[4]=source_seat_code(0=N/A,1..3)、fields[5]=tsumogiri_mode(0=非当前摸牌,1=当前摸牌；
-仅 discard id∈[1,75) 有意义，由 action_id-1 的奇偶恢复)、fields[6..15]=answer_0..answer_9`。
-action_id 不进入 embedding（仅用于 logits 映射与排序）；完整的 15 宽 query 行
-（query_type/action_id/action_type/primary_tile/source_seat/answers）作为
-`query_rows` 存储单独保留，供一致性校验使用。
+仅 discard id∈[1,75) 有意义，由 action_id-1 的奇偶恢复)、fields[6]=action_id(0..240)、
+fields[7..16]=answer_0..answer_9`。
+action_id 进入 embedding（241 维专用离散表），是**完整 consume 组合 + 赤牌身份 + tsumogiri
+的规范编码**（discard：牌种+赤五+tsumogiri；chi：consume 对；pon：红/普通对；kan：牌种；
+hora/ryukyoku/pass/reach 各一）；因此 consume 不再需要单独进入 token 字段。
+完整的 15 宽 query 行（query_type/action_id/action_type/primary_tile/source_seat/answers）
+作为 `query_rows` 存储单独保留，供一致性校验使用。
 
 ### 3.11 CRITIC_HAND（kind 13, SIMPLE）
 
@@ -321,7 +324,10 @@ action_id 不进入 embedding（仅用于 logits 映射与排序）；完整的 
 - Actor 层：
   - Shared(segment 1) ↔ Shared 双向；Shared 不可见 Analysis/Action。
   - Analysis(segment 2) → Shared ∪ Analysis（Analysis 之间全可见）。
-  - Action pair i（segment 3 的第 2i,2i+1 行）→ Shared ∪ Analysis ∪ 本 pair；不同 pair 互不可见。
+  - SEP_ACTIONS（kind 110）为 Actions 段标记：独立角色，SEP_ACTIONS 只可读自己，
+    Action 行可读 SEP_ACTIONS；SEP_ACTIONS 不并入 Analysis 的可见域。
+  - Action pair i（segment 3 的第 2i,2i+1 行）→ Shared ∪ Analysis ∪ SEP_ACTIONS ∪ 本 pair；
+    不同 pair 互不可见。
   - 所有有效 query 只作用有效 key；padding 行不可见。
 - Critic 层：Shared ∪ Critic 全部（含 SEP_CRITIC/闭手/未来/Value Query）双向；Value Query 位于
   末尾并读取全部。
