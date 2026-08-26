@@ -459,4 +459,22 @@ mod tests {
             .unwrap();
         assert_eq!(simple_shanten(&counts, 0, MODE_MIN_DROP).unwrap(), expected);
     }
+
+    #[test]
+    fn bucket_o2_boundaries_are_exact() {
+        // O2 有效牌剩余枚数：0 精确，1-4/5-8/9-12/13-16/17-20/21+。
+        assert_eq!(bucket_o2(0), 0);
+        assert_eq!(bucket_o2(1), 1);
+        assert_eq!(bucket_o2(4), 1);
+        assert_eq!(bucket_o2(5), 2);
+        assert_eq!(bucket_o2(8), 2);
+        assert_eq!(bucket_o2(9), 3);
+        assert_eq!(bucket_o2(12), 3);
+        assert_eq!(bucket_o2(13), 4);
+        assert_eq!(bucket_o2(16), 4);
+        assert_eq!(bucket_o2(17), 5);
+        assert_eq!(bucket_o2(20), 5);
+        assert_eq!(bucket_o2(21), 6);
+        assert_eq!(bucket_o2(1000), 6);
+    }
 }
