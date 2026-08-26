@@ -324,12 +324,76 @@ fn concealed_count(observation: &Observation, player: usize, pending: Option<u8>
     total.max(0)
 }
 
-fn is_supplied(observation: &Observation, discard_seat: usize, tile: u32) -> bool {
-    observation.melds.iter().flatten().any(|meld| {
+/// 收集每座牌河中被鸣的下标集合（0 基，实体去重用）。
+fn claimed_river_indices(melds: &[Vec<Meld>], river_lengths: &[usize]) -> Vec<Vec<bool>> {
+    let mut claimed: Vec<Vec<bool>> = river_lengths.iter().map(|&len| vec![false; len]).collect();
+    for meld_rows in melds {
+        for meld in meld_rows {
+            if meld.from_who >= 0 {
+                if let Some(index) = meld.called_tile_index {
+                    let from = meld.from_who as usize;
+                    if from < claimed.len() {
+                        if let Some(slot) = claimed[from].get_mut(index as usize) {
+                            *slot = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    claimed
+}
+
+/// 实体口径公开计数：副露全部 + 未被鸣的河牌 + 宝牌指示牌，被鸣河牌只出现一次。
+fn entity_public_counts(
+    melds: &[Vec<Meld>],
+    discards: &[Vec<u32>],
+    dora_indicators: &[u32],
+) -> [u8; TILE_KINDS] {
+    let river_lengths: Vec<usize> = discards.iter().map(|river| river.len()).collect();
+    let claimed = claimed_river_indices(melds, &river_lengths);
+    let mut counts = [0_u8; TILE_KINDS];
+    for (player, river) in discards.iter().enumerate() {
+        for (index, &tile) in river.iter().enumerate() {
+            if claimed[player].get(index).copied().unwrap_or(false) {
+                continue;
+            }
+            let kind = kind_of(tile);
+            if kind < TILE_KINDS {
+                counts[kind] = counts[kind].min(3) + 1;
+            }
+        }
+    }
+    for meld_rows in melds {
+        for meld in meld_rows {
+            for &tile in &meld.tiles {
+                let kind = kind_of(u32::from(tile));
+                if kind < TILE_KINDS {
+                    counts[kind] = counts[kind].min(3) + 1;
+                }
+            }
+        }
+    }
+    for &tile in dora_indicators {
+        let kind = kind_of(tile);
+        if kind < TILE_KINDS {
+            counts[kind] = counts[kind].min(3) + 1;
+        }
+    }
+    counts
+}
+
+/// 判断某条河牌（0 基下标）是否恰好被某副露鸣走。
+fn is_supplied_by(melds: &[Vec<Meld>], discard_seat: usize, river_index: usize) -> bool {
+    melds.iter().flatten().any(|meld| {
         meld.from_who >= 0
             && meld.from_who as usize == discard_seat
-            && meld.called_tile.map(|value| u32::from(value)) == Some(tile)
+            && meld.called_tile_index == Some(river_index as u8)
     })
+}
+
+fn is_supplied(observation: &Observation, discard_seat: usize, river_index: usize) -> bool {
+    is_supplied_by(&observation.melds, discard_seat, river_index)
 }
 
 fn riichi_stage(declared: bool, declaration: Option<u8>, index: usize) -> i32 {
@@ -406,32 +470,12 @@ fn encode_one(observation: &Observation) -> Result<(Vec<i32>, Vec<f32>), String>
     let mut numerics: Vec<f32> = Vec::new();
     let order = rel_order(seat);
 
-    // 公开可见计数：四家牌河 + 全部副露 + 宝牌指示牌。
-    let mut public_counts = [0_u8; TILE_KINDS];
-    for river in &observation.discards {
-        for &tile in river {
-            let kind = kind_of(tile);
-            if kind < TILE_KINDS {
-                public_counts[kind] = public_counts[kind].min(3) + 1;
-            }
-        }
-    }
-    for meld_rows in &observation.melds {
-        for meld in meld_rows {
-            for &tile in &meld.tiles {
-                let kind = kind_of(u32::from(tile));
-                if kind < TILE_KINDS {
-                    public_counts[kind] = public_counts[kind].min(3) + 1;
-                }
-            }
-        }
-    }
-    for &tile in &observation.dora_indicators {
-        let kind = kind_of(tile);
-        if kind < TILE_KINDS {
-            public_counts[kind] = public_counts[kind].min(3) + 1;
-        }
-    }
+    // 公开可见计数（实体口径：被鸣河牌不再双计，只出现在副露里一次）。
+    let public_counts = entity_public_counts(
+        &observation.melds,
+        &observation.discards,
+        &observation.dora_indicators,
+    );
     let own_counts = tile_counts(&own_hand);
     let remaining = remaining_counts(&own_counts, &public_counts);
     let own_river_u8: Vec<u8> = observation.discards[seat]
@@ -702,7 +746,7 @@ fn encode_one(observation: &Observation) -> Result<(Vec<i32>, Vec<f32>), String>
                     red_flag(*tile),
                     i32::from(flags.get(index).copied().unwrap_or(false)),
                     riichi_stage(declared, declaration, index),
-                    i32::from(is_supplied(observation, player, *tile)),
+                    i32::from(is_supplied(observation, player, index)),
                     age,
                 ],
             );
@@ -936,4 +980,94 @@ pub fn prepare_current_state_batch(
         numeric: numeric_array.unbind(),
         offsets: offsets_array.unbind(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meld(meld_type: MeldType, from_who: i8, called_tile: Option<u8>, index: Option<u8>) -> Meld {
+        Meld::new_with_index(
+            meld_type,
+            match meld_type {
+                MeldType::Pon => vec![108, 108, 109],
+                MeldType::Chi => vec![96, 100, 104],
+                MeldType::Daiminkan => vec![108, 108, 109, 110],
+                MeldType::Ankan => vec![16, 17, 18, 19],
+                MeldType::Kakan => vec![108, 108, 109, 110],
+            },
+            meld_type != MeldType::Ankan,
+            from_who,
+            called_tile,
+            index,
+        )
+    }
+
+    #[test]
+    fn supplied_marks_only_exact_claimed_river_index() {
+        // 同牌种两张河牌：只有下标 0 被鸣，is_supplied 只标 0，不标 1。
+        let melds = vec![vec![meld(MeldType::Pon, 1, Some(108), Some(0))]];
+        assert!(is_supplied_by(&melds, 1, 0));
+        assert!(!is_supplied_by(&melds, 1, 1));
+        assert!(!is_supplied_by(&melds, 1, 2));
+        // 下标 1 被鸣时只标 1。
+        let melds2 = vec![vec![meld(MeldType::Pon, 1, Some(108), Some(1))]];
+        assert!(!is_supplied_by(&melds2, 1, 0));
+        assert!(is_supplied_by(&melds2, 1, 1));
+    }
+
+    #[test]
+    fn entity_counts_deduplicate_claimed_river_tile() {
+        // 河 1 有 [E,E,9s]（108,108,104），副露为 p2 的 Pon E（from p1, index 0）。
+        let melds = vec![
+            vec![],
+            vec![],
+            vec![meld(MeldType::Pon, 1, Some(108), Some(0))],
+            vec![],
+        ];
+        let discards = vec![vec![], vec![108, 108, 104], vec![], vec![]];
+        let dora: Vec<u32> = vec![];
+        let counts = entity_public_counts(&melds, &discards, &dora);
+        assert_eq!(counts[27], 4); // 河 1 张 E（另一张被鸣）+ 副露 3 张 E = 4 实体
+        assert_eq!(counts[26], 1); // 9s
+    }
+
+    #[test]
+    fn entity_counts_do_not_double_count_with_cap() {
+        // 河 2×E + 副露 3×E = 5 出现次数 → 实体 public=4（E 共 4 张），不被 5 掩盖。
+        let melds = vec![
+            vec![],
+            vec![],
+            vec![meld(MeldType::Pon, 1, Some(108), Some(0))],
+            vec![],
+        ];
+        let discards = vec![vec![], vec![108, 108], vec![], vec![]];
+        let counts = entity_public_counts(&melds, &discards, &[]);
+        assert_eq!(counts[27], 4);
+    }
+
+    #[test]
+    fn bucket_boundaries_are_exact() {
+        assert_eq!(bucket_honba(19), 19);
+        assert_eq!(bucket_honba(20), 20);
+        assert_eq!(bucket_sticks(3), 3);
+        assert_eq!(bucket_sticks(4), 4);
+        assert_eq!(bucket_turn(0), 0);
+        assert_eq!(bucket_turn(25), 25);
+        assert_eq!(bucket_turn(26), 26);
+        assert_eq!(bucket_post_riichi(15), 15);
+        assert_eq!(bucket_post_riichi(16), 16);
+        assert_eq!(bucket_count6(5), 5);
+        assert_eq!(bucket_count6(6), 6);
+        assert_eq!(bucket_kind_count(33), 33);
+        assert_eq!(bucket_kind_count(34), 34);
+        assert_eq!(bucket_entity_count(99), 99);
+        assert_eq!(bucket_entity_count(100), 100);
+        assert_eq!(bucket_yakuhai(5), 5);
+        assert_eq!(bucket_yakuhai(6), 6);
+        assert_eq!(bucket_dora_aka(7), 7);
+        assert_eq!(bucket_dora_aka(8), 8);
+        assert_eq!(bucket_base_han(9), 9);
+        assert_eq!(bucket_base_han(10), 10);
+    }
 }
