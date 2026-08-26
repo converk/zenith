@@ -7,10 +7,10 @@
 #   - 运行日志:  logs/v18/(本脚本: v18_precompute_60pct.log、v18_sft_from_scratch.log、统计快照)
 # 训练节奏(3000 steps 验证/保存、96 半庄终评)在 sft/contract.py 单点定义,勿在配置复制。
 #
-# 用法:
+# 用法(前台运行,打印实时输出到终端,同时 tee 落盘日志):
 #   bash audit/reports/v18/scripts/run_v18_precompute_and_sft.sh             # 生成数据 + 训练
 #   bash audit/reports/v18/scripts/run_v18_precompute_and_sft.sh --skip-precompute  # 已有数据仅训练
-# 环境变量(可选): CONDA_ENV=Mahjong-AI  WORKERS=16
+# 内置默认(可被环境变量覆盖): CONDA_ENV=Mahjong-AI  WORKERS=16  CUDA_DEVICE=0,1
 # 注意: 脚本不处理 resume;恢复训练请用自包含 resume 配置手工启动(参照 v17_ppo_resume.yaml 做法)。
 set -euo pipefail
 
@@ -42,6 +42,17 @@ export CUDA_DEVICE
 export PYTHONUNBUFFERED=1
 
 mkdir -p "$LOG_DIR" "$CKPT_DIR"
+
+cat <<EOF
+[v18] 前台一键运行(数据预处理 → 自检 → SFT 训练)
+      conda_env = ${CONDA_ENV}
+      workers   = ${WORKERS}
+      cuda      = ${CUDA_DEVICE}
+      源数据    = ${SOURCE_DIR}
+      编码输出  = ${DATASET_OUT}
+      模型保存  = ${CKPT_DIR}
+      日志目录  = ${LOG_DIR}
+EOF
 
 if [[ ! -d "$SOURCE_DIR" ]]; then
   echo "错误: 源数据目录不存在: $SOURCE_DIR" >&2
