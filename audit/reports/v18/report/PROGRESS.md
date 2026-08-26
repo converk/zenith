@@ -442,3 +442,98 @@ conda run -n Mahjong-AI python -m riichi_ppo_v1.tools.validate --parameter-contr
 - **边界确认**：未修改 PPO/rollout/1v3/riichi_lab_bot 旧输入契约（仅包级 import 兼容）；
   未删除/覆盖任何 checkpoint、数据集、历史报告；未生成 60% 全量编码数据集；
   V16/V17 资产保持只读归档。
+
+## 旧输入冗余代码清理（2026-08-27）
+
+范围：删除 V18 重构后零引用的旧 54 行原子 Snapshot 族、旧 per-player semantic-token
+路径与模型侧死代码/占位；PPO/rollout/learner/worker/inference/eval/1v3/GRP/riichi_lab_bot
+训练路基（仍引用旧 history/snapshot 契约者）一律**未修改**，仅标记为待迁移。
+
+命令（每主题提交前执行）：
+
+```bash
+rg -n "prepare_atomic_snapshots|AtomicSnapshotBatch|SNAPSHOT_FIELD_COUNT" riichi_ppo_v1 riichi_lab_bot   # 零命中
+rg -n "SemanticToken|KIND_TILE_COUNT|SEGMENT_ACTOR_STATE|DecisionSnapshot|history_generations" \
+  RiichiEnv/riichienv-state-machine riichi_ppo_v1 riichi_lab_bot                                       # 零命中
+env LD_LIBRARY_PATH=$CONDA_PREFIX/lib conda run --no-capture-output -n Mahjong-AI \
+  cargo test --manifest-path RiichiEnv/Cargo.toml --workspace
+conda run --no-capture-output -n Mahjong-AI python -m pytest -q \
+  riichi_ppo_v1/tests/unit riichi_ppo_v1/tests/protocol riichi_ppo_v1/tests/integration
+conda run --no-capture-output -n Mahjong-AI python -m pytest -q RiichiEnv/tests
+conda run --no-capture-output -n Mahjong-AI python -m riichi_ppo_v1.tools.validate --parameter-contract
+conda run -n Mahjong-AI python audit/reports/v18/scripts/v18_audit_oracle.py
+conda run -n Mahjong-AI python audit/reports/v18/scripts/v18_model_structure_audit.py
+```
+
+### 提交清单（每主题可独立回滚）
+
+1. `refactor(constants)` — 溢出桶常量迁移到单源（6eb0b73）：
+   `OPEN_MELD_YAKUHAI_HAN_OVERFLOW_BUCKET`(=6)/`VISIBLE_MELD_DORA_AKA_OVERFLOW_BUCKET`(=8)
+   迁入 `riichienv-state-machine/src/lib.rs` 常量区并导出到 `riichi` 扩展；
+   `ENCODING_PROTOCOL_VERSION`(18) 导出随之迁入 lib.rs（原 atomic_snapshot::register 提供；
+   为 C1 删除模块的前置）。`encoding_protocol.py` 增加 Python 镜像，
+   `test_v18_encoding_protocol.py::test_overflow_bucket_constants_mirror_rust` 交叉验证
+   （schema 基数 = 溢出桶 + 1）。
+2. `chore(rust) C1`（0959f58）— 删除 `atomic_snapshot.rs` 模块及
+   `prepare_atomic_snapshots`/`AtomicSnapshotBatch`/`global_visible_facts`/
+   `self_progress_facts`/`opponent_riichi_traits`/`first_six_discard_counts` 与其单测；
+   `_riichienv.pyi`/`riichienv/__init__.py`/`riichienv-python/src/lib.rs` 同步收口导出。
+   保留 `open_meld_yakuhai_han`/`visible_meld_dora_aka_han`/`dora_kind` 等当前编码器活跃函数。
+3. `chore(rust) C2`（9e6a1f9）— 删除 `player.rs` 旧 per-player semantic-token 路径与
+   `semantic_token_tests.rs`；`manager.prepare_decisions` 只返回 241 维合法掩码（旧
+   history/Snapshot 材料输出无任何活跃消费者，快照输入参数随之删除，bridge/sft/validation
+   同步适配）；删除 `DecisionSnapshot`/`ACTOR_*`/`snapshot_tile` 与 table 的
+   `history_generations`；`apply_events_batch` 保留事件解析/校验/边界同步与合法请求失效。
+4. `chore(model) C3`（fa8d27d）— 删除 `DenseSlotFusion`（其槽位敏感性/顺序交换/padding
+   断言已由 `StateTokenEmbedding` 等价用例覆盖，无需移植）、`_SEGMENT_ORDER_VALIDATOR`
+   占位、`SEGMENT_KINDS`；清理 model/ 与 sft/ 全部未用 import（含 trainer.py 未用
+   `grad_norm` 赋值；`validation.py` NUM_ACTIONS 改从 schema 单源导入）。`schema.py`
+   保留 `NUM_ACTIONS` 再导出（8+ 处消费的单一来源枢纽，非死代码）。
+5. 导出收口与过时注释（本次）— `__init__.py`/`_riichienv.pyi`/`lib.rs` 的导出删除已在
+   C1/C2 同一提交内完成（符号删除与导出收口必须原子提交才能编译）；补充
+   `validation.py` 模块文档与 `v18_input_protocol.md`/`KyokuEventTupleProtocol.md`
+   残留的旧「54 行 Atomic Snapshot / history adapter」表述清理（负向表述保留「不再…」
+   语义，仅删除对已删产物的引用）。
+
+### 删除清单（含 rg 证据）
+
+| 对象 | 位置 | 证据 |
+| --- | --- | --- |
+| `atomic_snapshot.rs`（601 行，含 SNAPSHOT_SCHEMA/encode/validate/register） | `riichienv-state-machine/src/` | 模块自迁出 overflow 常量后仅自测引用；`rg atomic_snapshot` 活跃路径零命中 |
+| `prepare_atomic_snapshots`/`AtomicSnapshotBatch` | `riichienv-python/src/encoding_facts.rs` | `rg prepare_atomic_snapshots` 在 `riichi_ppo_v1/`、`riichi_lab_bot/`、`RiichiEnv/tests` 零命中；仅导出 |
+| `global_visible_facts`/`self_progress_facts`/`opponent_riichi_traits`/`first_six_discard_counts` | `encoding_facts.rs` | 仅被 `prepare_atomic_snapshots` 调用（已证）；对应 5 个单测一并删除 |
+| `SemanticToken`/`tokens()`/`append_state_tokens` 等全部令牌块 | `player.rs`（整文件删除） | 模块外零引用；`tokens()` 唯一调用方 `prepare_decisions` 同步改为掩码-only |
+| `semantic_token_tests.rs`（3 测试） | `MjaiKyokuStateMachine/` | 仅测旧令牌格式 |
+| `DecisionSnapshot`/`ACTOR_*`/`snapshot_tile`/`history_generations` | `types.rs`/`protocol.rs`/`table.rs` | 均为令牌路径专属，随 C2 删除 |
+| `DenseSlotFusion` | `model/dense_embedding.py` | `rg DenseSlotFusion` 仅测试 import；测试实际只用 StateTokenEmbedding |
+| `_SEGMENT_ORDER_VALIDATOR`/`SEGMENT_KINDS` | `architecture.py`/`encoding_protocol.py` | 零外部引用 |
+
+### 保留清单（确认未删/未改语义）
+
+- 当前 V18 全部路径：`prepare_current_state_batch`/`encode_query_batch`/
+  `prepare_encoding_facts`/`analyze_encoding_yaku_batch`（保留函数
+  `open_meld_yakuhai_han`/`visible_meld_dora_aka_han`/`dora_kind`/`decompose_melds`/
+  `kernel_shape`/`tile_counts`/`count_dora_aka`/`dora_type`/`physical_tiles`/
+  `remove_by_type`/`observation_facts`）、`model/{current_state,dense_embedding,
+  architecture,semantic_validation,native_encoding,action_groups,validation,bridge,
+  critic_features}.py`、`sft/*`、`configs/v18_*`。
+- 状态机能力：`manager.prepare_decisions`（法律掩码）、`decode_actions`、
+  `action_ids_with_source_indices`、`apply_events_batch`、`query_encoding.rs`、
+  `analysis.rs`、`types.rs`（MjaiEvent/MjaiTile 常量）。
+- PPO 训练路基：`training/{rollout_buffer,learner,worker,inference,metrics,
+  trajectory}*`、`evaluation/*`、`training/grp/*`、`riichi_lab_bot/*` —— 原样保留；
+  其中对旧 history/snapshot 字段的引用为待迁移项（`test_learner_accepts_only_
+  rollout_buffer` 断点、`riichi_lab_bot/tests` collection 失败均未修复）。
+- 归档资产：`specs/008-*`、`audit/reports/v16|v17`、`checkpoints/*`、`datasets/*`、
+  `logs/v16|v17` —— 未修改未删除。
+
+### 验证结果（与清理前一致）
+
+- `cargo test --workspace`：148→134 通过（去除 3 个旧令牌测试与 5 个旧快照测试 =
+  删除数量一致），0 failed；
+- pytest unit+protocol+integration：467 passed, 2 failed —— 仅既有两项
+  （`test_historical_audit_and_logs_are_removed_but_checkpoints_remain` 环境资产项、
+  `test_learner_accepts_only_rollout_buffer` PPO 待迁移断点）；`RiichiEnv/tests` 2 skipped；
+- `validate --parameter-contract`：通过，total **5,804,914** 不变（state keys 258）；
+- 两个 oracle（`v18_audit_oracle.py`：862 决策 concealed/public/known=0、collision=0；
+  `v18_model_structure_audit.py`：RoPE/padding/batch PASS）输出与清理前完全一致。

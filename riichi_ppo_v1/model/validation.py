@@ -1,4 +1,4 @@
-"""Reusable validation helpers for the 4-player semantic-token integration boundary."""
+"""Reusable validation helpers for the 4-player current-state integration boundary."""
 
 from __future__ import annotations
 

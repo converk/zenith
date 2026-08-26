@@ -44,8 +44,8 @@ Actor 序列为 `[B,T,32]` 的当前局面快照（段/类别/字段 schema 见
 `model/encoding_protocol.py` 与 `v18_input_protocol.md`）：桌况、自身手牌与
 SELF_STATE_ANALYSIS、四家 PLAYER、三家完整牌河（逐张 + 各两个六张摘要）、当前副露、
 34 个 TILE_STATE、三个 OPPONENT_ANALYSIS 与按 action ID 升序的 Offense/Defense Query。
-**不包含**：`tiles_left`、独立当前供牌公共字段、54 行 Atomic Snapshot、MJAI 历史事件
-token（无历史 generation/cache 标识）。所有类别分隔符与有效 token 都计入长度并应用
+**不包含**：`tiles_left`、独立当前供牌公共字段、MJAI 历史事件 token（无历史
+generation/cache 标识）。所有类别分隔符与有效 token 都计入长度并应用
 RoPE；超过 `context_tokens` 必须拒绝，不能截断。
 
 Query 行宽 15 不变：每动作连续 Offense/Defense 两行；`chi/pon/daiminkan/ron` 的

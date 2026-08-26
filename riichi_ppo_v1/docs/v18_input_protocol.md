@@ -51,8 +51,8 @@ ACTION_OFFENSE_QUERY / ACTION_DEFENSE_QUERY ×(2 per action)   # action_id 升�
 ```
 
 相对座次：0=自身，1=下家，2=对面，3=上家。没有**自身逐张牌河 token**、没有
-`tiles_left`、没有独立当前供牌公共字段、没有 MJAI 历史事件 token，也没有 54 行
-Atomic Snapshot；自己舍牌计数、立直宣言信息与振听语义由 tile-state / SELF_PLAYER /
+`tiles_left`、没有独立当前供牌公共字段、没有 MJAI 历史事件 token；自己舍牌计数、
+立直宣言信息与振听语义由 tile-state / SELF_PLAYER /
 SELF_STATE_ANALYSIS 无损承载。
 
 ## 3. 关键类别字段（摘要）
@@ -103,7 +103,7 @@ SELF_STATE_ANALYSIS 无损承载。
 3 Shared + 1 Actor + 2 Critic 层，`dense_slot_dim=32`、`dense_fusion_dim=512`，
 `context_tokens=256`；RMSNorm/RoPE/gated FFN。密集类别使用槽位独立 embedding 表 +
 共享输入投影（512）+ 共享 gated MLP；总参数 ≤6.0M（当前约 5.764M）。无 MHA 双分支、
-无 Q scorer/Q boost、无 history/54 行 Snapshot adapter。checkpoint 只接受 V18
+无 Q scorer/Q boost。checkpoint 只接受 V18
 `current_state_snapshot` 配置与精确 state keys；Actor-only SFT artifact 仅保存 Actor
 范围参数并 strict load，不提供旧版本兼容。
 
