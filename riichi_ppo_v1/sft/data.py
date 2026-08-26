@@ -1,4 +1,4 @@
-"""V18 SFT 输入编码与预计算样本读取。"""
+"""V18 当前局面 SFT 输入编码与预计算样本读取。"""
 
 from __future__ import annotations
 
@@ -10,27 +10,24 @@ from typing import Iterator
 import numpy as np
 
 from ..model.action_groups import action_id
-from ..model.action_query import analyze_action_queries, encode_query_row
+from ..model.current_state import EncodedStateBatch, encode_batch
 from ..model.bridge import (
     action_jsons,
     action_jsons_and_decision_flag,
     snapshot_json,
 )
-from ..model.encoding_protocol import ENCODED_FORMAT
-from ..model.snapshot import encode_snapshot_rows
+from ..model.encoding_protocol import ENCODED_FORMAT, TOKEN_NUMERIC_WIDTH, TOKEN_ROW_WIDTH
 
 
 @dataclass(slots=True)
 class EncodedSample:
-    """V18 决策样本:Objective Facts + Atomic Snapshot + 每动作一对 Query。"""
+    """V18 决策样本：完整 Actor 序列 + Query 元数据 + 监督动作。"""
 
-    history_factors: np.ndarray
-    history_numeric: np.ndarray
-    snapshot_factors: np.ndarray
-    snapshot_numeric: np.ndarray
-    query_rows: np.ndarray
-    action_ids: np.ndarray
-    legal_mask: np.ndarray
+    actor_factors: np.ndarray  # [T, 32] int32
+    actor_numeric: np.ndarray  # [T, 8] float32
+    query_rows: np.ndarray  # [2Q, 15] int32
+    action_ids: np.ndarray  # [Q] int32
+    legal_mask: np.ndarray  # [241] bool
     action: int
     year: int
     game_id: str
@@ -39,21 +36,16 @@ class EncodedSample:
     decision_index: int = 0
 
     @property
-    def history_length(self) -> int:
-        return int(self.history_factors.shape[0])
-
-    @property
-    def snapshot_length(self) -> int:
-        return int(self.snapshot_factors.shape[0])
+    def token_length(self) -> int:
+        """完整 Actor 序列的 token 数。"""
+        return int(self.actor_factors.shape[0])
 
     @property
     def query_pair_count(self) -> int:
         return int(self.action_ids.shape[0])
 
-    @property
-    def token_length(self) -> int:
-        """长度分桶键:完整目标序列的 token 数。"""
-        return self.history_length + self.snapshot_length + 2 * self.query_pair_count
+    def to_rows(self) -> np.ndarray:
+        return self.actor_factors
 
 
 def _member_metadata(name: str) -> tuple[int, str, int]:
@@ -74,7 +66,7 @@ def encode_kyoku(
     game_id: str = "",
     kyoku_index: int = 0,
 ) -> list[EncodedSample]:
-    """Replay 一局并编码 V18 输入(Objective Facts + Snapshot + Query 对)。"""
+    """Replay 一局并按当前局面协议编码每个决策。"""
     from .contract import assert_runtime_contract
 
     assert_runtime_contract()
@@ -91,8 +83,8 @@ def encode_kyoku(
     pending: list[
         tuple[
             int, object,
-            np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
-            np.ndarray, np.ndarray, np.ndarray, int,
+            np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+            np.ndarray, int,
         ]
     ] = []
     active = set(range(4))
@@ -126,12 +118,11 @@ def encode_kyoku(
             raise RuntimeError(
                 f"failed to encode legal actions: game={game_id} kyoku={kyoku_index} seats={env_indices}"
             ) from exc
-        prepared_factors = np.asarray(prepared[0], dtype=np.uint8)
-        prepared_numeric = np.asarray(prepared[1], dtype=np.float32)
-        prepared_lengths = np.asarray(prepared[2], dtype=np.int64)
         prepared_legal = np.asarray(prepared[3], dtype=np.bool_)
+        decisions: list[tuple[object, list[tuple[object, int]]]] = []
+        seat_list: list[int] = []
+        target_actions: list[int] = []
         for row, (seat, observation, expert_action) in enumerate(batch):
-            length = int(prepared_lengths[row])
             legal = prepared_legal[row]
             target_action = action_id(expert_action, observation)
             if target_action is None:
@@ -153,8 +144,7 @@ def encode_kyoku(
             for action, template in zip(legal_actions, templates, strict=True):
                 key = json.dumps(json.loads(template), separators=(",", ":"), sort_keys=True)
                 representative.setdefault(key, action)
-            query_rows: list[np.ndarray] = []
-            action_ids: list[int] = []
+            actions_by_id: list[tuple[object, int]] = []
             for action_id_value, raw in zip(ids, decoded, strict=True):
                 key = json.dumps(json.loads(raw), separators=(",", ":"), sort_keys=True)
                 action = representative.get(key)
@@ -163,35 +153,33 @@ def encode_kyoku(
                         f"decoded action_id={action_id_value} has no legal representative: "
                         f"game={game_id} seat={seat} mjai={raw}"
                     )
-                offense, defense = analyze_action_queries(
-                    observation, action, action_id_value,
-                )
-                query_rows.append(encode_query_row(offense))
-                query_rows.append(encode_query_row(defense))
-                action_ids.append(action_id_value)
-            snapshot_factors, snapshot_numeric = encode_snapshot_rows(observation)
+                actions_by_id.append((action, action_id_value))
+            decisions.append((observation, actions_by_id))
+            seat_list.append(seat)
+            target_actions.append(int(target_action))
+        encoded: EncodedStateBatch = encode_batch(decisions)
+        for row, (seat, observation, _expert_action) in enumerate(batch):
+            count = int(encoded.query_pair_counts[row])
             pending.append((
                 seat, observation,
-                prepared_factors[row, :length].copy(),
-                prepared_numeric[row, :length].copy(),
-                snapshot_factors, snapshot_numeric,
-                np.asarray(query_rows, dtype=np.int32),
-                np.asarray(action_ids, dtype=np.int32),
-                legal.copy(), int(target_action),
+                encoded.actor_factors[row, : int(encoded.actor_lengths[row])].copy(),
+                encoded.actor_numeric[row, : int(encoded.actor_lengths[row])].copy(),
+                encoded.query_rows[row, : 2 * count].copy(),
+                encoded.action_ids[row, :count].copy(),
+                encoded.legal_mask[row].copy(),
+                target_actions[row],
             ))
     if not pending:
         return []
     seat_samples: list[list[EncodedSample]] = [[] for _ in range(4)]
     for (
-        seat, _observation, factors, numeric, snapshot_factors,
-        snapshot_numeric, rows, action_ids_array, legal, target_action,
+        seat, _observation, actor_factors, actor_numeric, query_rows,
+        action_ids_array, legal, target_action,
     ) in pending:
         seat_samples[seat].append(EncodedSample(
-            history_factors=factors,
-            history_numeric=numeric,
-            snapshot_factors=snapshot_factors,
-            snapshot_numeric=snapshot_numeric,
-            query_rows=rows,
+            actor_factors=actor_factors,
+            actor_numeric=actor_numeric,
+            query_rows=query_rows,
             action_ids=action_ids_array,
             legal_mask=legal,
             action=target_action,

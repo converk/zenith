@@ -1,4 +1,4 @@
-"""V18 SFT 路径的唯一 fail-closed 契约边界。"""
+"""V18 当前局面 SFT 路径的唯一 fail-closed 契约边界。"""
 
 from __future__ import annotations
 
@@ -9,24 +9,27 @@ from typing import Any, Mapping
 
 from ..model.encoding_protocol import (
     ACTION_TYPE_CARDINALITY,
+    CATEGORY_SCHEMAS,
+    CONTEXT_TOKENS,
     DEFENSE_SLOT_ORDER,
     ENCODED_FORMAT,
     ENCODING_PROTOCOL_VERSION,
+    KIND_BOS,
+    NUM_SEPARATORS,
     OFFENSE_SLOT_ORDER,
     QUERY_ROW_WIDTH,
     QUERY_SLOT_COUNT,
-    SNAPSHOT_FACTOR_CARDINALITIES,
-    SNAPSHOT_FACTOR_WIDTH,
-    SNAPSHOT_FIELD_COUNT,
-    SNAPSHOT_FIELDS,
-    SNAPSHOT_NUMERIC_WIDTH,
+    SEPARATOR_IDS,
     SLOT_CARDINALITIES,
+    STATE_PROTOCOL_VERSION,
+    TOKEN_NUMERIC_WIDTH,
+    TOKEN_ROW_WIDTH,
 )
-from ..model.schema import NUM_ACTIONS
+from ..model.schema import NUM_ACTIONS, TILE_KINDS, TID_COUNT
 
-SFT_CONTRACT_VERSION = "riichi-sft-v18-1"
+SFT_CONTRACT_VERSION = "riichi-sft-v18-2"
 RUNTIME_CONTRACT_ID = "riichi-runtime-v18-1"
-DATA_PLAN_VERSION = 1
+DATA_PLAN_VERSION = 2
 DATA_CURSOR_VERSION = 1
 TRAINING_MODES = frozenset({"actor_only", "actor_public_value", "joint_actor_critic"})
 
@@ -35,28 +38,33 @@ TRAINING_MODES = frozenset({"actor_only", "actor_public_value", "joint_actor_cri
 SFT_CADENCE_STEPS = 3000
 SFT_FINAL_EVAL_HANCHAN_COUNT = 96
 
-# V18 输入契约的规范化载荷:协议版本、格式、Rust Schema 全表(字段 ID/名称/
-# 座次/域)、Query 行宽与槽位基数、动作空间维度。任何一项变化都会使哈希变化,
-# 旧数据集 manifest 会 fail closed。载荷只从 Rust 单一来源与协议常量生成,
-# 不允许手工冻结魔法字符串。
+# V18 当前局面输入契约的规范化载荷：协议版本、格式、token 行宽/数值宽、
+# 类别 schema 全表（kind/name/segment/离散字段基数/数值字段）、分隔符、动作空间。
+# 任何一项变化都会使哈希变化，旧数据集 manifest 会 fail closed。
 _ACTOR_INPUT_CONTRACT_PAYLOAD = {
     "protocol_version": ENCODING_PROTOCOL_VERSION,
     "encoded_format": ENCODED_FORMAT,
-    "snapshot_field_count": SNAPSHOT_FIELD_COUNT,
-    "snapshot_schema": [
+    "state_protocol": STATE_PROTOCOL_VERSION,
+    "token_row_width": TOKEN_ROW_WIDTH,
+    "token_numeric_width": TOKEN_NUMERIC_WIDTH,
+    "context_tokens": CONTEXT_TOKENS,
+    "num_separators": NUM_SEPARATORS,
+    "separator_ids": SEPARATOR_IDS,
+    "categories": [
         (
-            field.field_id, field.name, field.relative_seat,
-            field.categorical_max, field.tile_max, field.numeric,
+            schema.kind, schema.name, schema.segment, schema.cls,
+            tuple((field.name, field.cardinality) for field in schema.discrete),
+            tuple((field.name, field.scale) for field in schema.numeric),
+            schema.slot_count,
         )
-        for field in SNAPSHOT_FIELDS
+        for schema in sorted(CATEGORY_SCHEMAS.values(), key=lambda value: value.kind)
     ],
-    "snapshot_factor_cardinalities": tuple(SNAPSHOT_FACTOR_CARDINALITIES),
-    "snapshot_factor_width": SNAPSHOT_FACTOR_WIDTH,
-    "snapshot_numeric_width": SNAPSHOT_NUMERIC_WIDTH,
     "query_row_width": QUERY_ROW_WIDTH,
     "query_slot_count": QUERY_SLOT_COUNT,
     "action_type_cardinality": ACTION_TYPE_CARDINALITY,
     "num_actions": NUM_ACTIONS,
+    "tile_kinds": TILE_KINDS,
+    "tid_count": TID_COUNT,
     "offense_slot_order": OFFENSE_SLOT_ORDER,
     "defense_slot_order": DEFENSE_SLOT_ORDER,
     "slot_cardinalities": SLOT_CARDINALITIES,
@@ -82,7 +90,7 @@ def load_manifest(dataset: Path) -> dict[str, Any]:
 
 
 def validate_manifest(manifest: Mapping[str, Any]) -> None:
-    """对 V18 单协议版本 manifest 执行 fail-closed 校验。"""
+    """对 V18 当前局面单版本 manifest 执行 fail-closed 校验。"""
     if manifest.get("format") != ENCODED_FORMAT:
         raise RuntimeError("only the V18 encoded SFT format is supported")
     if manifest.get("encoding_protocol_version") != ENCODING_PROTOCOL_VERSION:
@@ -93,6 +101,8 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
         raise RuntimeError(
             "encoded dataset carries an unknown V18 protocol contract hash"
         )
+    if manifest.get("state_protocol") != STATE_PROTOCOL_VERSION:
+        raise RuntimeError("encoded dataset carries an unknown state protocol version")
     if not isinstance(manifest.get("source_manifest_sha256"), str) or not manifest["source_manifest_sha256"]:
         raise RuntimeError("V18 SFT manifest lacks source_manifest_sha256")
     counts = manifest.get("counts")

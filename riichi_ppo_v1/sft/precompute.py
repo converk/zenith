@@ -1,4 +1,4 @@
-"""物化确定性的 V18 actor-only SFT 子集以加速训练。"""
+"""物化确定性的 V18 当前局面 actor-only SFT 子集以加速训练。"""
 
 from __future__ import annotations
 
@@ -27,6 +27,14 @@ from ..model.encoding_protocol import (
     OFFENSE_SLOT_ORDER,
     QUERY_ROW_ANSWER_START,
     SLOT_CARDINALITIES,
+    STATE_PROTOCOL_VERSION,
+    SEGMENT_ACTIONS,
+    SEGMENT_ANALYSIS,
+    SEGMENT_CRITIC_FUTURE,
+    SEGMENT_CRITIC_PRIVATE,
+    SEGMENT_SHARED,
+    TOKEN_NUMERIC_WIDTH,
+    TOKEN_ROW_WIDTH,
 )
 from ..model.schema import NUM_ACTIONS
 from .contract import (
@@ -134,12 +142,10 @@ def _require_complete_action_coverage(statistics: dict[str, np.ndarray]) -> None
 
 
 def _write_chunk(path: Path, samples: list[EncodedSample]) -> int:
-    """物化一批 V18 样本:history/snapshot/query 三段 + 身份元数据。"""
+    """物化一批 V18 当前局面样本：actor 序列 + query 元数据 + 身份字段。"""
     count = len(samples)
-    history_offsets = np.zeros(count + 1, dtype=np.int64)
-    history_offsets[1:] = np.cumsum([sample.history_length for sample in samples], dtype=np.int64)
-    snapshot_offsets = np.zeros(count + 1, dtype=np.int64)
-    snapshot_offsets[1:] = np.cumsum([sample.snapshot_length for sample in samples], dtype=np.int64)
+    actor_offsets = np.zeros(count + 1, dtype=np.int64)
+    actor_offsets[1:] = np.cumsum([sample.token_length for sample in samples], dtype=np.int64)
     query_offsets = np.zeros(count + 1, dtype=np.int64)
     query_offsets[1:] = np.cumsum([sample.query_rows.shape[0] for sample in samples], dtype=np.int64)
     action_offsets = np.zeros(count + 1, dtype=np.int64)
@@ -147,15 +153,12 @@ def _write_chunk(path: Path, samples: list[EncodedSample]) -> int:
     temporary = path.with_suffix(".tmp.npz")
     np.savez_compressed(
         temporary,
-        history_offsets=history_offsets,
-        history_factors=np.concatenate([sample.history_factors for sample in samples], axis=0),
-        history_numeric=np.concatenate([sample.history_numeric for sample in samples], axis=0).astype(np.float16),
-        snapshot_offsets=snapshot_offsets,
-        snapshot_factors=np.concatenate([sample.snapshot_factors for sample in samples], axis=0),
-        snapshot_numeric=np.concatenate([sample.snapshot_numeric for sample in samples], axis=0).astype(np.float16),
+        actor_offsets=actor_offsets,
+        actor_factors=np.concatenate([sample.actor_factors for sample in samples], axis=0),
+        actor_numeric=np.concatenate([sample.actor_numeric for sample in samples], axis=0).astype(np.float32),
         query_offsets=query_offsets,
-        action_offsets=action_offsets,
         query_rows=np.concatenate([sample.query_rows for sample in samples], axis=0),
+        action_offsets=action_offsets,
         action_ids=np.concatenate([sample.action_ids for sample in samples], axis=0),
         legal=np.packbits(np.stack([sample.legal_mask for sample in samples]), axis=1, bitorder="little"),
         actions=np.asarray([sample.action for sample in samples], dtype=np.uint8),
@@ -172,7 +175,7 @@ def _write_chunk(path: Path, samples: list[EncodedSample]) -> int:
 def _empty_field_statistics() -> dict[str, np.ndarray]:
     return {
         "query_answer_out_of_range": np.zeros(1, dtype=np.int64),
-        "snapshot_numeric_out_of_range": np.zeros(1, dtype=np.int64),
+        "actor_field_out_of_range": np.zeros(1, dtype=np.int64),
         "legal_actions": np.zeros(NUM_ACTIONS, dtype=np.int64),
         "expert_actions": np.zeros(NUM_ACTIONS, dtype=np.int64),
     }
@@ -181,12 +184,25 @@ def _empty_field_statistics() -> dict[str, np.ndarray]:
 def _accumulate_field_statistics(
     target: dict[str, np.ndarray], samples: list[EncodedSample],
 ) -> None:
-    """累计 query answer 越界、snapshot 数值越界与动作覆盖率。"""
+    """累计 query answer 越界、actor 行域越界与动作覆盖率。"""
+    from ..model.encoding_protocol import CATEGORY_SCHEMAS, is_separator_kind
+
     for sample in samples:
+        rows = sample.actor_factors
+        for token in rows:
+            kind = int(token[1])
+            if is_separator_kind(kind):
+                continue
+            schema = CATEGORY_SCHEMAS[kind]
+            bad = 0
+            for index, field in enumerate(schema.discrete):
+                value = int(token[2 + index])
+                bad += int(not 0 <= value < field.cardinality)
+            target["actor_field_out_of_range"][0] += bad
         pairs = sample.query_pair_count
-        rows = sample.query_rows[: 2 * pairs]
-        offense = rows[0::2, QUERY_ROW_ANSWER_START:]
-        defense = rows[1::2, QUERY_ROW_ANSWER_START:]
+        query = sample.query_rows[: 2 * pairs]
+        offense = query[0::2, QUERY_ROW_ANSWER_START:]
+        defense = query[1::2, QUERY_ROW_ANSWER_START:]
         for index, slot in enumerate(OFFENSE_SLOT_ORDER):
             codes = offense[:, index]
             target["query_answer_out_of_range"][0] += np.count_nonzero(
@@ -197,22 +213,16 @@ def _accumulate_field_statistics(
             target["query_answer_out_of_range"][0] += np.count_nonzero(
                 (codes < 0) | (codes >= SLOT_CARDINALITIES[slot])
             )
-        numeric = sample.snapshot_numeric
-        if len(numeric):
-            bad = np.count_nonzero(np.abs(numeric) > 1.0)
-            bad += np.count_nonzero(~np.isfinite(numeric))
-            target["snapshot_numeric_out_of_range"][0] += bad
         target["legal_actions"] += sample.legal_mask.astype(np.int64)
         target["expert_actions"][int(sample.action)] += 1
 
 
-def _assert_public_history(samples: list[EncodedSample], source: str) -> None:
-    """拒绝 Actor 历史中混入隐藏信息。"""
+def _assert_public_actor(samples: list[EncodedSample], source: str) -> None:
+    """拒绝 Actor 行中混入 Critic 私有信息。"""
     for sample in samples:
-        if np.any(sample.history_factors[:, 9] == 2):
-            raise RuntimeError(
-                f"replay history contains hidden information: {source}"
-            )
+        segments = sample.actor_factors[:, 0].astype(int)
+        if np.any(np.isin(segments, (SEGMENT_CRITIC_PRIVATE, SEGMENT_CRITIC_FUTURE))):
+            raise RuntimeError(f"replay actor sequence contains hidden information: {source}")
 
 
 def _precompute_source_shard(
@@ -256,7 +266,7 @@ def _precompute_source_shard(
             samples = encode_kyoku(
                 _decode(file.read()), year=year, game_id=game_id, kyoku_index=kyoku_index,
             )
-            _assert_public_history(samples, f"{shard}:{member.name}")
+            _assert_public_actor(samples, f"{shard}:{member.name}")
             _accumulate_field_statistics(statistics, samples)
             buffered.extend(samples)
             kyokus += 1
@@ -295,7 +305,7 @@ def precompute(
     require_complete_action_coverage: bool = False,
     base_encoded: Path | None = None,
 ) -> None:
-    """V18 子集的确定性重编码,可复用已有 V18 编码缓存。"""
+    """V18 当前局面子集的确定性重编码,可复用已有 V18 编码缓存。"""
     remainders = tuple(sorted(set(remainders)))
     if denominator <= 0 or not remainders or any(not 0 <= value < denominator for value in remainders):
         raise ValueError("subset remainder must be in [0, subset denominator)")
@@ -386,7 +396,7 @@ def precompute(
             if source_name not in base_statistics:
                 raise RuntimeError(f"base_encoded manifest lacks field_statistics.{source_name}")
             value = base_statistics[source_name]
-            if name in {"query_answer_out_of_range", "snapshot_numeric_out_of_range"}:
+            if name in {"query_answer_out_of_range", "actor_field_out_of_range"}:
                 field_statistics[name] = np.asarray([value], dtype=np.int64)
             else:
                 field_statistics[name] = np.asarray(value, dtype=np.int64)
@@ -454,8 +464,8 @@ def precompute(
         _require_complete_action_coverage(field_statistics)
     if int(field_statistics["query_answer_out_of_range"][0]) != 0:
         raise RuntimeError("V18 encoding produced out-of-range query answers")
-    if int(field_statistics["snapshot_numeric_out_of_range"][0]) != 0:
-        raise RuntimeError("V18 encoding produced out-of-range snapshot numerics")
+    if int(field_statistics["actor_field_out_of_range"][0]) != 0:
+        raise RuntimeError("V18 encoding produced out-of-range actor fields")
     for split in ("train", "validation"):
         if int(counts[f"{split}_kyokus"]) != int(total_kyokus[split]):
             raise RuntimeError(
@@ -466,15 +476,18 @@ def precompute(
         "format": ENCODED_FORMAT,
         "encoding_protocol_version": ENCODING_PROTOCOL_VERSION,
         "encoding_contract_sha256": ACTOR_INPUT_CONTRACT_SHA256,
+        "state_protocol": STATE_PROTOCOL_VERSION,
+        "token_row_width": TOKEN_ROW_WIDTH,
+        "token_numeric_width": TOKEN_NUMERIC_WIDTH,
         "source_manifest_sha256": source_manifest_sha256,
         "subset_denominator": denominator,
         "subset_remainders": list(remainders),
         "game_sample_denominator": game_sample_denominator,
         "game_sample_remainder": game_sample_remainder,
         "actor_only": True,
-        "numeric_dtype": "float16",
+        "numeric_dtype": "float32",
         "legal_encoding": f"packbits-little-{NUM_ACTIONS}",
-        "ordered_public_history_verified": True,
+        "current_state_snapshot_verified": True,
         "complete_action_coverage_required": bool(require_complete_action_coverage),
         "preflight_target_kyokus": total_kyokus,
         "counts": counts,
@@ -483,7 +496,7 @@ def precompute(
            if base_encoded is not None and reused_manifest is not None else {}),
         "field_statistics": {
             "query_answer_out_of_range": int(field_statistics["query_answer_out_of_range"][0]),
-            "snapshot_numeric_out_of_range": int(field_statistics["snapshot_numeric_out_of_range"][0]),
+            "actor_field_out_of_range": int(field_statistics["actor_field_out_of_range"][0]),
             "legal_action_type_coverage": _action_coverage(field_statistics["legal_actions"]),
             "expert_action_type_coverage": _action_coverage(field_statistics["expert_actions"]),
             "legal_action_id_counts": field_statistics["legal_actions"].tolist(),
@@ -503,7 +516,7 @@ def iter_precomputed_samples(
     rank: int = 0,
     world_size: int = 1,
 ) -> Iterator[EncodedSample]:
-    """按确定性全局行流读取 V18 编码 chunk。"""
+    """按确定性全局行流读取 V18 当前局面编码 chunk。"""
     manifest = json.loads((dataset / "manifest.json").read_text(encoding="utf-8"))
     validate_manifest(manifest)
     paths = sorted((dataset / split).glob(f"{split}-*.npz"))
@@ -538,14 +551,14 @@ def iter_precomputed_samples(
         if selected_start >= selected_end:
             continue
         with np.load(path, allow_pickle=False) as data:
-            (history_offsets, history_factors, history_numeric,
-             snapshot_offsets, snapshot_factors, snapshot_numeric,
-             query_offsets, action_offsets, query_rows, action_ids,
+            (actor_offsets, actor_factors, actor_numeric,
+             query_offsets, query_rows,
+             action_offsets, action_ids,
              legal, actions) = (
                 data[name] for name in (
-                    "history_offsets", "history_factors", "history_numeric",
-                    "snapshot_offsets", "snapshot_factors", "snapshot_numeric",
-                    "query_offsets", "action_offsets", "query_rows", "action_ids",
+                    "actor_offsets", "actor_factors", "actor_numeric",
+                    "query_offsets", "query_rows",
+                    "action_offsets", "action_ids",
                     "legal", "actions",
                 )
             )
@@ -559,10 +572,8 @@ def iter_precomputed_samples(
                 random.Random(f"riichi-sft-v18-row-order\0{seed}\0{path.name}").shuffle(order)
             for row in order[selected_start:selected_end]:
                 yield EncodedSample(
-                    history_factors[history_offsets[row]:history_offsets[row + 1]].copy(),
-                    history_numeric[history_offsets[row]:history_offsets[row + 1]].astype(np.float32),
-                    snapshot_factors[snapshot_offsets[row]:snapshot_offsets[row + 1]].copy(),
-                    snapshot_numeric[snapshot_offsets[row]:snapshot_offsets[row + 1]].astype(np.float32),
+                    actor_factors[actor_offsets[row]:actor_offsets[row + 1]].copy(),
+                    actor_numeric[actor_offsets[row]:actor_offsets[row + 1]].astype(np.float32),
                     query_rows[query_offsets[row]:query_offsets[row + 1]].copy(),
                     action_ids[action_offsets[row]:action_offsets[row + 1]].copy(),
                     np.unpackbits(legal[row], bitorder="little", count=NUM_ACTIONS).astype(np.bool_),

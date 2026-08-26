@@ -1,4 +1,4 @@
-# V18 Actor-only BC SFT-ready 自包含配置;Snapshot schema 由 Rust 固定为 54 行。
+# V18 当前局面 Actor-only SFT 自包含配置（无 overlay/隐式继承）。
 seed: 1
 device: cuda
 learner_gpus: 2
@@ -11,10 +11,12 @@ query_heads: 16
 kv_heads: 4
 head_dim: 16
 ffn_dim: 704
-context_tokens: 4096
+dense_slot_dim: 32
+dense_fusion_dim: 512
+context_tokens: 256
 rope_base: 10000.0
 eps: 0.000001
-policy_head_type: isolated_action_query
+policy_head_type: current_state_snapshot
 dataset: datasets/tenhou_sft_2024_2025_encoded_60pct_v18
 epochs: 1
 actor_only: true

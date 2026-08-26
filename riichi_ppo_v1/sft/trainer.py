@@ -1,8 +1,9 @@
 """V18 actor-only SFT 从零训练入口。
 
-V18 输入为 Objective Facts + Atomic Snapshot + 每动作一对 Query,网络为
-isolated_action_query 策略头。节奏键(每 3000 steps 验证/保存、
-最终 96 半庄)只引用 ``sft/contract.py`` 的机制常量,禁止实验配置复制。
+V18 输入为当前局面状态快照（Shared 公共前缀 + Opponent Analysis + 每动作
+Offense/Defense Query），网络为 current_state_snapshot 策略头。节奏键
+(每 3000 steps 验证/保存、最终 96 半庄)只引用 ``sft/contract.py`` 的机制常量,
+禁止实验配置复制。
 """
 
 from __future__ import annotations
@@ -51,8 +52,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "device": "cuda",
     "learner_gpus": 2,
     "model_size": "v18",
-    "context_tokens": 4096,
-    "policy_head_type": "isolated_action_query",
+    "context_tokens": 256,
+    "policy_head_type": "current_state_snapshot",
+    "dense_slot_dim": 32,
+    "dense_fusion_dim": 512,
     "epochs": 1,
     "train_critic": False,
     "train_public_value": False,
@@ -105,8 +108,8 @@ def validate_config(config: dict[str, Any]) -> None:
             "V18 SFT cadence keys must stay single-sourced in sft/contract.py: "
             + ", ".join(sorted(duplicated))
         )
-    if str(config.get("policy_head_type")) != "isolated_action_query":
-        raise ValueError("V18 SFT requires policy_head_type=isolated_action_query")
+    if str(config.get("policy_head_type")) != "current_state_snapshot":
+        raise ValueError("V18 SFT requires policy_head_type=current_state_snapshot")
     if str(config.get("model_size")) != "v18":
         raise ValueError("V18 SFT requires model_size=v18")
     if bool(config.get("train_critic", False)) or bool(config.get("train_public_value", False)):
@@ -130,45 +133,39 @@ def _model_config(config: dict[str, Any]) -> ModelConfig:
     values = {
         **base.__dict__,
         "context_tokens": int(config["context_tokens"]),
+        "dense_slot_dim": int(config["dense_slot_dim"]),
+        "dense_fusion_dim": int(config["dense_fusion_dim"]),
     }
     return ModelConfig(**values)
 
 
 def collate_samples(samples: list[EncodedSample], device: torch.device) -> dict[str, torch.Tensor]:
     batch = len(samples)
-    history_max = max(sample.history_length for sample in samples)
-    snapshot_max = max(sample.snapshot_length for sample in samples)
+    actor_max = max(sample.token_length for sample in samples)
     action_max = max(sample.query_pair_count for sample in samples)
-    history_factors = torch.zeros((batch, history_max, 10), dtype=torch.uint8)
-    history_numeric = torch.zeros((batch, history_max, 8), dtype=torch.float32)
-    history_lengths = torch.empty(batch, dtype=torch.long)
-    snapshot_factors = torch.zeros((batch, snapshot_max, 4), dtype=torch.long)
-    snapshot_numeric = torch.zeros((batch, snapshot_max, 1), dtype=torch.float32)
-    snapshot_lengths = torch.empty(batch, dtype=torch.long)
+    from ..model.encoding_protocol import TOKEN_NUMERIC_WIDTH, TOKEN_ROW_WIDTH
+
+    actor_factors = torch.zeros((batch, actor_max, TOKEN_ROW_WIDTH), dtype=torch.long)
+    actor_numeric = torch.zeros((batch, actor_max, TOKEN_NUMERIC_WIDTH), dtype=torch.float32)
+    actor_lengths = torch.empty(batch, dtype=torch.long)
     query_rows = torch.zeros((batch, 2 * action_max, 15), dtype=torch.long)
     action_ids = torch.zeros((batch, action_max), dtype=torch.long)
     pair_counts = torch.empty(batch, dtype=torch.long)
     legal = torch.zeros((batch, NUM_ACTIONS), dtype=torch.bool)
     actions = torch.empty(batch, dtype=torch.long)
     for row, sample in enumerate(samples):
-        history_factors[row, : sample.history_length] = torch.from_numpy(sample.history_factors)
-        history_numeric[row, : sample.history_length] = torch.from_numpy(sample.history_numeric)
-        history_lengths[row] = sample.history_length
-        snapshot_factors[row, : sample.snapshot_length] = torch.from_numpy(sample.snapshot_factors)
-        snapshot_numeric[row, : sample.snapshot_length] = torch.from_numpy(sample.snapshot_numeric)
-        snapshot_lengths[row] = sample.snapshot_length
+        actor_factors[row, : sample.token_length] = torch.from_numpy(sample.actor_factors)
+        actor_numeric[row, : sample.token_length] = torch.from_numpy(sample.actor_numeric)
+        actor_lengths[row] = sample.token_length
         query_rows[row, : sample.query_rows.shape[0]] = torch.from_numpy(sample.query_rows)
         action_ids[row, : sample.query_pair_count] = torch.from_numpy(sample.action_ids)
         pair_counts[row] = sample.query_pair_count
         legal[row] = torch.from_numpy(sample.legal_mask)
         actions[row] = sample.action
     return {
-        "history_factors": history_factors.to(device, non_blocking=True),
-        "history_numeric": history_numeric.to(device, non_blocking=True),
-        "history_lengths": history_lengths.to(device, non_blocking=True),
-        "snapshot_factors": snapshot_factors.to(device, non_blocking=True),
-        "snapshot_numeric": snapshot_numeric.to(device, non_blocking=True),
-        "snapshot_lengths": snapshot_lengths.to(device, non_blocking=True),
+        "actor_factors": actor_factors.to(device, non_blocking=True),
+        "actor_numeric": actor_numeric.to(device, non_blocking=True),
+        "actor_lengths": actor_lengths.to(device, non_blocking=True),
         "query_rows": query_rows.to(device, non_blocking=True),
         "action_ids": action_ids.to(device, non_blocking=True),
         "pair_counts": pair_counts.to(device, non_blocking=True),
@@ -208,13 +205,9 @@ def _forward_actor(model: nn.Module, batch: dict[str, torch.Tensor]) -> dict[str
     # 统一走 __call__/forward 分发,使 DistributedDataParallel 也能正确触发
     # 梯度同步;统一走 forward 分发。
     return model(
-        history_factors=batch["history_factors"],
-        history_numeric=batch["history_numeric"],
-        history_lengths=batch["history_lengths"],
-        snapshot_factors=batch["snapshot_factors"],
-        snapshot_numeric=batch["snapshot_numeric"],
-        snapshot_lengths=batch["snapshot_lengths"],
-        query_rows=batch["query_rows"],
+        actor_factors=batch["actor_factors"],
+        actor_numeric=batch["actor_numeric"],
+        actor_lengths=batch["actor_lengths"],
         query_action_ids=batch["action_ids"],
         query_pair_counts=batch["pair_counts"],
         legal_mask=batch["legal_mask"],
@@ -447,9 +440,7 @@ def _train_worker_impl(
                 global_step += 1
                 steps_in_epoch += 1
                 if metric_window is not None:
-                    total_lengths = (
-                        batch["history_lengths"] + batch["snapshot_lengths"] + 2 * batch["pair_counts"]
-                    )
+                    total_lengths = batch["actor_lengths"]
                     metric_window.update(
                         logits=model_output["policy_logits"].detach(),
                         actions=batch["actions"],

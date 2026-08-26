@@ -3,8 +3,8 @@ seed: 1
 device: cuda
 learner_gpus: 2
 model_size: v18
-context_tokens: 4096
-policy_head_type: isolated_action_query
+context_tokens: 256
+policy_head_type: current_state_snapshot
 dataset: datasets/tenhou_sft_2024_2025_encoded_60pct_v18
 epochs: 1
 train_critic: false

@@ -14,7 +14,7 @@ from ..model import KyokuTransformerActorCritic, ModelConfig
 from .contract import SFT_CONTRACT_VERSION
 
 _CRITIC_ROOTS = frozenset({
-    "critic_embedding", "critic_backbone", "value_head", "value_query",
+    "critic_backbone", "value_head", "value_query",
 })
 
 
@@ -39,16 +39,20 @@ def actor_parameters(model: nn.Module) -> Iterable[nn.Parameter]:
 
 
 def actor_logits(model: nn.Module, batch: Mapping[str, Tensor]) -> Tensor:
+    # 兼容两种命名：训练 collate 用 action_ids/pair_counts，fixture/model 层用
+    # query_action_ids/query_pair_counts（语义相同）。
+    if "query_action_ids" in batch:
+        action_ids = batch["query_action_ids"]
+        pair_counts = batch["query_pair_counts"]
+    else:
+        action_ids = batch["action_ids"]
+        pair_counts = batch["query_pair_counts"] if "query_pair_counts" in batch else batch["pair_counts"]
     output = model(
-        history_factors=batch["history_factors"],
-        history_numeric=batch["history_numeric"],
-        history_lengths=batch["history_lengths"],
-        snapshot_factors=batch["snapshot_factors"],
-        snapshot_numeric=batch["snapshot_numeric"],
-        snapshot_lengths=batch["snapshot_lengths"],
-        query_rows=batch["query_rows"],
-        query_action_ids=batch["query_action_ids"],
-        query_pair_counts=batch["query_pair_counts"],
+        actor_factors=batch["actor_factors"],
+        actor_numeric=batch["actor_numeric"],
+        actor_lengths=batch["actor_lengths"],
+        query_action_ids=action_ids,
+        query_pair_counts=pair_counts,
         legal_mask=batch["legal_mask"],
         policy_only=True,
     )
