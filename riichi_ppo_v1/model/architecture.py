@@ -249,6 +249,8 @@ def _assert_structure(factors: Tensor, lengths: Tensor, *, critic: bool) -> None
         if seg_raw != expected_seg:
             raise ValueError("token segment field disagrees with its kind schema")
         if critic:
+            if length == 0:
+                raise ValueError("critic rows must not be empty")
             if int(kind_raw[0]) != KIND_SEP_CRITIC:
                 raise ValueError("critic rows must start with SEP_CRITIC")
             if any(int(kind) not in (KIND_SEP_CRITIC, KIND_CRITIC_HAND, KIND_CRITIC_FUTURE) for kind in kind_raw):
@@ -400,6 +402,8 @@ class KyokuTransformerActorCritic(nn.Module):
         for row in range(batch):
             count = int(pair_counts[row])
             ids = query_action_ids[row, :count].to(device=device, dtype=torch.long)
+            if ids.numel() != torch.unique(ids).numel():
+                raise ValueError("query action ids must be unique (duplicate action id rejected)")
             values = action_logits_list[row][:count]
             raw[row].scatter_add_(0, ids, values)
         logits = raw.masked_fill(~legal_mask.to(device=device, dtype=torch.bool), float("-inf"))

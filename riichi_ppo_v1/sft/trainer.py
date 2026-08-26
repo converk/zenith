@@ -139,38 +139,63 @@ def _model_config(config: dict[str, Any]) -> ModelConfig:
     return ModelConfig(**values)
 
 
-def collate_samples(samples: list[EncodedSample], device: torch.device) -> dict[str, torch.Tensor]:
+def collate_samples(
+    samples: list[EncodedSample],
+    device: torch.device,
+    *,
+    validate_semantics: bool = True,
+) -> dict[str, torch.Tensor]:
     batch = len(samples)
     actor_max = max(sample.token_length for sample in samples)
     action_max = max(sample.query_pair_count for sample in samples)
     from ..model.encoding_protocol import TOKEN_NUMERIC_WIDTH, TOKEN_ROW_WIDTH
 
-    actor_factors = torch.zeros((batch, actor_max, TOKEN_ROW_WIDTH), dtype=torch.long)
-    actor_numeric = torch.zeros((batch, actor_max, TOKEN_NUMERIC_WIDTH), dtype=torch.float32)
-    actor_lengths = torch.empty(batch, dtype=torch.long)
-    query_rows = torch.zeros((batch, 2 * action_max, 15), dtype=torch.long)
-    action_ids = torch.zeros((batch, action_max), dtype=torch.long)
-    pair_counts = torch.empty(batch, dtype=torch.long)
-    legal = torch.zeros((batch, NUM_ACTIONS), dtype=torch.bool)
-    actions = torch.empty(batch, dtype=torch.long)
+    actor_factors_np = np.zeros((batch, actor_max, TOKEN_ROW_WIDTH), dtype=np.int64)
+    actor_numeric_np = np.zeros((batch, actor_max, TOKEN_NUMERIC_WIDTH), dtype=np.float32)
+    actor_lengths_np = np.empty(batch, dtype=np.int64)
+    query_rows_np = np.zeros((batch, 2 * action_max, 15), dtype=np.int64)
+    action_ids_np = np.zeros((batch, action_max), dtype=np.int64)
+    pair_counts_np = np.empty(batch, dtype=np.int64)
+    legal_np = np.zeros((batch, NUM_ACTIONS), dtype=np.bool_)
+    actions_np = np.empty(batch, dtype=np.int64)
     for row, sample in enumerate(samples):
-        actor_factors[row, : sample.token_length] = torch.from_numpy(sample.actor_factors)
-        actor_numeric[row, : sample.token_length] = torch.from_numpy(sample.actor_numeric)
-        actor_lengths[row] = sample.token_length
-        query_rows[row, : sample.query_rows.shape[0]] = torch.from_numpy(sample.query_rows)
-        action_ids[row, : sample.query_pair_count] = torch.from_numpy(sample.action_ids)
-        pair_counts[row] = sample.query_pair_count
-        legal[row] = torch.from_numpy(sample.legal_mask)
-        actions[row] = sample.action
+        actor_factors_np[row, : sample.token_length] = sample.actor_factors
+        actor_numeric_np[row, : sample.token_length] = sample.actor_numeric
+        actor_lengths_np[row] = sample.token_length
+        query_rows_np[row, : sample.query_rows.shape[0]] = sample.query_rows
+        action_ids_np[row, : sample.query_pair_count] = sample.action_ids
+        pair_counts_np[row] = sample.query_pair_count
+        legal_np[row] = sample.legal_mask
+        actions_np[row] = sample.action
+    if validate_semantics:
+        from ..model.semantic_validation import assert_actor_input_semantics
+
+        assert_actor_input_semantics(
+            actor_factors_np,
+            actor_numeric_np,
+            actor_lengths_np,
+            query_rows_np,
+            action_ids_np,
+            pair_counts_np,
+            legal_np,
+        )
+    actor_factors = torch.from_numpy(actor_factors_np).to(device, non_blocking=True)
+    actor_numeric = torch.from_numpy(actor_numeric_np).to(device, non_blocking=True)
+    actor_lengths = torch.from_numpy(actor_lengths_np).to(device, non_blocking=True)
+    query_rows = torch.from_numpy(query_rows_np).to(device, non_blocking=True)
+    action_ids = torch.from_numpy(action_ids_np).to(device, non_blocking=True)
+    pair_counts = torch.from_numpy(pair_counts_np).to(device, non_blocking=True)
+    legal = torch.from_numpy(legal_np).to(device, non_blocking=True)
+    actions = torch.from_numpy(actions_np).to(device, non_blocking=True)
     return {
-        "actor_factors": actor_factors.to(device, non_blocking=True),
-        "actor_numeric": actor_numeric.to(device, non_blocking=True),
-        "actor_lengths": actor_lengths.to(device, non_blocking=True),
-        "query_rows": query_rows.to(device, non_blocking=True),
-        "action_ids": action_ids.to(device, non_blocking=True),
-        "pair_counts": pair_counts.to(device, non_blocking=True),
-        "legal_mask": legal.to(device, non_blocking=True),
-        "actions": actions.to(device, non_blocking=True),
+        "actor_factors": actor_factors,
+        "actor_numeric": actor_numeric,
+        "actor_lengths": actor_lengths,
+        "query_rows": query_rows,
+        "action_ids": action_ids,
+        "pair_counts": pair_counts,
+        "legal_mask": legal,
+        "actions": actions,
     }
 
 
@@ -215,6 +240,12 @@ def _forward_actor(model: nn.Module, batch: dict[str, torch.Tensor]) -> dict[str
     )
 
 
+def _assert_targets_legal(actions: torch.Tensor, legal_mask: torch.Tensor) -> None:
+    """BC 损失前重验目标动作 ∈ legal_mask（fail closed，拒绝损坏样本）。"""
+    if not torch.all(legal_mask.gather(1, actions.view(-1, 1))):
+        raise RuntimeError("BC target action is not present in legal_mask (corrupt sample)")
+
+
 @torch.no_grad()
 def evaluate(
     model: nn.Module,
@@ -242,11 +273,14 @@ def evaluate(
     )
     total = ce_sum = top1 = top3 = 0
     for rows in batches:
-        batch = collate_samples(rows, device)
+        batch = collate_samples(
+            rows, device, validate_semantics=bool(config.get("validate_semantics", True)),
+        )
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
             output = _forward_actor(model, batch)
         logits = output["policy_logits"].float()
         targets = batch["actions"]
+        _assert_targets_legal(targets, batch["legal_mask"])
         ce_sum += float(F.cross_entropy(logits, targets, reduction="sum"))
         top = logits.topk(3, dim=-1).indices
         top1 += int((top[:, 0] == targets).sum())
@@ -422,12 +456,15 @@ def _train_worker_impl(
                 if epoch == start_epoch and batch_index < skip_steps:
                     continue
                 step_started = time.perf_counter()
-                batch = collate_samples(rows, device)
+                batch = collate_samples(
+                    rows, device, validate_semantics=bool(config.get("validate_semantics", True)),
+                )
                 effective_tokens = sum(sample.token_length for sample in rows)
                 padded_tokens = len(rows) * max(sample.token_length for sample in rows)
                 optimizer.zero_grad(set_to_none=True)
                 with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
                     model_output = _forward_actor(model, batch)
+                    _assert_targets_legal(batch["actions"], batch["legal_mask"])
                     loss = F.cross_entropy(model_output["policy_logits"].float(), batch["actions"])
                     policy_ce = loss.detach()
                 loss.backward()

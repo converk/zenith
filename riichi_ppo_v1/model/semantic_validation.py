@@ -210,23 +210,78 @@ def assert_actor_input_semantics(
                 raise AssertionError(f"row {token_index} numeric is non-finite")
             if np.any(np.abs(actor_numeric[row, token_index]) > 1.0):
                 raise AssertionError(f"row {token_index} numeric outside [-1,1]")
-        # TILE_STATE 守恒。
+        # TILE_STATE 守恒（实体口径：known = min(4, public + self_concealed)）。
         tile_rows = rows[kinds == KIND_TILE_STATE]
         for tile_row in tile_rows:
+            public = int(tile_row[6])
+            self_concealed = int(tile_row[3])
             known = int(tile_row[7])
             unknown = int(tile_row[8])
-            if unknown != 4 - min(known, 4):
+            if public < 0 or public > 4 or self_concealed < 0 or self_concealed > 4:
+                raise AssertionError(f"tile-state counts out of domain for kind {tile_row[2]}")
+            if known != min(4, public + self_concealed):
+                raise AssertionError(f"tile-state known count violates entity conservation for kind {tile_row[2]}")
+            if unknown != 4 - known:
                 raise AssertionError(f"tile-state unknown count violates conservation for kind {tile_row[2]}")
             if bool(tile_row[9]) != (unknown == 0):
                 raise AssertionError("tile-state all_seen disagrees with unknown count")
-        # RIVER_SUMMARY 有效长度域。
-        for summary_index in np.flatnonzero(kinds == KIND_RIVER_SUMMARY):
-            valid_length = int(rows[summary_index, 2])
-            if valid_length < 0 or valid_length > 6:
-                raise AssertionError("river summary valid_length must be 0..6")
-            for slot in range(valid_length, 6):
-                if rows[summary_index, 3 + 4 * slot:7 + 4 * slot].any():
-                    raise AssertionError("river summary padding slot must be all zero")
+        # TABLE 保留列与 drawn_is_current 域。
+        table_rows = rows[kinds == KIND_TABLE]
+        if table_rows.shape[0] != 1:
+            raise AssertionError("actor sequence must contain exactly one TABLE row")
+        table_row = table_rows[0]
+        if np.any(table_row[24:29] != 0):
+            raise AssertionError("TABLE reserved columns (24..28) must be zero")
+        decision_mode = int(table_row[8])
+        drawn_is_current = int(table_row[11])
+        if drawn_is_current != (1 if decision_mode == 0 else 0):
+            raise AssertionError("TABLE drawn_is_current must equal (decision_mode == 0)")
+        # SELF_HAND 域与 is_drawn 一致性。
+        self_rows = rows[kinds == KIND_SELF_HAND]
+        drawn_type = int(table_row[9])
+        previous_type = 0
+        for self_row in self_rows:
+            tile_type = int(self_row[2])
+            count = int(self_row[3])
+            is_drawn = int(self_row[5])
+            if tile_type <= previous_type:
+                raise AssertionError("SELF_HAND kinds must be strictly ascending")
+            previous_type = tile_type
+            if count < 1 or count > 4:
+                raise AssertionError("SELF_HAND count must be 1..4")
+            expected_drawn = 1 if drawn_type != 0 and tile_type == drawn_type else 0
+            if is_drawn != expected_drawn:
+                raise AssertionError("SELF_HAND is_drawn disagrees with TABLE.drawn_tile_type")
+        # RIVER_SUMMARY 有效长度与对应牌河长度一致（逐 river）。
+        kinds_list = kinds.tolist()
+        for river_sep in (KIND_SEP_SHIMOCHA_RIVER, KIND_SEP_TOIMEN_RIVER, KIND_SEP_KAMICHA_RIVER):
+            if river_sep not in kinds_list:
+                raise AssertionError("river separator missing")
+            sep_index = kinds_list.index(river_sep)
+            first_pos = sep_index + 1
+            if kinds_list[first_pos] != KIND_RIVER_SUMMARY:
+                raise AssertionError("each river must start with a summary")
+            discard_pos = first_pos + 1
+            discard_count = 0
+            while discard_pos < len(kinds_list) and kinds_list[discard_pos] == KIND_RIVER_DISCARD:
+                discard_count += 1
+                discard_pos += 1
+            if discard_pos >= len(kinds_list) or kinds_list[discard_pos] != KIND_RIVER_SUMMARY:
+                raise AssertionError("each river must end with a summary")
+            expected_length = min(6, discard_count)
+            for summary_pos in (first_pos, discard_pos):
+                summary_row = rows[summary_pos]
+                valid_length = int(summary_row[2])
+                if valid_length != expected_length:
+                    raise AssertionError(
+                        f"river summary valid_length {valid_length} != min(6, river length {discard_count})"
+                    )
+                for slot in range(expected_length):
+                    if int(summary_row[3 + 4 * slot]) == 0:
+                        raise AssertionError("river summary valid slot tile_type must be non-zero")
+                for slot in range(valid_length, 6):
+                    if rows[summary_pos, 3 + 4 * slot:7 + 4 * slot].any():
+                        raise AssertionError("river summary padding slot must be all zero")
         # action 集合与 query 行。
         pair_count = int(query_pair_counts[row])
         legal_ids = np.flatnonzero(legal_mask[row]).astype(np.int64)
@@ -237,6 +292,8 @@ def assert_actor_input_semantics(
             raise AssertionError("action id outside action space")
         if len(np.unique(ids)) != pair_count or set(ids.tolist()) != set(legal_ids.tolist()):
             raise AssertionError("query action ids do not equal legal-mask set")
+        if np.any(np.diff(ids) <= 0):
+            raise AssertionError("query action ids must be strictly ascending")
         query_chunk = query_rows[row, : 2 * pair_count].astype(np.int64, copy=False)
         if np.any(query_chunk[0::2, QUERY_ROW_QUERY_TYPE] != 1) or np.any(query_chunk[1::2, QUERY_ROW_QUERY_TYPE] != 2):
             raise AssertionError("query rows must alternate Offense/Defense")
@@ -255,6 +312,7 @@ def assert_actor_input_semantics(
                 int(query_value[QUERY_ROW_PRIMARY_TILE]),
                 int(query_value[QUERY_ROW_SOURCE_SEAT]),
                 (int(query_value[QUERY_ROW_ACTION_ID]) - 1) % 2 if 1 <= int(query_value[QUERY_ROW_ACTION_ID]) < 75 else 0,
+                int(query_value[QUERY_ROW_ACTION_ID]),
                 *[int(value) for value in query_value[QUERY_ROW_ANSWER_START:QUERY_ROW_WIDTH]],
             )
             actual = [int(rows[position, 2 + offset]) for offset in range(len(expected))]
@@ -300,6 +358,18 @@ def assert_critic_token_semantics(factors: np.ndarray, lengths: np.ndarray) -> N
             raise AssertionError("hand rows must be in critic-private segment")
         if np.any(future_rows[:, 0].astype(int) != SEGMENT_CRITIC_FUTURE):
             raise AssertionError("future rows must be in critic-future segment")
+        if np.any(hand_rows[:, 2].astype(int) < 1) or np.any(hand_rows[:, 2].astype(int) > 3):
+            raise AssertionError("critic hand relative_seat must be 1..3")
+        if np.any(hand_rows[:, 3].astype(int) < 1) or np.any(hand_rows[:, 3].astype(int) > 34):
+            raise AssertionError("critic hand tile_type must be 1..34")
+        if np.any(~np.isin(hand_rows[:, 4].astype(int), (0, 1))):
+            raise AssertionError("critic hand red must be 0/1")
+        if np.any(hand_rows[:, 5].astype(int) < 1) or np.any(hand_rows[:, 5].astype(int) > 4):
+            raise AssertionError("critic hand count must be 1..4")
+        if np.any(future_rows[:, 3].astype(int) < 1) or np.any(future_rows[:, 3].astype(int) > 34):
+            raise AssertionError("critic future tile_type must be 1..34")
+        if np.any(~np.isin(future_rows[:, 4].astype(int), (0, 1))):
+            raise AssertionError("critic future red must be 0/1")
         positions = future_rows[:, 2].astype(int)
         if positions.tolist() != list(range(1, 6)):
             raise AssertionError("future wall must contain positions 1..5 in order")

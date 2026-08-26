@@ -103,6 +103,32 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
         )
     if manifest.get("state_protocol") != STATE_PROTOCOL_VERSION:
         raise RuntimeError("encoded dataset carries an unknown state protocol version")
+    if int(manifest.get("token_row_width", -1)) != TOKEN_ROW_WIDTH:
+        raise RuntimeError("manifest token_row_width disagrees with runtime contract")
+    if int(manifest.get("token_numeric_width", -1)) != TOKEN_NUMERIC_WIDTH:
+        raise RuntimeError("manifest token_numeric_width disagrees with runtime contract")
+    if int(manifest.get("context_tokens", -1)) != CONTEXT_TOKENS:
+        raise RuntimeError("manifest context_tokens disagrees with runtime contract")
+    if manifest.get("numeric_dtype") != "float32":
+        raise RuntimeError("manifest numeric_dtype must be float32")
+    if manifest.get("legal_encoding") != f"packbits-little-{NUM_ACTIONS}":
+        raise RuntimeError("manifest legal_encoding must be packbits-little-241")
+    if manifest.get("actor_only") is not True:
+        raise RuntimeError("manifest actor_only must be True for the actor-only SFT path")
+    if int(manifest.get("subset_denominator", -1)) <= 0:
+        raise RuntimeError("manifest subset_denominator must be positive")
+    remainders = manifest.get("subset_remainders")
+    if not isinstance(remainders, (list, tuple)) or not remainders:
+        raise RuntimeError("manifest subset_remainders must be a non-empty list")
+    denominator = int(manifest["subset_denominator"])
+    if any(not 0 <= int(value) < denominator for value in remainders):
+        raise RuntimeError("manifest subset_remainders must be within [0, subset_denominator)")
+    if int(manifest.get("game_sample_denominator", -1)) <= 0:
+        raise RuntimeError("manifest game_sample_denominator must be positive")
+    game_denominator = int(manifest["game_sample_denominator"])
+    game_remainder = int(manifest.get("game_sample_remainder", -1))
+    if not 0 <= game_remainder < game_denominator:
+        raise RuntimeError("manifest game_sample_remainder must be within [0, game_sample_denominator)")
     if not isinstance(manifest.get("source_manifest_sha256"), str) or not manifest["source_manifest_sha256"]:
         raise RuntimeError("V18 SFT manifest lacks source_manifest_sha256")
     counts = manifest.get("counts")

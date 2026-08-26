@@ -21,6 +21,7 @@ import zipfile
 import numpy as np
 
 from ..model.encoding_protocol import (
+    CONTEXT_TOKENS,
     DEFENSE_SLOT_ORDER,
     ENCODED_FORMAT,
     ENCODING_PROTOCOL_VERSION,
@@ -479,6 +480,7 @@ def precompute(
         "state_protocol": STATE_PROTOCOL_VERSION,
         "token_row_width": TOKEN_ROW_WIDTH,
         "token_numeric_width": TOKEN_NUMERIC_WIDTH,
+        "context_tokens": CONTEXT_TOKENS,
         "source_manifest_sha256": source_manifest_sha256,
         "subset_denominator": denominator,
         "subset_remainders": list(remainders),
@@ -562,6 +564,27 @@ def iter_precomputed_samples(
                     "legal", "actions",
                 )
             )
+            # fail-closed：三个 offsets 数组必须自身严格单调且与数组长度一致。
+            for offsets, array, label in (
+                (actor_offsets, actor_factors, "actor"),
+                (query_offsets, query_rows, "query"),
+                (action_offsets, action_ids, "action"),
+            ):
+                offsets = np.asarray(offsets)
+                if offsets.ndim != 1 or offsets.size < 1 or int(offsets[0]) != 0:
+                    raise RuntimeError(f"{label} offsets malformed in {path}: first offset must be 0")
+                if np.any(np.diff(offsets.astype(np.int64)) <= 0):
+                    raise RuntimeError(f"{label} offsets must be strictly increasing in {path}")
+                if int(offsets[-1]) != int(array.shape[0]):
+                    raise RuntimeError(
+                        f"{label} offsets[-1] {offsets[-1]} != array length {array.shape[0]} in {path}"
+                    )
+            if int(actor_offsets[-1]) != actor_factors.shape[0]:
+                raise RuntimeError(f"actor offsets length mismatch in {path}")
+            if int(query_offsets[-1]) != query_rows.shape[0]:
+                raise RuntimeError(f"query offsets length mismatch in {path}")
+            if int(action_offsets[-1]) != action_ids.shape[0]:
+                raise RuntimeError(f"action offsets length mismatch in {path}")
             years, game_ids, kyoku_indices, seats, decision_indices = (
                 data[name] for name in (
                     "years", "game_ids", "kyoku_indices", "seats", "decision_indices",
