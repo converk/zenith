@@ -298,10 +298,9 @@ fn pending_draw_actor(observation: &Observation) -> Option<u8> {
         serde_json::from_str::<serde_json::Value>(&raw)
             .ok()
             .and_then(|value| match value["type"].as_str() {
-                Some("tsumo") => value["actor"].as_u64().map(|actor| actor as u8),
-                Some("dahai") | Some("kakan") | Some("pon") | Some("chi") | Some("daiminkan") => {
-                    Some(u8::MAX)
-                }
+                Some("tsumo") | Some("pon") | Some("chi") | Some("daiminkan")
+                | Some("ankan") | Some("kakan") => value["actor"].as_u64().map(|actor| actor as u8),
+                Some("dahai") => Some(u8::MAX),
                 _ => None,
             })
     });
@@ -311,17 +310,20 @@ fn pending_draw_actor(observation: &Observation) -> Option<u8> {
     }
 }
 
+fn concealed_count_from(melds: &[Meld], pending: Option<u8>, player: usize) -> i32 {
+    let three = melds
+        .iter()
+        .filter(|meld| matches!(meld.meld_type, MeldType::Chi | MeldType::Pon))
+        .count();
+    let kans = melds
+        .iter()
+        .filter(|meld| matches!(meld.meld_type, MeldType::Daiminkan | MeldType::Ankan | MeldType::Kakan))
+        .count();
+    (13_i32 + i32::from(pending == Some(player as u8)) - 3 * three as i32 - 4 * kans as i32).max(0)
+}
+
 fn concealed_count(observation: &Observation, player: usize, pending: Option<u8>) -> i32 {
-    let mut total = 13_i32 + i32::from(pending == Some(player as u8));
-    for meld in &observation.melds[player] {
-        match meld.meld_type {
-            MeldType::Chi | MeldType::Pon => total -= 2,
-            MeldType::Daiminkan => total -= 3,
-            MeldType::Ankan => total -= 4,
-            MeldType::Kakan => total -= 1,
-        }
-    }
-    total.max(0)
+    concealed_count_from(&observation.melds[player], pending, player)
 }
 
 /// 收集每座牌河中被鸣的下标集合（0 基，实体去重用）。
@@ -1044,6 +1046,25 @@ mod tests {
         let discards = vec![vec![], vec![108, 108], vec![], vec![]];
         let counts = entity_public_counts(&melds, &discards, &[]);
         assert_eq!(counts[27], 4);
+    }
+
+    #[test]
+    fn concealed_count_matches_contract_formula() {
+        // 13 + pending - 3×三张副露 - 4×杠。
+        let no_meld: Vec<Meld> = vec![];
+        assert_eq!(concealed_count_from(&no_meld, Some(0), 0), 14);
+        assert_eq!(concealed_count_from(&no_meld, None, 0), 13);
+        let pon = vec![meld(MeldType::Pon, 1, Some(108), Some(0))];
+        assert_eq!(concealed_count_from(&pon, Some(0), 0), 11);
+        assert_eq!(concealed_count_from(&pon, None, 0), 10);
+        let chi = vec![meld(MeldType::Chi, 1, Some(104), Some(0))];
+        assert_eq!(concealed_count_from(&chi, None, 0), 10);
+        let daiminkan = vec![meld(MeldType::Daiminkan, 1, Some(108), Some(0))];
+        assert_eq!(concealed_count_from(&daiminkan, None, 0), 9);
+        let ankan = vec![meld(MeldType::Ankan, -1, None, None)];
+        assert_eq!(concealed_count_from(&ankan, None, 0), 9);
+        let kakan = vec![meld(MeldType::Kakan, 1, Some(108), Some(0))];
+        assert_eq!(concealed_count_from(&kakan, None, 0), 9);
     }
 
     #[test]
