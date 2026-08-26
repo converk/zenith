@@ -159,3 +159,62 @@ commit（9 个主题），先写失败测试再改实现：
 
 复核结果见本报告顶部结论与 `v18_field_matrix.md` 的「修复说明」；完整验证命令与原始输出记录于
 `audit/reports/v18/report/PROGRESS.md` 的缺陷修复小节。
+
+---
+
+## 十一、独立复核记录（审查代理复跑，2026-08-27）
+
+以下为审查代理在修复提交（`1863b68..eb4970f`，工作区干净）上**独立复跑**的结果，未修改任何文件：
+
+### 1. 独立 oracle（不读生产 schema/校验器）
+
+```bash
+conda run -n Mahjong-AI python audit/reports/v18/scripts/v18_audit_oracle.py
+```
+
+| 检查 | 结果 |
+|---|---|
+| 862 决策 concealed_bad | **0**（修复前 792） |
+| 862 决策 public_bad | **0**（修复前 703） |
+| 862 决策 known_bad | **0**（修复前 688） |
+| 合成 supplied 反例 | `[(1,1),(2,0),(3,0)]` —— 只标实际被鸣下标（修复前 `[(1,1),(2,1),(3,0)]`） |
+| action O/D 精确碰撞 | **0**（修复前 12） |
+| summary 逐槽 / context 上界 / 无未知 kind | PASS（max_len=129 ≤256，无截断） |
+
+### 2. 模型结构专项
+
+```bash
+conda run -n Mahjong-AI python audit/reports/v18/scripts/v18_model_structure_audit.py
+```
+
+| 检查 | 结果 |
+|---|---|
+| RoPE 三分支实际旋转 | PASS（8 次 hook 调用，rotated_is_different=true） |
+| RoPE vs 恒等旋转（因果） | maxdiff=0.0756（≠0，RoPE 真实生效） |
+| mask 逐格独立 oracle | **synthetic_mismatch=0 / real_mismatch=0**（修复前 76/103，全部为 SEP_ACTIONS 角色差异；B7 修复后已与契约 §5 一致） |
+| padding 输出严格为零 | PASS（max_abs=0.0） |
+| 批内变长（99/102） | PASS（单样本 vs [A,B] maxdiff=2.7e-7） |
+| 内容 token 保留 segment/kind | PASS（改 segment → 输出 maxdiff=0.258 非 0；修复前 0.0 被覆盖） |
+| critic 空输入 | PASS（ValueError: critic rows must not be empty；修复前 IndexError） |
+| 重复 action_id | PASS（ValueError 拒绝；修复前 scatter 叠加） |
+
+### 3. 测试与参数
+
+- `cargo test --workspace`：通过对（含新增 `entity_counts_*`/`supplied_*`/`concealed_count_*`/`bucket_boundaries_are_exact` 与 query_encoding `bucket_o2_*` 单测）。
+- `pytest unit + protocol + integration`：**182 passed, 2 failed**——两个失败与修复前完全一致且均不在修复范围：`test_artifact_conventions`（本机 checkpoints 缺 train_riichi_v13，环境资产项）、`test_learner_accepts_only_rollout_buffer`（PPO learner 仍传 `history_factors`，待迁移）。
+- `pytest RiichiEnv/tests`：284 passed, 2 skipped；`riichi_lab_bot/tests`：collection 仍失败（import 已删 `SNAPSHOT_FIELD_BY_NAME`，待迁移，未修）。
+- `validate --parameter-contract`：通过，total **5,804,914**（≤6.0M），state_dict 258 键、无 Q 键。
+
+### 4. 文档/契约/常量核对
+
+- 契约 §2.1/§2.2 separator 编号已统一为 **101..111**（B1）；§3.5 `valid_length` 公式已改 `i <= valid_length`（B2）；§3.6 supplied、§3.8 public_count、§3.10 action_id、§5 SEP_ACTIONS 均已按新语义改写；`data-model.md:73` 已改 `{111,13,14}`。
+- README/`v18_input_protocol.md`/PROGRESS 参数量同步为 5,804,914；`parameter_count.py` value_head 归入 critic 组；`schema.py` NUM_ACTIONS 单源自 `encoding_protocol`（B10）；`encoding_facts.rs` 旧“49 行”注释已清。
+- `logs/v18/` 已清（仅剩 grp 日志），`/tmp/dbg_riichi` 已删（B11）。
+- 字段矩阵已更新：**PASS 96 / PARTIAL 25 / FAIL 0**（修复前 67/44/10）；PARTIAL 为残留业务值精确性/理论上界复核项，非阻塞。
+
+### 5. 复核中发现的新增次要残留（P3，不阻塞）
+
+- 编码器 `claimed_river_indices`/`is_supplied_by` 对 `from_who>=0` 但 `called_tile_index=None` 的副露（仅 `apply_mjai_event` 手工驱动与 mjsoul 计分路径可能出现）**静默当作未鸣**，会退回修复前的双计；V18 生产路径（step()/apply_log_action）均写入下标，因此建议在编码器对该组合显式报错或按值回退（低优先级）。
+- `pending_draw_actor` 依赖 events 增量的末事件类型；若未来状态机改变事件触发顺序，需同步该函数（当前 862 决策 0 失败）。
+
+**独立复核结论**：修复提示词中的 4 项 P1（A1+A3、A2、A4）与 B1–B11 均已按方案落实；两个独立 oracle 全部转 PASS；字段矩阵无 FAIL；无新增回归（2 个既有失败与 lab_bot 断点均属环境/PPO 待迁移，未在修复范围）。**修复后状态：PASS（4 项 P1 与全部 P2 已闭环；PARTIAL 项为明确记录的非阻塞残留）。**
