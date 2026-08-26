@@ -537,3 +537,12 @@ conda run -n Mahjong-AI python audit/reports/v18/scripts/v18_model_structure_aud
 - `validate --parameter-contract`：通过，total **5,804,914** 不变（state keys 258）；
 - 两个 oracle（`v18_audit_oracle.py`：862 决策 concealed/public/known=0、collision=0；
   `v18_model_structure_audit.py`：RoPE/padding/batch PASS）输出与清理前完全一致。
+
+## V18 输入链路复审与性能审查（2026-08-27，HEAD 6a8e422）
+
+按用户「审查与测试当前环境/状态机能否给出正确编码输入、输入编码解码一致、Python 侧是否引入多余计算」执行，新增两份只读审计脚本并在 HEAD 上复跑全部基线：
+
+- **结论**：Q1（预处理逐 token 语义/V18 结构）PASS；Q2（输入编码一致 + 输出解码）输入 PASS、SFT 解码 PASS（7150 个合法 id 往返 0 失败），**在线 bridge 解码存在 P1 发现 V18-DEC-1**（27/7150 chi/pon 经 `decode_actions + select_action_from_mjai` 失败，集中在 called-in-consume 表示的回放；SFT 路径不受影响，PPO 待迁移项）；Q3（性能）发现 5 项 P3（逐批 Python 语义校验≈0.57s/batch@512、precompute 逐 token 统计≈2.9µs/token、encode_batch Python 装配≈52%、Rust 批编码不释放 GIL、encode_kyoku 双份 action_jsons+JSON 匹配）。
+- **测试**：cargo 134 passed 0 failed；pytest unit+protocol+integration 183 passed 2 failed（仅既有两项）；RiichiEnv 284 passed 2 skipped；lab_bot collection 失败（既有待迁移）；`validate --parameter-contract` PASS（5,804,914/258 keys）；两个既有 oracle 全 PASS。
+- **新增交付**：`audit/reports/v18/scripts/v18_decode_roundtrip.py`、`audit/reports/v18/scripts/v18_perf_review.py`、`audit/reports/v18/report/V18输入链路复审与性能审查报告.md`。
+- **未改动**：PPO/rollout/1v3/lab_bot 仅盘点；未生成完整数据集；未启动正式训练；未删除归档资产；临时产物无。
