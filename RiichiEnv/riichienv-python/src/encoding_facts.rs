@@ -6,12 +6,14 @@ use numpy::{
 };
 use pyo3::{exceptions::PyValueError, prelude::*};
 
+use riichi::{
+    OPEN_MELD_YAKUHAI_HAN_OVERFLOW_BUCKET, VISIBLE_MELD_DORA_AKA_OVERFLOW_BUCKET,
+};
 use riichi::atomic_snapshot::{
     AtomicSnapshotInput, SNAPSHOT_FACTOR_WIDTH, SNAPSHOT_FIELD_COUNT, SNAPSHOT_FIRST_DISCARD_LIMIT,
     SNAPSHOT_FULLY_VISIBLE_KIND_OVERFLOW_BUCKET, SNAPSHOT_NUMERIC_WIDTH, SNAPSHOT_OPPONENT_COUNT,
     SNAPSHOT_POST_RIICHI_TSUMOGIRI_OVERFLOW_BUCKET, SNAPSHOT_PROGRESS_TILE_OVERFLOW_BUCKET,
-    SNAPSHOT_UNKNOWN_DORA_COPY_OVERFLOW_BUCKET, SNAPSHOT_VISIBLE_MELD_DORA_AKA_OVERFLOW_BUCKET,
-    SNAPSHOT_YAKUHAI_HAN_OVERFLOW_BUCKET, encode as encode_atomic_snapshot,
+    SNAPSHOT_UNKNOWN_DORA_COPY_OVERFLOW_BUCKET, encode as encode_atomic_snapshot,
 };
 use riichi::shanten;
 use riichienv_core::{
@@ -120,7 +122,7 @@ pub(crate) fn open_meld_yakuhai_han(melds: &[Meld], player_wind: u8, round_wind:
                 .saturating_add(u8::from(kind == HONOR_TILE_START + usize::from(round_wind)));
         }
     }
-    Ok(han.min(SNAPSHOT_YAKUHAI_HAN_OVERFLOW_BUCKET))
+    Ok(han.min(OPEN_MELD_YAKUHAI_HAN_OVERFLOW_BUCKET))
 }
 
 /// 已表示于副露的宝牌与赤宝牌番数;暗杠不改变门清,但其牌面可在本统计中出现。
@@ -139,7 +141,7 @@ pub(crate) fn visible_meld_dora_aka_han(
             han = han.saturating_add(u8::from(RED_FIVE_TILE_IDS.contains(&tile)));
         }
     }
-    Ok(han.min(SNAPSHOT_VISIBLE_MELD_DORA_AKA_OVERFLOW_BUCKET))
+    Ok(han.min(VISIBLE_MELD_DORA_AKA_OVERFLOW_BUCKET))
 }
 
 /// 观察者合法已知区域的四张可见牌种与不同宝牌种未知实体牌数。

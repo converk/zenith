@@ -478,8 +478,6 @@ pub fn atomic_snapshot_schema() -> Vec<(u8, String, u8, u8, u8, bool)> {
 
 pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(atomic_snapshot_schema, module)?)?;
-    module.add("ENCODING_PROTOCOL_VERSION", 18_u8)?;
-    module.add("SNAPSHOT_FIELD_COUNT", SNAPSHOT_FIELD_COUNT)?;
     Ok(())
 }
 

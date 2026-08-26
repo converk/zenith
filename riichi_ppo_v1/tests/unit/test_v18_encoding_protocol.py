@@ -19,6 +19,7 @@ from riichi_ppo_v1.model.encoding_protocol import (
     KIND_TILE_STATE,
     NUM_SEPARATORS,
     OFFENSE_SLOT_ORDER,
+    OPEN_MELD_YAKUHAI_HAN_OVERFLOW_BUCKET,
     QUERY_ROW_WIDTH,
     QUERY_SLOT_COUNT,
     SEPARATOR_IDS,
@@ -33,6 +34,7 @@ from riichi_ppo_v1.model.encoding_protocol import (
     STATE_PROTOCOL_VERSION,
     TOKEN_NUMERIC_WIDTH,
     TOKEN_ROW_WIDTH,
+    VISIBLE_MELD_DORA_AKA_OVERFLOW_BUCKET,
 )
 
 
@@ -77,6 +79,20 @@ def test_query_slot_orders_and_cardinalities() -> None:
     assert ACTION_TYPE_CARDINALITY == 12
     for slot in OFFENSE_SLOT_ORDER + DEFENSE_SLOT_ORDER:
         assert SLOT_CARDINALITIES[slot] > 0
+
+
+def test_overflow_bucket_constants_mirror_rust() -> None:
+    """Rust 单源溢出桶常量与 Python 镜像一致,且与类别 schema 的「+1 基数」约定相符。"""
+    assert OPEN_MELD_YAKUHAI_HAN_OVERFLOW_BUCKET == 6
+    assert VISIBLE_MELD_DORA_AKA_OVERFLOW_BUCKET == 8
+    buckets = {
+        "open_meld_yakuhai_han": OPEN_MELD_YAKUHAI_HAN_OVERFLOW_BUCKET,
+        "visible_meld_dora_aka_han": VISIBLE_MELD_DORA_AKA_OVERFLOW_BUCKET,
+    }
+    for kind, schema in CATEGORY_SCHEMAS.items():
+        for field in schema.discrete:
+            if field.name in buckets:
+                assert field.cardinality == buckets[field.name] + 1, (kind, field.name)
 
 
 def test_no_legacy_snapshot_constants() -> None:

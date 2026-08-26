@@ -22,6 +22,11 @@ if ENCODING_PROTOCOL_VERSION != 18:
 ENCODED_FORMAT = f"riichi-sft-encoded-v{ENCODING_PROTOCOL_VERSION}"
 STATE_PROTOCOL_VERSION = "riichi-current-state-v18-1"
 
+# 溢出桶常量(Rust 单源:riichienv-state-machine/src/lib.rs;两者与
+# CATEGORY_SCHEMAS 的「+1 基数」一致性由 test_v18_encoding_protocol.py 交叉验证)。
+OPEN_MELD_YAKUHAI_HAN_OVERFLOW_BUCKET = int(riichi.OPEN_MELD_YAKUHAI_HAN_OVERFLOW_BUCKET)
+VISIBLE_MELD_DORA_AKA_OVERFLOW_BUCKET = int(riichi.VISIBLE_MELD_DORA_AKA_OVERFLOW_BUCKET)
+
 # 动作空间维度（领域常量，schema.py 从此单源导入）。
 NUM_ACTIONS = 241
 
