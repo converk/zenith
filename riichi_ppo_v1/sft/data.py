@@ -13,8 +13,6 @@ from ..model.action_groups import action_id
 from ..model.current_state import EncodedStateBatch, encode_batch
 from ..model.bridge import (
     action_jsons,
-    action_jsons_and_decision_flag,
-    snapshot_json,
 )
 from ..model.encoding_protocol import ENCODED_FORMAT, TOKEN_NUMERIC_WIDTH, TOKEN_ROW_WIDTH
 
@@ -102,23 +100,20 @@ def encode_kyoku(
         env_indices = [seat for seat, _observation, _action in batch]
         events_by_env: list[list[list[str]]] = []
         action_rows: list[list[str]] = []
-        snapshots: list[str] = []
         for seat, observation, _expert_action in batch:
             events = [[], [], [], []]
             events[seat] = list(observation.new_events())
             events_by_env.append(events)
-            actions, decision_flag = action_jsons_and_decision_flag(observation)
-            action_rows.append(actions)
-            snapshots.append(snapshot_json(observation, decision_flag))
+            action_rows.append(action_jsons(observation))
         manager.apply_events_batch(env_indices, events_by_env)
         batch_indices = [seat * 4 + seat for seat, _observation, _action in batch]
         try:
-            prepared = manager.prepare_decisions(batch_indices, action_rows, snapshots)
+            prepared = manager.prepare_decisions(batch_indices, action_rows)
         except Exception as exc:
             raise RuntimeError(
                 f"failed to encode legal actions: game={game_id} kyoku={kyoku_index} seats={env_indices}"
             ) from exc
-        prepared_legal = np.asarray(prepared[3], dtype=np.bool_)
+        prepared_legal = np.asarray(prepared, dtype=np.bool_)
         decisions: list[tuple[object, list[tuple[object, int]]]] = []
         seat_list: list[int] = []
         target_actions: list[int] = []

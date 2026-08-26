@@ -1,9 +1,5 @@
 struct TableStateMachine {
-    players: [PlayerKyokuStateMachine; NUM_PLAYERS],
-    /// Monotonic cache epoch for each player history.  A new kyoku resets
-    /// tokens, so a length alone is not sufficient to validate a rollout KV
-    /// prefix.
-    history_generations: [u64; NUM_PLAYERS],
+    /// 每个座位最近一次 prepare_decisions 登记的合法动作请求。
     pending_requests: [Option<ActionRequest>; NUM_PLAYERS],
 }
 
@@ -20,8 +16,6 @@ struct ActionRequest {
 impl TableStateMachine {
     fn new() -> Self {
         Self {
-            players: std::array::from_fn(|seat| PlayerKyokuStateMachine::new(seat as u8)),
-            history_generations: [0; NUM_PLAYERS],
             pending_requests: std::array::from_fn(|_| None),
         }
     }
@@ -29,18 +23,14 @@ impl TableStateMachine {
     fn apply_player_events(
         &mut self,
         player_index: u8,
-        events: Vec<MjaiEvent>,
+        _events: Vec<MjaiEvent>,
     ) -> Result<(), String> {
         if player_index >= NUM_PLAYERS as u8 {
             return Err("player_index must be in 0..4".to_owned());
         }
+        // 事件到达即作废该座位上一次登记的合法动作请求(旧 history 已删除,
+        // 本方法仅保留请求生命周期职责)。
         self.pending_requests[player_index as usize] = None;
-        for event in events {
-            if matches!(event, MjaiEvent::StartKyoku { .. }) {
-                self.history_generations[player_index as usize] = self.history_generations[player_index as usize].wrapping_add(1);
-            }
-            self.players[player_index as usize].apply_player_event(&event)?;
-        }
         Ok(())
     }
 

@@ -95,66 +95,46 @@ impl MjaiKyokuStateMachineManager {
         Ok((end_kyoku.into_pyarray(py), end_game.into_pyarray(py)).into_pyobject(py)?)
     }
 
-    /// Atomically records legal actions and materializes semantic tokens.
-    /// The append-only public event prefix and temporary current-state suffix
-    /// are concatenated here; the learned query token belongs to the model.
+    /// Atomically records legal actions and returns the fixed 241-action legal mask。
+    ///
+    /// 旧 per-player semantic-token 历史/快照材料已删除(V18 输入由
+    /// `prepare_current_state_batch` + `encode_query_batch` 独立装配);
+    /// 本方法只保留「固定动作空间」登记与合法掩码职责。
     fn prepare_decisions<'py>(
         &mut self,
         py: Python<'py>,
         batch_indices: Vec<usize>,
         legal_actions: Vec<Vec<String>>,
-        snapshot_jsons: Vec<String>,
-    ) -> PyResult<Bound<'py, PyTuple>> {
-        if batch_indices.len() != legal_actions.len() || batch_indices.len() != snapshot_jsons.len() {
-            return Err(PyValueError::new_err("batch_indices, legal_actions and snapshot_jsons must have the same length"));
+    ) -> PyResult<Bound<'py, PyArray2<bool>>> {
+        if batch_indices.len() != legal_actions.len() {
+            return Err(PyValueError::new_err(
+                "batch_indices and legal_actions must have the same length",
+            ));
         }
         let batch_size = batch_indices.len();
         let mut seen = vec![false; self.tables.len() * NUM_PLAYERS];
-        let mut snapshots = Vec::with_capacity(batch_size);
-        for (row, ((batch_index, actions), snapshot_json)) in batch_indices.iter().copied().zip(legal_actions).zip(snapshot_jsons).enumerate() {
+        let mut masks = vec![false; batch_size * NUM_ACTIONS];
+        for (row, (batch_index, actions)) in batch_indices.iter().copied().zip(legal_actions).enumerate() {
             if batch_index >= seen.len() {
                 return Err(PyValueError::new_err("batch_index is out of range"));
             }
             if seen[batch_index] {
-                return Err(PyValueError::new_err("batch_indices must not contain duplicates"));
+                return Err(PyValueError::new_err(
+                    "batch_indices must not contain duplicates",
+                ));
             }
             seen[batch_index] = true;
-            let env_index = batch_index / NUM_PLAYERS;
             let player_index = (batch_index % NUM_PLAYERS) as u8;
-            let snapshot = serde_json::from_str::<DecisionSnapshot>(&snapshot_json)
-                .map_err(|error| PyValueError::new_err(format!("invalid snapshot JSON: {error}")))?;
-            let table = &mut self.tables[env_index];
-            table.set_legal_action_jsons(player_index, actions).map_err(PyValueError::new_err)?;
-            let tokens = table.players[player_index as usize].tokens(&snapshot).map_err(PyValueError::new_err)?;
-            snapshots.push((row, batch_index, tokens));
-        }
-
-        let max_length = snapshots.iter().map(|(_, _, tokens)| tokens.len()).max().unwrap_or(0);
-        let mut factors = vec![0u8; batch_size * max_length * TOKEN_WIDTH];
-        let mut numeric = vec![0f32; batch_size * max_length * NUMERIC_WIDTH];
-        let mut token_lengths = vec![0i64; batch_size];
-        let mut history_generations = vec![0i64; batch_size];
-        let mut masks = vec![false; batch_size * NUM_ACTIONS];
-        for (row, batch_index, tokens) in snapshots {
-            let table = &self.tables[batch_index / NUM_PLAYERS];
-            token_lengths[row] = tokens.len() as i64;
-            history_generations[row] = table.history_generations[batch_index % NUM_PLAYERS] as i64;
-            for (token_index, token) in tokens.into_iter().enumerate() {
-                let factor_offset = (row * max_length + token_index) * TOKEN_WIDTH;
-                factors[factor_offset..factor_offset + TOKEN_WIDTH].copy_from_slice(&token.factors);
-                let numeric_offset = (row * max_length + token_index) * NUMERIC_WIDTH;
-                numeric[numeric_offset..numeric_offset + NUMERIC_WIDTH].copy_from_slice(&token.numeric);
-            }
+            let table = &mut self.tables[batch_index / NUM_PLAYERS];
+            table
+                .set_legal_action_jsons(player_index, actions)
+                .map_err(PyValueError::new_err)?;
             masks[row * NUM_ACTIONS..(row + 1) * NUM_ACTIONS]
-                .copy_from_slice(&table.action_mask((batch_index % NUM_PLAYERS) as u8));
+                .copy_from_slice(&table.action_mask(player_index));
         }
-        Ok((
-            factors.into_pyarray(py).reshape((batch_size, max_length, TOKEN_WIDTH))?,
-            numeric.into_pyarray(py).reshape((batch_size, max_length, NUMERIC_WIDTH))?,
-            token_lengths.into_pyarray(py),
-            masks.into_pyarray(py).reshape((batch_size, NUM_ACTIONS))?,
-            history_generations.into_pyarray(py),
-        ).into_pyobject(py)?)
+        Ok(masks
+            .into_pyarray(py)
+            .reshape((batch_size, NUM_ACTIONS))?)
     }
 
     /// Decode selected fixed action ids into the exact corresponding RiichiEnv

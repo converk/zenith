@@ -122,28 +122,6 @@ def action_jsons(observation: Any) -> list[str]:
     return action_jsons_and_decision_flag(observation)[0]
 
 
-def snapshot_json(observation: Any, decision_flags: int = 0) -> str:
-    pid = int(observation.player_id)
-    hands = getattr(observation, "hands", None)
-    if hands is None:
-        raise RuntimeError("Observation must expose all hands for the state bridge")
-    data = {
-        "player_id": pid,
-        "oya": int(observation.oya),
-        "round_wind": int(observation.round_wind),
-        "kyoku_index": int(observation.kyoku_index),
-        "honba": int(observation.honba),
-        "riichi_sticks": int(observation.riichi_sticks),
-        "scores": [int(x) for x in observation.scores],
-        "dora_indicators": [tile_id_to_mjai(x) for x in observation.dora_indicators],
-        "hand": [tile_id_to_mjai(x) for x in hands[pid]],
-        "drawn_tile": tile_id_to_mjai(getattr(observation, "drawn_tile", None)),
-        "riichi_declared": [bool(x) for x in observation.riichi_declared],
-        "decision_flags": int(decision_flags),
-    }
-    return json.dumps(data, separators=(",", ":"))
-
-
 class BatchedStateBridge:
     """One strict, vectorized boundary for all tables owned by a rollout worker."""
 
@@ -215,20 +193,13 @@ class BatchedStateBridge:
             ]
             legal_objects = [objects for objects, _actions, _flag in action_rows]
             legal_actions = [actions for _objects, actions, _flag in action_rows]
-        with self.profiler.stage("state/snapshot_json"):
-            snapshots = [
-                snapshot_json(decision.observation, decision_flag)
-                for decision, (_objects, _actions, decision_flag) in zip(
-                    decisions, action_rows, strict=True,
-                )
-            ]
         with self.profiler.stage("state/rust_prepare_decisions"):
-            # 只取合法掩码与动作索引映射；history 输出不再消费。
+            # 只取合法掩码;V18 输入由 current_state.encode_batch 独立装配。
             prepared = self.state_machine.prepare_decisions(
-                batch_indices, legal_actions, snapshots,
+                batch_indices, legal_actions,
             )
         with self.profiler.stage("state/rust_action_index_map"):
-            mask = np.asarray(prepared[3], dtype=np.bool_)
+            mask = np.asarray(prepared, dtype=np.bool_)
             index_rows = self.state_machine.action_ids_with_source_indices(batch_indices)
             per_row_actions: list[list[tuple[Any, int]]] = []
             for row, mappings in enumerate(index_rows):

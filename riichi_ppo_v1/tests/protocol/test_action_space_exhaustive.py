@@ -10,7 +10,7 @@ try:
 except ImportError:  # pragma: no cover
     riichi = None
 
-from riichi_ppo_v1.model.validation import all_action_templates, assert_full_action_space, canonical, fixture_snapshot
+from riichi_ppo_v1.model.validation import all_action_templates, assert_full_action_space, canonical
 from riichi_ppo_v1.model.encoding_protocol import ACTION_TYPE_CODES, SUPPLIER_REQUIRED_ACTION_TYPES
 
 
@@ -30,7 +30,7 @@ class ActionSpaceExhaustiveTest(unittest.TestCase):
         manager = riichi.MjaiKyokuStateMachineManager(1)
         templates = all_action_templates()
         manager.prepare_decisions(
-            [0], [[json.dumps(template, separators=(",", ":")) for template in templates]], [fixture_snapshot()],
+            [0], [[json.dumps(template, separators=(",", ":")) for template in templates]],
         )
         # First/last slots of every fixed-action segment.  The exhaustive test
         # above proves all ids; this makes an accidental range shift readable.
@@ -54,7 +54,7 @@ class ActionSpaceExhaustiveTest(unittest.TestCase):
         ]
         for action in invalid:
             with self.assertRaises(ValueError, msg=str(action)):
-                manager.prepare_decisions([0], [[json.dumps(action)]], [fixture_snapshot()])
+                manager.prepare_decisions([0], [[json.dumps(action)]])
 
     def test_distinct_actions_cannot_silently_share_one_id(self) -> None:
         manager = riichi.MjaiKyokuStateMachineManager(1)
@@ -70,4 +70,4 @@ class ActionSpaceExhaustiveTest(unittest.TestCase):
         ]
         for actions in collisions:
             with self.assertRaises(ValueError, msg=str(actions)):
-                manager.prepare_decisions([0], [[json.dumps(action) for action in actions]], [fixture_snapshot()])
+                manager.prepare_decisions([0], [[json.dumps(action) for action in actions]])

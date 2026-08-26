@@ -4,12 +4,6 @@ const ENVS_PER_THREAD: usize = 8;
 pub(crate) const NUM_ACTIONS: usize = 241;
 pub(crate) const TILE_KINDS: usize = 34;
 
-const ACTOR_NONE: u8 = 0;
-const ACTOR_SELF: u8 = 1;
-const ACTOR_SHIMOCHA: u8 = 2;
-const ACTOR_TOIMEN: u8 = 3;
-const ACTOR_KAMICHA: u8 = 4;
-
 #[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -51,23 +45,6 @@ enum MjaiEvent {
 }
 
 #[allow(dead_code)]
-#[derive(Clone, Debug, Deserialize)]
-struct DecisionSnapshot {
-    player_id: u8,
-    oya: u8,
-    round_wind: u8,
-    kyoku_index: u8,
-    honba: u8,
-    riichi_sticks: u32,
-    scores: [i32; NUM_PLAYERS],
-    dora_indicators: Vec<String>,
-    hand: Vec<String>,
-    drawn_tile: Option<String>,
-    riichi_declared: [bool; NUM_PLAYERS],
-    #[serde(default)]
-    decision_flags: u8,
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 struct MjaiTile(#[serde(deserialize_with = "deserialize_tile")] u8);
 

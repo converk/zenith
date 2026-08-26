@@ -86,21 +86,14 @@ def all_action_templates() -> list[dict[str, Any]]:
     return templates
 
 
-def fixture_snapshot() -> str:
-    return json.dumps({
-        "player_id": 0, "oya": 0, "round_wind": 0, "kyoku_index": 0, "honba": 0,
-        "riichi_sticks": 0, "scores": [25000] * 4, "dora_indicators": ["2p"],
-        "hand": ["1m"] * 13, "drawn_tile": None, "riichi_declared": [False] * 4,
-        "decision_flags": 0,
-    }, separators=(",", ":"))
-
-
 def assert_full_action_space(manager: Any) -> None:
     templates = all_action_templates()
-    _factors, _numeric, _lengths, mask, _history_generations = manager.prepare_decisions(
-        [0], [[json.dumps(template, separators=(",", ":")) for template in templates]], [fixture_snapshot()]
+    mask = np.asarray(
+        manager.prepare_decisions(
+            [0], [[json.dumps(template, separators=(",", ":")) for template in templates]]
+        ),
+        dtype=bool,
     )
-    mask = np.asarray(mask, dtype=bool)
     if mask.shape != (1, NUM_ACTIONS) or not mask[0].all():
         raise AssertionError(f"expected all {NUM_ACTIONS} slots, got shape={mask.shape} count={mask.sum(axis=1)}")
     for action_id, expected in enumerate(templates):

@@ -276,10 +276,6 @@ fn tile_from_str(value: &str) -> Option<MjaiTile> {
         .map(|index| MjaiTile(index as u8))
 }
 
-fn snapshot_tile(value: &str) -> Result<MjaiTile, String> {
-    tile_from_str(value).ok_or_else(|| format!("invalid snapshot tile {value:?}"))
-}
-
 const fn default_scores() -> [i32; NUM_PLAYERS] {
     [25_000; NUM_PLAYERS]
 }
