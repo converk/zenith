@@ -604,3 +604,15 @@ manifest/offsets/field_statistics（越界 0/0）正常；冒烟产物已清理�
   安全性：precompute 阶段已断言域越界=0、`_assert_public_actor`、manifest/offsets fail-closed；
   载入端仍有 manifest/offsets 校验、每批 `_assert_targets_legal` 与模型 `_assert_structure` 兜底。
   需停止当前训练进程后重启生效。
+
+## SFT 训练慢根因二：模型策略头逐行 Python 循环（已向量化，2026-08-27）
+
+- **现象**：`validate_semantics=false` 后每步仍 ~0.45–0.9s；两个 worker 各占满一个 CPU 核，
+  GPU 仅 32–49%——瓶颈在 Python 侧而非 GPU 算力（训练机为 2×L20）。
+- **定位**：`architecture.py` 策略头对每行做 `torch.nonzero(query_mask[row])`（GPU→CPU 同步）
+  + 逐行 scatter；local_batch=256 → 每 forward 256 次同步。
+- **修复**：整批一次 `torch.nonzero(query_mask)`（单次同步）+ 行主序配对 + 扁平 scatter_add
+  + 行内相邻重复检测（跨行重复合法）。L20 实测（local_batch=256）：每步 293ms→**109ms**
+  （fwd 142→74ms，bwd 143→28ms，约 2.7×）。
+- **验证**：18 个模型/查询/信息边界/BC 测试全过；结构审计（RoPE/mask/padding/批内一致）PASS；
+  decode 往返 B1/B2 全 PASS；全量 pytest 184 passed / 1 failed（仅 PPO 迁移 WIP 项）。
