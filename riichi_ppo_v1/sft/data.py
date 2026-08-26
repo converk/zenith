@@ -114,6 +114,9 @@ def encode_kyoku(
                 f"failed to encode legal actions: game={game_id} kyoku={kyoku_index} seats={env_indices}"
             ) from exc
         prepared_legal = np.asarray(prepared, dtype=np.bool_)
+        # Rust 直接映射 action_id → 调用方合法动作列表下标，避免 Python 侧
+        # decode_actions + JSON 规范匹配（与 model/bridge.prepare 同一路径）。
+        index_rows = manager.action_ids_with_source_indices(batch_indices)
         decisions: list[tuple[object, list[tuple[object, int]]]] = []
         seat_list: list[int] = []
         target_actions: list[int] = []
@@ -129,26 +132,23 @@ def encode_kyoku(
             ids = [int(value) for value in np.flatnonzero(legal).tolist()]
             if not ids:
                 raise RuntimeError(f"empty legal mask: game={game_id} seat={seat}")
-            batch_index = seat * 4 + seat
-            decoded = manager.decode_actions([batch_index] * len(ids), ids)
             legal_actions = list(observation.legal_actions())
-            templates = action_jsons(observation)
-            if len(legal_actions) != len(templates):
-                raise RuntimeError(f"legal/template length mismatch: game={game_id} seat={seat}")
-            representative: dict[str, object] = {}
-            for action, template in zip(legal_actions, templates, strict=True):
-                key = json.dumps(json.loads(template), separators=(",", ":"), sort_keys=True)
-                representative.setdefault(key, action)
+            mappings = index_rows[row]
             actions_by_id: list[tuple[object, int]] = []
-            for action_id_value, raw in zip(ids, decoded, strict=True):
-                key = json.dumps(json.loads(raw), separators=(",", ":"), sort_keys=True)
-                action = representative.get(key)
-                if action is None:
+            for action_id_value, source_index in mappings:
+                action_id_value = int(action_id_value)
+                source_index = int(source_index)
+                if not 0 <= source_index < len(legal_actions):
                     raise RuntimeError(
-                        f"decoded action_id={action_id_value} has no legal representative: "
-                        f"game={game_id} seat={seat} mjai={raw}"
+                        f"state machine returned invalid legal action index {source_index}: "
+                        f"game={game_id} seat={seat}"
                     )
-                actions_by_id.append((action, action_id_value))
+                actions_by_id.append((legal_actions[source_index], action_id_value))
+            if [int(action_id_value) for _action, action_id_value in actions_by_id] != ids:
+                raise RuntimeError(
+                    f"state machine action-id mapping disagrees with legal mask: "
+                    f"game={game_id} seat={seat}"
+                )
             decisions.append((observation, actions_by_id))
             seat_list.append(seat)
             target_actions.append(int(target_action))

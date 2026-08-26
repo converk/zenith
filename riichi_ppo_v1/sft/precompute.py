@@ -182,21 +182,31 @@ def _empty_field_statistics() -> dict[str, np.ndarray]:
 def _accumulate_field_statistics(
     target: dict[str, np.ndarray], samples: list[EncodedSample],
 ) -> None:
-    """累计 query answer 越界、actor 行域越界与动作覆盖率。"""
-    from ..model.encoding_protocol import CATEGORY_SCHEMAS, is_separator_kind
+    """累计 query answer 越界、actor 行域越界与动作覆盖率（域检查按类别向量化）。"""
+    from ..model.encoding_protocol import CATEGORY_SCHEMAS
+
+    # 预计算每个 kind 的字段列区间与基数上界，避免逐 token × 逐字段 Python 循环。
+    kind_checks: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    for kind, schema in CATEGORY_SCHEMAS.items():
+        if not schema.discrete:
+            continue
+        count = len(schema.discrete)
+        kind_checks[kind] = (
+            np.arange(2, 2 + count, dtype=np.int64),
+            np.asarray([field.cardinality for field in schema.discrete], dtype=np.int64),
+        )
 
     for sample in samples:
         rows = sample.actor_factors
-        for token in rows:
-            kind = int(token[1])
-            if is_separator_kind(kind):
+        kinds = rows[:, 1].astype(np.int64)
+        for kind, (columns, maximums) in kind_checks.items():
+            positions = np.flatnonzero(kinds == kind)
+            if positions.size == 0:
                 continue
-            schema = CATEGORY_SCHEMAS[kind]
-            bad = 0
-            for index, field in enumerate(schema.discrete):
-                value = int(token[2 + index])
-                bad += int(not 0 <= value < field.cardinality)
-            target["actor_field_out_of_range"][0] += bad
+            values = rows[positions][:, columns]
+            bad = int(np.count_nonzero((values < 0) | (values >= maximums[None, :])))
+            if bad:
+                target["actor_field_out_of_range"][0] += bad
         pairs = sample.query_pair_count
         query = sample.query_rows[: 2 * pairs]
         offense = query[0::2, QUERY_ROW_ANSWER_START:]
