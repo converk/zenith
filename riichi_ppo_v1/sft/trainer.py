@@ -37,7 +37,6 @@ from .checkpoint import checkpoint_payload, load_exact_resume
 from .actor_bc import actor_parameters, freeze_critic
 from .contract import (
     SFT_CADENCE_STEPS,
-    SFT_FINAL_EVAL_HANCHAN_COUNT,
     dataset_manifest_hash,
     load_manifest,
     training_mode,
@@ -468,7 +467,7 @@ def _train_worker_impl(
                     loss = F.cross_entropy(model_output["policy_logits"].float(), batch["actions"])
                     policy_ce = loss.detach()
                 loss.backward()
-                grad_norm = torch.nn.utils.clip_grad_norm_(
+                torch.nn.utils.clip_grad_norm_(
                     [parameter for parameter in model.parameters() if parameter.requires_grad],
                     float(config["max_grad_norm"]),
                 )

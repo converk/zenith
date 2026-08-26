@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from riichi_ppo_v1.model.dense_embedding import DenseSlotFusion, SharedDenseMLP, StateTokenEmbedding
+from riichi_ppo_v1.model.dense_embedding import StateTokenEmbedding
 from riichi_ppo_v1.model.encoding_protocol import (
     CATEGORY_SCHEMAS,
     KIND_RIVER_SUMMARY,

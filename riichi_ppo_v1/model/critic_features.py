@@ -18,7 +18,6 @@ from .encoding_protocol import (
     KIND_SEP_CRITIC,
     SEGMENT_CRITIC_FUTURE,
     SEGMENT_CRITIC_PRIVATE,
-    TOKEN_NUMERIC_WIDTH,
     TOKEN_ROW_WIDTH,
 )
 

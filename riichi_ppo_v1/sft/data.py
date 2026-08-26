@@ -14,7 +14,7 @@ from ..model.current_state import EncodedStateBatch, encode_batch
 from ..model.bridge import (
     action_jsons,
 )
-from ..model.encoding_protocol import ENCODED_FORMAT, TOKEN_NUMERIC_WIDTH, TOKEN_ROW_WIDTH
+from ..model.encoding_protocol import ENCODED_FORMAT
 
 
 @dataclass(slots=True)

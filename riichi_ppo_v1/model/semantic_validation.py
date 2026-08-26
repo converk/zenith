@@ -38,7 +38,6 @@ from .encoding_protocol import (
     KIND_SELF_STATE_ANALYSIS,
     KIND_TABLE,
     KIND_TILE_STATE,
-    NUM_SEPARATORS,
     QUERY_ROW_ACTION_ID,
     QUERY_ROW_ACTION_TYPE,
     QUERY_ROW_ANSWER_START,
@@ -56,7 +55,6 @@ from .encoding_protocol import (
     TOKEN_NUMERIC_WIDTH,
     TOKEN_ROW_WIDTH,
     is_separator_kind,
-    separator_id_of_kind,
 )
 from .schema import NUM_ACTIONS
 

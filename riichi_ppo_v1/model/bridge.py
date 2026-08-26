@@ -21,7 +21,7 @@ from .critic_features import (
     pad_critic_feature_rows,
 )
 from .current_state import EncodedStateBatch, encode_batch
-from .schema import NUM_ACTIONS, TID_COUNT
+from .schema import TID_COUNT
 
 NUM_PLAYERS = 4
 _DECISION_ACTION_TYPES = frozenset({"dahai", "reach", "ankan", "kakan", "ryukyoku"})

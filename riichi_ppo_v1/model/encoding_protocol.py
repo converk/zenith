@@ -395,12 +395,6 @@ CATEGORY_SCHEMAS[KIND_ACTION_DEFENSE_QUERY] = CategorySchema(
     _action_fields("D"),
 )
 
-# ---- 段 → kind 集合（在全部 schema 就绪后计算） ----
-SEGMENT_KINDS: dict[int, frozenset[int]] = {
-    segment: frozenset(schema.kind for schema in CATEGORY_SCHEMAS.values() if schema.segment == segment)
-    for segment in range(1, 6)
-}
-
 
 def is_separator_kind(kind: int) -> bool:
     return kind in SEPARATOR_KINDS.values()

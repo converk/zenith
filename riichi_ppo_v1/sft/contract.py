@@ -14,7 +14,6 @@ from ..model.encoding_protocol import (
     DEFENSE_SLOT_ORDER,
     ENCODED_FORMAT,
     ENCODING_PROTOCOL_VERSION,
-    KIND_BOS,
     NUM_SEPARATORS,
     OFFENSE_SLOT_ORDER,
     QUERY_ROW_WIDTH,

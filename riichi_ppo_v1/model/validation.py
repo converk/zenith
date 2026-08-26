@@ -10,7 +10,8 @@ from typing import Any
 
 import numpy as np
 
-from .bridge import NUM_ACTIONS, BatchedStateBridge, Decision, action_jsons
+from .bridge import BatchedStateBridge, Decision, action_jsons
+from .schema import NUM_ACTIONS
 
 EVENT_TYPES = frozenset({
     "start_game", "start_kyoku", "tsumo", "dahai", "chi", "pon", "daiminkan",

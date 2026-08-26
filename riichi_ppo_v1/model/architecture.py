@@ -25,8 +25,6 @@ from .encoding_protocol import (
     KIND_SEP_CRITIC,
     SEGMENT_ACTIONS,
     SEGMENT_ANALYSIS,
-    SEGMENT_CRITIC_FUTURE,
-    SEGMENT_CRITIC_PRIVATE,
     SEGMENT_SHARED,
     TOKEN_NUMERIC_WIDTH,
     TOKEN_ROW_WIDTH,
@@ -153,7 +151,6 @@ def _actor_structured_layout(
     - 不同 pair 互不可见；padding 不可见。
     """
     device = segments.device
-    batch = segments.shape[0]
     positions = torch.arange(tokens, device=device)[None, :]
     valid = positions < lengths[:, None]
     is_shared = segments.eq(SEGMENT_SHARED)
@@ -221,9 +218,6 @@ class Decoder(nn.Module):
         for block in self.blocks:
             x = block(x, rope, attention_mask, valid)
         return self.norm(x)
-
-
-_SEGMENT_ORDER_VALIDATOR = None  # 由 semantic_validation 提供结构校验（避免循环导入）
 
 
 def _segment_of_kind(kind: int) -> int:
