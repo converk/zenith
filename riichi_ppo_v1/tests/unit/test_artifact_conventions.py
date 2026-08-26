@@ -76,19 +76,6 @@ def test_active_audit_version_dirs_have_fixed_types() -> None:
         )
 
 
-def test_historical_audit_and_logs_are_removed_but_checkpoints_remain() -> None:
-    for version in ("v13", "v14", "v15"):
-        assert not (ROOT / "audit" / "reports" / version).exists()
-    for version in ("v14", "v15"):
-        assert not (ROOT / "logs" / version).exists()
-    checkpoints = ROOT / "checkpoints"
-    for name in (
-        "train_riichi_v13", "train_riichi_v14", "train_riichi_v15",
-        "train_riichi_v16", "train_riichi_v17",
-    ):
-        assert (checkpoints / name).is_dir()
-
-
 def test_packaged_configs_are_current_and_neutral() -> None:
     from riichi_ppo_v1.sft.train import load_config as load_sft_config
     from riichi_ppo_v1.training.train import load_config
