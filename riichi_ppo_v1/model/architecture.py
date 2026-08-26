@@ -220,44 +220,87 @@ class Decoder(nn.Module):
         return self.norm(x)
 
 
-def _segment_of_kind(kind: int) -> int:
-    from .encoding_protocol import CATEGORY_SCHEMAS, SEPARATOR_SEGMENTS
+def _segment_map(kind: Tensor) -> Tensor:
+    """kind → 期望 segment 的整批查表（1..14 与 101..111 之外的 kind 映射为 0）。
 
-    if kind in SEPARATOR_SEGMENTS:
-        return SEPARATOR_SEGMENTS[kind]
-    return CATEGORY_SCHEMAS[kind].segment
+    等价于逐 token 的类别→segment 映射，纯向量化、无 per-row Python 循环。
+    """
+    from .encoding_protocol import (
+        SEGMENT_ACTIONS,
+        SEGMENT_ANALYSIS,
+        SEGMENT_CRITIC_FUTURE,
+        SEGMENT_CRITIC_PRIVATE,
+        SEGMENT_SHARED,
+    )
+
+    is_sep = (kind >= 101) & (kind <= 111)
+    shared = ((kind >= 1) & (kind <= 9)) | ((kind >= 101) & (kind <= 108))
+    analysis = (kind == 10) | (kind == 109)
+    actions = (kind == 11) | (kind == 12) | (kind == 110)
+    critic_private = (kind == 13) | (kind == 111)
+    critic_future = kind == 14
+    invalid = ~(shared | analysis | actions | critic_private | critic_future) & ~is_sep
+    return torch.where(
+        invalid, torch.zeros_like(kind),
+        torch.where(
+            shared, torch.full_like(kind, SEGMENT_SHARED),
+            torch.where(
+                analysis, torch.full_like(kind, SEGMENT_ANALYSIS),
+                torch.where(
+                    actions, torch.full_like(kind, SEGMENT_ACTIONS),
+                    torch.where(
+                        critic_private, torch.full_like(kind, SEGMENT_CRITIC_PRIVATE),
+                        torch.full_like(kind, SEGMENT_CRITIC_FUTURE),
+                    ),
+                ),
+            ),
+        ),
+    )
 
 
 def _assert_structure(factors: Tensor, lengths: Tensor, *, critic: bool) -> None:
-    """轻量结构校验：段/类别一致性、BOS 开头、分隔符位置、action 数量（fail closed）。"""
-    from .encoding_protocol import CATEGORY_SCHEMAS, is_separator_kind
+    """轻量结构校验：段/类别一致性、BOS 开头、分隔符位置、action 数量（fail closed）。
+
+    整批向量化实现（旧实现逐行 tolist + Python 循环，实测一次 forward 占 ~32ms）。
+    """
+    from .encoding_protocol import (
+        KIND_BOS,
+        KIND_CRITIC_FUTURE,
+        KIND_CRITIC_HAND,
+        KIND_SEP_CRITIC,
+        SEGMENT_ACTIONS,
+    )
 
     batch, tokens, _width = factors.shape
-    for row in range(batch):
-        length = int(lengths[row])
-        seg_raw = factors[row, :length, 0].tolist()
-        kind_raw = factors[row, :length, 1].tolist()
-        expected_seg = [
-            _segment_of_kind(int(kind)) for kind in kind_raw
-        ]
-        if seg_raw != expected_seg:
-            raise ValueError("token segment field disagrees with its kind schema")
-        if critic:
-            if length == 0:
-                raise ValueError("critic rows must not be empty")
-            if int(kind_raw[0]) != KIND_SEP_CRITIC:
-                raise ValueError("critic rows must start with SEP_CRITIC")
-            if any(int(kind) not in (KIND_SEP_CRITIC, KIND_CRITIC_HAND, KIND_CRITIC_FUTURE) for kind in kind_raw):
-                raise ValueError("critic rows contain a non-critic kind")
-            continue
-        if int(kind_raw[0]) != KIND_BOS:
-            raise ValueError("actor sequence must start with BOS")
-        action_count = sum(
-            1 for kind in kind_raw
-            if not is_separator_kind(int(kind)) and CATEGORY_SCHEMAS[int(kind)].segment == SEGMENT_ACTIONS
+    if batch == 0:
+        return
+    device = factors.device
+    lengths = lengths.to(device=device, dtype=torch.long)
+    positions = torch.arange(tokens, device=device)[None, :]
+    valid = positions < lengths[:, None]
+    kind = factors[..., 1].long()
+    seg = factors[..., 0].long()
+    expected_seg = _segment_map(kind)
+    if bool((valid & (seg != expected_seg)).any()):
+        raise ValueError("token segment field disagrees with its kind schema")
+    if critic:
+        if bool((lengths == 0).any()):
+            raise ValueError("critic rows must not be empty")
+        if bool((factors[:, 0, 1].long() != KIND_SEP_CRITIC).any()):
+            raise ValueError("critic rows must start with SEP_CRITIC")
+        non_critic = valid & ~(
+            (kind == KIND_SEP_CRITIC) | (kind == KIND_CRITIC_HAND) | (kind == KIND_CRITIC_FUTURE)
         )
-        if action_count == 0 or action_count % 2 != 0:
-            raise ValueError("actor sequence must contain a positive even action count")
+        if bool(non_critic.any()):
+            raise ValueError("critic rows contain a non-critic kind")
+        return
+    if bool((factors[:, 0, 1].long() != KIND_BOS).any()):
+        raise ValueError("actor sequence must start with BOS")
+    is_sep = (kind >= 101) & (kind <= 111)
+    action_rows = valid & ~is_sep & (expected_seg == SEGMENT_ACTIONS)
+    counts = action_rows.sum(dim=1)
+    if bool(((counts == 0) | (counts % 2 != 0)).any()):
+        raise ValueError("actor sequence must contain a positive even action count")
 
 
 class KyokuTransformerActorCritic(nn.Module):

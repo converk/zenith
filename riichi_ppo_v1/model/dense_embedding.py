@@ -21,8 +21,6 @@ from torch import Tensor, nn
 from .encoding_protocol import (
     CATEGORY_SCHEMAS,
     CategorySchema,
-    is_separator_kind,
-    separator_id_of_kind,
 )
 
 SIMPLE_SLOT_DIM = 16
@@ -194,35 +192,47 @@ class StateTokenEmbedding(nn.Module):
         segment = factors[..., 0].long()
         kind = factors[..., 1].long()
         base = self.segment(segment.clamp(0, 5)) + self.kind(kind.clamp(0, 127))
-        # 分隔符：额外类别专属 embedding。
+        base_flat = base.reshape(-1, self.d_model)
+        # 分隔符：类别专属 embedding（纯向量化；kind=100+separator_id ∈ [101,111]）。
         flat_kind = kind.reshape(-1)
-        sep_positions = torch.nonzero(
-            torch.tensor([is_separator_kind(int(value)) for value in flat_kind.tolist()], device=kind.device),
-            as_tuple=False,
-        ).squeeze(-1)
-        if sep_positions.numel():
-            sep_ids = torch.tensor(
-                [separator_id_of_kind(int(flat_kind[index].item())) for index in sep_positions.tolist()],
-                device=kind.device,
-            )
-            base_flat = base.reshape(-1, self.d_model)
-            base_flat[sep_positions] = base_flat[sep_positions] + self.separator(sep_ids)
-            base = base_flat.reshape(batch, tokens, -1)
-        content = base
+        sep_mask = (flat_kind >= 101) & (flat_kind <= 111)
+        sep_ids = flat_kind[sep_mask] - 100
+        base_flat[sep_mask] = base_flat[sep_mask] + self.separator(sep_ids)
+        content_flat = base_flat
         flat_factors = factors.reshape(batch * tokens, -1)
         flat_numeric = numeric.reshape(batch * tokens, -1)
-        flat_kind = flat_factors[:, 1]
-        content_flat = content.reshape(batch * tokens, -1)
-        for kind_value, schema in CATEGORY_SCHEMAS.items():
-            idx = torch.nonzero(flat_kind.eq(kind_value), as_tuple=False).squeeze(-1)
-            if idx.numel() == 0:
+        # 一次稳定排序得到按 kind 连续区段，替代逐类别 torch.nonzero
+        # （旧实现每类一次 GPU 操作 + 同步）。
+        order = torch.argsort(flat_kind, stable=True)
+        sorted_kind = flat_kind[order]
+        change = sorted_kind[1:] != sorted_kind[:-1]
+        starts = torch.cat([
+            torch.zeros(1, dtype=torch.long, device=kind.device),
+            torch.nonzero(change, as_tuple=False).squeeze(-1) + 1,
+        ])
+        ends = torch.cat([
+            starts[1:],
+            torch.tensor([sorted_kind.numel()], dtype=torch.long, device=kind.device),
+        ])
+        starts_list = starts.tolist()
+        ends_list = ends.tolist()
+        kind_values = sorted_kind[starts].tolist()
+        for offset, kind_value in enumerate(kind_values):
+            schema = CATEGORY_SCHEMAS.get(kind_value)
+            if schema is None:
                 continue
+            start, end = starts_list[offset], ends_list[offset]
+            if start >= end:
+                continue
+            idx = order[start:end]
+            row_factors = flat_factors[idx]
+            row_numeric = flat_numeric[idx]
             if schema.cls == "DENSE":
-                parts = self._dense_parts(str(kind_value), schema, flat_factors[idx], flat_numeric[idx])
+                parts = self._dense_parts(str(kind_value), schema, row_factors, row_numeric)
                 embedded = self.shared_mlp(self.dense_input(parts))
             elif schema.cls == "SIMPLE":
                 if schema.discrete:
-                    embedded = self.simple_input(self._simple_parts(str(kind_value), flat_factors[idx]))
+                    embedded = self.simple_input(self._simple_parts(str(kind_value), row_factors))
                 else:
                     # BOS：无字段类别，直接使用 kind/segment 基础向量。
                     embedded = content_flat[idx]
