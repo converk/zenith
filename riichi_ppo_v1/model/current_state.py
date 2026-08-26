@@ -5,7 +5,7 @@ Observation 当前字段构造 Shared 公共前缀 + 三个 Opponent Analysis �
 本模块负责：
 1. 按决策切分 Rust 行，补写 ``SEP_ACTIONS`` 分隔符行；
 2. 调用既有 ``encode_action_queries_batch_native`` 生成 O/D Query 行（15 宽），
-   并把每个动作对的 14 个嵌入特征按 schema 顺序写入 action token 行；
+   并把每个动作对的 15 个嵌入特征按 schema 顺序写入 action token 行；
 3. 按 action ID 升序规范排序（调用方提供的 triples 本身即升序，这里再次校验）；
 4. 输出模型/训练入口统一的 ``EncodedStateBatch``。
 
@@ -52,7 +52,7 @@ class EncodedStateBatch:
 
 
 def _action_row(query_type: int, row: np.ndarray, tsumogiri_mode: int) -> np.ndarray:
-    """把 15 宽 query 行转换为 32 宽 action token 行（14 个嵌入特征）。"""
+    """把 15 宽 query 行转换为 32 宽 action token 行（15 个嵌入特征，含 action_id）。"""
     action_row = np.zeros(TOKEN_ROW_WIDTH, dtype=np.int32)
     action_row[0] = SEGMENT_ACTIONS
     action_row[1] = KIND_ACTION_OFFENSE_QUERY if query_type == 1 else KIND_ACTION_DEFENSE_QUERY
@@ -61,6 +61,7 @@ def _action_row(query_type: int, row: np.ndarray, tsumogiri_mode: int) -> np.nda
         int(row[QUERY_ROW_PRIMARY_TILE]),
         int(row[QUERY_ROW_SOURCE_SEAT]),
         int(tsumogiri_mode),
+        int(row[QUERY_ROW_ACTION_ID]),
         *[int(value) for value in row[QUERY_ROW_ANSWER_START:QUERY_ROW_WIDTH]],
     )
     action_row[2:2 + len(features)] = np.asarray(features, dtype=np.int32)

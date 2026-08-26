@@ -59,6 +59,46 @@ def first_kyoku_record(path: str = "RiichiEnv/tests/data/126_204_0_mjai.jsonl") 
     return record, "test-1"
 
 
+def make_observation(
+    *,
+    hands: list[list[int]] | None = None,
+    melds: list[list[dict[str, object]]] | None = None,
+    discards: list[list[int]] | None = None,
+    dora_indicators: list[int] | None = None,
+    events: list[str] | None = None,
+    drawn_tile: int | None = None,
+) -> object:
+    """构造带副露/赤牌/事件的合成 Observation（V18 测试夹具）。
+
+    ``events`` 为 JSON 字符串列表（与 Observation.new_events 一致）。
+    仅用于编码器字段级断言；麻将合法性由调用方负责。
+    """
+    import base64
+    import json
+
+    import riichienv
+
+    data = {
+        "player_id": 0,
+        "hands": hands if hands is not None else [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [], [], []],
+        "melds": melds if melds is not None else [[], [], [], []],
+        "discards": discards if discards is not None else [[], [], [], []],
+        "dora_indicators": dora_indicators if dora_indicators is not None else [],
+        "scores": [25000] * 4,
+        "riichi_declared": [False] * 4, "riichi_accepted": [False] * 4,
+        "riichi_declaration_indices": [None] * 4,
+        "missed_agari_doujun": False, "missed_agari_riichi": False,
+        "tiles_left": 70, "honba": 0, "riichi_sticks": 0, "round_wind": 0,
+        "oya": 0, "kyoku_index": 0, "waits": [], "is_tenpai": False,
+        "tsumogiri_flags": [[], [], [], []], "riichi_sutehais": [None] * 4,
+        "last_tedashis": [None] * 4, "last_discard": None,
+        "drawn_tile": drawn_tile,
+        "_legal_actions": [], "events": events if events is not None else [],
+    }
+    b64 = base64.b64encode(json.dumps(data).encode()).decode()
+    return riichienv.Observation.deserialize_from_base64(b64)
+
+
 def _row(segment: int, kind: int, fields: tuple[int, ...] = ()) -> np.ndarray:
     row = np.zeros(TOKEN_ROW_WIDTH, dtype=np.int64)
     row[0] = segment
@@ -104,8 +144,8 @@ def shared_prefix_rows() -> list[np.ndarray]:
 
 
 def _action_row(query_type: int, action_id: int) -> np.ndarray:
-    # query 行特征：action_type=1, primary=0, source=0, tsumogiri=0, answers=0
-    fields = (1, 0, 0, 0) + (0,) * 10
+    # query 行特征：action_type=1, primary=0, source=0, tsumogiri=0, action_id, answers=0
+    fields = (1, 0, 0, 0, action_id) + (0,) * 10
     kind = KIND_ACTION_OFFENSE_QUERY if query_type == 1 else KIND_ACTION_DEFENSE_QUERY
     return _row(SEGMENT_ACTIONS, kind, fields)
 

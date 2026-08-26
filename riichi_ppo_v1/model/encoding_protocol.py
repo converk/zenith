@@ -22,6 +22,9 @@ if ENCODING_PROTOCOL_VERSION != 18:
 ENCODED_FORMAT = f"riichi-sft-encoded-v{ENCODING_PROTOCOL_VERSION}"
 STATE_PROTOCOL_VERSION = "riichi-current-state-v18-1"
 
+# 动作空间维度（领域常量，schema.py 从此单源导入）。
+NUM_ACTIONS = 241
+
 # 行布局：row[:, 0]=segment, row[:, 1]=token_kind, row[:, 2:]=类别字段。
 TOKEN_ROW_WIDTH = 32
 TOKEN_NUMERIC_WIDTH = 8
@@ -363,12 +366,17 @@ SLOT_CARDINALITIES: dict[str, int] = {
 
 
 def _action_fields(slot_prefix: str) -> tuple[DiscreteField, ...]:
-    """Action Query 的嵌入特征：metadata + 10 个 answer 槽（Offense 用 O、Defense 用 D）。"""
+    """Action Query 的嵌入特征：metadata + action_id + 10 个 answer 槽（Offense 用 O、Defense 用 D）。
+
+    ``action_id``（0..240）是完整 consume/赤牌身份的规范编码，进入 token embedding；
+    query_rows 仍保留 15 宽原始元数据供一致性校验。
+    """
     return (
         DiscreteField("action_type_code", 12),
         DiscreteField("primary_tile_code", 35),
         DiscreteField("source_seat_code", 4),
         DiscreteField("tsumogiri_mode", 2),
+        DiscreteField("action_id", NUM_ACTIONS),
         *(DiscreteField(f"answer_{index}", SLOT_CARDINALITIES[slot_prefix + str(index)]) for index in range(10)),
     )
 
