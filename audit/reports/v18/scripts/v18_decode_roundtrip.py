@@ -219,7 +219,10 @@ def main() -> int:
     if total_samples == 0 or checked == 0 or b1_fail:
         print("FAIL（B1 SFT 解码往返失败）")
         return 1
-    print("B1 SFT 解码往返 PASS；B2 bridge select 存在失败（见上，需修复/迁移盘点）。")
+    if b2_fail:
+        print("B1 SFT 解码往返 PASS；B2 bridge select 存在失败（见上，需修复）")
+        return 0
+    print("B1 与 B2 解码往返全部 PASS")
     return 0
 
 

@@ -546,3 +546,17 @@ conda run -n Mahjong-AI python audit/reports/v18/scripts/v18_model_structure_aud
 - **测试**：cargo 134 passed 0 failed；pytest unit+protocol+integration 183 passed 2 failed（仅既有两项）；RiichiEnv 284 passed 2 skipped；lab_bot collection 失败（既有待迁移）；`validate --parameter-contract` PASS（5,804,914/258 keys）；两个既有 oracle 全 PASS。
 - **新增交付**：`audit/reports/v18/scripts/v18_decode_roundtrip.py`、`audit/reports/v18/scripts/v18_perf_review.py`、`audit/reports/v18/report/V18输入链路复审与性能审查报告.md`。
 - **未改动**：PPO/rollout/1v3/lab_bot 仅盘点；未生成完整数据集；未启动正式训练；未删除归档资产；临时产物无。
+
+## V18-DEC-1 修复与 v13 环境测试删除（2026-08-27 后续）
+
+1. **V18-DEC-1 根修（bridge 解码缺陷，P1）**：`RiichiEnv/riichienv-core/src/observation/mjai_select.rs`
+   在精确等长 consumed 匹配失败后，对 chi/pon/daiminkan 增加 `hand_only_consumed_matches` 回退
+   （去掉与 `pai` 相同的被鸣牌后按序比较），兼容「consume_tiles 含被鸣牌」与「仅手牌侧」两种表示；
+   新增 7 个 Rust 单元测试；重编译 `riichi`/`riichienv` 扩展。验证：`cargo test --workspace` 119+4+10+8 passed、
+   `v18_decode_roundtrip.py` B2 27→**0**（7150 id 全通过）、`test_mjai_parity`/`test_action_to_mjai` 12 passed、
+   两个 oracle 全 PASS、pytest 183 passed / 1 failed（仅 PPO 待迁移断点）。
+2. **v13 checkpoint 环境测试删除（按用户决定）**：删除
+   `test_artifact_conventions.py::test_historical_audit_and_logs_are_removed_but_checkpoints_remain`
+   （V13 已停用；断言本机必须存在 `train_riichi_v13/v14/v15` 属环境资产项）。`rg` 确认仅测试自身与
+   历史报告/归档 spec 引用（保留原貌）；测试文件重跑 11 passed。
+3. 报告更新：`V18输入链路复审与性能审查报告.md` §2.2/§4/§5/§7 已同步；全部改动已提交。
