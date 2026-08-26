@@ -330,3 +330,66 @@ conda run -n Mahjong-AI python -m riichi_ppo_v1.tools.validate --parameter-contr
   `--subset-denominator 1 --subset-remainders 0`,`configs/v18_grp.yaml`
   epochs 15 → 30;protocol/design/spec/plan 全部同步。预期 train 约 36 万
   半庄、约 5.6 万步(1–2 小时)。
+
+## V18 当前局面输入与 Actor 决策架构重构（specs/010）
+
+- 2026-08-27：按 `audit/reports/v18/design/V18当前局面输入与Actor决策架构重构提示词.md`
+  完成输入协议重构（PPO 阶段不在本阶段范围）：
+  - **协议**：移除 Actor 事件历史（history factors/numeric/lengths/generations）、
+    54 行 Atomic Snapshot、旧局部 position Query；改为**当前局面状态快照**：
+    Shared 公共前缀（桌况/自身手牌/SELF_STATE_ANALYSIS/四家 PLAYER/三家完整牌河+各两个
+    六张摘要/当前副露/34 TILE_STATE）+ Actor-only 尾部（三个 OPPONENT_ANALYSIS +
+    按 action_id 升序的 Offense/Defense Query，O0–O9/D0–D9 语义保留）。全 token RoPE
+    连续位置、公共双向 GQA、结构化 Actor mask、Critic 独立尾部（SEP_CRITIC + 三家闭手 +
+    未来五张 + Value Query）。schema 单点定义在 `riichi_ppo_v1/model/encoding_protocol.py`
+    （`TOKEN_ROW_WIDTH=32`、`TOKEN_NUMERIC_WIDTH=8`、`CONTEXT_TOKENS=256`）。
+  - **编码器**：新增 `RiichiEnv/riichienv-python/src/current_state_encoding.rs`
+    （`riichienv.prepare_current_state_batch`，直接以 Observation 当前字段构造共享+分析行），
+    复用 `riichi::shanten`/`analysis::suji_category`/`wall_class` 等内核；Python 装配层
+    `model/current_state.py` 拼接 SEP_ACTIONS 与按 action_id 升序的 query 行。
+  - **模型**：`architecture.py` 重写（`current_state_snapshot` 策略头、共享双向 backbone、
+    结构化 Actor 层、Critic 尾部）；`model/dense_embedding.py` 新增槽位感知融合
+    （`dense_slot_dim=32` 独立槽位表 + 共享输入投影 512 + 共享 gated MLP；
+    简单类别 16 维 concat 共享投影）。`d_model=256`、16Q/4KV GQA、`ffn_dim=704`、
+    3+1+2 层、`dense_fusion_dim=512`；**总参数 5,756,722（≤6.0M）**，无 MHA 双分支/
+    Q 模块/旧 adapter（`forbidden_q_keys=()`）；分项 embedding 1,327,920 / shared
+    2,115,072 / actor 705,280 / critic 1,410,560 / head 197,890。
+  - **SFT**：`sft/data.py`、`precompute.py`、`trainer.py`、`actor_bc.py`、`contract.py`
+    重写；`EncodedSample` 改为完整 Actor 序列（actor_factors/actor_numeric/query_rows/
+    action_ids/legal/身份），shard 存 `actor_offsets/actor_factors/actor_numeric/...`；
+    manifest 增加 `state_protocol=riichi-current-state-v18-1`；
+    `encoding_contract_sha256=418b7b8f...`（由新 schema 生成）。
+  - **测试**：重写/新增 unit/integration/protocol 共 16 个测试文件
+    （协议单源、Rust 行结构、RoPE/结构化 mask、密集嵌入敏感性/内部顺序/padding/梯度、
+    参数契约、Actor-only BC 隔离、契约 hash fail-closed、真实 replay 编码、Query 语义、
+    信息边界、小规模 SFT 生命周期）。`pytest riichi_ppo_v1/tests`（PPO 相关除外）：
+    **163 passed, 0 failed**；PPO 旧输入测试 `test_rollout_buffer::test_learner_accepts_only_rollout_buffer`
+    因旧契约不兼容而失败，属预期待迁移项（见下）。
+  - **上下文统计（抽样）**：真实 fixture 首个 kyoku 共 65 个决策，token_length=99
+    （早巡样本），pair_count=13；`context_tokens=256` 严格上界核算见
+    `specs/010/.../research.md §2.7`（Actor ≤204、Critic ≤185）。
+  - **清理**：删除 `riichi_ppo_v1/model/snapshot.py`（全仓引用检查零命中）；删除后全仓
+    import 冒烟通过（`riichi_lab_bot` 仅保留包级 import 兼容，其运行路径列入待迁移）。
+  - **文档**：重写 `riichi_ppo_v1/docs/v18_input_protocol.md`、`v18_sft.md`、
+    `KyokuEventTupleProtocol.md`；更新根 `README.md`、`riichi_ppo_v1/README.md`、
+    `AGENTS.md`、`docs/directory-responsibilities.md`。
+  - **PPO/rollout/bot 待迁移清单**：`training/worker.py`、`inference.py`、`learner.py`、
+    `learner_ddp.py`、`rollout_buffer.py`、`trajectory.py`（Transition 旧字段）、
+    `evaluation/policy_adapter.py`、`head_to_head_1v3.py`、`riichi_lab_bot/
+    src/riichi_lab_bot/{model,policy,bridge}.py` 仍引用旧 history/snapshot/局部 position
+    输入契约；本阶段不修改、不兼容、不测试，仅记录。
+  注：`test_artifact_conventions::test_historical_audit_and_logs_are_removed_but_checkpoints_remain`
+  断言本仓库存在 `checkpoints/train_riichi_v13/v14/v15` 目录；当前 checkout 仅有
+  v16/v17/v18，属环境性差异（非本次改动引入）。
+- **性能冒烟**：CPU Rust/PyO3 编码吞吐（真实 fixture 单 kyoku 65 decisions，3 轮取后两轮）：
+  ~1,984–2,045 decisions/s；GPU Actor-only SFT 单卡（CUDA_DEVICE=0，L20，bf16 autocast，
+  batch 16，2 步后两轮）: loss≈1.59，~5,836 tokens/s，峰值显存 191 MB（结构/显存验证，
+  非训练基线）。临时脚本已删除。
+- **60% selection 代表性 token 统计**（`--subset-denominator 5 --subset-remainders 0,1,2`
+  × `--game-sample-denominator 500`，train 268,011 decisions，临时样本已删除）：
+  actor mean **109.01**、p50 **108**、p95 **134**、p99 **144**、max **161**、min 73；
+  分项 segment mean：shared **87.07**、analysis **4.00**、actions **17.94**；
+  query_answer_out_of_range=0、actor_field_out_of_range=0。
+  与提示词参考（早巡 85–105 / 中巡 105–135 / 晚巡 130–165 / 极端 185–215）一致；
+  严格上界 `context_tokens=256` 保持成立（Actor ≤204、Critic ≤185，见
+  `specs/010/.../research.md §2.7`），无截断。

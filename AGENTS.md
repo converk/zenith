@@ -34,6 +34,11 @@
   指导,与其冲突时以宪法为准。
 - 现行版本契约:encoding protocol 与活跃训练代均为 V18。V16/V17 的 checkpoint、
   数据集、配置、日志和历史报告仅作冷存储,不再被活跃代码加载或迁移。
+- V18 输入协议为**当前局面状态快照**(Shared 公共前缀 + 三家 Opponent Analysis +
+  每个合法动作一对 Offense/Defense Query;全 token RoPE、公共双向 GQA、结构化 Actor
+  mask;`d_model=256`/16Q/4KV GQA/`dense_slot_dim=32`/`dense_fusion_dim=512`/
+  `context_tokens=256`);MJAI 事件仅用于同步/生命周期/动作执行,不再作为模型输入。
+  PPO/rollout 与 `riichi_lab_bot` 对旧输入契约的引用为 V18 后续待迁移项。
 
 # 目录与组件职责
 

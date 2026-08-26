@@ -10,7 +10,7 @@
 | `configs/` | 打包默认配置、V18 自包含配置与只读归档实验配置 |
 | `docs/` | 协议、动作空间、V18 输入契约与 SFT 使用文档 |
 | `evaluation/` | 跨阶段确定性评测:1v3 对抗、分片驱动与策略适配边界 |
-| `model/` | 模型结构、领域常量单一来源、动作分组与模型/环境转换边界 |
+| `model/` | 模型结构、领域常量单一来源、动作分组与模型/环境转换边界（当前局面协议 schema、密集槽位融合嵌入、Rust 编码装配） |
 | `sft/` | SFT 数据准备、预计算、训练、契约与 checkpoint 持久化 |
 | `tools/` | 独立生产 CLI(事件统计、协议验证入口) |
 | `training/` | PPO 训练循环、rollout、单/双卡 learner(DDP)与奖励机制 |
@@ -30,7 +30,7 @@
 | `src/riichienv/` | Python 环境封装:常量、TID 转换、手牌/动作与对局接口 |
 | `riichienv-core/` | Rust 核心:规则、计分、向听、观察编码与重放 |
 | `riichienv-state-machine/` | MJAI 协议状态机与持久化,公开模块名 `riichi`,不依赖 `riichienv` |
-| `riichienv-python/` | PyO3 绑定构建入口 |
+| `riichienv-python/` | PyO3 绑定构建入口（含当前局面批编码器 `current_state_encoding.rs`） |
 | `tests/` | 环境行为、动作合法性、和了与协议测试 |
 | `docs/` | 环境文档 |
 | `scripts/` | 构建、安装与日志校验脚本 |

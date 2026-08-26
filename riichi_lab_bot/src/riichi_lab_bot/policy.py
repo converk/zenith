@@ -16,7 +16,6 @@ from riichi_ppo_v1.model.encoding_protocol import (
     QUERY_ROW_ACTION_ID,
     QUERY_ROW_ACTION_TYPE,
     QUERY_ROW_QUERY_TYPE,
-    SNAPSHOT_FIELDS,
 )
 from riichi_ppo_v1.model.semantic_validation import (
     assert_actor_input_semantics,
@@ -27,13 +26,11 @@ from .model import (
     NUM_ACTIONS,
     NUMERIC_WIDTH,
     QUERY_ROW_WIDTH,
-    SNAPSHOT_FACTOR_WIDTH,
-    SNAPSHOT_FIELD_COUNT,
-    SNAPSHOT_NUMERIC_WIDTH,
     TOKEN_WIDTH,
     KyokuTransformerActorCritic,
     ModelConfig,
 )
+# V18 待迁移：bot 的 PreparedDecision 仍使用旧 history/snapshot 布局，本阶段不兼容。
 
 
 def resolve_device(value: str) -> torch.device:

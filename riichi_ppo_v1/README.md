@@ -1,8 +1,9 @@
 # V18 SFT/PPO 训练框架
 
-本包的活跃协议仅为 V18：Objective Facts + 54 个 Atomic Snapshot 字段 + 每个
-合法动作一对 Offense/Defense Query。V16/V17 配置与产物保留为冷存储，不能由
-活跃 checkpoint、SFT、评测或 bot 路径加载。
+本包的活跃协议仅为 V18：**决策时刻状态快照**（Shared 公共前缀 + 三家 Opponent
+Analysis + 每个合法动作一对 Offense/Defense Query，全 token RoPE、公共双向 GQA、
+结构化 Actor mask）。V16/V17 配置与产物保留为冷存储，不能由活跃 checkpoint、SFT、
+评测或 bot 路径加载；PPO/rollout 与 bot 的旧输入引用为后续待迁移项。
 
 ## 安装与验证
 
@@ -16,8 +17,9 @@ python -m pytest riichi_ppo_v1/tests
 ```
 
 参数契约固定为 `d_model=256`、16 Q heads、4 KV heads、`head_dim=16`、
-`ffn_dim=704`、3 Shared + 1 Actor + 2 Critic，完整 Actor-Critic 参数量必须位于
-4.9M–5.1M。模型不包含 Q scorer、candidate-Q 输出或兼容 key。
+`ffn_dim=704`、3 Shared + 1 Actor + 2 Critic，密集槽位 `dense_slot_dim=32`、
+`dense_fusion_dim=512`，`context_tokens=256`，完整 Actor-Critic 参数量 ≤6.0M（当前
+约 5.76M）。模型不包含 Q scorer、candidate-Q 输出、MHA 双分支或旧协议兼容 key。
 
 ## V18 SFT-ready 路径
 

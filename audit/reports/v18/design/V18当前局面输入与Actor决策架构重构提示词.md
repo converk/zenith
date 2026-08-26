@@ -1,12 +1,5 @@
 # V18 当前局面输入与 Actor 决策架构重构提示词
 
-将下面整段提示词复制到新的 Codex 对话中执行。
-
-> 本文件只是下一次开发对话的任务提示词，提示词文件本身不需要用
-> spec-kit 管理。后续实施对话必须使用 spec-kit 流程，并遵守 constitution、
-> AGENTS.md 和项目既有治理规范。
-
-````text
 请在项目 `/mnt/disk1/hubowen/zenith` 中完成 V18 当前局面输入协议、数据预处理、
 模型结构、Actor-only SFT 以及相关测试/文档的整体重构。PPO 阶段本次不考虑。
 
