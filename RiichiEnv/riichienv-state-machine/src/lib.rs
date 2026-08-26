@@ -5,7 +5,6 @@
 //! reproducible for the RiichiEnv PPO integration.
 
 pub mod analysis;
-pub mod atomic_snapshot;
 #[path = "MjaiKyokuStateMachine/mod.rs"]
 mod mjai_kyoku_state_machine;
 mod query_encoding;
@@ -34,7 +33,6 @@ pub const VISIBLE_MELD_DORA_AKA_OVERFLOW_BUCKET: u8 = 8;
 fn riichi(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<MjaiKyokuStateMachineManager>()?;
     analysis::register(m)?;
-    atomic_snapshot::register(m)?;
     query_encoding::register(m)?;
     m.add("ANALYSIS_VERSION", HAND_ANALYSIS_VERSION)?;
     m.add("ENCODING_PROTOCOL_VERSION", ENCODING_PROTOCOL_VERSION)?;

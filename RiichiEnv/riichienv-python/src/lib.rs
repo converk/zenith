@@ -82,7 +82,6 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<env::BatchedRiichiEnv>()?;
     m.add_class::<encoding_facts::CompactEncodingFacts>()?;
     m.add_class::<encoding_facts::EncodingYakuValues>()?;
-    m.add_class::<encoding_facts::AtomicSnapshotBatch>()?;
     m.add_class::<current_state_encoding::CurrentStateBatch>()?;
 
     m.add_function(wrap_pyfunction!(calculate_score_py, m)?)?;
@@ -94,10 +93,6 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(encoding_facts::prepare_encoding_facts, m)?)?;
     m.add_function(wrap_pyfunction!(
         encoding_facts::analyze_encoding_yaku_batch,
-        m
-    )?)?;
-    m.add_function(wrap_pyfunction!(
-        encoding_facts::prepare_atomic_snapshots,
         m
     )?)?;
     m.add_function(wrap_pyfunction!(

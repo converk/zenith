@@ -1,26 +1,19 @@
 use std::collections::{HashMap, HashSet};
 
 use numpy::{
-    IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyUntypedArrayMethods,
-    ndarray::{Array2, Array3},
+    IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyUntypedArrayMethods,
+    ndarray::Array2,
 };
 use pyo3::{exceptions::PyValueError, prelude::*};
 
 use riichi::{
     OPEN_MELD_YAKUHAI_HAN_OVERFLOW_BUCKET, VISIBLE_MELD_DORA_AKA_OVERFLOW_BUCKET,
 };
-use riichi::atomic_snapshot::{
-    AtomicSnapshotInput, SNAPSHOT_FACTOR_WIDTH, SNAPSHOT_FIELD_COUNT, SNAPSHOT_FIRST_DISCARD_LIMIT,
-    SNAPSHOT_FULLY_VISIBLE_KIND_OVERFLOW_BUCKET, SNAPSHOT_NUMERIC_WIDTH, SNAPSHOT_OPPONENT_COUNT,
-    SNAPSHOT_POST_RIICHI_TSUMOGIRI_OVERFLOW_BUCKET, SNAPSHOT_PROGRESS_TILE_OVERFLOW_BUCKET,
-    SNAPSHOT_UNKNOWN_DORA_COPY_OVERFLOW_BUCKET, encode as encode_atomic_snapshot,
-};
-use riichi::shanten;
 use riichienv_core::{
     action::{Action, ActionType},
     observation::Observation,
     offense_analysis::analyze_offense_rows,
-    types::{Meld, MeldType},
+    types::Meld,
 };
 
 const TILE_KINDS: usize = 34;
@@ -65,31 +58,6 @@ pub(crate) fn dora_kind(indicator: u32) -> Result<usize, String> {
                 + (tile - HONOR_TILE_START - WIND_TILE_COUNT + 1) % 3,
         )
     }
-}
-
-/// 前六张舍牌按花色与幺九字牌归类;不足六张自然以零补足。
-pub(crate) fn first_six_discard_counts(discards: &[u32]) -> Result<[u8; 4], String> {
-    let mut result = [0_u8; 4];
-    for &tile in discards.iter().take(SNAPSHOT_FIRST_DISCARD_LIMIT) {
-        if tile >= PHYSICAL_TILE_COUNT {
-            return Err("牌河含非法实体牌 ID".to_string());
-        }
-        let kind = tile as usize / 4;
-        let category = if kind < 9 {
-            0
-        } else if kind < 18 {
-            1
-        } else if kind < HONOR_TILE_START {
-            2
-        } else {
-            3
-        };
-        result[category] += 1;
-        if kind < HONOR_TILE_START && (kind % 9 == 0 || kind % 9 == 8) {
-            result[3] += 1;
-        }
-    }
-    Ok(result)
 }
 
 /// 开放副露中已确认的役牌番数;连风刻按场风与自风分别累计。
@@ -144,120 +112,6 @@ pub(crate) fn visible_meld_dora_aka_han(
     Ok(han.min(VISIBLE_MELD_DORA_AKA_OVERFLOW_BUCKET))
 }
 
-/// 观察者合法已知区域的四张可见牌种与不同宝牌种未知实体牌数。
-pub(crate) fn global_visible_facts(observation: &Observation) -> Result<(u8, u8, [u8; TILE_KINDS]), String> {
-    let observer = usize::from(observation.player_id);
-    if observer >= 4 {
-        return Err("观察者座次必须位于 0..3".to_string());
-    }
-    let mut known_tiles = HashSet::new();
-    known_tiles.extend(observation.hands[observer].iter().copied());
-    for river in &observation.discards {
-        known_tiles.extend(river.iter().copied());
-    }
-    for player_melds in &observation.melds {
-        for meld in player_melds {
-            known_tiles.extend(meld.tiles.iter().map(|&tile| u32::from(tile)));
-        }
-    }
-    known_tiles.extend(observation.dora_indicators.iter().copied());
-    let mut visible = [0_u8; TILE_KINDS];
-    for tile in known_tiles {
-        if tile >= PHYSICAL_TILE_COUNT {
-            return Err("合法已知区域含非法实体牌 ID".to_string());
-        }
-        let kind = tile as usize / 4;
-        visible[kind] = visible[kind].saturating_add(1);
-    }
-    let fully_visible = visible.iter().filter(|&&count| count >= 4).count() as u8;
-    let mut distinct_dora = [false; TILE_KINDS];
-    for &indicator in &observation.dora_indicators {
-        distinct_dora[dora_kind(indicator)?] = true;
-    }
-    let unknown_dora_copies = distinct_dora
-        .iter()
-        .enumerate()
-        .filter(|(_, is_dora)| **is_dora)
-        .map(|(kind, _)| 4_u8.saturating_sub(visible[kind]))
-        .sum::<u8>();
-    Ok((
-        fully_visible.min(SNAPSHOT_FULLY_VISIBLE_KIND_OVERFLOW_BUCKET),
-        unknown_dora_copies.min(SNAPSHOT_UNKNOWN_DORA_COPY_OVERFLOW_BUCKET),
-        visible,
-    ))
-}
-
-/// 自身进张与听牌和牌张数:把当前手牌归一为十三张形,分别摸入 34 类后只统计
-/// 能降低综合向听的剩余实体牌;听牌(综合向听为 0)时统计摸入即和牌的剩余张数。
-/// 只依赖观察者合法已知区域(自身手牌/副露、四家牌河、公开副露牌、宝牌指示牌)。
-pub(crate) fn self_progress_facts(
-    observation: &Observation,
-    visible: &[u8; TILE_KINDS],
-) -> Result<(u8, u8), String> {
-    let seat = usize::from(observation.player_id);
-    if seat >= 4 {
-        return Err("观察者座次必须位于 0..3".to_string());
-    }
-    let hand = observation.hands[seat]
-        .iter()
-        .map(|&tile| u8::try_from(tile).map_err(|_| "physical tile exceeds u8".to_string()))
-        .collect::<Result<Vec<_>, _>>()?;
-    let (three_melds, kans) = decompose_melds(&observation.melds[seat]);
-    let (counts, meld_count) = kernel_shape(&hand, three_melds, &kans, 13);
-    let current = shanten::calculate(&counts, meld_count).overall;
-    let after_draws = shanten::calculate_after_draws(&counts, meld_count);
-    let mut improve = 0_u32;
-    let mut win = 0_u32;
-    for kind in 0..TILE_KINDS {
-        let remaining = 4_u32.saturating_sub(u32::from(visible[kind]));
-        if remaining == 0 {
-            continue;
-        }
-        if after_draws[kind] < current {
-            improve += remaining;
-        }
-        if current == 0 && after_draws[kind] == -1 {
-            win += remaining;
-        }
-    }
-    Ok((
-        improve.min(u32::from(SNAPSHOT_PROGRESS_TILE_OVERFLOW_BUCKET)) as u8,
-        win.min(u32::from(SNAPSHOT_PROGRESS_TILE_OVERFLOW_BUCKET)) as u8,
-    ))
-}
-
-/// 立直宣言牌与立直后摸切数:宣言牌取河中的实体牌,立直后摸切数从宣言下标
-/// 之后逐张统计(宣言牌本身必为手切,天然不计入)。
-pub(crate) fn opponent_riichi_traits(
-    observation: &Observation,
-    opponent: usize,
-) -> Result<(u8, u8), String> {
-    let declaration_tile = match observation.riichi_sutehais[opponent] {
-        Some(tile) => {
-            riichienv_core::observation::sequence_features::tile_id_to_kan37(u32::from(tile)) + 1
-        }
-        None => 0,
-    };
-    let post_riichi_tsumogiri = match observation.riichi_declaration_indices[opponent] {
-        Some(index) => {
-            let flags = &observation.tsumogiri_flags[opponent];
-            if flags.len() != observation.discards[opponent].len() {
-                return Err("牌河与摸切标记长度不一致".to_string());
-            }
-            let start = usize::from(index) + 1;
-            let count = flags
-                .iter()
-                .skip(start)
-                .filter(|&&flag| flag)
-                .count()
-                .min(usize::from(SNAPSHOT_POST_RIICHI_TSUMOGIRI_OVERFLOW_BUCKET)) as u8;
-            count
-        }
-        None => 0,
-    };
-    Ok((declaration_tile, post_riichi_tsumogiri))
-}
-
 #[pyclass(name = "CompactEncodingFacts", frozen)]
 pub struct CompactEncodingFacts {
     #[pyo3(get)]
@@ -308,167 +162,6 @@ pub struct EncodingYakuValues {
     yaku_class: Py<PyArray1<u8>>,
     #[pyo3(get)]
     base_han: Py<PyArray1<u8>>,
-}
-
-#[pyclass(name = "AtomicSnapshotBatch", frozen)]
-pub struct AtomicSnapshotBatch {
-    #[pyo3(get)]
-    factors: Py<PyArray3<u8>>,
-    #[pyo3(get)]
-    numeric: Py<PyArray3<f32>>,
-    #[pyo3(get)]
-    lengths: Py<PyArray1<u8>>,
-}
-
-/// 从原生 Observation 批量派生固定 49 行原子 Snapshot。
-/// 注意：这是 V16/V17 旧输入契约（PPO/rollout 待迁移项）；V18 活跃编码入口为
-/// `prepare_current_state_batch`（当前局面快照），不经过本函数。
-#[pyfunction]
-pub fn prepare_atomic_snapshots(
-    py: Python<'_>,
-    observations: Vec<Observation>,
-) -> PyResult<AtomicSnapshotBatch> {
-    if observations.is_empty() {
-        return Err(PyValueError::new_err("Snapshot 批次不能为空"));
-    }
-    let mut factor_values =
-        Vec::with_capacity(observations.len() * SNAPSHOT_FIELD_COUNT * SNAPSHOT_FACTOR_WIDTH);
-    let mut numeric_values =
-        Vec::with_capacity(observations.len() * SNAPSHOT_FIELD_COUNT * SNAPSHOT_NUMERIC_WIDTH);
-    for observation in &observations {
-        let observer = usize::from(observation.player_id);
-        if observer >= 4 {
-            return Err(PyValueError::new_err("观察者座次必须位于 0..3"));
-        }
-        let mut hand_counts = [0_u8; TILE_KINDS];
-        for &tile in &observation.hands[observer] {
-            if tile >= 136 {
-                return Err(PyValueError::new_err("手牌含非法实体牌 ID"));
-            }
-            hand_counts[tile as usize / 4] += 1;
-        }
-        let mut special_counts = hand_counts;
-        for meld in &observation.melds[observer] {
-            if meld.meld_type == MeldType::Ankan {
-                for &tile in &meld.tiles {
-                    special_counts[usize::from(tile) / 4] += 1;
-                }
-            }
-        }
-        let hand_is_open = observation.melds[observer].iter().any(|meld| meld.opened);
-        let meld_count = u8::try_from(observation.melds[observer].len())
-            .map_err(|_| PyValueError::new_err("面子数转换失败"))?;
-        let mut riichi_status = [1_u8; 3];
-        let mut riichi_turn = [0_u8; 3];
-        let mut open_meld_count = [0_u8; 3];
-        let mut tedashi_count = [0_u8; 3];
-        let mut tsumogiri_count = [0_u8; 3];
-        let mut post_riichi_tsumogiri_values = [0_u8; SNAPSHOT_OPPONENT_COUNT];
-        let mut riichi_declaration_tile = [0_u8; SNAPSHOT_OPPONENT_COUNT];
-        let mut tsumogiri_streak = [0_u8; 3];
-        let mut first_six_discard_values = [[0_u8; 4]; SNAPSHOT_OPPONENT_COUNT];
-        let mut open_meld_yakuhai_values = [0_u8; SNAPSHOT_OPPONENT_COUNT];
-        let mut visible_meld_dora_aka_values = [0_u8; SNAPSHOT_OPPONENT_COUNT];
-        let mut dora_multiplicity = [0_u8; TILE_KINDS];
-        for &indicator in &observation.dora_indicators {
-            let kind = dora_kind(indicator).map_err(PyValueError::new_err)?;
-            dora_multiplicity[kind] = dora_multiplicity[kind].saturating_add(1);
-        }
-        let (fully_visible_tile_kind_count, unknown_distinct_dora_copy_count, visible_counts) =
-            global_visible_facts(observation).map_err(PyValueError::new_err)?;
-        let (self_improve_tile_count, self_win_tile_count) =
-            self_progress_facts(observation, &visible_counts).map_err(PyValueError::new_err)?;
-        for (relative, opponent) in (1..=3).map(|relative| (relative, (observer + relative) % 4)) {
-            let index = relative - 1;
-            riichi_status[index] = if observation.riichi_accepted[opponent] {
-                3
-            } else if observation.riichi_declared[opponent] {
-                2
-            } else {
-                1
-            };
-            if riichi_status[index] != 1 {
-                let declaration = observation.riichi_declaration_indices[opponent]
-                    .ok_or_else(|| PyValueError::new_err("立直玩家缺少宣言河牌索引"))?;
-                riichi_turn[index] = declaration.saturating_add(1).min(25);
-            }
-            open_meld_count[index] = observation.melds[opponent]
-                .iter()
-                .filter(|meld| meld.opened)
-                .count()
-                .try_into()
-                .map_err(|_| PyValueError::new_err("副露数转换失败"))?;
-            let flags = &observation.tsumogiri_flags[opponent];
-            if flags.len() != observation.discards[opponent].len() {
-                return Err(PyValueError::new_err("牌河与摸切标记长度不一致"));
-            }
-            tsumogiri_count[index] = flags.iter().filter(|&&flag| flag).count().min(255) as u8;
-            tedashi_count[index] = flags.iter().filter(|&&flag| !flag).count().min(255) as u8;
-            let (declaration_tile, post_riichi_tsumogiri) =
-                opponent_riichi_traits(observation, opponent).map_err(PyValueError::new_err)?;
-            riichi_declaration_tile[index] = declaration_tile;
-            post_riichi_tsumogiri_values[index] = post_riichi_tsumogiri;
-            tsumogiri_streak[index] =
-                flags.iter().rev().take_while(|&&flag| flag).count().min(4) as u8;
-            first_six_discard_values[index] =
-                first_six_discard_counts(&observation.discards[opponent])
-                    .map_err(PyValueError::new_err)?;
-            let player_wind = ((opponent + 4 - usize::from(observation.oya)) % 4) as u8;
-            open_meld_yakuhai_values[index] = open_meld_yakuhai_han(
-                &observation.melds[opponent],
-                player_wind,
-                observation.round_wind,
-            )
-            .map_err(PyValueError::new_err)?;
-            visible_meld_dora_aka_values[index] =
-                visible_meld_dora_aka_han(&observation.melds[opponent], &dora_multiplicity)
-                    .map_err(PyValueError::new_err)?;
-        }
-        let encoded = encode_atomic_snapshot(&AtomicSnapshotInput {
-            observer: observation.player_id,
-            scores: observation.scores,
-            hand_counts,
-            special_counts,
-            meld_count,
-            hand_is_open,
-            riichi_status,
-            riichi_turn,
-            open_meld_count,
-            tedashi_count,
-            tsumogiri_count,
-            post_riichi_tsumogiri_count: post_riichi_tsumogiri_values,
-            riichi_declaration_tile,
-            tsumogiri_streak,
-            first_six_discard_counts: first_six_discard_values,
-            open_meld_yakuhai_han: open_meld_yakuhai_values,
-            visible_meld_dora_aka_han: visible_meld_dora_aka_values,
-            fully_visible_tile_kind_count,
-            unknown_distinct_dora_copy_count,
-            self_improve_tile_count,
-            self_win_tile_count,
-        })
-        .map_err(PyValueError::new_err)?;
-        factor_values.extend(encoded.factors.into_iter().flatten());
-        numeric_values.extend(encoded.numeric.into_iter().flatten());
-    }
-    let batch = observations.len();
-    Ok(AtomicSnapshotBatch {
-        factors: Array3::from_shape_vec(
-            (batch, SNAPSHOT_FIELD_COUNT, SNAPSHOT_FACTOR_WIDTH),
-            factor_values,
-        )
-        .expect("原子 Snapshot factor 形状")
-        .into_pyarray(py)
-        .unbind(),
-        numeric: Array3::from_shape_vec(
-            (batch, SNAPSHOT_FIELD_COUNT, SNAPSHOT_NUMERIC_WIDTH),
-            numeric_values,
-        )
-        .expect("原子 Snapshot numeric 形状")
-        .into_pyarray(py)
-        .unbind(),
-        lengths: PyArray1::from_vec(py, vec![SNAPSHOT_FIELD_COUNT as u8; batch]).unbind(),
-    })
 }
 
 fn dora_type(indicator: u8) -> usize {
@@ -990,13 +683,11 @@ pub fn prepare_encoding_facts(
 #[cfg(test)]
 mod tests {
     use super::{
-        action_requires_supplier, first_six_discard_counts, global_visible_facts,
-        opponent_riichi_traits, open_meld_yakuhai_han, relative_source_code,
-        self_progress_facts, visible_meld_dora_aka_han,
+        action_requires_supplier, open_meld_yakuhai_han, relative_source_code,
+        visible_meld_dora_aka_han,
     };
     use riichienv_core::{
         action::ActionType,
-        observation::Observation,
         types::{Meld, MeldType},
     };
 
@@ -1046,16 +737,6 @@ mod tests {
     }
 
     #[test]
-    fn first_six_discards_keep_overlapping_terminal_and_suit_counts() {
-        let counts = first_six_discard_counts(&[0, 4, 36, 72, 108, 132, 8]).expect("合法牌河");
-        assert_eq!(counts, [2, 1, 1, 5]);
-        assert_eq!(
-            first_six_discard_counts(&[0, 36]).expect("不足六张舍牌"),
-            [1, 1, 0, 2]
-        );
-    }
-
-    #[test]
     fn yakuhai_wind_and_ankan_dora_follow_public_meld_rules() {
         let east_pon = Meld::new(MeldType::Pon, vec![108, 109, 110], true, 1, Some(108));
         let red_five_ankan = Meld::new(MeldType::Ankan, vec![16, 17, 18, 19], false, -1, None);
@@ -1063,112 +744,6 @@ mod tests {
         let mut dora = [0_u8; 34];
         dora[4] = 1;
         assert_eq!(visible_meld_dora_aka_han(&[red_five_ankan], &dora), Ok(5));
-    }
-
-    #[test]
-    fn global_facts_ignore_opponent_concealed_hands_and_deduplicate_dora_kinds() {
-        let mut observation = Observation::new(
-            0,
-            [vec![16], vec![20], vec![24], vec![28]],
-            [vec![], vec![], vec![], vec![]],
-            [vec![0, 1, 2, 3], vec![], vec![], vec![]],
-            vec![12, 12],
-            [25_000; 4],
-            [false; 4],
-            [false; 4],
-            [None; 4],
-            false,
-            false,
-            70,
-            vec![],
-            vec![],
-            0,
-            0,
-            0,
-            0,
-            0,
-            vec![],
-            false,
-            [None; 4],
-            [None; 4],
-            None,
-            None,
-        );
-        let baseline = global_visible_facts(&observation).expect("合法公开状态");
-        observation.hands[1] = vec![40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 80, 84, 88];
-        let changed = global_visible_facts(&observation).expect("合法公开状态");
-        assert_eq!(baseline.0, 1);
-        assert_eq!(baseline.1, 3);
-        assert_eq!(baseline.0, changed.0);
-        assert_eq!(baseline.1, changed.1);
-    }
-
-
-    /// 构造只有给定手牌、无公开信息的观察者(座次 0)视图。
-    fn base_observation(hand: Vec<u8>) -> Observation {
-        Observation::new(
-            0,
-            [hand, vec![], vec![], vec![]],
-            [vec![], vec![], vec![], vec![]],
-            [vec![], vec![], vec![], vec![]],
-            vec![],
-            [25_000; 4],
-            [false; 4],
-            [false; 4],
-            [None; 4],
-            false,
-            false,
-            70,
-            vec![],
-            vec![],
-            0,
-            0,
-            0,
-            0,
-            0,
-            vec![],
-            false,
-            [None; 4],
-            [None; 4],
-            None,
-            None,
-        )
-    }
-
-    #[test]
-    fn self_progress_counts_win_tiles_when_tenpai() {
-        // 三组顺子 + 双对(E/N) = 0 向听,只听 E/N;各两张实体在手中,各剩 2 张。
-        let observation =
-            base_observation(vec![0, 4, 8, 36, 40, 44, 72, 76, 80, 108, 109, 112, 113]);
-        let (_, _, visible) = global_visible_facts(&observation).expect("合法公开状态");
-        let (improve, win) = self_progress_facts(&observation, &visible).expect("合法手牌");
-        assert_eq!(improve, 4);
-        assert_eq!(win, 4);
-    }
-
-    #[test]
-    fn self_progress_one_shanten_has_no_win_tiles() {
-        // 三组顺子 + E 对 + N/W 单张:1 向听,改善张为 E/N/W 的剩余实体
-        // (2/3/3),非听牌故和牌张为 0。
-        let observation =
-            base_observation(vec![0, 4, 8, 36, 40, 44, 72, 76, 80, 108, 109, 112, 116]);
-        let (_, _, visible) = global_visible_facts(&observation).expect("合法公开状态");
-        let (improve, win) = self_progress_facts(&observation, &visible).expect("合法手牌");
-        assert_eq!(improve, 8);
-        assert_eq!(win, 0);
-    }
-
-    #[test]
-    fn riichi_traits_skip_declaration_discard_and_encode_red_five() {
-        let mut observation = base_observation(vec![]);
-        observation.discards[1] = vec![0, 4, 8, 36, 40];
-        observation.tsumogiri_flags[1] = vec![false, true, true, false, true];
-        observation.riichi_declaration_indices[1] = Some(3);
-        observation.riichi_sutehais[1] = Some(16);
-        let (declaration_tile, post_riichi_tsumogiri) =
-            opponent_riichi_traits(&observation, 1).expect("合法立直状态");
-        assert_eq!(declaration_tile, 1); // 红 5m → 1..37 规范码 1
-        assert_eq!(post_riichi_tsumogiri, 1); // 宣言之后只有第 5 张为摸切
     }
 }
 
