@@ -1,4 +1,9 @@
-"""V18 centralized-value Critic 的严格私有事实。"""
+"""V18 centralized-value Critic 的严格私有事实（新行宽）。
+
+Critic 私有输入保持现行契约：三家真实闭手（固定相对座次顺序）+ 未来五张牌（固定摸牌顺序）。
+行布局改为与 Actor 相同的 32 宽：[segment, kind, fields...]；segment/kind 与
+``encoding_protocol.py`` 单点定义一致。
+"""
 
 from __future__ import annotations
 
@@ -7,25 +12,18 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from .architecture import TOKEN_WIDTH
+from .encoding_protocol import (
+    KIND_CRITIC_FUTURE,
+    KIND_CRITIC_HAND,
+    KIND_SEP_CRITIC,
+    SEGMENT_CRITIC_FUTURE,
+    SEGMENT_CRITIC_PRIVATE,
+    TOKEN_NUMERIC_WIDTH,
+    TOKEN_ROW_WIDTH,
+)
 
 NUM_PLAYERS = 4
-
-SEGMENT_CRITIC_PRIVATE = 4
-SEGMENT_CRITIC_FUTURE_WALL = 5
-TOKEN_KIND_TILE_COUNT = 4
-TOKEN_KIND_FUTURE_WALL = 6
-FIELD_OPPONENT_HAND = 2
-FIELD_FUTURE_WALL = 3
 FUTURE_WALL_TILE_COUNT = 5
-
-_MELD_FIELDS = {
-    "chi": 1,
-    "pon": 2,
-    "daiminkan": 3,
-    "ankan": 4,
-    "kakan": 5,
-}
 
 
 @dataclass(frozen=True)
@@ -37,7 +35,7 @@ class TableState:
 
 @dataclass(frozen=True)
 class MeldState:
-    """Validated public portion of one RiichiEnv meld."""
+    """One validated public portion of a RiichiEnv meld."""
 
     field: int
     tiles: tuple[int, ...]
@@ -47,7 +45,7 @@ class MeldState:
 
 @dataclass(frozen=True)
 class CriticFeatures:
-    factors: np.ndarray
+    factors: np.ndarray  # [T, 32]
     length: int
 
 
@@ -55,7 +53,7 @@ from .schema import TID_COUNT
 
 
 def tile_id_to_type(tile: Any) -> int | None:
-    """返回 34 类牌型,故意把红五并入普通五。"""
+    """返回 34 类牌型，故意把红五并入普通五。"""
     if tile is None:
         return None
     value = int(tile)
@@ -64,8 +62,16 @@ def tile_id_to_type(tile: Any) -> int | None:
     return value // 4
 
 
+def _tile_type_red(tile: Any) -> tuple[int, int]:
+    value = int(tile)
+    tile_type = tile_id_to_type(value)
+    if tile_type is None:
+        raise ValueError(f"invalid tile id {value}")
+    return tile_type, int(bool(_is_red(value)))
+
+
 def _seat_tiles(values: Any, seat: int) -> tuple[int, ...]:
-    """Read a public per-seat tile row, treating absent/malformed data as empty."""
+    """读取每座位实体牌行，缺行/非法牌忽略。"""
     try:
         row = values[seat]
     except (IndexError, KeyError, TypeError):
@@ -73,17 +79,10 @@ def _seat_tiles(values: Any, seat: int) -> tuple[int, ...]:
     return tuple(int(tile) for tile in row if tile_id_to_type(tile) is not None)
 
 
-def _meld_field(value: Any) -> int | None:
-    """Map RiichiEnv's enum (or a test double) to a stable compact code."""
-    name = str(getattr(value, "name", value)).lower()
-    for kind, field in _MELD_FIELDS.items():
-        if kind in name:
-            return field
-    return None
-
-
 def _meld_state(value: Any) -> MeldState | None:
-    field = _meld_field(getattr(value, "meld_type", None))
+    """把 RiichiEnv 的 Meld（或测试替身）映射为稳定结构。"""
+    name = str(getattr(value, "meld_type", getattr(value, "type", ""))).lower()
+    field = {"chi": 1, "pon": 2, "daiminkan": 3, "ankan": 4, "kakan": 5}.get(name)
     if field is None:
         return None
     tiles = tuple(tile for tile in getattr(value, "tiles", ()) if tile_id_to_type(tile) is not None)
@@ -105,7 +104,7 @@ def _public_meld_rows(values: Any, seat: int) -> tuple[MeldState, ...]:
 
 
 def collect_visible_table_state(observations: dict[int, Any], *, include_public_state: bool = True) -> TableState:
-    """Collect concealed hands and optional public river/meld projection."""
+    """收集四家闭手与可选公开牌河/副露投影（仅用于 Critic 测试与装配）。"""
     if set(observations) != set(range(NUM_PLAYERS)):
         raise RuntimeError("critic features require all four player observations")
     hands: list[tuple[int, ...]] = []
@@ -116,9 +115,6 @@ def collect_visible_table_state(observations: dict[int, Any], *, include_public_
         hands.append(_seat_tiles(hand_rows, seat))
     if not include_public_state:
         return TableState(tuple(hands))
-
-    # Rivers and melds are public and identical from every observer's view.
-    # Selecting one canonical observation avoids multiplying extraction work.
     public_observation = observations[0]
     discards = getattr(public_observation, "discards", ())
     melds = getattr(public_observation, "melds", ())
@@ -129,86 +125,57 @@ def collect_visible_table_state(observations: dict[int, Any], *, include_public_
     )
 
 
-def _tile_factors(tile_type: int) -> tuple[int, int]:
-    tile_type = int(tile_type)
-    suit = tile_type // 9 + 1 if tile_type < 27 else 4
-    rank = tile_type % 9 + 1 if tile_type < 27 else tile_type - 26
-    return suit, rank
-
-
 def _is_red(tile: int) -> bool:
     return int(tile) in {16, 52, 88}
 
 
-def _tile_count_rows(field: int, relative: int, tiles: Iterable[int], *, flag: int = 0) -> list[tuple[int, ...]]:
-    counts: dict[tuple[int, bool], int] = {}
-    for tile in tiles:
-        tile_type = tile_id_to_type(tile)
-        if tile_type is None:
-            continue
-        key = (tile_type, _is_red(tile))
-        counts[key] = counts.get(key, 0) + 1
-    rows: list[tuple[int, ...]] = []
-    for (tile_type, red), count in sorted(counts.items()):
-        suit, rank = _tile_factors(tile_type)
-        rows.append((
-            SEGMENT_CRITIC_PRIVATE,
-            TOKEN_KIND_TILE_COUNT,
-            int(field),
-            int(relative),
-            suit,
-            rank,
-            int(red),
-            int(count),
-            int(flag),
-            1,
-        ))
+def _critic_sep_row() -> np.ndarray:
+    row = np.zeros(TOKEN_ROW_WIDTH, dtype=np.uint8)
+    row[0] = SEGMENT_CRITIC_PRIVATE
+    row[1] = KIND_SEP_CRITIC
+    return row
+
+
+def encode_opponent_hand_tokens(table_state: TableState, observer: int) -> list[np.ndarray]:
+    """三家真实闭手：相对座次 1,2,3，同一座次按牌型升序。"""
+    rows: list[np.ndarray] = []
+    for relative in (1, 2, 3):
+        seat = (int(observer) + relative) % NUM_PLAYERS
+        counts: dict[int, tuple[int, int]] = {}
+        for tile in table_state.hands[seat]:
+            tile_type, red = _tile_type_red(tile)
+            key = (tile_type, red)
+            current_count, current_red = counts.get(key, (0, 0))
+            counts[key] = (current_count + 1, current_red or red)
+        for (tile_type, red), (count, _any_red) in sorted(counts.items()):
+            row = np.zeros(TOKEN_ROW_WIDTH, dtype=np.uint8)
+            row[0] = SEGMENT_CRITIC_PRIVATE
+            row[1] = KIND_CRITIC_HAND
+            row[2] = relative
+            row[3] = tile_type + 1
+            row[4] = red
+            row[5] = count
+            rows.append(row)
     return rows
 
 
-def encode_opponent_hand_tokens(table_state: TableState, observer: int) -> list[tuple[int, ...]]:
-    rows: list[tuple[int, ...]] = []
-    for relative in (2, 3, 4):
-        seat = (int(observer) + relative - 1) % NUM_PLAYERS
-        # Aka dora are semantically distinct tiles.  The value branch is
-        # allowed to see concealed opponent hands, so folding their red fives
-        # here would discard information that is retained for rivers/melds.
-        rows.extend(_tile_count_rows(FIELD_OPPONENT_HAND, relative, table_state.hands[seat]))
-    return rows
-
-
-def encode_future_wall_tokens(wall: Iterable[int]) -> list[tuple[int, ...]]:
-    """Encode the next five live-wall tiles as ordered critic-only tokens.
-
-    ``wall`` 必须已截取为后五张活牌。牌按摸牌顺序编码为 position 1..5;
-    缺失、数量不符或非法牌号均为硬错误。
-    """
+def encode_future_wall_tokens(wall: Iterable[int]) -> list[np.ndarray]:
+    """未来五张活牌，按摸牌顺序 position 1..5。"""
     tiles = tuple(wall)
     if len(tiles) != FUTURE_WALL_TILE_COUNT:
         raise ValueError("future wall must contain exactly five ordered tiles")
-    rows: list[tuple[int, ...]] = []
+    rows: list[np.ndarray] = []
     for position, tile in enumerate(tiles, start=1):
         if tile is None:
             raise ValueError("future wall contains a missing tile id")
-        value = int(tile)
-        if not 0 <= value < TID_COUNT:
-            raise ValueError(f"invalid RiichiEnv tile id {value} in future wall")
-        tile_type = tile_id_to_type(value)
-        if tile_type is None:
-            raise ValueError(f"invalid RiichiEnv tile id {value} in future wall")
-        suit, rank = _tile_factors(tile_type)
-        rows.append((
-            SEGMENT_CRITIC_FUTURE_WALL,
-            TOKEN_KIND_FUTURE_WALL,
-            FIELD_FUTURE_WALL,
-            position,
-            suit,
-            rank,
-            int(_is_red(value)),
-            1,
-            0,
-            1,
-        ))
+        tile_type, red = _tile_type_red(tile)
+        row = np.zeros(TOKEN_ROW_WIDTH, dtype=np.uint8)
+        row[0] = SEGMENT_CRITIC_FUTURE
+        row[1] = KIND_CRITIC_FUTURE
+        row[2] = position
+        row[3] = tile_type + 1
+        row[4] = red
+        rows.append(row)
     return rows
 
 
@@ -219,20 +186,16 @@ def encode_critic_features(
     include_public_state: bool = False,
     future_wall_tiles: Iterable[int] = (),
 ) -> CriticFeatures:
-    rows = encode_opponent_hand_tokens(table_state, observer)
+    rows: list[np.ndarray] = [_critic_sep_row()]
+    rows.extend(encode_opponent_hand_tokens(table_state, observer))
     if future_wall_tiles:
         rows.extend(encode_future_wall_tokens(future_wall_tiles))
-    if not rows:
-        return empty_critic_features()
-    factors = np.asarray(rows, dtype=np.uint8).reshape(-1, TOKEN_WIDTH)
+    factors = np.asarray(rows, dtype=np.uint8).reshape(-1, TOKEN_ROW_WIDTH)
     return CriticFeatures(factors, len(rows))
 
 
 def empty_critic_features() -> CriticFeatures:
-    return CriticFeatures(
-        np.zeros((0, TOKEN_WIDTH), dtype=np.uint8),
-        0,
-    )
+    return CriticFeatures(np.zeros((0, TOKEN_ROW_WIDTH), dtype=np.uint8), 0)
 
 
 def pad_critic_feature_rows(features: list[CriticFeatures]) -> tuple[np.ndarray, np.ndarray]:
@@ -241,7 +204,7 @@ def pad_critic_feature_rows(features: list[CriticFeatures]) -> tuple[np.ndarray,
     batch = len(features)
     lengths = np.asarray([feature.length for feature in features], dtype=np.int64)
     maximum = int(lengths.max(initial=0))
-    factors = np.zeros((batch, maximum, TOKEN_WIDTH), dtype=np.uint8)
+    factors = np.zeros((batch, maximum, TOKEN_ROW_WIDTH), dtype=np.uint8)
     for row, feature in enumerate(features):
         length = int(feature.length)
         if length:

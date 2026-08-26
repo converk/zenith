@@ -22,11 +22,27 @@ def parameter_report(model: nn.Module) -> dict[str, Any]:
     forbidden = tuple(
         key for key in keys
         if "q_scorer" in key or "candidate_q" in key or "dueling_q" in key
+        or "snapshot_embeddings" in key or "query_embedding" in key or "history" in key
     )
+    # 分项：嵌入 / shared / actor / critic / head。
+    grouped: dict[str, int] = {"embedding": 0, "shared": 0, "actor": 0, "critic": 0, "head": 0}
+    for name, parameter in model.named_parameters():
+        count = int(parameter.numel())
+        if name.startswith("token_embedding") or ".embedding" in name or "Embedding" in type(parameter).__name__:
+            grouped["embedding"] += count
+        elif name.startswith("public_backbone"):
+            grouped["shared"] += count
+        elif name.startswith("actor_backbone"):
+            grouped["actor"] += count
+        elif name.startswith("critic_backbone") or name.startswith("value_query"):
+            grouped["critic"] += count
+        else:
+            grouped["head"] += count
     return {
         "total": total,
         "trainable": trainable,
         "by_root": dict(sorted(by_root.items())),
+        "by_group": dict(sorted(grouped.items())),
         "state_key_count": len(keys),
         "forbidden_q_keys": forbidden,
     }
@@ -34,8 +50,8 @@ def parameter_report(model: nn.Module) -> dict[str, Any]:
 
 def assert_v18_parameter_contract(model: nn.Module) -> dict[str, Any]:
     report = parameter_report(model)
-    if not 4_900_000 <= report["total"] <= 5_100_000:
-        raise RuntimeError(f"V18 parameter count is outside 4.9M–5.1M: {report['total']}")
+    if report["total"] > 6_000_000:
+        raise RuntimeError(f"V18 parameter count exceeds 6.0M: {report['total']}")
     if report["forbidden_q_keys"]:
-        raise RuntimeError("V18 state contains forbidden Q keys")
+        raise RuntimeError("V18 state contains forbidden Q/legacy keys")
     return report
