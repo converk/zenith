@@ -616,3 +616,28 @@ manifest/offsets/field_statistics（越界 0/0）正常；冒烟产物已清理�
   （fwd 142→74ms，bwd 143→28ms，约 2.7×）。
 - **验证**：18 个模型/查询/信息边界/BC 测试全过；结构审计（RoPE/mask/padding/批内一致）PASS；
   decode 往返 B1/B2 全 PASS；全量 pytest 184 passed / 1 failed（仅 PPO 迁移 WIP 项）。
+
+## 性能优化与基准修正（2026-08-27 后续：嵌入/结构校验向量化）
+
+**基准修正（重要）**：此前“02cd75e 旧版训练比当前慢 10 倍”的结论**有误**——CUDA 设备枚举顺序与
+nvidia-smi 不一致，旧基准的 rank1 实际跑在 T400 4GB 上。用正确的 2×L20 重测：
+**旧版 02cd75e 100 步 = 5.29s（≈53ms/步），旧版确实快**；当前优化后约 ~65ms/步，差距 ~1.2×。
+
+**优化 1 StateTokenEmbedding 向量化**（`dense_embedding.py`）：
+- 分隔符处理原为 `flat_kind.tolist()`（每批 28k 元素 CPU 往返）+ 逐分隔符 Python 循环；
+  改为纯向量化 mask（kind∈[101,111] → id=kind-100）。
+- 逐类别 `torch.nonzero(flat_kind.eq(kind))`（每类一次 GPU 操作）改为一次 stable `argsort`
+  分段 + 每段切片。
+- 输出与优化前**逐位一致**（max_abs_diff=0.0）；`token_embedding` 36ms → **7ms**。
+
+**优化 2 `_assert_structure` 向量化**（`architecture.py`）：
+- 原实现逐行 `tolist()` + Python 循环（一次 forward 实测 ~32ms）；改为整批 segment 查表 +
+  boolean mask（保持全部失败语义/错误文案不变；`_segment_of_kind` 移除）。
+- `_assert_structure` 31.6ms → **~1ms**；fwd 50 → **19ms**。
+
+**torch.compile**：单卡 +~30%（57→40ms），但 **DDP 双卡下灾难性退化（8s/步，
+IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，仅单卡可选**。
+
+**最终实测（2×L20, batch 512, DDP 双卡）**：旧 02cd75e 53ms/步；当前 **~65ms/步**
+（data 3 + fwd 19 + bwd 42 + opt 1）；经 precompute/encode 未改动，数据集无需重生成。
+要生效需重启训练（`validate_semantics:false`、嵌入/校验优化均在进程启动时加载）。
