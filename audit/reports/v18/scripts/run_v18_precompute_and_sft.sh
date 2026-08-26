@@ -69,7 +69,7 @@ else
 fi
 
 # ── 阶段 2: 数据契约校验 + 只读统计自检 ──────────────────────────────────
-echo "[v18] 阶段 2: 校验 manifest 契约与 54 行 Snapshot 统计"
+echo "[v18] 阶段 2: 校验 manifest 契约与 V18 当前局面 token 统计"
 conda run -n "$CONDA_ENV" python -c "
 from pathlib import Path
 from riichi_ppo_v1.sft.contract import load_manifest, validate_manifest
@@ -77,9 +77,10 @@ from riichi_ppo_v1.tools.v18_token_statistics import calculate
 ds = Path('$DATASET_OUT')
 validate_manifest(load_manifest(ds))
 stats = calculate(ds, 'validation')
-assert stats['snapshot_mean'] == 54.0, stats
-print('manifest OK; validation decisions=%d snapshot_mean=%.1f total_mean=%.6f' % (
-    stats['decisions'], stats['snapshot_mean'], stats['total_mean']))
+assert stats['decisions'] > 0, stats
+assert stats['actor_max'] <= 256, stats
+print('manifest OK; validation decisions=%d actor_mean=%.1f actor_max=%d' % (
+    stats['decisions'], stats['actor_mean'], stats['actor_max']))
 " 2>&1 | tee "$LOG_DIR/v18_precompute_verify.log"
 
 # ── 阶段 3: Actor-only SFT 训练(前台,日志落盘) ──────────────────────────
