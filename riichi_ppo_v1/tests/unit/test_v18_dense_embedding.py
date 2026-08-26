@@ -52,6 +52,48 @@ def test_padding_slot_zero_contribution() -> None:
     assert e0.abs().sum() > 0.0
 
 
+def test_summary_padding_slots_strictly_zero_contribution() -> None:
+    """padding 子槽严格零贡献：改写 padding 槽字段不改变输出。"""
+    embedding = StateTokenEmbedding(256)
+    # valid_length=1：slot2 及其后均为 padding，字段非零也必须是零贡献。
+    base = _row(KIND_RIVER_SUMMARY, (1,) + (1, 0, 0, 0) + (9, 1, 1, 1) + (0,) * 16)
+    zeroed = _row(KIND_RIVER_SUMMARY, (1,) + (1, 0, 0, 0) + (0,) * 20)
+    e0 = embedding(base, torch.zeros(1, 1, 8))
+    e1 = embedding(zeroed, torch.zeros(1, 1, 8))
+    assert torch.allclose(e0, e1, atol=1e-6)
+
+
+def test_summary_slot_internal_field_order_is_concatenated() -> None:
+    """槽内字段按 concat 而非求和：交换槽内字段值必须改变 embedding。"""
+    embedding = StateTokenEmbedding(256)
+    a = _row(KIND_RIVER_SUMMARY, (2,) + (1, 0, 2, 0, 2, 0, 1, 0) + (0,) * 16)
+    b = _row(KIND_RIVER_SUMMARY, (2,) + (2, 0, 1, 0, 1, 0, 2, 0) + (0,) * 16)
+    e0 = embedding(a, torch.zeros(1, 1, 8))
+    e1 = embedding(b, torch.zeros(1, 1, 8))
+    assert not torch.allclose(e0, e1)
+
+
+def test_summary_slot_single_field_change_changes_embedding() -> None:
+    """槽内单字段改变必须改变 embedding（concat 语义）。"""
+    embedding = StateTokenEmbedding(256)
+    a = _row(KIND_RIVER_SUMMARY, (2,) + (1, 0, 0, 0, 2, 0, 0, 0) + (0,) * 16)
+    b = _row(KIND_RIVER_SUMMARY, (2,) + (1, 0, 1, 0, 2, 0, 0, 0) + (0,) * 16)
+    e0 = embedding(a, torch.zeros(1, 1, 8))
+    e1 = embedding(b, torch.zeros(1, 1, 8))
+    assert not torch.allclose(e0, e1)
+
+
+def test_content_token_keeps_segment_and_kind_base() -> None:
+    """B5：内容 token 的 segment 变化必须改变最终嵌入（基础向量保留）。"""
+    embedding = StateTokenEmbedding(256)
+    base = _row(KIND_TABLE, (0,) * 11)
+    modified = _row(KIND_TABLE, (0,) * 11)
+    modified[0, 0, 0] = 2  # 非法组合，但只测嵌入层的 segment 基础向量是否保留
+    e0 = embedding(base, torch.zeros(1, 1, 8))
+    e1 = embedding(modified, torch.zeros(1, 1, 8))
+    assert not torch.allclose(e0, e1)
+
+
 def test_gradients_reach_all_slot_tables() -> None:
     embedding = StateTokenEmbedding(256)
     row = _row(KIND_TILE_STATE, (5, 1, 2, 1, 3, 3, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 0, 2, 1, 1, 1))
@@ -101,14 +143,22 @@ def test_metadata_ablation_changes_action_embedding_and_logits() -> None:
         actor_lengths=inputs["actor_lengths"], query_action_ids=inputs["action_ids"],
         query_pair_counts=inputs["query_pair_counts"], legal_mask=inputs["legal_mask"], policy_only=True,
     )
-    # 改变一个 answer 槽（O1 的答案从 0 改为 1）。
+    # 改变一个 answer 槽（answer_0 从 0 改为 1）；action_id 位于 2+4，answer_0 位于 2+5。
     modified = inputs["actor_factors"].clone()
-    # 找到第一个 action 行并修改其 answer_0 字段（行偏移 2+4+0）。
     first_action = torch.nonzero(modified[0, :, 1].eq(11))[0, 0]
-    modified[0, first_action, 2 + 4] = 1
+    modified[0, first_action, 2 + 5] = 1
     out = model(
         actor_factors=modified, actor_numeric=inputs["actor_numeric"],
         actor_lengths=inputs["actor_lengths"], query_action_ids=inputs["action_ids"],
         query_pair_counts=inputs["query_pair_counts"], legal_mask=inputs["legal_mask"], policy_only=True,
     )
     assert not torch.allclose(base["raw_policy_logits"], out["raw_policy_logits"])
+    # action_id 本身进入嵌入：改列 2+4 也必须改变 logits。
+    modified2 = inputs["actor_factors"].clone()
+    modified2[0, first_action, 2 + 4] = 2
+    out2 = model(
+        actor_factors=modified2, actor_numeric=inputs["actor_numeric"],
+        actor_lengths=inputs["actor_lengths"], query_action_ids=inputs["action_ids"],
+        query_pair_counts=inputs["query_pair_counts"], legal_mask=inputs["legal_mask"], policy_only=True,
+    )
+    assert not torch.allclose(base["raw_policy_logits"], out2["raw_policy_logits"])

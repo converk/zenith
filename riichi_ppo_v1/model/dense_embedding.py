@@ -29,9 +29,10 @@ SIMPLE_SLOT_DIM = 16
 DENSE_SLOT_DIM = 32
 DENSE_FUSION_DIM = 512
 
-# 统一 concat 宽度：取各类别槽位向量数最大值（TABLE=29，TILE_STATE=23）。
+# 统一 concat 宽度：取各类别槽位向量数最大值（TABLE=29，RIVER_SUMMARY=31）。
+# 每个 summary 槽按 4 字段 concat + slot_id 共 5 个槽位向量（B6 修复）。
 _MAX_DENSE_SLOTS = max(
-    len(schema.discrete) - 4 * schema.slot_count + schema.slot_count + len(schema.numeric)
+    len(schema.discrete) - 4 * schema.slot_count + (5 if schema.slot_count else 0) * schema.slot_count + len(schema.numeric)
     for schema in CATEGORY_SCHEMAS.values() if schema.cls == "DENSE"
 )
 _MAX_SIMPLE_SLOTS = max(
@@ -119,7 +120,7 @@ class DenseSlotFusion(nn.Module):
         else:
             self.slot_id = None
         in_dim = self.slot_dim * (
-            len(schema.discrete) - 4 * schema.slot_count + schema.slot_count + len(schema.numeric)
+            len(schema.discrete) - 4 * schema.slot_count + (5 if schema.slot_count else 0) * schema.slot_count + len(schema.numeric)
         )
         self.projection = nn.Linear(in_dim, self.fusion_dim, bias=False)
         self.shared_mlp = shared_mlp
@@ -155,10 +156,15 @@ class DenseSlotFusion(nn.Module):
             slot_ids = torch.arange(1, self.schema.slot_count + 1, device=factors.device)
             valid_mask = (slot_ids[None, None, :] <= valid_length[..., None]).float()
             for slot_index in range(self.schema.slot_count):
-                slot = torch.stack(slot_fields[4 * slot_index:4 * slot_index + 4], dim=-1).sum(dim=-1)
-                slot = slot + self.slot_id(torch.full(
-                    (factors.shape[0], factors.shape[1]), slot_index + 1, device=factors.device))
-                slot_parts.append(slot * valid_mask[..., slot_index:slot_index + 1])
+                mask = valid_mask[..., slot_index:slot_index + 1]
+                slot_parts.extend([
+                    slot_fields[4 * slot_index + 0] * mask,
+                    slot_fields[4 * slot_index + 1] * mask,
+                    slot_fields[4 * slot_index + 2] * mask,
+                    slot_fields[4 * slot_index + 3] * mask,
+                    self.slot_id(torch.full(
+                        (factors.shape[0], factors.shape[1]), slot_index + 1, device=factors.device)) * mask,
+                ])
             fused = torch.cat([*scalar, *slot_parts, *numeric_parts], dim=-1)
         else:
             fused = torch.cat([*fields, *numeric_parts], dim=-1)
@@ -243,11 +249,16 @@ class StateTokenEmbedding(nn.Module):
             slot_ids = torch.arange(1, schema.slot_count + 1, device=factors.device)
             valid_mask = (slot_ids[None, :] <= valid_length[:, None]).float()
             for slot_index in range(schema.slot_count):
-                slot = torch.stack(slot_fields[4 * slot_index:4 * slot_index + 4], dim=-1).sum(dim=-1)
-                slot = slot + slot_ids_embedding(torch.full(
-                    (factors.shape[0],), slot_index + 1, device=factors.device,
-                ))
-                slot_parts.append(slot * valid_mask[:, slot_index:slot_index + 1])
+                mask = valid_mask[:, slot_index:slot_index + 1]
+                slot_parts.extend([
+                    slot_fields[4 * slot_index + 0] * mask,
+                    slot_fields[4 * slot_index + 1] * mask,
+                    slot_fields[4 * slot_index + 2] * mask,
+                    slot_fields[4 * slot_index + 3] * mask,
+                    slot_ids_embedding(torch.full(
+                        (factors.shape[0],), slot_index + 1, device=factors.device,
+                    )) * mask,
+                ])
             parts = [*scalar, *slot_parts]
         return parts
 
@@ -297,7 +308,7 @@ class StateTokenEmbedding(nn.Module):
                     embedded = content_flat[idx]
             else:  # pragma: no cover
                 continue
-            content_flat[idx] = embedded.to(content_flat.dtype)
+            content_flat[idx] = content_flat[idx] + embedded.to(content_flat.dtype)
         content = content_flat.reshape(batch, tokens, -1)
         if valid is not None:
             content = content * valid[..., None].to(content.dtype)
