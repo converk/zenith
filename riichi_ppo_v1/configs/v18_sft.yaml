@@ -36,6 +36,12 @@ inference_dtype: bf16
 shuffle_buffer_kyokus: 8192
 length_bucket_window_batches: 32
 log_interval_steps: 100
+# 关闭逐批全量 Python 语义校验：实测 512 样本/批使 collate 从 9ms 涨到 547ms
+# （每步 ~0.8s，CPU 单核打满）。该校验已在 precompute 阶段完成
+# （域越界=0、offsets fail-closed、_assert_public_actor），载入端仍有 manifest/
+# offsets/_assert_targets_legal 与模型 _assert_structure 兜底；如需重新开启
+# 可改回 true（仅调试用，勿用于长跑）。
+validate_semantics: false
 validation_max_samples: 0
 validation_samples_per_run: 150000
 checkpoint_dir: checkpoints/train_riichi_v18/sft

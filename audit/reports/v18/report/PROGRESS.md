@@ -592,3 +592,15 @@ manifest/offsets/field_statistics（越界 0/0）正常；冒烟产物已清理�
    真实异常 kyoku 74 决策全部通过，pytest 全绿。
 4. **恢复命令**：`bash audit/reports/v18/scripts/run_v18_precompute_and_sft.sh --skip-precompute`
    （已有数据直接训练）。
+
+## SFT 训练慢的诊断与修复（PERF-1 落地，2026-08-27）
+
+- **现象**：用户报告 SFT 每 100 步要 ~80 秒（每步 ~0.8s，CPU 单核 101%），明显慢于
+  V17/输入修改前的 V18。
+- **定位**：`collate_samples(validate_semantics=True)` 每批跑全 Python 语义校验
+  （B8 引入，默认 True）。实测 512 样本/批（~108 token/样本）：**collate+语义校验 547 ms，
+  仅 collate 9 ms**——即每步 ~0.54s 的纯 CPU 冗余校验，是主导开销。
+- **修复**：`v18_sft.yaml` 增加 `validate_semantics: false`（trainer 已支持该配置项）。
+  安全性：precompute 阶段已断言域越界=0、`_assert_public_actor`、manifest/offsets fail-closed；
+  载入端仍有 manifest/offsets 校验、每批 `_assert_targets_legal` 与模型 `_assert_structure` 兜底。
+  需停止当前训练进程后重启生效。
