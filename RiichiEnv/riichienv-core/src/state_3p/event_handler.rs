@@ -181,6 +181,7 @@ impl GameState3PEventHandler for GameState3P {
                     opened: true,
                     from_who: -1,
                     called_tile: Some(tile),
+                    called_tile_index: None,
                 });
                 self.drawn_tile = None;
                 self.phase = Phase::WaitAct;
@@ -218,6 +219,7 @@ impl GameState3PEventHandler for GameState3P {
                     opened: true,
                     from_who: -1,
                     called_tile: Some(tile),
+                    called_tile_index: None,
                 });
                 self.drawn_tile = None;
                 self.phase = Phase::WaitAct;
@@ -250,6 +252,7 @@ impl GameState3PEventHandler for GameState3P {
                     opened: true,
                     from_who: -1,
                     called_tile: Some(tile),
+                    called_tile_index: None,
                 });
                 self.current_player = actor as u8;
                 self.phase = Phase::WaitAct;
@@ -271,6 +274,7 @@ impl GameState3PEventHandler for GameState3P {
                     opened: false,
                     from_who: -1,
                     called_tile: None,
+                    called_tile_index: None,
                 });
                 self.current_player = actor as u8;
                 self.phase = Phase::WaitAct;
@@ -478,6 +482,7 @@ impl GameState3PEventHandler for GameState3P {
                     opened: true,
                     from_who,
                     called_tile: ct,
+                    called_tile_index: (self.players[discarder as usize].discards.len().checked_sub(1)).map(|value| value as u8),
                 });
 
                 // PAO detection: daisangen (3 dragon melds) or daisuushii (4 wind melds)
@@ -552,6 +557,7 @@ impl GameState3PEventHandler for GameState3P {
                         opened: false,
                         from_who: -1,
                         called_tile: None,
+                        called_tile_index: None,
                     });
                 } else {
                     let tile = tiles[0];

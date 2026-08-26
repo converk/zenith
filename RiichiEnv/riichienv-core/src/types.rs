@@ -103,6 +103,23 @@ pub struct Meld {
     /// The tile claimed from another player's discard (for chi/pon/daiminkan).
     /// None for ankan/kakan or melds not involving a discard claim.
     pub called_tile: Option<u8>,
+    /// 被鸣牌在供牌者牌河中的本地 0 基下标（chi/pon/daiminkan 设置；
+    /// ankan/kakan 为 None；kakan 继承原 pon 的下标）。
+    #[serde(default)]
+    pub called_tile_index: Option<u8>,
+}
+
+impl Default for Meld {
+    fn default() -> Self {
+        Self {
+            meld_type: MeldType::Chi,
+            tiles: Vec::new(),
+            opened: false,
+            from_who: -1,
+            called_tile: None,
+            called_tile_index: None,
+        }
+    }
 }
 
 impl Meld {
@@ -113,12 +130,24 @@ impl Meld {
         from_who: i8,
         called_tile: Option<u8>,
     ) -> Self {
+        Self::new_with_index(meld_type, tiles, opened, from_who, called_tile, None)
+    }
+
+    pub fn new_with_index(
+        meld_type: MeldType,
+        tiles: Vec<u8>,
+        opened: bool,
+        from_who: i8,
+        called_tile: Option<u8>,
+        called_tile_index: Option<u8>,
+    ) -> Self {
         Self {
             meld_type,
             tiles,
             opened,
             from_who,
             called_tile,
+            called_tile_index,
         }
     }
 
@@ -131,15 +160,16 @@ impl Meld {
 #[pymethods]
 impl Meld {
     #[new]
-    #[pyo3(signature = (meld_type, tiles, opened, from_who=-1, called_tile=None))]
+    #[pyo3(signature = (meld_type, tiles, opened, from_who=-1, called_tile=None, called_tile_index=None))]
     pub fn py_new(
         meld_type: MeldType,
         tiles: Vec<u8>,
         opened: bool,
         from_who: i8,
         called_tile: Option<u8>,
+        called_tile_index: Option<u8>,
     ) -> Self {
-        Self::new(meld_type, tiles, opened, from_who, called_tile)
+        Self::new_with_index(meld_type, tiles, opened, from_who, called_tile, called_tile_index)
     }
 
     #[getter]
@@ -185,6 +215,16 @@ impl Meld {
     #[getter]
     pub fn get_called_tile(&self) -> Option<u8> {
         self.called_tile
+    }
+
+    #[getter]
+    pub fn get_called_tile_index(&self) -> Option<u8> {
+        self.called_tile_index
+    }
+
+    #[setter]
+    pub fn set_called_tile_index(&mut self, called_tile_index: Option<u8>) {
+        self.called_tile_index = called_tile_index;
     }
 }
 

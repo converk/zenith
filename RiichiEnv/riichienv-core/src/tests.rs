@@ -1691,6 +1691,7 @@ mod unit_tests {
                 opened: true,
                 from_who: 1,
                 called_tile: Some(124),
+                ..Default::default()
             },
             Meld {
                 meld_type: MeldType::Pon,
@@ -1698,6 +1699,7 @@ mod unit_tests {
                 opened: true,
                 from_who: 2,
                 called_tile: Some(128),
+                ..Default::default()
             },
         ];
 
@@ -1742,6 +1744,7 @@ mod unit_tests {
                 opened: true,
                 from_who: 1,
                 called_tile: Some(108),
+                ..Default::default()
             },
             Meld {
                 meld_type: MeldType::Pon,
@@ -1749,6 +1752,7 @@ mod unit_tests {
                 opened: true,
                 from_who: 2,
                 called_tile: Some(112),
+                ..Default::default()
             },
             Meld {
                 meld_type: MeldType::Pon,
@@ -1756,6 +1760,7 @@ mod unit_tests {
                 opened: true,
                 from_who: 3,
                 called_tile: Some(116),
+                ..Default::default()
             },
         ];
 
@@ -1798,6 +1803,7 @@ mod unit_tests {
             opened: true,
             from_who: 1,
             called_tile: Some(124),
+            ..Default::default()
         }];
 
         // Player 1 discards hatsu (32*4=128). Player 0 calls daiminkan.

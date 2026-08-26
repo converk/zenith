@@ -1216,6 +1216,7 @@ impl GameState {
                     opened: true,
                     from_who: discarder as i8,
                     called_tile: Some(tile),
+                    called_tile_index: (self.players[discarder as usize].discards.len().checked_sub(1)).map(|value| value as u8),
                 });
 
                 if !self.skip_mjai_logging {
@@ -1455,14 +1456,20 @@ impl GameState {
                     self.players[p_idx].hand.remove(idx);
                 }
             }
-            let (m_type, tiles, from_who, ct) = if action.action_type == ActionType::Ankan {
-                (MeldType::Ankan, action.consume_tiles.clone(), -1i8, None)
+            let (m_type, tiles, from_who, ct, ct_index) = if action.action_type == ActionType::Ankan {
+                (MeldType::Ankan, action.consume_tiles.clone(), -1i8, None, None)
             } else {
                 let (discarder, tile) = self.last_discard.expect("last_discard must be set");
                 let mut t_vec = action.consume_tiles.clone();
                 t_vec.push(tile);
                 t_vec.sort();
-                (MeldType::Daiminkan, t_vec, discarder as i8, Some(tile))
+                (
+                    MeldType::Daiminkan,
+                    t_vec,
+                    discarder as i8,
+                    Some(tile),
+                    (self.players[discarder as usize].discards.len().checked_sub(1)).map(|value| value as u8),
+                )
             };
             self.players[p_idx].melds.push(Meld {
                 meld_type: m_type,
@@ -1470,6 +1477,7 @@ impl GameState {
                 opened: m_type == MeldType::Daiminkan,
                 from_who,
                 called_tile: ct,
+                called_tile_index: ct_index,
             });
 
             // PAO check for Daiminkan

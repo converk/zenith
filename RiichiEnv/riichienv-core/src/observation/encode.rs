@@ -716,6 +716,7 @@ mod tests {
             opened: false,
             from_who: 0,
             called_tile: None,
+            ..Default::default()
         }];
 
         // From player 0: rel_order=[0,1,2,3], player1 is at ch_idx=1
@@ -751,6 +752,7 @@ mod tests {
             opened: true,
             from_who: 1,
             called_tile: Some(0),
+            ..Default::default()
         }];
 
         // From player 0: rel_order=[0,1,2,3], player2 at ch_idx=2

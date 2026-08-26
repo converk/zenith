@@ -1914,6 +1914,7 @@ impl WinResultContextIterator {
                         opened: true,
                         from_who,
                         called_tile: ct,
+                        ..Default::default()
                     });
                     if *meld_type == MeldType::Daiminkan {
                         self.rinshan[*seat] = true;
@@ -2000,6 +2001,7 @@ impl WinResultContextIterator {
                             opened: false,
                             from_who: -1,
                             called_tile: None,
+                            ..Default::default()
                         });
                         self.rinshan[*seat] = true;
 
@@ -2027,6 +2029,7 @@ impl WinResultContextIterator {
                                 opened: true,
                                 from_who: -1,
                                 called_tile: None,
+                                ..Default::default()
                             });
                         }
                         TileConverter::match_and_remove_u8(
