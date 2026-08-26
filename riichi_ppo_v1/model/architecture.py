@@ -380,26 +380,38 @@ class KyokuTransformerActorCritic(nn.Module):
         action_capacity = query_action_ids.shape[1]
         if torch.any(pair_counts < 0) or torch.any(pair_counts > action_capacity):
             raise ValueError("query_pair_counts out of range")
-        action_logits_list: list[Tensor] = []
-        for row in range(batch):
-            positions = torch.nonzero(query_mask[row]).squeeze(-1)
-            if positions.numel() != 2 * int(pair_counts[row]):
-                raise ValueError("action query rows do not match query_pair_counts")
-            pair_positions = positions.view(-1, 2)
-            offense_hidden = actor_hidden[row, pair_positions[:, 0]]
-            defense_hidden = actor_hidden[row, pair_positions[:, 1]]
-            pair_hiddens = self.action_fusion(torch.cat((offense_hidden, defense_hidden), dim=-1))
-            logits = self.policy_mlp(pair_hiddens).squeeze(-1).float()
-            action_logits_list.append(logits)
+        # 整批向量化：一次 nonzero 取代逐行 torch.nonzero（每行一次 GPU→CPU 同步，
+        # 旧实现 256 行/批造成大量同步开销）。nonzero 默认返回 CPU 张量，随后统一
+        # 搬到设备上参与索引；结果按行主序，行内 O/D 相邻成对。
+        flat_positions = torch.nonzero(query_mask).to(device=device)
+        if flat_positions.shape[0] != 2 * int(pair_counts.sum()):
+            raise ValueError("action query rows do not match query_pair_counts")
+        if flat_positions.shape[0] > 0:
+            row_indices = flat_positions[:, 0]
+            col_indices = flat_positions[:, 1]
+            offense_hidden = actor_hidden[row_indices[0::2], col_indices[0::2]]
+            defense_hidden = actor_hidden[row_indices[1::2], col_indices[1::2]]
+            pair_hiddens = self.action_fusion(
+                torch.cat((offense_hidden, defense_hidden), dim=-1)
+            )
+            action_logits = self.policy_mlp(pair_hiddens).squeeze(-1).float()
+        else:
+            action_logits = actor_hidden.new_zeros((0,), dtype=torch.float32)
 
         raw = torch.zeros((batch, NUM_ACTIONS), dtype=torch.float32, device=device)
-        for row in range(batch):
-            count = int(pair_counts[row])
-            ids = query_action_ids[row, :count].to(device=device, dtype=torch.long)
-            if ids.numel() != torch.unique(ids).numel():
-                raise ValueError("query action ids must be unique (duplicate action id rejected)")
-            values = action_logits_list[row][:count]
-            raw[row].scatter_add_(0, ids, values)
+        if action_logits.shape[0] > 0:
+            pair_row = torch.repeat_interleave(
+                torch.arange(batch, device=device), pair_counts
+            )
+            starts = (pair_counts.cumsum(0) - pair_counts).repeat_interleave(pair_counts)
+            within = torch.arange(action_logits.shape[0], device=device) - starts
+            flat_ids = query_action_ids.to(device=device, dtype=torch.long)[pair_row, within]
+            # 行内升序（canonical 契约保证），跨行重复属正常；只检测相邻同行的重复。
+            if flat_ids.numel() > 0:
+                same_row = pair_row[1:] == pair_row[:-1]
+                if torch.any(same_row & (flat_ids[1:] == flat_ids[:-1])):
+                    raise ValueError("query action ids must be unique (duplicate action id rejected)")
+            raw.view(-1).scatter_add_(0, pair_row * NUM_ACTIONS + flat_ids, action_logits)
         logits = raw.masked_fill(~legal_mask.to(device=device, dtype=torch.bool), float("-inf"))
         output: dict[str, Tensor] = {"raw_policy_logits": raw, "policy_logits": logits}
         if policy_only:
