@@ -578,3 +578,17 @@ conda run -n Mahjong-AI python audit/reports/v18/scripts/v18_model_structure_aud
 `v18_decode_roundtrip.py`（走生产 encode_kyoku）B1/B2 全 PASS；端到端冒烟
 （`--game-sample-denominator 100000`，33 kyoku / 1,911 决策）precompute 成功，
 manifest/offsets/field_statistics（越界 0/0）正常；冒烟产物已清理。
+
+## SFT 训练首跑校验器 off-by-one 修复（V18-VAL-1，2026-08-27 后续）
+
+1. **现象**：正式 60% 数据生成成功（validation 1,439,440 决策，actor_max=165），SFT 首批
+   collate 抛 `AssertionError: SELF_HAND requires at least one nonzero kind`。
+2. **根因**：合法「四副露+对子」和牌决策（例 `2024021011gm-00a9-0000-07d2a4be` kyoku0 seat3
+   step19：3 碰+1 吃+对子 [44,44]，tsumo action=239）闭手只有一种牌 → SELF_HAND 恰好 1 行；
+   `_assert_actor_canonical_order` 校验 SEP_SELF_HAND 后 `cursor += 2` 跳过第一行，1 行被误判为空。
+   数据本身正确，无需重生成。
+3. **修复**：`semantic_validation.py` `cursor += 2` → `cursor += 1` + 回归测试
+   `test_v18_replay_bridge.py::test_single_self_hand_row_all_meld_pair_accepted`；
+   真实异常 kyoku 74 决策全部通过，pytest 全绿。
+4. **恢复命令**：`bash audit/reports/v18/scripts/run_v18_precompute_and_sft.sh --skip-precompute`
+   （已有数据直接训练）。
