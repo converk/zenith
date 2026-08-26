@@ -132,20 +132,22 @@ def encode_batch(
         count = len(ordered)
         if end - start + 1 + 2 * count > actor_factors.shape[1]:
             raise RuntimeError("assembled actor sequence exceeds padded capacity")
-        # SEP_ACTIONS 行。
-        sep = np.zeros(TOKEN_ROW_WIDTH, dtype=np.int32)
-        sep[0] = SEGMENT_ACTIONS
-        sep[1] = KIND_SEP_ACTIONS
-        assembled = np.vstack([native_rows, sep])
-        assembled_numeric = np.vstack([native_numeric, np.zeros((1, TOKEN_NUMERIC_WIDTH), dtype=np.float32)])
+        # 一次性预分配本行,避免按合法动作反复 vstack 复制热路径数组。
+        assembled_length = end - start + 1 + 2 * count
+        assembled = np.zeros((assembled_length, TOKEN_ROW_WIDTH), dtype=np.int32)
+        assembled_numeric = np.zeros((assembled_length, TOKEN_NUMERIC_WIDTH), dtype=np.float32)
+        native_length = end - start
+        assembled[:native_length] = native_rows
+        assembled_numeric[:native_length] = native_numeric
+        assembled[native_length, 0] = SEGMENT_ACTIONS
+        assembled[native_length, 1] = KIND_SEP_ACTIONS
         per_row_queries = query_rows_all[query_cursor:query_cursor + 2 * count]
         for offset in range(count):
             offense = _action_row(1, per_row_queries[2 * offset], _tsumogiri_mode(int(ordered[offset][1])))
             defense = _action_row(2, per_row_queries[2 * offset + 1], _tsumogiri_mode(int(ordered[offset][1])))
-            assembled = np.vstack([assembled, offense[None, :], defense[None, :]])
-            assembled_numeric = np.vstack(
-                [assembled_numeric, np.zeros((2, TOKEN_NUMERIC_WIDTH), dtype=np.float32)]
-            )
+            target = native_length + 1 + 2 * offset
+            assembled[target] = offense
+            assembled[target + 1] = defense
         actor_factors[row, : assembled.shape[0]] = assembled
         actor_numeric[row, : assembled.shape[0]] = assembled_numeric
         actor_lengths[row] = assembled.shape[0]
