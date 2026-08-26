@@ -79,6 +79,34 @@ fn consumed_matches(action_consume: &[u8], expected: &[String]) -> bool {
     a == b
 }
 
+/// 兼容「Action.consume_tiles 含被鸣牌」表示：MJAI 协议的 chi/pon/daiminkan
+/// consumed 只含手牌侧（2/2/3 张），而部分回放构造的合法动作把被鸣牌也放进
+/// consume_tiles（3/3/4 张）。该函数在精确等长匹配失败后，去掉与 `pai`
+/// 相同的一张再比较，仅当剩余张数恰为手牌侧数量时生效。
+fn hand_only_consumed_matches(action: &Action, tile_str: &str, expected: &[String]) -> bool {
+    if tile_str.is_empty() {
+        return false;
+    }
+    let expected_hand = match action.action_type {
+        ActionType::Chi | ActionType::Pon => 2,
+        ActionType::Daiminkan => 3,
+        _ => return false,
+    };
+    let mut tiles: Vec<String> = action.consume_tiles.iter().map(|&t| tid_to_mjai(t)).collect();
+    if tiles.len() != expected_hand + 1 {
+        return false;
+    }
+    let Some(position) = tiles.iter().position(|tile| tile == tile_str) else {
+        return false;
+    };
+    tiles.remove(position);
+    let mut a = tiles;
+    let mut b = expected.to_vec();
+    a.sort();
+    b.sort();
+    a == b
+}
+
 /// Select a matching `Action` from a slice of legal actions for a parsed Mjai
 /// message.
 ///
@@ -160,7 +188,10 @@ pub(crate) fn select_action<'a>(
         }
 
         if let Some(consumed) = parsed.consumed.as_ref() {
-            if !consumed_matches(&a.consume_tiles, consumed) {
+            let exact = consumed_matches(&a.consume_tiles, consumed);
+            let fallback = !exact
+                && hand_only_consumed_matches(a, &parsed.tile_str, consumed);
+            if !exact && !fallback {
                 return false;
             }
             // If pai is also given, double-check tile match for actions that
@@ -191,4 +222,94 @@ pub(crate) fn select_action<'a>(
         }
         true
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parsed_pon(consumed: &[&str], pai: &str) -> ParsedMjai {
+        ParsedMjai {
+            type_str: "pon".to_string(),
+            tile_str: pai.to_string(),
+            tsumogiri: None,
+            consumed: Some(consumed.iter().map(|value| value.to_string()).collect()),
+        }
+    }
+
+    fn parsed_chi(consumed: &[&str], pai: &str) -> ParsedMjai {
+        ParsedMjai {
+            type_str: "chi".to_string(),
+            tile_str: pai.to_string(),
+            tsumogiri: None,
+            consumed: Some(consumed.iter().map(|value| value.to_string()).collect()),
+        }
+    }
+
+    #[test]
+    fn full_consume_pon_accepts_canonical_hand_only_consumed() {
+        // 回放构造：consume_tiles 含被鸣牌（3 张 E），MJAI 消息只带手牌侧 2 张。
+        let actions = [Action::new(ActionType::Pon, Some(108), vec![108, 108, 108], None)];
+        let parsed = parsed_pon(&["E", "E"], "E");
+        let selected = select_action(&actions, &parsed, None, false);
+        assert!(selected.is_some());
+        assert_eq!(selected.unwrap().consume_tiles, vec![108, 108, 108]);
+    }
+
+    #[test]
+    fn full_consume_pon_keeps_full_form_exact_match() {
+        // 原始 3 张形式仍走精确匹配（向后兼容）。
+        let actions = [Action::new(ActionType::Pon, Some(108), vec![108, 108, 108], None)];
+        let parsed = parsed_pon(&["E", "E", "E"], "E");
+        let selected = select_action(&actions, &parsed, None, false);
+        assert!(selected.is_some());
+    }
+
+    #[test]
+    fn hand_only_consume_pon_still_matches_canonical() {
+        // env 表示：consume_tiles 只含手牌侧 2 张，匹配不变。
+        let actions = [Action::new(ActionType::Pon, Some(108), vec![108, 109], None)];
+        let parsed = parsed_pon(&["E", "E"], "E");
+        let selected = select_action(&actions, &parsed, None, false);
+        assert!(selected.is_some());
+    }
+
+    #[test]
+    fn full_consume_pon_wrong_pai_rejected() {
+        let actions = [Action::new(ActionType::Pon, Some(108), vec![108, 108, 108], None)];
+        let parsed = parsed_pon(&["E", "E"], "S");
+        let selected = select_action(&actions, &parsed, None, false);
+        assert!(selected.is_none());
+    }
+
+    #[test]
+    fn full_consume_chi_accepts_canonical_hand_only_consumed() {
+        // 红五被鸣：consume_tiles=[5sr,6s,7s]，canonical consumed=["6s","7s"]，pai="5sr"。
+        let actions = [Action::new(ActionType::Chi, Some(88), vec![88, 92, 96], None)];
+        let parsed = parsed_chi(&["6s", "7s"], "5sr");
+        let selected = select_action(&actions, &parsed, None, false);
+        assert!(selected.is_some());
+        assert_eq!(selected.unwrap().consume_tiles, vec![88, 92, 96]);
+    }
+
+    #[test]
+    fn full_consume_chi_keeps_full_form_exact_match() {
+        let actions = [Action::new(ActionType::Chi, Some(88), vec![88, 92, 96], None)];
+        let parsed = parsed_chi(&["5sr", "6s", "7s"], "5sr");
+        let selected = select_action(&actions, &parsed, None, false);
+        assert!(selected.is_some());
+    }
+
+    #[test]
+    fn full_consume_chi_red_disambiguates() {
+        // 手牌 [5mr,5m,5m]（16,17,18），被鸣普通 5m（19）：canonical ["5m","5m"] 只匹配非红动作。
+        let actions = [
+            Action::new(ActionType::Pon, Some(19), vec![16, 17, 19], None),
+            Action::new(ActionType::Pon, Some(19), vec![17, 18, 19], None),
+        ];
+        let parsed = parsed_pon(&["5m", "5m"], "5m");
+        let selected = select_action(&actions, &parsed, None, false);
+        assert!(selected.is_some());
+        assert!(!selected.unwrap().consume_tiles.contains(&16));
+    }
 }
