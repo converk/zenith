@@ -376,7 +376,9 @@ class SemanticMetrics:
         rank = ranking.index(seat) + 1
         self.match_ranks.append(rank)
         self.match_final_scores.append(scores[seat])
-        self.match_flying += int(any(score < 0.0 for score in scores))
+        # 飞人率口径:候选模型自身终局负分即记为该半庄「被飞」;与其他排名
+        # 指标同为候选中心口径,其他玩家被飞不影响候选的飞人率。
+        self.match_flying += int(scores[seat] < 0.0)
         self.completed_matches += 1
         if point_delta is not None:
             self.match_point_deltas.append(float(point_delta))
@@ -405,6 +407,8 @@ class SemanticMetrics:
             f"{prefix}/kyoku/draw_point_delta_mean": _mean(self.draw_points),
             f"{prefix}/kyoku/draw_tenpai_count": float(self.draw_tenpai),
             f"{prefix}/kyoku/exhaustive_draw_count": float(self.exhaustive_draws),
+            # 荒牌流局率:与流局率同构(player-kyoku 计数等价于荒牌流局小局数/总小局数)。
+            f"{prefix}/kyoku/exhaustive_draw_rate": _rate(self.exhaustive_draws, kyokus),
             f"{prefix}/kyoku/draw_tenpai_rate": _rate(self.draw_tenpai, self.exhaustive_draws),
             f"{prefix}/kyoku/discard_count_mean": _mean(self.kyoku_discard_counts),
             f"{prefix}/kyoku/open_melds_mean": _mean(self.kyoku_open_melds),

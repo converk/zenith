@@ -156,6 +156,9 @@ def evaluate_1v3(
         ]
         seat_counts.update(candidate_seats)
         active_envs = set(range(batch_size_now))
+        # 每个环境已完成的半庄小局数,供 record_match_result 结算
+        # 半庄平均小局数/西入率(与训练侧 match 口径一致)。
+        kyoku_counts: list[int] = [0] * batch_size_now
 
         for _step in range(int(max_steps)):
             actions_by_env: list[dict[int, Any]] = [{} for _ in range(batch_size_now)]
@@ -196,6 +199,7 @@ def evaluate_1v3(
             for env_index in list(active_envs):
                 if not bool(end_kyoku[env_index]):
                     continue
+                kyoku_counts[env_index] += 1
                 scores = [int(value) for value in scores_by_env[env_index]]
                 seat = candidate_seats[env_index]
                 ryukyoku_reason = None
@@ -245,7 +249,10 @@ def evaluate_1v3(
                 others = [scores[s] for s in range(NUM_PLAYERS) if s != seat]
                 point_diff = float(scores[seat] - float(np.mean(others)))
                 point_diffs.append(point_diff)
-                metric_a.record_match_result(seat, scores, point_delta=point_diff)
+                metric_a.record_match_result(
+                    seat, scores, point_delta=point_diff,
+                    kyoku_count=kyoku_counts[env_index],
+                )
                 active_envs.remove(env_index)
                 completed += 1
             if not active_envs:
@@ -311,6 +318,7 @@ def evaluate_1v3(
             "draw_count": summary[f"{prefix}/kyoku/draw_rate"]
             * summary[f"{prefix}/kyoku/count"],
             "exhaustive_draw_count": summary[f"{prefix}/kyoku/exhaustive_draw_count"],
+            "exhaustive_draw_rate": summary[f"{prefix}/kyoku/exhaustive_draw_rate"],
             "draw_tenpai_count": summary[f"{prefix}/kyoku/draw_tenpai_count"],
         }
 
