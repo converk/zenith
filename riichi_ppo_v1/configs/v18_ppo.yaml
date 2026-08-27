@@ -29,12 +29,15 @@ inference_batch_target_workers: 0
 games_per_update: 2048
 
 # PPO 主超参:Actor 用归一化 advantage,Critic 拟合 old_value + raw GAE。
+# 梯度累积=10:每 10 个 minibatch 的(已 DDP 平均)梯度累加后再 step 一次,
+# 等效每步有效 batch = 2048×10×2 = 40960;LR 暂不放大,先以 KL/entropy/
+# clipfrac 观察是否保守,再决定 ×2~3。(维护者决定:2026-08-27)
 gamma: 1.0
 gae_lambda: 0.95
 ppo_clip: 0.20
 update_epochs: 2
 minibatch_size: 2048
-gradient_accumulation_steps: 1
+gradient_accumulation_steps: 10
 update_batch_mode: streaming
 bucket_window_multiplier: 8
 
@@ -60,7 +63,9 @@ critic_learning_rate: 0.00004
 critic_learning_rate_min: 0.000015
 critic_bootstrap_learning_rate: 0.00002
 warmup_fraction: 0.02
-adam_beta1: 0.95
+# β1 0.95→0.9:配合 accumulation=10 的大有效 batch,一阶动量回到标准响应速度
+# (维护者决定:2026-08-27)。
+adam_beta1: 0.9
 adam_beta2: 0.999
 adam_epsilon: 0.00001
 weight_decay: 0.0

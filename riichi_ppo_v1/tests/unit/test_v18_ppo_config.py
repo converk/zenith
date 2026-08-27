@@ -25,7 +25,7 @@ def test_v18_ppo_config_matches_stability_plan() -> None:
     assert config["games_per_update"] == 2048
     assert config["update_epochs"] == 2
     assert config["minibatch_size"] == 2048
-    assert config["gradient_accumulation_steps"] == 1
+    assert config["gradient_accumulation_steps"] == 10
     assert config["gamma"] == 1.0
     assert config["gae_lambda"] == 0.95
     assert config["ppo_clip"] == 0.20
@@ -37,7 +37,7 @@ def test_v18_ppo_config_matches_stability_plan() -> None:
     assert config["shared_learning_rate_min"] == pytest.approx(2.5e-6)
     assert config["critic_learning_rate"] == pytest.approx(4e-5)
     assert config["critic_learning_rate_min"] == pytest.approx(1.5e-5)
-    assert config["adam_beta1"] == 0.95
+    assert config["adam_beta1"] == 0.9
     assert config["weight_decay"] == 0.0
     assert config["actor_max_grad_norm"] == 0.5
     assert config["shared_max_grad_norm"] == 0.5
@@ -60,10 +60,10 @@ def test_v18_ppo_config_matches_stability_plan() -> None:
         assert key not in config
 
 
-def test_v18_global_effective_minibatch_is_4096() -> None:
+def test_v18_global_effective_minibatch_is_40960() -> None:
     config = _v18_config()
     per_gpu = int(config["minibatch_size"])
     learner_gpus = int(config["learner_gpus"])
     accumulation = int(config.get("gradient_accumulation_steps", 1))
     # global effective = per_gpu × gpus × accumulation。
-    assert per_gpu * learner_gpus * accumulation == 4096
+    assert per_gpu * learner_gpus * accumulation == 40960
