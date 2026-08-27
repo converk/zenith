@@ -31,6 +31,17 @@ def parse_history_namespace(namespace: str) -> int:
     return int(label)
 
 
+def inference_autocast_config(dtype_name: str, *, device_type: str = "cuda") -> tuple[torch.dtype, bool]:
+    """按配置解析 rollout autocast dtype;FP32 明确关闭 autocast。"""
+    normalized = str(dtype_name).lower()
+    if normalized in {"fp32", "float32"}:
+        return torch.float32, False
+    if normalized in {"bf16", "bfloat16"}:
+        enabled = bool(device_type == "cuda" and torch.cuda.is_bf16_supported())
+        return torch.bfloat16, enabled
+    raise ValueError("inference_dtype must be one of 'bf16' or 'fp32'")
+
+
 def dispatch_reason(
     worker_ids: list[int], target_workers: int, deadline: float, now: float,
     *, row_count: int = 0, target_rows: int | None = None,
@@ -136,6 +147,10 @@ if ray is not None:
             self.model_config = self._model_config()
             self.model = KyokuTransformerActorCritic(self.model_config).to(self.device)
             self.model.eval()
+            self.autocast_dtype, self.autocast_enabled = inference_autocast_config(
+                str(config.get("inference_dtype", "bf16")),
+                device_type=self.device.type,
+            )
             self._weights: dict[str, torch.Tensor] | None = None
             self.sft_model: torch.nn.Module | None = None
             self.history_models: dict[str, torch.nn.Module] = {}
@@ -485,8 +500,8 @@ if ray is not None:
                 # forward 必须包 inference_mode,否则导出的张量带 requires_grad,
                 # 在无梯度上下文下 .numpy() 会直接报错。
                 with torch.inference_mode(), torch.autocast(
-                    device_type="cuda", dtype=torch.bfloat16,
-                    enabled=torch.cuda.is_bf16_supported(),
+                    device_type="cuda", dtype=self.autocast_dtype,
+                    enabled=self.autocast_enabled,
                 ):
                     output = model(
                         device_tensors["actor_factors"],

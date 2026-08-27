@@ -350,10 +350,17 @@ class RolloutBuffer:
             "advantages": advantages,
         }
 
-    def bucketed_minibatches(self, minibatch_size: int, rng: np.random.Generator | None = None) -> tuple[np.ndarray, ...]:
-        """按已存序列长度构造随机分桶 minibatch,减少长尾 padding。"""
+    def bucketed_minibatches(
+        self,
+        minibatch_size: int,
+        rng: np.random.Generator | None = None,
+        *,
+        bucket_window_multiplier: int = 1,
+    ) -> tuple[np.ndarray, ...]:
+        """按粗粒度长度窗口构造 minibatch,兼顾随机性与 padding 成本。"""
         if minibatch_size <= 0:
             raise ValueError("minibatch_size must be positive")
+        window_multiplier = max(1, int(bucket_window_multiplier))
         count = self.size
         if count == 0:
             raise ValueError("cannot bucket an empty rollout")
@@ -361,8 +368,13 @@ class RolloutBuffer:
         permutation = rng.permutation if rng is not None else np.random.permutation
         shuffled = permutation(count)
         sorted_indices = shuffled[np.argsort(lengths[shuffled], kind="stable")]
+        window_size = max(minibatch_size, minibatch_size * window_multiplier)
+        windowed = sorted_indices.copy()
+        for start in range(0, count, window_size):
+            stop = min(start + window_size, count)
+            windowed[start:stop] = windowed[start:stop][permutation(stop - start)]
         batches = tuple(
-            sorted_indices[start : start + minibatch_size]
+            windowed[start : start + minibatch_size]
             for start in range(0, count, minibatch_size)
         )
         batch_order = permutation(len(batches))

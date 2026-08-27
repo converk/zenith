@@ -15,16 +15,15 @@ from ..model.bridge import BatchedStateBridge, Decision
 
 @dataclass(frozen=True)
 class PreparedPolicyBatch:
-    history_factors: np.ndarray
-    history_numeric: np.ndarray
-    history_lengths: np.ndarray
-    snapshot_factors: np.ndarray
-    snapshot_numeric: np.ndarray
-    snapshot_lengths: np.ndarray
+    actor_factors: np.ndarray
+    actor_numeric: np.ndarray
+    actor_lengths: np.ndarray
     query_rows: np.ndarray
     query_action_ids: np.ndarray
     query_pair_counts: np.ndarray
     legal: np.ndarray
+    critic_factors: np.ndarray
+    critic_lengths: np.ndarray
 
 
 class PolicyAdapter(Protocol):
@@ -58,16 +57,15 @@ class V18PolicyAdapter:
         del analysis
         batch = bridge.prepare(decisions)
         return PreparedPolicyBatch(
-            batch.history_factors,
-            batch.history_numeric,
-            batch.history_lengths,
-            batch.snapshot_factors,
-            batch.snapshot_numeric,
-            batch.snapshot_lengths,
+            batch.actor_factors,
+            batch.actor_numeric,
+            batch.actor_lengths,
             batch.query_rows,
             batch.query_action_ids,
             batch.query_pair_counts,
             batch.legal_mask,
+            batch.critic_factors,
+            batch.critic_lengths,
         )
 
     @torch.inference_mode()
@@ -80,15 +78,11 @@ class V18PolicyAdapter:
         use_bf16 = self.device.type == "cuda" and torch.cuda.is_bf16_supported()
         with torch.autocast(self.device.type, dtype=torch.bfloat16, enabled=use_bf16):
             output = self.model(
-                tensor(batch.history_factors),
-                tensor(batch.history_numeric),
-                tensor(batch.history_lengths),
-                tensor(batch.snapshot_factors),
-                tensor(batch.snapshot_numeric),
-                tensor(batch.snapshot_lengths),
-                tensor(batch.query_rows),
+                tensor(batch.actor_factors).long(),
+                tensor(batch.actor_numeric),
+                tensor(batch.actor_lengths).long(),
                 tensor(batch.query_action_ids),
-                tensor(batch.query_pair_counts),
+                tensor(batch.query_pair_counts).long(),
                 tensor(batch.legal),
                 policy_only=True,
             )
@@ -105,7 +99,7 @@ class V18PolicyAdapter:
 def load_policy_adapter(
     path: str | Path, *, device: torch.device | str,
 ) -> PolicyAdapter:
-    """加载严格 V18 isolated_action_query checkpoint。"""
+    """加载严格 V18 current_state_snapshot checkpoint。"""
     checkpoint = Path(path)
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
     if not isinstance(payload, dict):
@@ -117,8 +111,8 @@ def load_policy_adapter(
         config = ModelConfig.from_mapping(dict(raw_config))
     except (TypeError, ValueError) as exc:
         raise RuntimeError("policy checkpoint has an invalid model_config") from exc
-    if config.policy_head_type != "isolated_action_query":
-        raise RuntimeError("only V18 isolated_action_query checkpoints are supported")
+    if config.policy_head_type != "current_state_snapshot":
+        raise RuntimeError("only V18 current_state_snapshot checkpoints are supported")
     state = payload.get("model")
     if not isinstance(state, dict):
         raise RuntimeError("policy checkpoint is missing model weights")

@@ -7,7 +7,12 @@ import pytest
 import torch
 
 from riichi_ppo_v1.tests.v18_fixtures import actor_inputs, critic_inputs
-from riichi_ppo_v1.training.learner import PPOLearner, rollout_update_targets
+from riichi_ppo_v1.training.learner import (
+    PPOLearner,
+    clip_branch_grad_norms,
+    rollout_update_targets,
+    scheduled_entropy_coefficient,
+)
 from riichi_ppo_v1.training.rollout_buffer import RolloutBuffer
 from riichi_ppo_v1.training.trajectory import Transition
 
@@ -106,14 +111,18 @@ def test_collate_preserves_all_segments_and_padding() -> None:
 
 def test_bucketed_minibatches_are_deterministic_and_cover_all_rows() -> None:
     buffer = RolloutBuffer(_transitions(np.random.default_rng(3), 1500))
-    left = buffer.bucketed_minibatches(512, rng=np.random.default_rng(42))
-    right = buffer.bucketed_minibatches(512, rng=np.random.default_rng(42))
+    left = buffer.bucketed_minibatches(
+        512, rng=np.random.default_rng(42), bucket_window_multiplier=8,
+    )
+    right = buffer.bucketed_minibatches(
+        512, rng=np.random.default_rng(42), bucket_window_multiplier=8,
+    )
     assert len(left) == len(right) == 3
     assert sorted(int(index) for batch in left for index in batch) == list(range(len(buffer)))
     for first, second in zip(left, right, strict=True):
         np.testing.assert_array_equal(first, second)
         assert len(first) <= 512
-        assert np.all(np.diff(buffer.sequence_lengths[first]) >= 0)
+        assert len(set(int(value) for value in first)) == len(first)
 
 
 def test_concatenate_and_select_are_elementwise_exact() -> None:
@@ -143,17 +152,49 @@ def test_rollout_target_math_matches_frozen_formula() -> None:
         (raw_advantages - raw_advantages.mean(dtype=np.float64))
         / (raw_advantages.std(dtype=np.float64) + 1e-8)
     ).astype(np.float32)
-    expected_returns = np.zeros(len(transitions), dtype=np.float32)
-    running = 0.0
-    for index in range(len(transitions) - 1, -1, -1):
-        if transitions[index].done:
-            running = 0.0
-        running = float(transitions[index].reward) + 0.97 * running
-        expected_returns[index] = np.float32(running)
+    expected_returns = (
+        np.asarray([item.value for item in transitions], dtype=np.float32)
+        + raw_advantages
+    ).astype(np.float32)
     np.testing.assert_array_equal(advantages, expected_advantages)
     np.testing.assert_array_equal(returns, expected_returns)
     assert return_mean == float(expected_returns.mean(dtype=np.float64))
     assert return_std == float(expected_returns.std(dtype=np.float64))
+    assert not np.array_equal(returns, raw_advantages)
+
+
+def test_entropy_schedule_hits_start_middle_and_end() -> None:
+    total = 150
+    middle_update = round(total * 0.33)
+    assert scheduled_entropy_coefficient(
+        0.020, 0.0045, 1, total, middle=0.012, middle_fraction=0.33,
+    ) == pytest.approx(0.020)
+    assert scheduled_entropy_coefficient(
+        0.020, 0.0045, middle_update, total, middle=0.012, middle_fraction=0.33,
+    ) == pytest.approx(0.012)
+    assert scheduled_entropy_coefficient(
+        0.020, 0.0045, total, total, middle=0.012, middle_fraction=0.33,
+    ) == pytest.approx(0.0045)
+
+
+def test_branch_clipping_keeps_independent_scales() -> None:
+    actor = torch.nn.Parameter(torch.tensor([0.0]))
+    shared = torch.nn.Parameter(torch.tensor([0.0]))
+    critic = torch.nn.Parameter(torch.tensor([0.0]))
+    actor.grad = torch.tensor([10.0])
+    shared.grad = torch.tensor([0.25])
+    critic.grad = torch.tensor([2.0])
+    metrics = clip_branch_grad_norms(
+        {"actor": [actor], "shared": [shared], "critic": [critic]},
+        {"actor": 1.0, "shared": 1.0, "critic": 4.0},
+    )
+    assert metrics["grad_norm_actor_pre_clip"] == pytest.approx(10.0)
+    assert metrics["grad_norm_actor_post_clip"] == pytest.approx(1.0)
+    assert metrics["grad_norm_shared_post_clip"] == pytest.approx(0.25)
+    assert metrics["grad_norm_critic_post_clip"] == pytest.approx(2.0)
+    assert actor.grad.item() == pytest.approx(1.0)
+    assert shared.grad.item() == pytest.approx(0.25)
+    assert critic.grad.item() == pytest.approx(2.0)
 
 
 def test_learner_accepts_only_rollout_buffer() -> None:
@@ -167,9 +208,16 @@ def test_learner_accepts_only_rollout_buffer() -> None:
         "ppo_clip": 0.2,
         "value_coef": 0.5,
         "entropy_start": 0.01,
+        "entropy_middle": 0.005,
         "entropy_end": 0.001,
+        "entropy_middle_fraction": 0.5,
+        "entropy_loss_mode": "normalized",
         "max_grad_norm": 0.5,
+        "actor_max_grad_norm": 0.5,
+        "shared_max_grad_norm": 0.5,
+        "critic_max_grad_norm": 1.0,
         "target_kl": 0.0,
+        "target_kl_check_interval": 8,
         "total_updates": 50,
         "warmup_fraction": 0.02,
         "adam_beta1": 0.9,
@@ -181,11 +229,23 @@ def test_learner_accepts_only_rollout_buffer() -> None:
         "value_target_std_floor": 1e-2,
         "gamma": 1.0,
         "critic_bootstrap_updates": 0,
+        "critic_private_embedding_grad_scale": 0.25,
+        "bucket_window_multiplier": 8,
     }
     learner = PPOLearner("v18", "cpu", **kwargs)
     metrics = learner.update(RolloutBuffer(transitions), shuffle_seed=123)
     for name in ("loss", "policy_loss", "value_loss", "entropy", "approx_kl"):
         assert np.isfinite(metrics[name]), name
+    for name in (
+        "value_explained_variance_lambda",
+        "value_explained_variance_mc",
+        "lambda_return_mean",
+        "mc_return_mean",
+        "grad_norm_actor_pre_clip",
+        "grad_norm_shared_pre_clip",
+        "grad_norm_critic_pre_clip",
+    ):
+        assert name in metrics
     assert metrics["update/executed_minibatches"] == 3.0
     assert metrics["update/executed_transition_samples"] == 9.0
     with pytest.raises(TypeError, match="RolloutBuffer"):

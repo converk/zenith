@@ -1,0 +1,100 @@
+# V18 PPO 稳定性训练正式配置:150 updates × 2048 完整半庄。
+# 自包含配置,不与 training.yaml 或其他历史配置叠加。
+seed: 1
+device: cuda
+learner_gpus: 2
+iterations: 150
+total_updates: 150
+model_size: v18
+context_tokens: 256
+policy_head_type: current_state_snapshot
+critic_layers: 2
+inference_dtype: bf16
+game_mode: 4p-red-half
+
+# V18 前置产物:SFT 初始化/参考策略与冻结 GRP reward。
+init_model: checkpoints/train_riichi_v18/sft/best.pt
+grp_checkpoint: checkpoints/train_riichi_v18/grp/best.pt
+
+# Rollout 与推理拓扑。
+num_workers: 12
+envs_per_worker: 32
+env_step_threads: 4
+rollout_worker_num_cpus: 2
+rollout_worker_cpu_threads: 1
+inference_max_batch_size: 512
+inference_batch_wait_ms: 8.0
+inference_batch_target_rows: 0
+inference_batch_target_workers: 0
+games_per_update: 2048
+
+# PPO 主超参:Actor 用归一化 advantage,Critic 拟合 old_value + raw GAE。
+gamma: 1.0
+gae_lambda: 0.95
+ppo_clip: 0.20
+update_epochs: 4
+minibatch_size: 512
+gradient_accumulation_steps: 1
+update_batch_mode: streaming
+bucket_window_multiplier: 8
+
+value_coef: 0.5
+value_loss: huber
+value_target_normalization: batch_std
+value_target_std_floor: 0.01
+
+# 三点分段 entropy schedule,loss 使用按合法动作数归一化的 entropy。
+entropy_loss_mode: normalized
+entropy_start: 0.020
+entropy_middle: 0.012
+entropy_end: 0.0045
+entropy_middle_fraction: 0.33
+
+# 三分支独立学习率调度,bootstrap 不消耗 policy schedule。
+learning_rate: 0.00004
+actor_learning_rate: 0.00004
+actor_learning_rate_min: 0.000015
+shared_learning_rate: 0.000005
+shared_learning_rate_min: 0.0000025
+critic_learning_rate: 0.00004
+critic_learning_rate_min: 0.000015
+critic_bootstrap_learning_rate: 0.00002
+warmup_fraction: 0.02
+adam_beta1: 0.95
+adam_beta2: 0.999
+adam_epsilon: 0.00001
+weight_decay: 0.0
+
+# 稳定性:分支裁剪、critic 公共/私有 embedding 梯度隔离、old-policy KL guardrail。
+critic_bootstrap_updates: 2
+max_grad_norm: 0.5
+actor_max_grad_norm: 0.5
+shared_max_grad_norm: 0.5
+critic_max_grad_norm: 1.0
+critic_public_grad_scale: 0.25
+critic_private_embedding_grad_scale: 0.25
+target_kl: 0.01
+target_kl_check_interval: 8
+
+# SFT reference KL 保持 V17 的 U 形 anchor。
+sft_kl_coef_start: 0.0025
+sft_kl_coef_middle: 0.001
+sft_kl_coef_end: 0.002
+sft_kl_middle_fraction: 0.5
+
+# 每 10 updates 保存 checkpoint 并执行固定 1v3 评测。
+checkpoint_interval_updates: 10
+checkpoint_dir: checkpoints/train_riichi_v18/ppo
+resume: null
+
+opponent_mix:
+  enabled: false
+
+eval1v3_enabled: true
+eval1v3_model_b: checkpoints/train_riichi_v18/sft/best.pt
+eval1v3_seed_base: 20260827
+eval1v3_devices: ["0", "1"]
+eval1v3_parallel_hanchans: 200
+eval1v3_output_dir: audit/reports/v18/eval
+
+progress_update_interval_updates: 10

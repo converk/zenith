@@ -65,11 +65,44 @@ def scheduled_learning_rate(
     return float(base) - (float(base) - float(min_lr)) * progress
 
 
-def scheduled_entropy_coefficient(start: float, end: float, update: int, total_updates: int) -> float:
-    """entropy 系数从 start 线性退火到 end。"""
+def scheduled_entropy_coefficient(
+    start: float,
+    end: float,
+    update: int,
+    total_updates: int,
+    *,
+    middle: float | None = None,
+    middle_fraction: float = 0.5,
+) -> float:
+    """entropy 系数调度:默认线性退火,配置 middle 时三点分段线性。"""
+    if middle is not None:
+        return scheduled_piecewise_coefficient(
+            start, float(middle), end, update, total_updates, middle_fraction,
+        )
     total = max(1, int(total_updates))
     progress = min(max(float(update) / float(total), 0.0), 1.0)
     return float(start) + (float(end) - float(start)) * progress
+
+
+def scheduled_piecewise_coefficient(
+    start: float,
+    middle: float,
+    end: float,
+    update: int,
+    total_updates: int,
+    middle_fraction: float,
+) -> float:
+    """三点分段单调调度,精确命中首/中/末锚点。"""
+    if not 0.0 < float(middle_fraction) < 1.0:
+        raise ValueError("middle_fraction must be in (0, 1)")
+    total = max(1, int(total_updates))
+    step = min(max(int(update), 1), total)
+    middle_update = min(total, max(1, round(total * float(middle_fraction))))
+    if step <= middle_update:
+        local = (step - 1) / max(middle_update - 1, 1)
+        return float(start) + (float(middle) - float(start)) * local
+    local = (step - middle_update) / max(total - middle_update, 1)
+    return float(middle) + (float(end) - float(middle)) * local
 
 
 def scheduled_u_coefficient(
@@ -146,6 +179,51 @@ def branch_grad_norms(model: nn.Module) -> dict[str, torch.Tensor]:
     return {name: value.sqrt() for name, value in squared_sums.items()}
 
 
+def optimizer_branch_parameters(
+    optimizer: torch.optim.Optimizer,
+) -> dict[str, list[nn.Parameter]]:
+    """从 optimizer 参数组读取 actor/critic/shared 参数列表。"""
+    grouped: dict[str, list[nn.Parameter]] = {"actor": [], "critic": [], "shared": []}
+    for group in optimizer.param_groups:
+        branch = str(group.get("branch", ""))
+        if branch not in grouped:
+            raise ValueError(f"unclassified optimizer branch: {branch}")
+        grouped[branch].extend(group["params"])
+    return grouped
+
+
+def clip_branch_grad_norms(
+    branch_parameters: dict[str, list[nn.Parameter]],
+    max_norms: dict[str, float],
+) -> dict[str, torch.Tensor]:
+    """独立裁剪 actor/shared/critic,返回每个分支的裁剪前后与缩放比例。"""
+    device = next(
+        parameter.device
+        for parameters in branch_parameters.values()
+        for parameter in parameters
+    )
+    metrics: dict[str, torch.Tensor] = {}
+    for branch in ("actor", "shared", "critic"):
+        parameters = branch_parameters[branch]
+        max_norm = float(max_norms[branch])
+        pre_clip = nn.utils.clip_grad_norm_(parameters, max_norm)
+        post_clip = torch.zeros((), device=device)
+        for parameter in parameters:
+            if parameter.grad is not None:
+                post_clip.add_(parameter.grad.detach().float().square().sum())
+        post_clip = post_clip.sqrt()
+        scale = torch.ones((), device=device)
+        if float(pre_clip.detach()) > 0.0:
+            scale = (post_clip / pre_clip.to(device=device)).clamp(max=1.0)
+        metrics[f"grad_norm_{branch}_pre_clip"] = pre_clip.to(device=device)
+        metrics[f"grad_norm_{branch}_post_clip"] = post_clip
+        metrics[f"grad_norm_{branch}_clip_scale"] = scale
+        metrics[f"grad_norm_{branch}_clipped"] = (
+            pre_clip.to(device=device) > max_norm
+        ).float()
+    return metrics
+
+
 def _rollout_values(
     transitions: RolloutBuffer,
     field: str,
@@ -175,7 +253,7 @@ def rollout_update_targets(
     transitions: RolloutBuffer,
     gamma: float,
 ) -> tuple[np.ndarray, np.ndarray, float, float]:
-    """完整 rollout 的 advantage 归一化与 empirical returns(供 DDP 分片复用)。"""
+    """完整 rollout 的 advantage 归一化与 λ-return(供 DDP 分片复用)。"""
     source_advantages = _rollout_values(
         transitions, "advantages", np.dtype(np.float32),
     )
@@ -183,7 +261,11 @@ def rollout_update_targets(
         (source_advantages - source_advantages.mean(dtype=np.float64))
         / (source_advantages.std(dtype=np.float64) + 1e-8)
     ).astype(np.float32)
-    returns = discounted_empirical_returns(transitions, float(gamma))
+    del gamma
+    returns = (
+        _rollout_values(transitions, "values", np.dtype(np.float32))
+        + source_advantages
+    ).astype(np.float32)
     return (
         advantages,
         returns,
@@ -346,6 +428,7 @@ class PPOLearner:
             weight_decay=float(hyperparameters.get("weight_decay", 0.01)),
             fused=self.use_bf16,
         )
+        self.branch_parameters = optimizer_branch_parameters(self.optimizer)
         self.model_ddp: DistributedDataParallel | None = (
             DistributedDataParallel(
                 self.model,
@@ -378,6 +461,23 @@ class PPOLearner:
         self.critic_public_grad_scale = float(hyperparameters.get("critic_public_grad_scale", 1.0))
         if not 0.0 <= self.critic_public_grad_scale <= 1.0:
             raise ValueError("critic_public_grad_scale must be in [0, 1]")
+        self.critic_private_embedding_grad_scale = float(
+            hyperparameters.get("critic_private_embedding_grad_scale", 1.0)
+        )
+        if not 0.0 <= self.critic_private_embedding_grad_scale <= 1.0:
+            raise ValueError("critic_private_embedding_grad_scale must be in [0, 1]")
+        self.branch_max_grad_norms = {
+            "actor": float(hyperparameters["actor_max_grad_norm"]),
+            "shared": float(hyperparameters["shared_max_grad_norm"]),
+            "critic": float(hyperparameters["critic_max_grad_norm"]),
+        }
+        if any(value <= 0.0 for value in self.branch_max_grad_norms.values()):
+            raise ValueError("branch max grad norms must be positive")
+        self.entropy_loss_mode = str(
+            hyperparameters["entropy_loss_mode"]
+        ).lower()
+        if self.entropy_loss_mode != "normalized":
+            raise ValueError("V18 PPO requires entropy_loss_mode=normalized")
         self.gradient_accumulation_steps = max(
             1, int(hyperparameters.get("gradient_accumulation_steps", 1))
         )
@@ -435,6 +535,7 @@ class PPOLearner:
             critic_lengths=batch["critic_lengths"],
             detach_critic_public=critic_bootstrap,
             critic_public_grad_scale=self.critic_public_grad_scale,
+            critic_private_embedding_grad_scale=self.critic_private_embedding_grad_scale,
         )
 
     def update(
@@ -473,16 +574,38 @@ class PPOLearner:
             return_mean = float(returns.mean(dtype=np.float64))
             return_std = float(returns.std(dtype=np.float64))
 
-        # value 拟合度:对完整 rollout 的 empirical returns 计算 explained variance。
+        mc_returns = discounted_empirical_returns(
+            transitions, float(self.hp.get("gamma", 1.0)),
+        )
+        raw_advantages = _rollout_values(transitions, "advantages", np.dtype(np.float64))
         raw_values = _rollout_values(
             transitions, "values", np.dtype(np.float64),
         )
-        returns_var = float(np.var(returns, dtype=np.float64))
-        length_metrics["value_explained_variance"] = (
+        lambda_var = float(np.var(returns, dtype=np.float64))
+        mc_var = float(np.var(mc_returns, dtype=np.float64))
+        lambda_ev = (
             0.0
-            if returns_var <= 1e-12
-            else 1.0 - float(np.var(returns - raw_values, dtype=np.float64)) / returns_var
+            if lambda_var <= 1e-12
+            else 1.0 - float(np.var(returns - raw_values, dtype=np.float64)) / lambda_var
         )
+        mc_ev = (
+            0.0
+            if mc_var <= 1e-12
+            else 1.0 - float(np.var(mc_returns - raw_values, dtype=np.float64)) / mc_var
+        )
+        length_metrics.update({
+            "value_explained_variance": lambda_ev,
+            "value_explained_variance_lambda": lambda_ev,
+            "value_explained_variance_mc": mc_ev,
+            "raw_advantage_mean": float(raw_advantages.mean(dtype=np.float64)),
+            "raw_advantage_std": float(raw_advantages.std(dtype=np.float64)),
+            "normalized_advantage_mean": float(advantages.mean(dtype=np.float64)),
+            "normalized_advantage_std": float(advantages.std(dtype=np.float64)),
+            "lambda_return_mean": float(returns.mean(dtype=np.float64)),
+            "lambda_return_std": float(returns.std(dtype=np.float64)),
+            "mc_return_mean": float(mc_returns.mean(dtype=np.float64)),
+            "mc_return_std": float(mc_returns.std(dtype=np.float64)),
+        })
 
         # 每个 epoch / minibatch 复用同一份紧凑缓冲,避免恢复 Transition 对象。
         transitions.advantages = np.asarray(advantages, dtype=np.float32)
@@ -492,6 +615,7 @@ class PPOLearner:
         step_metric_totals: dict[str, torch.Tensor] = {}
         ratio_samples: list[torch.Tensor] = []
         updates = 0
+        optimizer_steps = 0
         count = len(transitions)
         configured_epochs = int(self.hp["update_epochs"])
         minibatch_size = int(self.hp["minibatch_size"])
@@ -543,10 +667,12 @@ class PPOLearner:
             entropy_coef = 0.0
         else:
             entropy_coef = scheduled_entropy_coefficient(
-                float(self.hp.get("entropy_start", self.hp.get("entropy_coef", 0.0))),
-                float(self.hp.get("entropy_end", self.hp.get("entropy_coef", 0.0))),
+                float(self.hp["entropy_start"]),
+                float(self.hp["entropy_end"]),
                 policy_update_number,
                 total_policy_updates,
+                middle=float(self.hp["entropy_middle"]),
+                middle_fraction=float(self.hp["entropy_middle_fraction"]),
             )
         if critic_bootstrap:
             sft_kl_coef = 0.0
@@ -570,18 +696,29 @@ class PPOLearner:
 
         self.model.train()
         stop_early = False
-        rng = np.random.default_rng(shuffle_seed) if shuffle_seed is not None else None
+        rank_seed = (
+            None
+            if shuffle_seed is None
+            else int(shuffle_seed) + int(self.rank or 0) * 1_000_003
+        )
+        rng = np.random.default_rng(rank_seed) if rank_seed is not None else None
         epochs_started = 0
         epochs_completed = 0
         executed_samples = 0
         executed_tokens = 0
         executed_padded_input_tokens = 0
+        running_kl_sum: torch.Tensor | None = None
+        running_kl_count = 0
         for _ in range(configured_epochs):
             epochs_started += 1
-            epoch_kl_sum: torch.Tensor | None = None
-            epoch_kl_count = 0
             with self.profiler.stage("update/length_bucket"):
-                minibatches = transitions.bucketed_minibatches(minibatch_size, rng=rng)
+                minibatches = transitions.bucketed_minibatches(
+                    minibatch_size,
+                    rng=rng,
+                    bucket_window_multiplier=int(
+                        self.hp.get("bucket_window_multiplier", 1)
+                    ),
+                )
             for batch_number, indices in enumerate(minibatches, start=1):
                 with self.profiler.stage("update/collate_soa_gather"):
                     host_batch = transitions.collate(indices)
@@ -668,12 +805,14 @@ class PPOLearner:
                     if critic_bootstrap:
                         # 预热期只训 critic:policy/entropy/KL 不进入损失,
                         # actor/shared 学习率同时为 0。
+                        entropy_loss_values = entropy_values
                         loss = value_coef * value_loss_values_.mean()
                     else:
+                        entropy_loss_values = normalized_entropy_values
                         loss = (
                             policy_loss_values.mean()
                             + value_coef * value_loss_values_.mean()
-                            - entropy_coef * entropy_values.mean()
+                            - entropy_coef * entropy_loss_values.mean()
                             + sft_kl_coef * sft_reference_kl_values.mean()
                         )
                     evaluated_loss = loss
@@ -691,7 +830,14 @@ class PPOLearner:
                     # 反向,只在最后一累积步执行梯度裁剪 + optimizer.step,
                     # 保持 global effective batch ≈ minibatch_size × 累积步数。
                     accumulation_steps = self.gradient_accumulation_steps
-                    scaled_loss = evaluated_loss / float(accumulation_steps)
+                    planned_minibatches = (
+                        configured_epochs * planned_minibatches_per_epoch
+                    )
+                    actual_group_size = min(
+                        accumulation_steps,
+                        planned_minibatches - updates,
+                    )
+                    scaled_loss = evaluated_loss / float(max(actual_group_size, 1))
                     scaled_loss.backward()
                     # ``updates`` 为累计已处理 minibatch 数(从 0 开始),
                     # 每组 accumulation_steps 的最后一步才 step;最后一个
@@ -700,9 +846,6 @@ class PPOLearner:
                         (updates + 1) % accumulation_steps == 0
                         if accumulation_steps > 1
                         else True
-                    )
-                    planned_minibatches = (
-                        configured_epochs * planned_minibatches_per_epoch
                     )
                     is_last_batch = updates + 1 == planned_minibatches
                     should_step = (
@@ -722,29 +865,59 @@ class PPOLearner:
                             "non-finite PPO loss on one of the DDP ranks: "
                             + loss_detail
                         )
-                with self._gpu_stage("update/gradient_clip"):
-                    branch_norms = branch_grad_norms(self.model)
-                    grad_norm = nn.utils.clip_grad_norm_(
-                        self.model.parameters(), float(self.hp["max_grad_norm"]),
-                    )
-                    grad_norm_post_clip = grad_norm.clamp(max=float(self.hp["max_grad_norm"]))
                 if should_step:
+                    with self._gpu_stage("update/gradient_clip"):
+                        branch_clip_metrics = clip_branch_grad_norms(
+                            self.branch_parameters,
+                            self.branch_max_grad_norms,
+                        )
                     with self._gpu_stage("update/optimizer_step"):
                         self.optimizer.step()
                         self.optimizer.zero_grad(set_to_none=True)
+                    optimizer_steps += 1
+                else:
+                    parameter_device = next(self.model.parameters()).device
+                    branch_clip_metrics = {
+                        f"grad_norm_{branch}_{suffix}": torch.zeros(
+                            (), device=parameter_device,
+                        )
+                        for branch in ("actor", "shared", "critic")
+                        for suffix in ("pre_clip", "post_clip", "clip_scale", "clipped")
+                    }
+                    for branch in ("actor", "shared", "critic"):
+                        branch_clip_metrics[f"grad_norm_{branch}_clip_scale"] = torch.ones(
+                            (), device=parameter_device,
+                        )
                 with self._gpu_stage("update/diagnostic_metrics"):
                     with torch.no_grad():
                         kl_values = approximate_kl_values(logprob, old_logprobs)
                         clipfrac_values = (
                             (ratio - 1).abs() > float(self.hp["ppo_clip"])
                         ).float()
-                        if float(self.hp["target_kl"]) > 0:
+                        if float(self.hp["target_kl"]) > 0 and not critic_bootstrap:
                             kl_sum = kl_values.sum()
-                            if epoch_kl_sum is None:
-                                epoch_kl_sum = kl_sum.detach().clone()
+                            if running_kl_sum is None:
+                                running_kl_sum = kl_sum.detach().clone()
                             else:
-                                epoch_kl_sum.add_(kl_sum.detach())
-                            epoch_kl_count += len(indices)
+                                running_kl_sum.add_(kl_sum.detach())
+                            running_kl_count += len(indices)
+                            interval = max(
+                                1,
+                                int(self.hp.get("target_kl_check_interval", 0)) or 1,
+                            )
+                            if should_step and optimizer_steps % interval == 0:
+                                if self.world_size > 1:
+                                    kl_total = running_kl_sum.detach().clone()
+                                    kl_count = torch.tensor(
+                                        float(running_kl_count), device=self.device,
+                                    )
+                                    dist.all_reduce(kl_total, op=dist.ReduceOp.SUM)
+                                    dist.all_reduce(kl_count, op=dist.ReduceOp.SUM)
+                                    checked_kl = kl_total / kl_count.clamp_min(1.0)
+                                else:
+                                    checked_kl = running_kl_sum / max(running_kl_count, 1)
+                                if float(checked_kl) > float(self.hp["target_kl"]):
+                                    stop_early = True
                 for name, values in (
                     (
                         "loss",
@@ -754,7 +927,7 @@ class PPOLearner:
                             else (
                                 policy_loss_values
                                 + value_coef * value_loss_values_
-                                - entropy_coef * entropy_values
+                                - entropy_coef * entropy_loss_values
                                 + sft_kl_coef * sft_reference_kl_values
                             )
                         ),
@@ -778,38 +951,45 @@ class PPOLearner:
                 metric_sample_count += len(indices)
                 if len(indices):
                     ratio_samples.append(ratio.detach())
-                for name, value in (
-                    ("grad_norm", grad_norm),
-                    ("grad_norm_post_clip", grad_norm_post_clip),
-                ):
-                    detached = value.detach()
-                    if name in step_metric_totals:
-                        step_metric_totals[name].add_(detached)
-                    else:
-                        step_metric_totals[name] = detached.clone()
-                for branch, value in branch_norms.items():
-                    name = f"grad_norm_{branch}"
-                    detached_value = value.detach()
-                    if name in step_metric_totals:
-                        step_metric_totals[name].add_(detached_value)
-                    else:
-                        step_metric_totals[name] = detached_value.clone()
+                if should_step:
+                    for name, value in branch_clip_metrics.items():
+                        detached_value = value.detach()
+                        if name in step_metric_totals:
+                            step_metric_totals[name].add_(detached_value)
+                        else:
+                            step_metric_totals[name] = detached_value.clone()
+                    pre_values = [
+                        branch_clip_metrics[f"grad_norm_{branch}_pre_clip"]
+                        for branch in ("actor", "shared", "critic")
+                    ]
+                    post_values = [
+                        branch_clip_metrics[f"grad_norm_{branch}_post_clip"]
+                        for branch in ("actor", "shared", "critic")
+                    ]
+                    for name, value in (
+                        ("grad_norm", torch.stack(pre_values).square().sum().sqrt()),
+                        ("grad_norm_post_clip", torch.stack(post_values).square().sum().sqrt()),
+                    ):
+                        detached_value = value.detach()
+                        if name in step_metric_totals:
+                            step_metric_totals[name].add_(detached_value)
+                        else:
+                            step_metric_totals[name] = detached_value.clone()
+                    for branch in ("actor", "shared", "critic"):
+                        name = f"grad_norm_{branch}"
+                        detached_value = branch_clip_metrics[
+                            f"grad_norm_{branch}_pre_clip"
+                        ].detach()
+                        if name in step_metric_totals:
+                            step_metric_totals[name].add_(detached_value)
+                        else:
+                            step_metric_totals[name] = detached_value.clone()
                 updates += 1
-            epochs_completed += 1
-            if float(self.hp["target_kl"]) > 0 and epoch_kl_sum is not None:
-                if self.world_size > 1:
-                    # 两 rank 各自在本地分片上累计 KL;全局求和后再判定,
-                    # 保证 early stop 在两个 rank 上同时触发。
-                    kl_total = epoch_kl_sum.detach().clone()
-                    kl_count = torch.tensor(float(epoch_kl_count), device=self.device)
-                    dist.all_reduce(kl_total, op=dist.ReduceOp.SUM)
-                    dist.all_reduce(kl_count, op=dist.ReduceOp.SUM)
-                    epoch_kl = kl_total / kl_count.clamp_min(1.0)
-                else:
-                    epoch_kl = epoch_kl_sum / max(epoch_kl_count, 1)
-                if float(epoch_kl) > float(self.hp["target_kl"]):
-                    stop_early = True
+                if stop_early:
                     break
+            if stop_early:
+                break
+            epochs_completed += 1
         self.iteration += 1
         if not executed_samples:
             raise RuntimeError("PPO update completed without a minibatch")
@@ -839,6 +1019,9 @@ class PPOLearner:
             "system/critic_public_grad_scale": float(
                 0.0 if critic_bootstrap else self.critic_public_grad_scale
             ),
+            "system/critic_private_embedding_grad_scale": float(
+                self.critic_private_embedding_grad_scale
+            ),
             "training/critic_bootstrap": float(critic_bootstrap),
             "training/policy_update": float(policy_update_number),
         })
@@ -850,7 +1033,7 @@ class PPOLearner:
         step_names = tuple(step_metric_totals)
         step_values = torch.stack(
             [step_metric_totals[name] for name in step_names]
-        ).div(max(updates, 1)).tolist()
+        ).div(max(optimizer_steps, 1)).tolist()
         result = (
             dict(zip(sample_names, sample_values))
             | dict(zip(step_names, step_values))

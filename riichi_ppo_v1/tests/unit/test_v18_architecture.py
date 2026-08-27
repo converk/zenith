@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import torch
+import pytest
 
 from riichi_ppo_v1.model import KyokuTransformerActorCritic, ModelConfig
 from riichi_ppo_v1.model.architecture import (
@@ -16,6 +17,22 @@ from riichi_ppo_v1.model.encoding_protocol import (
     SEGMENT_SHARED,
 )
 from riichi_ppo_v1.tests.v18_fixtures import actor_inputs
+
+
+def _tiny_config() -> ModelConfig:
+    return ModelConfig(
+        layers=2,
+        shared_layers=1,
+        critic_layers=1,
+        d_model=32,
+        query_heads=4,
+        kv_heads=1,
+        head_dim=8,
+        ffn_dim=64,
+        dense_slot_dim=8,
+        dense_fusion_dim=64,
+        context_tokens=256,
+    )
 
 
 def test_model_topology() -> None:
@@ -185,3 +202,47 @@ def test_critic_forward_private_changes_value() -> None:
     )
     assert output["value"].shape == (2,)
     assert torch.isfinite(output["value"]).all()
+
+
+def test_critic_private_embedding_grad_scale_preserves_forward_and_scales_backward() -> None:
+    from riichi_ppo_v1.tests.v18_fixtures import critic_inputs
+
+    torch.manual_seed(123)
+    model = KyokuTransformerActorCritic(_tiny_config())
+    inputs = actor_inputs(batch=1, action_ids=(1, 7))
+    critic = critic_inputs(batch=1)
+
+    outputs = []
+    grads = []
+    for scale in (0.0, 0.25, 1.0):
+        model.zero_grad(set_to_none=True)
+        output = model(
+            actor_factors=inputs["actor_factors"],
+            actor_numeric=inputs["actor_numeric"],
+            actor_lengths=inputs["actor_lengths"],
+            query_action_ids=inputs["action_ids"],
+            query_pair_counts=inputs["query_pair_counts"],
+            legal_mask=inputs["legal_mask"],
+            critic_factors=critic["critic_factors"],
+            critic_lengths=critic["critic_lengths"],
+            detach_critic_public=True,
+            critic_private_embedding_grad_scale=scale,
+        )
+        outputs.append(output["value"].detach())
+        output["value"].sum().backward()
+        grad_squares = [
+            parameter.grad.detach().float().square().sum()
+            for parameter in model.token_embedding.parameters()
+            if parameter.grad is not None
+        ]
+        grad_norm = (
+            torch.stack(grad_squares).sum().sqrt()
+            if grad_squares
+            else torch.zeros(())
+        )
+        grads.append(grad_norm.item())
+
+    torch.testing.assert_close(outputs[0], outputs[1])
+    torch.testing.assert_close(outputs[0], outputs[2])
+    assert grads[0] == 0.0
+    assert grads[1] == pytest.approx(grads[2] * 0.25, rel=1e-4, abs=1e-6)

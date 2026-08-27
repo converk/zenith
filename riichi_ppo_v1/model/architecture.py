@@ -365,6 +365,7 @@ class KyokuTransformerActorCritic(nn.Module):
         critic_lengths: Tensor | None = None,
         detach_critic_public: bool = False,
         critic_public_grad_scale: float = 1.0,
+        critic_private_embedding_grad_scale: float = 1.0,
         policy_only: bool = False,
     ) -> dict[str, Tensor]:
         if self.config.policy_head_type != "current_state_snapshot":
@@ -474,6 +475,16 @@ class KyokuTransformerActorCritic(nn.Module):
         if torch.any(critic_lengths > self.config.context_tokens - shared_lengths - 1):
             raise ValueError("critic context overflow")
         critic_embeddings = self.token_embedding(critic_factors, critic_factors.new_zeros((batch, critic_capacity, TOKEN_NUMERIC_WIDTH)))
+        private_grad_scale = float(critic_private_embedding_grad_scale)
+        if not 0.0 <= private_grad_scale <= 1.0:
+            raise ValueError("critic_private_embedding_grad_scale must be in [0, 1]")
+        if private_grad_scale == 0.0:
+            critic_embeddings = critic_embeddings.detach()
+        elif private_grad_scale != 1.0:
+            detached_private = critic_embeddings.detach()
+            critic_embeddings = detached_private + private_grad_scale * (
+                critic_embeddings - detached_private
+            )
         critic_total_lengths = shared_lengths + critic_lengths + 1
         critic_total = int(critic_total_lengths.max().item())
         critic_sequence = critic_embeddings.new_zeros((batch, critic_total, self.config.d_model))

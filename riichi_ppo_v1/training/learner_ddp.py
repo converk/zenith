@@ -27,6 +27,7 @@ import torch
 import torch.distributed as dist
 
 from .learner import (
+    discounted_empirical_returns,
     PPOLearner,
     rollout_target_metrics,
     rollout_update_targets,
@@ -72,6 +73,12 @@ _SAMPLE_WEIGHTED_KEYS = {
 _STEP_WEIGHTED_KEYS = {
     "grad_norm", "grad_norm_post_clip",
     "grad_norm_actor", "grad_norm_critic", "grad_norm_shared",
+    "grad_norm_actor_pre_clip", "grad_norm_actor_post_clip",
+    "grad_norm_actor_clip_scale", "grad_norm_actor_clipped",
+    "grad_norm_shared_pre_clip", "grad_norm_shared_post_clip",
+    "grad_norm_shared_clip_scale", "grad_norm_shared_clipped",
+    "grad_norm_critic_pre_clip", "grad_norm_critic_post_clip",
+    "grad_norm_critic_clip_scale", "grad_norm_critic_clipped",
 }
 # 直接求和的指标。
 _SUM_KEYS = {
@@ -86,7 +93,7 @@ _RANK0_KEYS = {
     "update/early_stop",
     "system/learning_rate", "system/actor_learning_rate", "system/shared_learning_rate",
     "system/critic_learning_rate", "system/entropy_coef", "system/sft_kl_coef",
-    "system/critic_public_grad_scale",
+    "system/critic_public_grad_scale", "system/critic_private_embedding_grad_scale",
     "training/critic_bootstrap", "training/policy_update",
 }
 
@@ -136,6 +143,8 @@ def _weighted_mean(values: list[float], weights: list[float]) -> float:
 def aggregate_learner_metrics(
     metrics_by_rank: list[dict[str, float]],
     transitions: RolloutBuffer,
+    *,
+    gamma: float = 1.0,
 ) -> dict[str, float]:
     """把两个 DDP rank 的本地指标汇总为一次 update 的全局指标。"""
     if not metrics_by_rank:
@@ -187,6 +196,38 @@ def aggregate_learner_metrics(
             result[name] = total * 1000.0 / max(count, 1)
     # buffer/Q 统计基于完整 rollout 在 host 侧精确重算,覆盖各 rank 分片统计。
     result.update(rollout_target_metrics(transitions))
+    advantages, lambda_returns, _lambda_mean, _lambda_std = rollout_update_targets(
+        transitions, gamma=gamma,
+    )
+    mc_returns = discounted_empirical_returns(transitions, gamma=gamma).astype(np.float64)
+    raw_advantages = np.asarray(transitions.advantages, dtype=np.float64)
+    raw_values = np.asarray(transitions.values, dtype=np.float64)
+    lambda_targets = np.asarray(lambda_returns, dtype=np.float64)
+    lambda_var = float(np.var(lambda_targets))
+    mc_var = float(np.var(mc_returns))
+    lambda_ev = (
+        0.0
+        if lambda_var <= 1e-12
+        else 1.0 - float(np.var(lambda_targets - raw_values)) / lambda_var
+    )
+    mc_ev = (
+        0.0
+        if mc_var <= 1e-12
+        else 1.0 - float(np.var(mc_returns - raw_values)) / mc_var
+    )
+    result.update({
+        "value_explained_variance": lambda_ev,
+        "value_explained_variance_lambda": lambda_ev,
+        "value_explained_variance_mc": mc_ev,
+        "raw_advantage_mean": float(raw_advantages.mean()) if len(raw_advantages) else 0.0,
+        "raw_advantage_std": float(raw_advantages.std()) if len(raw_advantages) else 0.0,
+        "normalized_advantage_mean": float(np.asarray(advantages, dtype=np.float64).mean()) if len(transitions) else 0.0,
+        "normalized_advantage_std": float(np.asarray(advantages, dtype=np.float64).std()) if len(transitions) else 0.0,
+        "lambda_return_mean": float(lambda_targets.mean()) if len(lambda_targets) else 0.0,
+        "lambda_return_std": float(lambda_targets.std()) if len(lambda_targets) else 0.0,
+        "mc_return_mean": float(mc_returns.mean()) if len(mc_returns) else 0.0,
+        "mc_return_std": float(mc_returns.std()) if len(mc_returns) else 0.0,
+    })
     padded = result["update/executed_padded_input_tokens"]
     tokens = (
         result["update/executed_transition_tokens_mean"]
@@ -401,7 +442,9 @@ class LearnerDDP:
         messages = [self._recv(rank) for rank in range(self.world_size)]
         per_rank = [messages[rank]["metrics"] for rank in range(self.world_size)]
         self.iteration = int(messages[0]["iteration"])
-        return aggregate_learner_metrics(per_rank, transitions), per_rank
+        return aggregate_learner_metrics(
+            per_rank, transitions, gamma=self._gamma,
+        ), per_rank
 
     def weights(self) -> dict[str, torch.Tensor]:
         self._command_queues[0].put({"kind": _CMD_WEIGHTS})

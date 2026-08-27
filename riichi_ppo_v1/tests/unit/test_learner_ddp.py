@@ -15,6 +15,7 @@ from riichi_ppo_v1.training.learner_ddp import (
     learner_shard_indices,
 )
 from riichi_ppo_v1.training.rollout_buffer import RolloutBuffer
+from riichi_ppo_v1.training.trajectory import transition_sequence_length
 
 from .test_rollout_buffer import _random_transition
 
@@ -113,8 +114,10 @@ def test_aggregate_metrics_weights_samples_and_steps() -> None:
     # buffer/advantage 统计按完整 rollout 精确重算。
     assert aggregated["advantage_mean"] == pytest.approx(0.05)
     assert aggregated["update/buffer_transition_tokens_mean"] == pytest.approx(
-        np.mean([row.history_length + row.snapshot_length + 2 * row.query_pair_counts for row in rows])
+        np.mean([transition_sequence_length(row) for row in rows])
     )
+    assert "value_explained_variance_lambda" in aggregated
+    assert "mc_return_mean" in aggregated
 
 
 def test_learner_ddp_rejects_non_cuda_or_small_world_size() -> None:

@@ -84,6 +84,11 @@ class SemanticMetrics:
     draw_points: list[float] = field(default_factory=list)
     kyoku_discard_counts: list[float] = field(default_factory=list)
     kyoku_open_melds: list[float] = field(default_factory=list)
+    kyoku_riichis: int = 0
+    kyoku_called_players: int = 0
+    post_riichi_player_kyokus: int = 0
+    post_riichi_wins: int = 0
+    post_riichi_deal_ins: int = 0
     wins: int = 0
     tsumo_wins: int = 0
     ron_wins: int = 0
@@ -114,9 +119,11 @@ class SemanticMetrics:
     reward_weighted_kyoku: list[float] = field(default_factory=list)
     completed_matches: int = 0
     match_ranks: list[int] = field(default_factory=list)
+    match_final_scores: list[float] = field(default_factory=list)
     match_point_deltas: list[float] = field(default_factory=list)
     match_kyoku_lengths: list[float] = field(default_factory=list)
     match_discard_counts: list[float] = field(default_factory=list)
+    match_flying: int = 0
     policy_decisions: Counter[str] = field(default_factory=Counter)
     policy_seats: Counter[str] = field(default_factory=Counter)
     structural_tenpai: int = 0
@@ -260,6 +267,20 @@ class SemanticMetrics:
                     continue
         horas = [row for row in rows if row.get("type") == "hora"]
         is_draw = any(row.get("type") == "ryukyoku" for row in rows)
+        if discard_count is None:
+            discard_count = sum(1 for row in rows if row.get("type") == "dahai")
+        if open_meld_count is None:
+            open_meld_count = sum(
+                1
+                for row in rows
+                if row.get("type") in {"chi", "pon", "daiminkan", "kakan"}
+            )
+        if is_draw and not exhaustive_draw:
+            exhaustive_draw = any(
+                row.get("type") == "ryukyoku"
+                and str(row.get("reason", "")) == "exhaustive_draw"
+                for row in rows
+            )
         tenpai_by_seat: dict[int, bool] = {}
         if draw_tenpai is not None:
             if isinstance(draw_tenpai, (list, tuple, np.ndarray)):
@@ -270,6 +291,16 @@ class SemanticMetrics:
                 tenpai_by_seat = {seat: bool(draw_tenpai) for seat in seats}
         if open_meld_count is not None:
             self.kyoku_open_melds.append(float(open_meld_count))
+        riichi_seats = {
+            int(row.get("actor", -1))
+            for row in rows
+            if row.get("type") == "reach" or row.get("type") == "riichi"
+        }
+        called_seats = {
+            int(row.get("actor", -1))
+            for row in rows
+            if row.get("type") in {"chi", "pon", "daiminkan", "ankan", "kakan"}
+        }
         for seat in seats:
             point = deltas[seat]
             self.kyoku_points.append(point)
@@ -285,11 +316,13 @@ class SemanticMetrics:
             if won:
                 self.wins += 1
                 self.win_points.append(point)
+                self.post_riichi_wins += int(seat in riichi_seats)
                 self.tsumo_wins += sum(int(row.get("target", -1)) == int(row.get("actor", -2)) for row in won)
                 self.ron_wins += sum(int(row.get("target", -1)) != int(row.get("actor", -2)) for row in won)
             if dealt:
                 self.deal_ins += 1
                 self.deal_in_points.append(point)
+                self.post_riichi_deal_ins += int(seat in riichi_seats)
             if lost_to_tsumo:
                 self.tsumo_losses += 1
             if is_draw:
@@ -298,6 +331,9 @@ class SemanticMetrics:
                 self.draw_points.append(point)
                 if seat in tenpai_by_seat:
                     self.draw_tenpai += int(tenpai_by_seat[seat])
+            self.kyoku_riichis += int(seat in riichi_seats)
+            self.kyoku_called_players += int(seat in called_seats)
+            self.post_riichi_player_kyokus += int(seat in riichi_seats)
             groups = [f"seat_{seat}"]
             if dealer_seat is not None:
                 groups.append("dealer" if seat == int(dealer_seat) else "nondealer")
@@ -331,7 +367,10 @@ class SemanticMetrics:
         if not 0 <= seat < len(scores):
             raise ValueError(f"learner seat {seat} is outside final scores")
         ranking = sorted(range(len(scores)), key=lambda index: (-scores[index], index))
-        self.match_ranks.append(ranking.index(seat) + 1)
+        rank = ranking.index(seat) + 1
+        self.match_ranks.append(rank)
+        self.match_final_scores.append(scores[seat])
+        self.match_flying += int(any(score < 0.0 for score in scores))
         self.completed_matches += 1
         if point_delta is not None:
             self.match_point_deltas.append(float(point_delta))
@@ -363,6 +402,14 @@ class SemanticMetrics:
             f"{prefix}/kyoku/draw_tenpai_rate": _rate(self.draw_tenpai, self.exhaustive_draws),
             f"{prefix}/kyoku/discard_count_mean": _mean(self.kyoku_discard_counts),
             f"{prefix}/kyoku/open_melds_mean": _mean(self.kyoku_open_melds),
+            f"{prefix}/kyoku/riichi_rate": _rate(self.kyoku_riichis, kyokus),
+            f"{prefix}/kyoku/call_rate": _rate(self.kyoku_called_players, kyokus),
+            f"{prefix}/kyoku/post_riichi_win_rate": _rate(
+                self.post_riichi_wins, self.post_riichi_player_kyokus,
+            ),
+            f"{prefix}/kyoku/post_riichi_deal_in_rate": _rate(
+                self.post_riichi_deal_ins, self.post_riichi_player_kyokus,
+            ),
             f"{prefix}/action/decision_count": float(self.decisions),
             f"{prefix}/action/legal_count_mean": _mean(self.legal_actions),
             f"{prefix}/action/riichi_opportunity_count": float(self.riichi_opportunities),
@@ -405,9 +452,12 @@ class SemanticMetrics:
             f"{prefix}/reward/total_mean": _mean(self.rewards),
             f"{prefix}/match/count": float(matches),
             f"{prefix}/match/first_place_rate": _rate(sum(rank == 1 for rank in self.match_ranks), matches),
+            f"{prefix}/match/second_place_rate": _rate(sum(rank == 2 for rank in self.match_ranks), matches),
+            f"{prefix}/match/third_place_rate": _rate(sum(rank == 3 for rank in self.match_ranks), matches),
             f"{prefix}/match/mean_rank": _mean([float(rank) for rank in self.match_ranks]),
             f"{prefix}/match/top2_rate": _rate(sum(rank <= 2 for rank in self.match_ranks), matches),
             f"{prefix}/match/last_place_rate": _rate(sum(rank == 4 for rank in self.match_ranks), matches),
+            f"{prefix}/match/final_score_mean": _mean(self.match_final_scores),
             f"{prefix}/match/point_delta_mean": _mean(self.match_point_deltas),
             f"{prefix}/match/point_delta_p10": _percentile(self.match_point_deltas, 10),
             f"{prefix}/match/point_delta_p50": _percentile(self.match_point_deltas, 50),
@@ -415,8 +465,14 @@ class SemanticMetrics:
             f"{prefix}/match/positive_point_delta_rate": _rate(
                 sum(delta > 0.0 for delta in self.match_point_deltas), matches,
             ),
+            f"{prefix}/match/flying_rate": _rate(self.match_flying, matches),
             f"{prefix}/match/length_kyokus_mean": _mean(self.match_kyoku_lengths),
             f"{prefix}/match/discard_count_mean": _mean(self.match_discard_counts),
+            f"{prefix}/match/decisions_mean": _rate(self.decisions, matches),
+            f"{prefix}/kyoku/decisions_mean": _rate(self.decisions, kyokus),
+            f"{prefix}/match/west_entry_rate": _rate(
+                sum(length > 8.0 for length in self.match_kyoku_lengths), matches,
+            ),
         }
         for kind in ("pass", "discard", "tsumogiri", "riichi", "chi", "pon", "daiminkan", "ankan", "kakan", "hora", "kyushu"):
             result[f"{prefix}/action/{kind}_rate"] = _rate(self.actions[kind], self.decisions)
