@@ -124,6 +124,32 @@ def _weighted_kyoku_metrics(shards: list[dict[str, Any]]) -> dict[str, float]:
     return merged
 
 
+def _weighted_semantic_metrics(shards: list[dict[str, Any]]) -> dict[str, float]:
+    """按候选模型半庄数加权合并 model_a 业务指标。"""
+    rows = [
+        shard["model_a"].get("semantic_metrics", {})
+        for shard in shards
+        if isinstance(shard["model_a"].get("semantic_metrics", {}), dict)
+    ]
+    names = {name for row in rows for name in row}
+    merged: dict[str, float] = {}
+    for name in names:
+        values = [
+            (float(row[name]), float(row.get("model_a/match/count", 0.0)))
+            for row in rows
+            if name in row
+        ]
+        if name.endswith("/count") or name.endswith("_count"):
+            merged[name] = float(sum(value for value, _weight in values))
+            continue
+        total = sum(weight for _value, weight in values)
+        merged[name] = (
+            float(sum(value * weight for value, weight in values) / total)
+            if total else float(np.mean([value for value, _weight in values]))
+        )
+    return merged
+
+
 def merge_1v3_shards(
     shards: list[dict[str, Any]],
     *,
@@ -146,8 +172,50 @@ def merge_1v3_shards(
     first_places = sum(int(shard["model_a"]["first_place_count"]) for shard in shards)
     top2 = sum(int(shard["model_a"]["top2_count"]) for shard in shards)
     fourths = sum(int(shard["model_a"]["fourth_place_count"]) for shard in shards)
+    second_places = sum(
+        int(shard["model_a"].get(
+            "second_place_count",
+            int(shard["model_a"]["top2_count"]) - int(shard["model_a"]["first_place_count"]),
+        ))
+        for shard in shards
+    )
+    third_places = sum(
+        int(shard["model_a"].get(
+            "third_place_count",
+            int(shard["hanchan_count"])
+            - int(shard["model_a"]["first_place_count"])
+            - int(shard["model_a"].get(
+                "second_place_count",
+                int(shard["model_a"]["top2_count"]) - int(shard["model_a"]["first_place_count"]),
+            ))
+            - int(shard["model_a"]["fourth_place_count"]),
+        ))
+        for shard in shards
+    )
     rank_sum = sum(
         float(shard["model_a"]["mean_rank"]) * int(shard["hanchan_count"])
+        for shard in shards
+    )
+    semantic_metrics = _weighted_semantic_metrics(shards)
+    final_score_mean = semantic_metrics.get("model_a/match/final_score_mean")
+    if final_score_mean is None:
+        final_values = [
+            (
+                float(shard["model_a"]["final_score_mean"]),
+                float(shard["hanchan_count"]),
+            )
+            for shard in shards
+            if "final_score_mean" in shard["model_a"]
+        ]
+        if final_values:
+            final_score_mean = sum(value * weight for value, weight in final_values) / sum(
+                weight for _value, weight in final_values
+            )
+    flying_count = sum(
+        float(shard["model_a"].get(
+            "flying_count",
+            float(shard["model_a"].get("flying_rate", 0.0)) * int(shard["hanchan_count"]),
+        ))
         for shard in shards
     )
     elapsed = max(float(shard["elapsed_s"]) for shard in shards)
@@ -163,17 +231,26 @@ def merge_1v3_shards(
             "checkpoint": first["model_a"]["checkpoint"],
             "first_place_count": first_places,
             "first_place_rate": first_places / total,
+            "second_place_count": second_places,
+            "second_place_rate": second_places / total,
+            "third_place_count": third_places,
+            "third_place_rate": third_places / total,
             "top2_count": top2,
             "top2_rate": top2 / total,
             "fourth_place_count": fourths,
             "fourth_place_rate": fourths / total,
+            "last_place_rate": fourths / total,
             "mean_rank": rank_sum / total,
+            "final_score_mean": float(final_score_mean) if final_score_mean is not None else 0.0,
+            "flying_count": flying_count,
+            "flying_rate": flying_count / total,
             "point_diff_mean": float(point_diffs.mean()),
             "point_diff_bootstrap_ci95": pooled_bootstrap_ci(
                 point_diffs, seed_base,
             ),
             "point_diff_samples": [float(value) for value in point_diffs],
             "kyoku_metrics": _weighted_kyoku_metrics(shards),
+            "semantic_metrics": semantic_metrics,
         },
         "model_b": {
             "checkpoint": first["model_b"]["checkpoint"],

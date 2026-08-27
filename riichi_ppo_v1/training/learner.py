@@ -224,6 +224,23 @@ def clip_branch_grad_norms(
     return metrics
 
 
+def accumulation_group_size(
+    planned_minibatches: int,
+    accumulation_steps: int,
+    minibatch_index: int,
+) -> int:
+    """返回当前 minibatch 所属累积组的实际大小。"""
+    planned = int(planned_minibatches)
+    steps = max(1, int(accumulation_steps))
+    index = int(minibatch_index)
+    if planned <= 0:
+        raise ValueError("planned_minibatches must be positive")
+    if index < 0 or index >= planned:
+        raise ValueError("minibatch_index is out of range")
+    group_start = (index // steps) * steps
+    return min(steps, planned - group_start)
+
+
 def _rollout_values(
     transitions: RolloutBuffer,
     field: str,
@@ -833,9 +850,10 @@ class PPOLearner:
                     planned_minibatches = (
                         configured_epochs * planned_minibatches_per_epoch
                     )
-                    actual_group_size = min(
+                    actual_group_size = accumulation_group_size(
+                        planned_minibatches,
                         accumulation_steps,
-                        planned_minibatches - updates,
+                        updates,
                     )
                     scaled_loss = evaluated_loss / float(max(actual_group_size, 1))
                     scaled_loss.backward()

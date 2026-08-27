@@ -241,7 +241,9 @@ def evaluate_1v3(
                 rank_sum += rank
                 rank_history.append(rank)
                 others = [scores[s] for s in range(NUM_PLAYERS) if s != seat]
-                point_diffs.append(float(scores[seat] - float(np.mean(others))))
+                point_diff = float(scores[seat] - float(np.mean(others)))
+                point_diffs.append(point_diff)
+                metric_a.record_match_result(seat, scores, point_delta=point_diff)
                 active_envs.remove(env_index)
                 completed += 1
             if not active_envs:
@@ -312,6 +314,8 @@ def evaluate_1v3(
 
     summary_a = metric_a.summary("model_a")
     summary_b = metric_b.summary("model_b")
+    second_places = sum(rank == 2 for rank in rank_history)
+    third_places = sum(rank == 3 for rank in rank_history)
 
     return {
         "protocol_version": 1,
@@ -326,11 +330,17 @@ def evaluate_1v3(
             "checkpoint": model_a_path,
             "first_place_rate": first_places / int(hanchan_count),
             "first_place_count": first_places,
+            "second_place_rate": second_places / int(hanchan_count),
+            "second_place_count": second_places,
+            "third_place_rate": third_places / int(hanchan_count),
+            "third_place_count": third_places,
             "top2_rate": top2 / int(hanchan_count),
             "top2_count": top2,
             "fourth_place_rate": fourths / int(hanchan_count),
             "fourth_place_count": fourths,
             "mean_rank": rank_sum / int(hanchan_count),
+            "final_score_mean": summary_a["model_a/match/final_score_mean"],
+            "flying_rate": summary_a["model_a/match/flying_rate"],
             "point_diff_vs_mean_opponent_mean": float(deltas.mean()),
             "point_diff_vs_mean_opponent_bootstrap_ci95": ci95,
             "point_diff_samples": [float(value) for value in point_diffs],

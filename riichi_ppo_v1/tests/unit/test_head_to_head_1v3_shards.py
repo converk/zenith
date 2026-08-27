@@ -17,9 +17,15 @@ def synthetic_shard(index: int, *, seed_base: int = 20260812) -> dict:
     rng = np.random.default_rng(seed_base + index)
     hanchans = 400
     point_diffs = rng.normal(loc=5.0 - 0.2 * index, scale=40.0, size=hanchans)
-    first_places = int(np.count_nonzero(point_diffs > 0))
-    top2 = int(np.count_nonzero(point_diffs > -5))
-    fourths = int(np.count_nonzero(point_diffs < -35))
+    ranks = np.asarray([
+        1 if value > 0 else (2 if value > -5 else (4 if value < -35 else 3))
+        for value in point_diffs
+    ])
+    first_places = int(np.count_nonzero(ranks == 1))
+    second_places = int(np.count_nonzero(ranks == 2))
+    third_places = int(np.count_nonzero(ranks == 3))
+    top2 = int(np.count_nonzero(ranks <= 2))
+    fourths = int(np.count_nonzero(ranks == 4))
     kyoku_count = 20 + (index % 5) * 5
     win_rate = 0.12 + 0.005 * index
     deal_in_rate = 0.10 - 0.004 * index
@@ -46,14 +52,20 @@ def synthetic_shard(index: int, *, seed_base: int = 20260812) -> dict:
         "model_a": {
             "checkpoint": f"/tmp/checkpoint_{index:05d}.pt",
             "first_place_count": first_places,
+            "second_place_count": second_places,
+            "third_place_count": third_places,
             "top2_count": top2,
             "fourth_place_count": fourths,
-            "mean_rank": float(np.mean([
-                1 if value > 0 else (2 if value > -5 else (4 if value < -35 else 3))
-                for value in point_diffs
-            ])),
+            "mean_rank": float(np.mean(ranks)),
+            "final_score_mean": 25000.0 + index,
+            "flying_rate": 0.01 * (index % 2),
             "point_diff_samples": [float(value) for value in point_diffs],
             "kyoku_metrics": kyoku_metrics,
+            "semantic_metrics": {
+                "model_a/match/count": float(hanchans),
+                "model_a/match/final_score_mean": 25000.0 + index,
+                "model_a/match/flying_rate": 0.01 * (index % 2),
+            },
         },
         "model_b": {"checkpoint": "/tmp/best_heuristic.pt"},
     }
@@ -81,6 +93,12 @@ def test_merged_4000_hanchans_match_direct_aggregation() -> None:
     assert model_a["top2_count"] == sum(
         shard["model_a"]["top2_count"] for shard in shards
     )
+    assert model_a["second_place_count"] == sum(
+        shard["model_a"]["second_place_count"] for shard in shards
+    )
+    assert model_a["third_place_count"] == sum(
+        shard["model_a"]["third_place_count"] for shard in shards
+    )
     assert model_a["fourth_place_count"] == sum(
         shard["model_a"]["fourth_place_count"] for shard in shards
     )
@@ -91,6 +109,15 @@ def test_merged_4000_hanchans_match_direct_aggregation() -> None:
         ) / 4000
     )
     assert model_a["point_diff_mean"] == pytest.approx(float(samples.mean()))
+    assert model_a["second_place_rate"] == pytest.approx(model_a["second_place_count"] / 4000)
+    assert model_a["third_place_rate"] == pytest.approx(model_a["third_place_count"] / 4000)
+    assert model_a["final_score_mean"] == pytest.approx(
+        np.mean([25000.0 + index for index in range(10)])
+    )
+    assert model_a["flying_rate"] == pytest.approx(
+        np.mean([0.01 * (index % 2) for index in range(10)])
+    )
+    assert model_a["semantic_metrics"]["model_a/match/count"] == 4000.0
     assert model_a["point_diff_bootstrap_ci95"] == pytest.approx(
         pooled_bootstrap_ci(samples, seed_base)
     )

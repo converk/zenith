@@ -507,6 +507,14 @@ class SemanticMetrics:
         total_decisions = sum(self.policy_decisions.values())
         result[f"{prefix}/opponents/current_seat_fraction"] = _rate(self.policy_seats["current"], total_seats)
         result[f"{prefix}/opponents/current_decision_fraction"] = _rate(self.policy_decisions["current"], total_decisions)
+        if prefix == "train":
+            for name in (
+                "first_place_rate", "second_place_rate", "third_place_rate",
+                "mean_rank", "top2_rate", "last_place_rate", "final_score_mean",
+                "point_delta_mean", "point_delta_p10", "point_delta_p50",
+                "point_delta_p90", "positive_point_delta_rate", "flying_rate",
+            ):
+                result.pop(f"{prefix}/match/{name}", None)
         return result
 
 

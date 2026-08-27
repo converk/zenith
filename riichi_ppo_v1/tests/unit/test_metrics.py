@@ -99,7 +99,11 @@ def test_match_length_metrics_support_physical_self_play_hanchans() -> None:
     summary = metrics.summary("train")
     assert summary["train/match/count"] == 2
     assert summary["train/match/length_kyokus_mean"] == 10.0
-    assert summary["train/match/mean_rank"] == 0.0
+    for name in (
+        "first_place_rate", "top2_rate", "last_place_rate", "mean_rank",
+        "final_score_mean", "flying_rate",
+    ):
+        assert f"train/match/{name}" not in summary
 
 
 def test_ppo_buffer_and_evaluation_matrix_metrics() -> None:

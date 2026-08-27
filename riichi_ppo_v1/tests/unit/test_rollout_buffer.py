@@ -9,6 +9,7 @@ import torch
 from riichi_ppo_v1.tests.v18_fixtures import actor_inputs, critic_inputs
 from riichi_ppo_v1.training.learner import (
     PPOLearner,
+    accumulation_group_size,
     clip_branch_grad_norms,
     rollout_update_targets,
     scheduled_entropy_coefficient,
@@ -195,6 +196,18 @@ def test_branch_clipping_keeps_independent_scales() -> None:
     assert actor.grad.item() == pytest.approx(1.0)
     assert shared.grad.item() == pytest.approx(0.25)
     assert critic.grad.item() == pytest.approx(2.0)
+
+
+def test_accumulation_tail_group_uses_actual_group_size() -> None:
+    divisors = [
+        accumulation_group_size(10, 4, index)
+        for index in range(10)
+    ]
+    assert divisors == [4, 4, 4, 4, 4, 4, 4, 4, 2, 2]
+    assert [
+        accumulation_group_size(3, 8, index)
+        for index in range(3)
+    ] == [3, 3, 3]
 
 
 def test_learner_accepts_only_rollout_buffer() -> None:
