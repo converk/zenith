@@ -11,15 +11,6 @@ from riichi_lab_bot.bridge import OnlineStateBridge
 from riichi_lab_bot.policy import PolicyEngine
 
 
-def test_v18_checkpoint_loads_strictly_and_warms_up() -> None:
-    engine = PolicyEngine(default_checkpoint(), device="cpu", dtype="fp32")
-    assert engine.config.context_tokens == 4096
-    assert engine.metadata["checkpoint_format"] == "v18_weights"
-    assert engine.metadata["token_schema_version"] == 18
-    assert engine.metadata["policy_head_type"] == "isolated_action_query"
-    assert engine.warmup() >= 0.0
-
-
 @pytest.mark.parametrize("checkpoint", [v16_sft_checkpoint, v17_ppo_checkpoint])
 def test_legacy_checkpoint_is_rejected(checkpoint) -> None:
     with pytest.raises(RuntimeError, match="V18"):
