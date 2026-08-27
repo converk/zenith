@@ -1,6 +1,6 @@
 # V18 PPO 稳定性训练正式配置:150 updates × 2048 完整半庄。
 # 自包含配置,不与 training.yaml 或其他历史配置叠加。
-seed: 1
+seed: 20260828
 device: cuda
 learner_gpus: 2
 iterations: 150
@@ -30,13 +30,13 @@ games_per_update: 2048
 
 # PPO 主超参:Actor 用归一化 advantage,Critic 拟合 old_value + raw GAE。
 # 梯度累积=10:每 10 个 minibatch 的(已 DDP 平均)梯度累加后再 step 一次,
-# 等效每步有效 batch = 2048×10×2 = 40960;LR 暂不放大,先以 KL/entropy/
-# clipfrac 观察是否保守,再决定 ×2~3。(维护者决定:2026-08-27)
+# 等效每步有效 batch = 1536×10×2 = 30720;LR 已按维护者决定上调 3.5×
+# (actor/critic 1.4e-4,shared 1.75e-5)。
 gamma: 1.0
 gae_lambda: 0.95
 ppo_clip: 0.20
 update_epochs: 2
-minibatch_size: 2048
+minibatch_size: 1536
 gradient_accumulation_steps: 10
 update_batch_mode: streaming
 bucket_window_multiplier: 8

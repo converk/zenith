@@ -24,7 +24,7 @@ def test_v18_ppo_config_matches_stability_plan() -> None:
     assert config["total_updates"] == 150
     assert config["games_per_update"] == 2048
     assert config["update_epochs"] == 2
-    assert config["minibatch_size"] == 2048
+    assert config["minibatch_size"] == 1536
     assert config["gradient_accumulation_steps"] == 10
     assert config["gamma"] == 1.0
     assert config["gae_lambda"] == 0.95
@@ -60,10 +60,10 @@ def test_v18_ppo_config_matches_stability_plan() -> None:
         assert key not in config
 
 
-def test_v18_global_effective_minibatch_is_40960() -> None:
+def test_v18_global_effective_minibatch_is_30720() -> None:
     config = _v18_config()
     per_gpu = int(config["minibatch_size"])
     learner_gpus = int(config["learner_gpus"])
     accumulation = int(config.get("gradient_accumulation_steps", 1))
     # global effective = per_gpu × gpus × accumulation。
-    assert per_gpu * learner_gpus * accumulation == 40960
+    assert per_gpu * learner_gpus * accumulation == 30720
