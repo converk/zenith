@@ -288,6 +288,29 @@ def categorical_kl_values(
     return (probability * (safe_policy - safe_reference)).sum(-1)
 
 
+def policy_entropy_values(
+    logprobabilities: torch.Tensor,
+    probabilities: torch.Tensor,
+    legal_mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """按合法动作掩码计算 raw 与 normalized 策略熵。
+
+    normalized = H / log(max(num_legal_actions, 2))。非法动作 logits 为
+    -inf,必须在乘法前把 log_prob 与概率都替换为 0;仅在乘积上 masked_fill
+    只救前向,反向仍会因 -inf × 0 回传 NaN 梯度。
+    """
+    safe_logprobabilities = torch.where(
+        legal_mask, logprobabilities, torch.zeros_like(logprobabilities),
+    )
+    safe_probabilities = torch.where(
+        legal_mask, probabilities, torch.zeros_like(probabilities),
+    )
+    entropy_values = -(safe_logprobabilities * safe_probabilities).sum(-1)
+    legal_action_counts = legal_mask.sum(-1).float().clamp_min(2.0)
+    normalized_entropy_values = entropy_values / legal_action_counts.log()
+    return entropy_values, normalized_entropy_values
+
+
 def transition_length_metrics(
     transitions: RolloutBuffer,
     prefix: str = "update/buffer",
@@ -779,15 +802,9 @@ class PPOLearner:
                     # 非法动作 logits 为 -inf:必须在乘法前把 log_prob 与概率
                     # 都替换为 0。仅在乘积上 masked_fill 只救前向,反向仍会因
                     # -inf × 0 回传 NaN 梯度。
-                    safe_logprobabilities = torch.where(
-                        legal_mask, logprobabilities, torch.zeros_like(logprobabilities),
+                    entropy_values, normalized_entropy_values = policy_entropy_values(
+                        logprobabilities, probabilities, legal_mask,
                     )
-                    safe_probabilities = torch.where(
-                        legal_mask, probabilities, torch.zeros_like(probabilities),
-                    )
-                    entropy_values = -(safe_logprobabilities * safe_probabilities).sum(-1)
-                    legal_action_counts = legal_mask.sum(-1).float().clamp_min(2.0)
-                    normalized_entropy_values = entropy_values / legal_action_counts.log()
                     if reference_output is None:
                         sft_reference_kl_values = torch.zeros_like(policy_loss_values)
                     else:
