@@ -232,34 +232,17 @@ def _rollout_values(
 def discounted_empirical_returns(
     transitions: RolloutBuffer, gamma: float,
 ) -> np.ndarray:
-    """Monte Carlo reward-to-go,每局终局时重置(向量化)。
-
-    语义与旧的逐 transition Python 循环一致:在 float64 上累积(与旧实现的
-    Python float 累积同精度),每段(以 done 为右边界,含 done 自身奖励)
-    ``returns[i] = Σ_{j=i}^{end} rewards[j]·γ^(j-i)``,最后统一转 float32。
-    γ=1.0 时退化为段内前缀和差,除法为精确 1.0。O(N),无 Python 逐元素循环。
-    """
-    count = len(transitions)
-    if count == 0:
-        return np.zeros(0, dtype=np.float32)
-    rewards64 = _rollout_values(
-        transitions, "rewards", np.dtype(np.float32),
-    ).astype(np.float64)
+    """Monte Carlo reward-to-go,每局终局时重置。"""
+    returns = np.zeros(len(transitions), dtype=np.float32)
+    running = 0.0
+    rewards = _rollout_values(transitions, "rewards", np.dtype(np.float32))
     done = _rollout_values(transitions, "done", np.dtype(np.bool_))
-    discount_powers = np.power(float(gamma), np.arange(count, dtype=np.float64))
-    scaled = rewards64 * discount_powers
-    cumulative = np.concatenate(([0.0], np.cumsum(scaled)))
-    ends = np.flatnonzero(done)
-    starts_ext = np.concatenate(([0], ends + 1, [count]))
-    segment_ids = np.repeat(
-        np.arange(len(ends) + 1, dtype=np.int64), np.diff(starts_ext),
-    )
-    segment_end_cumulative = cumulative[starts_ext[1:]]
-    index_range = np.arange(count, dtype=np.int64)
-    returns64 = (
-        segment_end_cumulative[segment_ids] - cumulative[index_range]
-    ) / discount_powers
-    return returns64.astype(np.float32)
+    for index in range(len(transitions) - 1, -1, -1):
+        if done[index]:
+            running = 0.0
+        running = float(rewards[index]) + float(gamma) * running
+        returns[index] = np.float32(running)
+    return returns
 
 
 def rollout_update_targets(
