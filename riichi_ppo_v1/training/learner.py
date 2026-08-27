@@ -155,30 +155,6 @@ def normalize_value_targets(
     raise ValueError("value_target_normalization must be one of 'none' or 'batch_std'")
 
 
-def branch_grad_norms(model: nn.Module) -> dict[str, torch.Tensor]:
-    """返回裁剪前的 actor/critic/shared 三组 L2 梯度范数。"""
-    parameter_device = next(model.parameters()).device
-    squared_sums = {
-        "actor": torch.zeros((), device=parameter_device),
-        "critic": torch.zeros((), device=parameter_device),
-        "shared": torch.zeros((), device=parameter_device),
-    }
-    for name, parameter in model.named_parameters():
-        if parameter.grad is None:
-            continue
-        root = name.split(".", 1)[0]
-        if root in ACTOR_ROOTS:
-            branch = "actor"
-        elif root in CRITIC_ROOTS:
-            branch = "critic"
-        elif root in SHARED_ROOTS:
-            branch = "shared"
-        else:  # 防止未来新增参数被静默漏报。
-            raise ValueError(f"unclassified model parameter for gradient metrics: {name}")
-        squared_sums[branch].add_(parameter.grad.detach().float().square().sum())
-    return {name: value.sqrt() for name, value in squared_sums.items()}
-
-
 def optimizer_branch_parameters(
     optimizer: torch.optim.Optimizer,
 ) -> dict[str, list[nn.Parameter]]:

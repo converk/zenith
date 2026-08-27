@@ -45,33 +45,6 @@ class ConfigLoadingTest(unittest.TestCase):
             self.assertNotIn("offense_" + "fusion", config)
             self.assertNotIn("critic_" + "head_type", config)
 
-    def test_v17_resume_config_is_self_contained_and_exact_resume(self) -> None:
-        configs = Path(__file__).resolve().parents[2] / "configs"
-        resumed = load_config(str(configs / "v17_ppo_resume.yaml"))
-
-        self.assertEqual(resumed["model_size"], "v16")
-        self.assertEqual(resumed["policy_head_type"], "symmetric_action_query")
-        self.assertEqual(
-            resumed["resume"],
-            "checkpoints/train_riichi_v17/ppo/checkpoint_00060.pt",
-        )
-        self.assertIsNone(resumed["init_model"])
-        self.assertEqual(resumed["games_per_update"], 512)
-        self.assertEqual(resumed["env_step_threads"], 4)
-        self.assertEqual(resumed["eval1v3_output_dir"], "audit/reports/v17/eval")
-
-    def test_v17_performance_benchmark_has_selected_worker_resources(self) -> None:
-        configs = Path(__file__).resolve().parents[2] / "configs"
-        config = load_config(str(configs / "v17_ppo_perf_512g4e.yaml"))
-        self.assertEqual(config["games_per_update"], 512)
-        self.assertEqual(config["update_epochs"], 4)
-        self.assertEqual(config["target_kl"], 0.0)
-        self.assertEqual(config["env_step_threads"], 4)
-        self.assertEqual(config["rollout_worker_cpu_threads"], 1)
-        self.assertEqual(config["rollout_worker_num_cpus"], 2)
-        self.assertNotIn("worker_return_soa", config)
-        self.assertNotIn("update_use_soa", config)
-
     def test_worker_partitioning_balances_workers_across_learners(self) -> None:
         self.assertEqual(partition_worker_indices(6, 2), [[0, 2, 4], [1, 3, 5]])
         self.assertEqual(partition_worker_indices(5, 2), [[0, 2, 4], [1, 3]])

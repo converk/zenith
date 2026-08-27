@@ -26,6 +26,9 @@ Date: 2026-08-27
 - Accumulation 只在 optimizer step 前裁剪,尾组按实际 minibatch 数缩放。
 - Rollout/update dtype 由 `inference_dtype` 统一控制。
 - 训练和评测业务指标复用 `SemanticMetrics`,TensorBoard 展示名使用中文。
+- 1v3 评测的业务指标按「小局结束」逐局结算,全小局/player-kyoku 口径(和牌率、放铳率、流局率、立直率、流局听牌率等),不再只统计最终小局。
+- 训练侧 `record_kyoku` 接入真实流局听牌掩码(牌山耗尽前的逐座听牌判定),`draw_tenpai` 只在荒牌流局累计,与文档口径一致。
+- 1v3 评测摘要投影为 `eval/...` 标量写入 TensorBoard,与训练曲线同图对比。
 - 旧模型架构训练兼容代码已移除:当前 PPO learner 要求显式 V18 三分支裁剪与 normalized entropy;1v3 adapter 只加载 `current_state_snapshot` checkpoint。
 
 ## 最终 PPO 参数
@@ -39,7 +42,7 @@ Date: 2026-08-27
 - KL guardrail: `target_kl=0.01`, `target_kl_check_interval=8`
 - Critic gradient scaling: public `0.25`, private embedding `0.25`
 - Bucketing: `bucket_window_multiplier=8`
-- Checkpoint/eval interval: 10 updates
+- Checkpoint/eval interval: 5 updates(与宪法 1v3 机制一致,`checkpoint_interval_updates=5`/`eval1v3_interval_updates=5`)
 
 ## 与 V17 的核心差异
 

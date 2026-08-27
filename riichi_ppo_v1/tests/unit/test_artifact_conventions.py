@@ -135,7 +135,7 @@ def test_progress_md_path_lives_in_report() -> None:
 
 def test_eval_output_dirs_match_current_version_convention() -> None:
     """V16/V17 配置的 `eval1v3_output_dir` 必须为 `audit/reports/<版本号>/eval`。"""
-    for name in ("v16_ppo.yaml", "v17_ppo.yaml", "v17_ppo_resume.yaml"):
+    for name in ("v16_ppo.yaml", "v17_ppo.yaml"):
         config = _read_yaml(CONFIG_DIR / name)
         assert re.fullmatch(
             r"audit/reports/v1[67]/eval", config["eval1v3_output_dir"]

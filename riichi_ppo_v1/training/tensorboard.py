@@ -7,7 +7,7 @@ only the small set of signals useful for routine training decisions.
 from __future__ import annotations
 
 import math
-from typing import Mapping, Protocol
+from typing import Any, Mapping, Protocol
 
 
 class ScalarWriter(Protocol):
@@ -259,6 +259,33 @@ def curated_scalars(metrics: Mapping[str, float]) -> dict[str, float]:
         for name, value in metrics.items()
         if name in CURATED_SCALAR_TAGS and math.isfinite(float(value))
     }
+
+
+def eval_summary_scalars(summary: Mapping[str, Any]) -> dict[str, float]:
+    """把 1v3 summary 投影为 ``eval/`` 前缀标量,供 curated TB 写入。
+
+    ``model_a.semantic_metrics`` 的键以 ``model_a/`` 为前缀(如
+    ``model_a/match/first_place_rate``),统一映射为 ``eval/`` 前缀,与
+    ``CURATED_SCALAR_TAGS`` 中的 ``eval/...`` 条目对齐。
+    """
+    result: dict[str, float] = {}
+    model_a = summary.get("model_a")
+    if isinstance(model_a, dict):
+        semantic = model_a.get("semantic_metrics")
+        if isinstance(semantic, dict):
+            for name, value in semantic.items():
+                if name.startswith("model_a/"):
+                    try:
+                        result["eval/" + name[len("model_a/"):]] = float(value)
+                    except (TypeError, ValueError):
+                        continue
+    elapsed = summary.get("elapsed_s")
+    if elapsed is not None:
+        try:
+            result["eval/performance/elapsed_s"] = float(elapsed)
+        except (TypeError, ValueError):
+            pass
+    return result
 
 
 def write_curated_scalars(writer: ScalarWriter, metrics: Mapping[str, float], step: int) -> None:

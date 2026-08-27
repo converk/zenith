@@ -249,7 +249,7 @@ class SemanticMetrics:
         open_meld_count: int | None = None,
         dealer_seat: int | None = None,
         phase: str | None = None,
-        draw_tenpai: bool | Iterable[bool | None] | None = None,
+        draw_tenpai: bool | Mapping[int, bool] | Iterable[bool | None] | None = None,
         exhaustive_draw: bool = False,
     ) -> None:
         seats = set(int(seat) for seat in learner_seats)
@@ -283,7 +283,12 @@ class SemanticMetrics:
             )
         tenpai_by_seat: dict[int, bool] = {}
         if draw_tenpai is not None:
-            if isinstance(draw_tenpai, (list, tuple, np.ndarray)):
+            if isinstance(draw_tenpai, dict):
+                tenpai_by_seat = {
+                    int(seat_index): bool(flag)
+                    for seat_index, flag in draw_tenpai.items()
+                }
+            elif isinstance(draw_tenpai, (list, tuple, np.ndarray)):
                 for seat_index, flag in enumerate(draw_tenpai):
                     if flag is not None:
                         tenpai_by_seat[seat_index] = bool(flag)
@@ -329,7 +334,8 @@ class SemanticMetrics:
                 self.draws += 1
                 self.exhaustive_draws += int(exhaustive_draw)
                 self.draw_points.append(point)
-                if seat in tenpai_by_seat:
+                # 流局听牌率口径:分子/分母都限定在荒牌流局(player-kyoku)。
+                if exhaustive_draw and seat in tenpai_by_seat:
                     self.draw_tenpai += int(tenpai_by_seat[seat])
             self.kyoku_riichis += int(seat in riichi_seats)
             self.kyoku_called_players += int(seat in called_seats)
@@ -526,18 +532,6 @@ class RollingKyokuMetrics:
     def update(self, values: Iterable[float]) -> dict[str, float]:
         self.points.extend(float(value) for value in values)
         return {"train_rolling/kyoku/window_count": float(len(self.points)), "train_rolling/kyoku/point_delta_mean": _mean(list(self.points))}
-
-
-def ppo_buffer_metrics(transitions: Iterable[object]) -> dict[str, float]:
-    """rollout buffer 的 advantage 与 value 统计(host 侧)。"""
-    rows = list(transitions)
-    advantages = np.asarray([float(item.advantage) for item in rows], dtype=np.float64)
-    values = np.asarray([float(item.value) for item in rows], dtype=np.float64)
-    result: dict[str, float] = {}
-    for name, values_ in (("advantage", advantages), ("value", values)):
-        result[f"buffer/{name}_mean"] = float(values_.mean()) if len(values_) else 0.0
-        result[f"buffer/{name}_std"] = float(values_.std()) if len(values_) else 0.0
-    return result
 
 
 def append_metric_jsonl(path: str | Path, *, update: int, global_decisions: int, global_kyokus: int,

@@ -4,8 +4,7 @@ import json
 
 import numpy as np
 
-from riichi_ppo_v1.training.metrics import SemanticMetrics, action_kind, append_metric_jsonl, metric_counters, ppo_buffer_metrics
-from riichi_ppo_v1.training.trajectory import Transition
+from riichi_ppo_v1.training.metrics import SemanticMetrics, action_kind, append_metric_jsonl, metric_counters
 
 
 def _hora(actor: int, target: int) -> str:
@@ -106,22 +105,34 @@ def test_match_length_metrics_support_physical_self_play_hanchans() -> None:
         assert f"train/match/{name}" not in summary
 
 
-def test_ppo_buffer_and_evaluation_matrix_metrics() -> None:
-    transition = Transition(
-        actor_factors=np.zeros((1, 32), np.int32),
-        actor_numeric=np.zeros((1, 8), np.float32),
-        actor_length=1,
-        query_rows=np.zeros((2, 15), np.int32),
-        query_action_ids=np.zeros(1, np.int32),
-        query_pair_counts=1,
-        legal_mask=np.ones(241, np.bool_),
-        action=0,
-        logprob=0.0,
-        value=0.0,
+def test_draw_tenpai_only_counts_exhaustive_draws() -> None:
+    """流局听牌率口径:只统计荒牌流局;非荒牌流局即使传入掩码也不计入。"""
+    ryukyoku = json.dumps({
+        "type": "ryukyoku", "reason": "exhaustive_draw", "deltas": [0, 0, 0, 0],
+    })
+    metrics = SemanticMetrics()
+    metrics.record_kyoku(
+        [0, 1, 2, 3], [0, 0, 0, 0],
+        [[ryukyoku], [ryukyoku], [ryukyoku], [ryukyoku]],
+        draw_tenpai={0: True, 1: False, 2: True, 3: False},
     )
-    transition.value, transition.advantage = 0.25, 1.0
-    result = ppo_buffer_metrics([transition])
-    assert result["buffer/advantage_mean"] == 1.0
-    assert result["buffer/advantage_std"] == 0.0
-    assert result["buffer/value_mean"] == 0.25
-    assert result["buffer/value_std"] == 0.0
+    summary = metrics.summary()
+    assert summary["train/kyoku/exhaustive_draw_count"] == 4
+    assert summary["train/kyoku/draw_tenpai_count"] == 2
+    assert summary["train/kyoku/draw_tenpai_rate"] == 0.5
+
+    # 非荒牌流局(九种九牌等)即使带了掩码也不计入 draw_tenpai。
+    abort = json.dumps({
+        "type": "ryukyoku", "reason": "kyushu_nine", "deltas": [0, 0, 0, 0],
+    })
+    other = SemanticMetrics()
+    other.record_kyoku(
+        [0, 1, 2, 3], [0, 0, 0, 0],
+        [[abort], [abort], [abort], [abort]],
+        draw_tenpai={0: True, 1: True, 2: True, 3: True},
+    )
+    other_summary = other.summary()
+    assert other_summary["train/kyoku/exhaustive_draw_count"] == 0
+    assert other_summary["train/kyoku/draw_tenpai_count"] == 0
+    assert other_summary["train/kyoku/draw_tenpai_rate"] == 0.0
+    assert other_summary["train/kyoku/draw_rate"] == 1.0

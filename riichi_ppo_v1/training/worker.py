@@ -755,6 +755,9 @@ if ray is not None:
                         for seat in range(NUM_PLAYERS)
                     ],
                     self.bridge.last_events[env_index],
+                    # 只传牌山耗尽前算好的座位听牌掩码;exhaustive_draw 由
+                    # metrics 从终局事件 reason 自动判定,非荒牌流局不计入。
+                    draw_tenpai=self._pending_tenpai.get(env_index),
                 )
                 for seat in range(NUM_PLAYERS):
                     reward = float(seat_rewards[seat])

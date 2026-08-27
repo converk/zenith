@@ -82,8 +82,9 @@ sft_kl_coef_middle: 0.001
 sft_kl_coef_end: 0.002
 sft_kl_middle_fraction: 0.5
 
-# 每 10 updates 保存 checkpoint 并执行固定 1v3 评测。
-checkpoint_interval_updates: 10
+# 每 5 updates 保存 checkpoint 并执行固定 1v3 评测(与宪法机制一致)。
+checkpoint_interval_updates: 5
+eval1v3_interval_updates: 5
 checkpoint_dir: checkpoints/train_riichi_v18/ppo
 resume: null
 

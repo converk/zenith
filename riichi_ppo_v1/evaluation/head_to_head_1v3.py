@@ -189,12 +189,12 @@ def evaluate_1v3(
                     )
 
             observations = list(envs.step_batch(actions_by_env))
-            bridge.sync(observations)
+            end_kyoku, _end_game = bridge.sync(observations)
             public.update(bridge.last_events)
             done = envs.done()
             scores_by_env = envs.scores()
             for env_index in list(active_envs):
-                if not bool(done[env_index]):
+                if not bool(end_kyoku[env_index]):
                     continue
                 scores = [int(value) for value in scores_by_env[env_index]]
                 seat = candidate_seats[env_index]
@@ -209,6 +209,8 @@ def evaluate_1v3(
                             ryukyoku_reason = event.get("reason")
                 tenpai_flags = final_tenpai_by_env.get(env_index)
                 exhaustive_draw = ryukyoku_reason == "exhaustive_draw"
+                # 业务指标按小局结束逐局结算,保证和牌率/放铳率/流局率/
+                # 立直率等为全小局 player-kyoku 口径,而不是只统计最终小局。
                 score_deltas = [
                     scores[player_seat] - start_scores[env_index][player_seat]
                     for player_seat in range(NUM_PLAYERS)
@@ -217,9 +219,7 @@ def evaluate_1v3(
                     [seat],
                     score_deltas,
                     bridge.last_events[env_index],
-                    draw_tenpai=(
-                        tenpai_flags[seat] if exhaustive_draw and tenpai_flags else None
-                    ),
+                    draw_tenpai=tenpai_flags if exhaustive_draw else None,
                     exhaustive_draw=exhaustive_draw,
                 )
                 metric_b.record_kyoku(
@@ -230,6 +230,8 @@ def evaluate_1v3(
                     exhaustive_draw=exhaustive_draw,
                 )
                 start_scores[env_index] = scores
+                if not bool(done[env_index]):
+                    continue
                 ranking = sorted(range(NUM_PLAYERS), key=lambda s: (-scores[s], s))
                 rank = ranking.index(seat) + 1
                 if rank == 1:

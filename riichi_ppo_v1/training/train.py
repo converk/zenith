@@ -34,7 +34,11 @@ from torch.utils.tensorboard import SummaryWriter
 
 from .profiling import GpuSampler, append_jsonl
 from .metrics import RollingKyokuMetrics, append_metric_jsonl, metric_counters
-from .tensorboard import learner_peak_allocated_mb, write_curated_scalars
+from .tensorboard import (
+    eval_summary_scalars,
+    learner_peak_allocated_mb,
+    write_curated_scalars,
+)
 from ..model.schema import TOKEN_SCHEMA_VERSION
 from .learner import PPOLearner, validate_fresh_model_checkpoint_contract
 from .learner_ddp import LearnerDDP
@@ -707,6 +711,14 @@ def run(config: dict[str, Any]) -> None:
                 checkpoint_path = Path(config["checkpoint_dir"]) / f"checkpoint_{update_number:05d}.pt"
                 learner.save(str(checkpoint_path), config, checkpoint_extra_state())
                 eval1v3_summary = run_1v3_evaluation(update_number)
+                if eval1v3_summary is not None:
+                    # 1v3 评测结果投影为 eval/ 前缀标量写入 TensorBoard,
+                    # 与其他训练指标同图对比(仅 curated 列表内的键会落盘)。
+                    write_curated_scalars(
+                        writer,
+                        eval_summary_scalars(eval1v3_summary),
+                        update_number,
+                    )
             _update_progress_md(
                 config, update_number, rollout_metrics, metrics, eval1v3_summary,
             )

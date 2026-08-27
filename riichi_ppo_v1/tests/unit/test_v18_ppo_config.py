@@ -52,7 +52,8 @@ def test_v18_ppo_config_matches_stability_plan() -> None:
     assert config["target_kl"] == 0.01
     assert config["target_kl_check_interval"] == 8
     assert config["bucket_window_multiplier"] == 8
-    assert config["checkpoint_interval_updates"] == 10
+    assert config["checkpoint_interval_updates"] == 5
+    assert config["eval1v3_interval_updates"] == 5
     assert config["init_model"].endswith("train_riichi_v18/sft/best.pt")
     assert config["grp_checkpoint"].endswith("train_riichi_v18/grp/best.pt")
     for key in ("q_coef", "q_boost_coef", "q_boost_lambda", "q_temperature", "qboost_lambda"):
