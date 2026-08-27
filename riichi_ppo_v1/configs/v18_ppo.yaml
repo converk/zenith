@@ -54,13 +54,13 @@ entropy_end: 0.0045
 entropy_middle_fraction: 0.33
 
 # 三分支独立学习率调度,bootstrap 不消耗 policy schedule。
-learning_rate: 0.00012
-actor_learning_rate: 0.00012
-actor_learning_rate_min: 0.000045
-shared_learning_rate: 0.000015
-shared_learning_rate_min: 0.0000075
-critic_learning_rate: 0.00012
-critic_learning_rate_min: 0.000045
+learning_rate: 0.00014
+actor_learning_rate: 0.00014
+actor_learning_rate_min: 0.0000525
+shared_learning_rate: 0.0000175
+shared_learning_rate_min: 0.00000875
+critic_learning_rate: 0.00014
+critic_learning_rate_min: 0.0000525
 critic_bootstrap_learning_rate: 0.00002
 warmup_fraction: 0.02
 # β1 0.95→0.9:配合 accumulation=10 的大有效 batch,一阶动量回到标准响应速度
