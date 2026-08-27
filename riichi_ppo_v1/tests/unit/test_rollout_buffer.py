@@ -6,45 +6,32 @@ import numpy as np
 import pytest
 import torch
 
+from riichi_ppo_v1.tests.v18_fixtures import actor_inputs, critic_inputs
 from riichi_ppo_v1.training.learner import PPOLearner, rollout_update_targets
 from riichi_ppo_v1.training.rollout_buffer import RolloutBuffer
 from riichi_ppo_v1.training.trajectory import Transition
-from types import SimpleNamespace
-
-# PPO 旧契约字段名保留（本测试只验证 buffer 扁平化，不验证编码语义）。
-SNAPSHOT_FIELD_COUNT = 34
-SNAPSHOT_FIELDS = [SimpleNamespace(field_id=index, relative_seat=0) for index in range(1, SNAPSHOT_FIELD_COUNT + 1)]
 
 
 def _random_transition(rng: np.random.Generator) -> Transition:
-    history_length = int(rng.integers(20, 60))
-    snapshot_length = SNAPSHOT_FIELD_COUNT
     pair_count = int(rng.integers(1, 8))
-    critic_length = 8
-    action_ids = rng.choice(30, size=(pair_count,), replace=False).astype(np.int32)
-    query_rows = np.zeros((2 * pair_count, 15), dtype=np.int32)
-    for pair, action_id in enumerate(action_ids):
-        query_rows[2 * pair, 0] = 1
-        query_rows[2 * pair + 1, 0] = 2
-        query_rows[2 * pair, 1] = int(action_id)
-        query_rows[2 * pair + 1, 1] = int(action_id)
-        query_rows[2 * pair:2 * pair + 2, 2] = 1
-    legal_mask = np.zeros(241, dtype=np.bool_)
-    legal_mask[action_ids] = True
+    action_ids = tuple(
+        sorted(
+            int(value)
+            for value in rng.choice(np.arange(1, 80), size=(pair_count,), replace=False)
+        )
+    )
+    actor = actor_inputs(batch=1, action_ids=action_ids)
+    critic = critic_inputs(batch=1)
+    actor_length = int(actor["actor_lengths"][0])
+    critic_length = int(critic["critic_lengths"][0])
     return Transition(
-        history_factors=rng.integers(0, 4, (history_length, 10)).astype(np.uint8),
-        history_numeric=rng.random((history_length, 8)).astype(np.float32),
-        history_length=history_length,
-        snapshot_factors=np.asarray([
-            (field.field_id, field.relative_seat, 0, 0)
-            for field in SNAPSHOT_FIELDS
-        ], dtype=np.uint8),
-        snapshot_numeric=np.zeros((snapshot_length, 1), dtype=np.float32),
-        snapshot_length=snapshot_length,
-        query_rows=query_rows,
-        query_action_ids=action_ids,
+        actor_factors=actor["actor_factors"][0, :actor_length].numpy().astype(np.int32),
+        actor_numeric=actor["actor_numeric"][0, :actor_length].numpy().astype(np.float32),
+        actor_length=actor_length,
+        query_rows=actor["query_rows"][0, : 2 * pair_count].numpy().astype(np.int32),
+        query_action_ids=actor["action_ids"][0, :pair_count].numpy().astype(np.int32),
         query_pair_counts=pair_count,
-        legal_mask=legal_mask,
+        legal_mask=actor["legal_mask"][0].numpy().astype(np.bool_),
         action=int(action_ids[0]),
         logprob=float(np.float32(rng.random())),
         value=float(np.float32(rng.random())),
@@ -52,12 +39,7 @@ def _random_transition(rng: np.random.Generator) -> Transition:
         kyoku_reward=float(np.float32(rng.random())),
         done=bool(rng.integers(0, 2)),
         advantage=float(np.float32(rng.random())),
-        critic_factors=np.asarray([
-            (4, 4, 2, 2, 1, 1, 0, 4, 0, 1),
-            (4, 4, 2, 3, 1, 2, 0, 4, 0, 1),
-            (4, 4, 2, 4, 1, 3, 0, 4, 0, 1),
-            *((5, 6, 3, pos, 1, pos, 0, 1, 0, 1) for pos in range(1, 6)),
-        ], dtype=np.uint8),
+        critic_factors=critic["critic_factors"][0, :critic_length].numpy().astype(np.uint8),
         critic_length=critic_length,
     )
 
@@ -87,7 +69,8 @@ def _assert_row_prefix_and_zero_padding(
     expected: np.ndarray,
 ) -> None:
     length = expected.shape[0]
-    torch.testing.assert_close(actual[row, :length], torch.from_numpy(expected))
+    expected_tensor = torch.from_numpy(expected).to(dtype=actual.dtype)
+    torch.testing.assert_close(actual[row, :length], expected_tensor)
     if length < actual.shape[1]:
         assert torch.count_nonzero(actual[row, length:]) == 0
 
@@ -100,10 +83,8 @@ def test_collate_preserves_all_segments_and_padding() -> None:
 
     for row, index in enumerate(indices):
         item = transitions[int(index)]
-        _assert_row_prefix_and_zero_padding(batch["history_factors"], row, item.history_factors)
-        _assert_row_prefix_and_zero_padding(batch["history_numeric"], row, item.history_numeric)
-        _assert_row_prefix_and_zero_padding(batch["snapshot_factors"], row, item.snapshot_factors)
-        _assert_row_prefix_and_zero_padding(batch["snapshot_numeric"], row, item.snapshot_numeric)
+        _assert_row_prefix_and_zero_padding(batch["actor_factors"], row, item.actor_factors)
+        _assert_row_prefix_and_zero_padding(batch["actor_numeric"], row, item.actor_numeric)
         _assert_row_prefix_and_zero_padding(batch["query_rows"], row, item.query_rows)
         _assert_row_prefix_and_zero_padding(
             batch["query_action_ids"], row, item.query_action_ids,
@@ -115,8 +96,7 @@ def test_collate_preserves_all_segments_and_padding() -> None:
         )
         _assert_row_prefix_and_zero_padding(batch["critic_factors"], row, expected_critic)
         torch.testing.assert_close(batch["legal_mask"][row], torch.from_numpy(item.legal_mask))
-        assert batch["history_lengths"][row] == item.history_length
-        assert batch["snapshot_lengths"][row] == item.snapshot_length
+        assert batch["actor_lengths"][row] == item.actor_length
         assert batch["query_pair_counts"][row] == item.query_pair_counts
         assert batch["critic_lengths"][row] == item.critic_length
         assert batch["actions"][row] == item.action

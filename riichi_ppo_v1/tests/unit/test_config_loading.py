@@ -17,7 +17,7 @@ class ConfigLoadingTest(unittest.TestCase):
     def test_packaged_groups_provide_v18_neutral_defaults(self) -> None:
         config = load_config()
         self.assertEqual(config["model_size"], "v18")
-        self.assertEqual(config["policy_head_type"], "isolated_action_query")
+        self.assertEqual(config["policy_head_type"], "current_state_snapshot")
         self.assertEqual(config["game_mode"], "4p-red-half")
         self.assertEqual(config["envs_per_worker"], 32)
         self.assertEqual(config["update_epochs"], 4)

@@ -81,7 +81,7 @@ def test_packaged_configs_are_current_and_neutral() -> None:
     from riichi_ppo_v1.training.train import load_config
 
     training = load_config()
-    assert training["policy_head_type"] == "isolated_action_query"
+    assert training["policy_head_type"] == "current_state_snapshot"
     assert training["model_size"] == "v18"
     assert training["checkpoint_dir"] == "checkpoints/train_riichi_current"
     sft = load_sft_config(CONFIG_DIR / "sft.yaml")

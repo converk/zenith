@@ -332,6 +332,8 @@ def run(config: dict[str, Any]) -> None:
     init_payload: dict[str, Any] = {}
     if config.get("resume") and config.get("init_model"):
         raise ValueError("resume and init_model are mutually exclusive")
+    if not config.get("grp_checkpoint"):
+        raise ValueError("V18 PPO requires grp_checkpoint in the run config")
     if config.get("resume"):
         resume_payload = torch.load(config["resume"], map_location="cpu", weights_only=False)
         schema = int(resume_payload.get("token_schema_version", 0))

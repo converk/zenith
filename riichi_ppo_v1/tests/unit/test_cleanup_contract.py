@@ -27,7 +27,7 @@ def test_remaining_tools_are_importable_and_covered() -> None:
 
 def test_remaining_configs_are_loadable() -> None:
     training = load_config()
-    assert training["policy_head_type"] == "isolated_action_query"  # PPO 配置不在本阶段范围
+    assert training["policy_head_type"] == "current_state_snapshot"
     assert training["model_size"] == "v18"
     assert training["checkpoint_dir"] == "checkpoints/train_riichi_current"
     sft = load_sft_config(ROOT / "configs" / "sft.yaml")

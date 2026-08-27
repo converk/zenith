@@ -98,11 +98,16 @@ def test_match_length_metrics_support_physical_self_play_hanchans() -> None:
 
 def test_ppo_buffer_and_evaluation_matrix_metrics() -> None:
     transition = Transition(
-        np.zeros((1, 10), np.uint8), np.zeros((1, 8), np.float32), 1,
-        np.zeros(1, np.uint8), np.zeros((1, 4), np.uint8),
-        np.zeros((1, 7), np.float32), 1,
-        np.zeros((2, 15), np.int32), np.zeros(1, np.int32), 1,
-        np.ones(241, np.bool_), 0, 0.0, 0.0,
+        actor_factors=np.zeros((1, 32), np.int32),
+        actor_numeric=np.zeros((1, 8), np.float32),
+        actor_length=1,
+        query_rows=np.zeros((2, 15), np.int32),
+        query_action_ids=np.zeros(1, np.int32),
+        query_pair_counts=1,
+        legal_mask=np.ones(241, np.bool_),
+        action=0,
+        logprob=0.0,
+        value=0.0,
     )
     transition.value, transition.advantage = 0.25, 1.0
     result = ppo_buffer_metrics([transition])

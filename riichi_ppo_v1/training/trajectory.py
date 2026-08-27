@@ -10,18 +10,15 @@ import numpy as np
 
 @dataclass
 class Transition:
-    """一个 V18 决策点:Objective Facts + Atomic Snapshot + 每动作 Query 对。
+    """一个 V18 决策点:完整 Actor 当前局面序列 + 每动作 Query 元数据。
 
-    历史段(Objective Facts)、快照段与 query 段在 rollout 时一次性编码并随决策
-    一起保留;训练更新时按同段 padding 重组回模型输入。
+    Actor 输入在 rollout 时由 ``BatchedStateBridge.prepare`` 一次性编码并随
+    决策保留;训练更新时只按完整序列 padding,不再恢复旧 history/snapshot split。
     """
 
-    history_factors: np.ndarray
-    history_numeric: np.ndarray
-    history_length: int
-    snapshot_factors: np.ndarray
-    snapshot_numeric: np.ndarray
-    snapshot_length: int
+    actor_factors: np.ndarray
+    actor_numeric: np.ndarray
+    actor_length: int
     query_rows: np.ndarray
     query_action_ids: np.ndarray
     query_pair_counts: int
@@ -38,12 +35,8 @@ class Transition:
 
 
 def transition_sequence_length(transition: Transition) -> int:
-    """Actor 序列长度 = Objective Facts + Snapshot + 每动作 offense/defense 对。"""
-    return (
-        int(transition.history_length)
-        + int(transition.snapshot_length)
-        + 2 * int(transition.query_pair_counts)
-    )
+    """Actor 序列长度 = V18 当前局面完整 token 数。"""
+    return int(transition.actor_length)
 
 
 def finish_kyoku_gae(

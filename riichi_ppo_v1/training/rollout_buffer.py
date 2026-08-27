@@ -18,16 +18,15 @@ from typing import Iterator, Sequence
 import numpy as np
 import torch
 
+from ..model.encoding_protocol import QUERY_ROW_WIDTH, TOKEN_NUMERIC_WIDTH, TOKEN_ROW_WIDTH
 from ..model.schema import NUM_ACTIONS
 from .trajectory import Transition, transition_sequence_length
 
-# V18 各段的固定通道宽(与 model/action_query.py / snapshot.py / critic_features.py 一致)。
-_HISTORY_W = 10
-_NUMERIC_W = 8
-_SNAPSHOT_FACTOR_W = 4
-_SNAPSHOT_NUMERIC_W = 1
-_QUERY_W = 15
-_CRITIC_W = 10
+# V18 当前局面行宽与 critic 私有行宽共享 token schema。
+_ACTOR_W = TOKEN_ROW_WIDTH
+_NUMERIC_W = TOKEN_NUMERIC_WIDTH
+_QUERY_W = QUERY_ROW_WIDTH
+_CRITIC_W = TOKEN_ROW_WIDTH
 
 
 def _gather_padded(
@@ -74,11 +73,8 @@ class RolloutBuffer:
         count = len(transitions)
         self.size = count
 
-        self.history_lengths = np.array(
-            [int(item.history_length) for item in transitions], dtype=np.int64
-        )
-        self.snapshot_lengths = np.array(
-            [int(item.snapshot_length) for item in transitions], dtype=np.int64
+        self.actor_lengths = np.array(
+            [int(item.actor_length) for item in transitions], dtype=np.int64
         )
         self.query_pair_counts = np.array(
             [int(item.query_pair_counts) for item in transitions], dtype=np.int64
@@ -107,30 +103,16 @@ class RolloutBuffer:
         )
 
         # ---- 可变长字段:flat + offset ----
-        self.history_offsets, self.history_factors, _ = self._concat_var(
+        self.actor_offsets, self.actor_factors_flat, _ = self._concat_var(
             transitions,
-            lambda item: item.history_factors.astype(np.uint8, copy=False),
+            lambda item: item.actor_factors.astype(np.int32, copy=False),
         )
         (
-            self.history_numeric_offsets,
-            self.history_numeric_flat,
+            self.actor_numeric_offsets,
+            self.actor_numeric_flat,
             _,
         ) = self._concat_var(
-            transitions, lambda item: item.history_numeric.astype(np.float32, copy=False)
-        )
-        (
-            self.snapshot_factors_offsets,
-            self.snapshot_factors_flat,
-            _,
-        ) = self._concat_var(
-            transitions, lambda item: item.snapshot_factors.astype(np.uint8, copy=False)
-        )
-        (
-            self.snapshot_numeric_offsets,
-            self.snapshot_numeric_flat,
-            _,
-        ) = self._concat_var(
-            transitions, lambda item: item.snapshot_numeric.astype(np.float32, copy=False)
+            transitions, lambda item: item.actor_numeric.astype(np.float32, copy=False)
         )
         (
             self.query_rows_offsets,
@@ -192,7 +174,7 @@ class RolloutBuffer:
         result = cls.__new__(cls)
         result.size = sum(len(buffer) for buffer in buffers)
         fixed_fields = (
-            "history_lengths", "snapshot_lengths", "query_pair_counts",
+            "actor_lengths", "query_pair_counts",
             "critic_lengths", "sequence_lengths", "actions", "old_logprobs",
             "values", "rewards", "kyoku_rewards", "done", "advantages",
             "legal_mask",
@@ -202,10 +184,8 @@ class RolloutBuffer:
                 np.asarray(getattr(buffer, name)) for buffer in buffers
             ], axis=0))
         variable_fields = (
-            ("history_offsets", "history_factors", result.history_lengths),
-            ("history_numeric_offsets", "history_numeric_flat", result.history_lengths),
-            ("snapshot_factors_offsets", "snapshot_factors_flat", result.snapshot_lengths),
-            ("snapshot_numeric_offsets", "snapshot_numeric_flat", result.snapshot_lengths),
+            ("actor_offsets", "actor_factors_flat", result.actor_lengths),
+            ("actor_numeric_offsets", "actor_numeric_flat", result.actor_lengths),
             ("query_rows_offsets", "query_rows_flat", 2 * result.query_pair_counts),
             ("query_ids_offsets", "query_ids_flat", result.query_pair_counts),
             ("critic_offsets", "critic_factors_flat", result.critic_lengths),
@@ -245,7 +225,7 @@ class RolloutBuffer:
         result = self.__class__.__new__(self.__class__)
         result.size = len(idx)
         fixed_fields = (
-            "history_lengths", "snapshot_lengths", "query_pair_counts",
+            "actor_lengths", "query_pair_counts",
             "critic_lengths", "sequence_lengths", "actions", "old_logprobs",
             "values", "rewards", "kyoku_rewards", "done", "advantages",
             "legal_mask",
@@ -253,10 +233,8 @@ class RolloutBuffer:
         for name in fixed_fields:
             setattr(result, name, np.ascontiguousarray(getattr(self, name)[idx]))
         variable_fields = (
-            ("history_offsets", "history_factors"),
-            ("history_numeric_offsets", "history_numeric_flat"),
-            ("snapshot_factors_offsets", "snapshot_factors_flat"),
-            ("snapshot_numeric_offsets", "snapshot_numeric_flat"),
+            ("actor_offsets", "actor_factors_flat"),
+            ("actor_numeric_offsets", "actor_numeric_flat"),
             ("query_rows_offsets", "query_rows_flat"),
             ("query_ids_offsets", "query_ids_flat"),
             ("critic_offsets", "critic_factors_flat"),
@@ -297,47 +275,29 @@ class RolloutBuffer:
             raise ValueError("cannot collate an empty minibatch")
         batch = int(len(idx))
 
-        hist_lens = self.history_lengths[idx]
-        snap_lens = self.snapshot_lengths[idx]
+        actor_lens = self.actor_lengths[idx]
         pair_counts = self.query_pair_counts[idx]
         critic_lens = self.critic_lengths[idx]
 
-        max_history = int(hist_lens.max(initial=0))
-        max_snapshot = int(snap_lens.max(initial=0))
+        max_actor = int(actor_lens.max(initial=0))
         max_pairs = int(pair_counts.max(initial=0))
         max_critic = int(critic_lens.max(initial=0))
 
-        history_factors = _gather_padded(
-            self.history_factors,
-            self.history_offsets[idx],
-            hist_lens,
-            max_history,
+        actor_factors = _gather_padded(
+            self.actor_factors_flat,
+            self.actor_offsets[idx],
+            actor_lens,
+            max_actor,
             0,
-            width=_HISTORY_W,
+            width=_ACTOR_W,
         )
-        history_numeric = _gather_padded(
-            self.history_numeric_flat,
-            self.history_numeric_offsets[idx],
-            hist_lens,
-            max_history,
+        actor_numeric = _gather_padded(
+            self.actor_numeric_flat,
+            self.actor_numeric_offsets[idx],
+            actor_lens,
+            max_actor,
             0.0,
             width=_NUMERIC_W,
-        )
-        snapshot_factors = _gather_padded(
-            self.snapshot_factors_flat,
-            self.snapshot_factors_offsets[idx],
-            snap_lens,
-            max_snapshot,
-            0,
-            width=_SNAPSHOT_FACTOR_W,
-        )
-        snapshot_numeric = _gather_padded(
-            self.snapshot_numeric_flat,
-            self.snapshot_numeric_offsets[idx],
-            snap_lens,
-            max_snapshot,
-            0.0,
-            width=_SNAPSHOT_NUMERIC_W,
         )
         query_rows = _gather_padded(
             self.query_rows_flat,
@@ -367,8 +327,7 @@ class RolloutBuffer:
             critic_factors = np.zeros((batch, 0, _CRITIC_W), dtype=np.uint8)
 
         # 标量长度/动作使用 long,legal mask 使用 bool。
-        history_lengths = torch.from_numpy(hist_lens)
-        snapshot_lengths = torch.from_numpy(snap_lens)
+        actor_lengths = torch.from_numpy(actor_lens)
         query_pair_counts = torch.from_numpy(pair_counts)
         critic_lengths = torch.from_numpy(critic_lens)
         actions = torch.from_numpy(self.actions[idx])
@@ -377,17 +336,14 @@ class RolloutBuffer:
         legal = torch.from_numpy(self.legal_mask[idx])
 
         return {
-            "history_factors": torch.from_numpy(np.ascontiguousarray(history_factors)),
-            "history_numeric": torch.from_numpy(np.ascontiguousarray(history_numeric)),
-            "history_lengths": history_lengths,
-            "snapshot_factors": torch.from_numpy(np.ascontiguousarray(snapshot_factors)),
-            "snapshot_numeric": torch.from_numpy(np.ascontiguousarray(snapshot_numeric)),
-            "snapshot_lengths": snapshot_lengths,
+            "actor_factors": torch.from_numpy(np.ascontiguousarray(actor_factors)).long(),
+            "actor_numeric": torch.from_numpy(np.ascontiguousarray(actor_numeric)),
+            "actor_lengths": actor_lengths,
             "query_rows": torch.from_numpy(np.ascontiguousarray(query_rows)),
-            "query_action_ids": torch.from_numpy(np.ascontiguousarray(query_action_ids)),
+            "query_action_ids": torch.from_numpy(np.ascontiguousarray(query_action_ids)).long(),
             "query_pair_counts": query_pair_counts,
             "legal_mask": legal,
-            "critic_factors": torch.from_numpy(np.ascontiguousarray(critic_factors)),
+            "critic_factors": torch.from_numpy(np.ascontiguousarray(critic_factors)).long(),
             "critic_lengths": critic_lengths,
             "actions": actions,
             "old_logprobs": old_logprobs,

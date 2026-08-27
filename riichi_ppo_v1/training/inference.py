@@ -18,6 +18,7 @@ except ImportError:
     ray = None
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
+from ..model.encoding_protocol import QUERY_ROW_WIDTH, TOKEN_NUMERIC_WIDTH, TOKEN_ROW_WIDTH
 from ..model.schema import NUM_ACTIONS
 from .profiling import StageProfiler
 
@@ -47,10 +48,10 @@ def dispatch_reason(
 def collate_request_rows(
     requests: list[dict[str, Any]], group: list[tuple[int, int]],
 ) -> tuple[
-    np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
-    np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+    np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+    np.ndarray, np.ndarray, np.ndarray, np.ndarray,
 ]:
-    """把选中请求行按 V18 分段 host-padding,保留请求/行映射。"""
+    """把选中请求行按 V18 完整 Actor 序列 host-padding,保留请求/行映射。"""
     if not group:
         raise ValueError("cannot collate an empty inference group")
 
@@ -60,31 +61,24 @@ def collate_request_rows(
             dtype=dtype,
         )
 
-    history_lengths = column("history_lengths", np.int64)
-    snapshot_lengths = column("snapshot_lengths", np.int64)
+    actor_lengths = column("actor_lengths", np.int64)
     pair_counts = column("query_pair_counts", np.int64)
     critic_lengths = column("critic_lengths", np.int64)
-    max_history = int(history_lengths.max())
-    max_snapshot = int(snapshot_lengths.max())
+    max_actor = int(actor_lengths.max())
     max_pairs = int(pair_counts.max())
     max_critic = int(critic_lengths.max(initial=0))
     batch = len(group)
-    history_factors = np.zeros((batch, max_history, 10), dtype=np.uint8)
-    history_numeric = np.zeros((batch, max_history, 8), dtype=np.float32)
-    snapshot_factors = np.zeros((batch, max_snapshot, 4), dtype=np.uint8)
-    snapshot_numeric = np.zeros((batch, max_snapshot, 1), dtype=np.float32)
-    query_rows = np.zeros((batch, 2 * max_pairs, 15), dtype=np.int32)
+    actor_factors = np.zeros((batch, max_actor, TOKEN_ROW_WIDTH), dtype=np.int32)
+    actor_numeric = np.zeros((batch, max_actor, TOKEN_NUMERIC_WIDTH), dtype=np.float32)
+    query_rows = np.zeros((batch, 2 * max_pairs, QUERY_ROW_WIDTH), dtype=np.int32)
     query_action_ids = np.zeros((batch, max_pairs), dtype=np.int32)
-    critic_factors = np.zeros((batch, max_critic, 10), dtype=np.uint8)
+    critic_factors = np.zeros((batch, max_critic, TOKEN_ROW_WIDTH), dtype=np.uint8)
     legal = np.empty((batch, NUM_ACTIONS), dtype=np.bool_)
     for index, (request_index, row) in enumerate(group):
         request = requests[request_index]
-        history_length = int(history_lengths[index])
-        history_factors[index, :history_length] = request["history_factors"][row, :history_length]
-        history_numeric[index, :history_length] = request["history_numeric"][row, :history_length]
-        snapshot_length = int(snapshot_lengths[index])
-        snapshot_factors[index, :snapshot_length] = request["snapshot_factors"][row, :snapshot_length]
-        snapshot_numeric[index, :snapshot_length] = request["snapshot_numeric"][row, :snapshot_length]
+        actor_length = int(actor_lengths[index])
+        actor_factors[index, :actor_length] = request["actor_factors"][row, :actor_length]
+        actor_numeric[index, :actor_length] = request["actor_numeric"][row, :actor_length]
         pair_count = int(pair_counts[index])
         query_rows[index, : 2 * pair_count] = request["query_rows"][row, : 2 * pair_count]
         query_action_ids[index, :pair_count] = request["query_action_ids"][row, :pair_count]
@@ -93,12 +87,9 @@ def collate_request_rows(
             critic_factors[index, :critic_length] = request["critic_factors"][row, :critic_length]
         legal[index] = request["legal_mask"][row]
     return (
-        history_factors,
-        history_numeric,
-        history_lengths,
-        snapshot_factors,
-        snapshot_numeric,
-        snapshot_lengths,
+        actor_factors,
+        actor_numeric,
+        actor_lengths,
         query_rows,
         query_action_ids,
         pair_counts,
@@ -304,12 +295,9 @@ if ray is not None:
             worker_id: int,
             namespace: str,
             batch_indices: np.ndarray,
-            history_factors: np.ndarray,
-            history_numeric: np.ndarray,
-            history_lengths: np.ndarray,
-            snapshot_factors: np.ndarray,
-            snapshot_numeric: np.ndarray,
-            snapshot_lengths: np.ndarray,
+            actor_factors: np.ndarray,
+            actor_numeric: np.ndarray,
+            actor_lengths: np.ndarray,
             query_rows: np.ndarray,
             query_action_ids: np.ndarray,
             query_pair_counts: np.ndarray,
@@ -318,18 +306,16 @@ if ray is not None:
             critic_lengths: np.ndarray,
             greedy: bool,
         ) -> dict[str, Any]:
-            if len(batch_indices) != len(history_lengths) or history_factors.shape[0] != len(batch_indices):
-                raise ValueError("decision metadata batch dimensions differ")
             if (
-                snapshot_factors.shape[0] != len(batch_indices)
-                or snapshot_numeric.shape[0] != len(batch_indices)
+                len(batch_indices) != len(actor_lengths)
+                or actor_factors.shape[0] != len(batch_indices)
+                or actor_numeric.shape[0] != len(batch_indices)
             ):
-                raise ValueError("snapshot metadata batch dimensions differ")
+                raise ValueError("decision metadata batch dimensions differ")
             if (
                 query_rows.shape[0] != len(batch_indices)
                 or query_action_ids.shape[0] != len(batch_indices)
                 or len(query_pair_counts) != len(batch_indices)
-                or len(snapshot_lengths) != len(batch_indices)
             ):
                 raise ValueError("query metadata batch dimensions differ")
             if (
@@ -344,12 +330,9 @@ if ray is not None:
                 "worker_id": int(worker_id),
                 "namespace": str(namespace),
                 "batch_indices": batch_indices,
-                "history_factors": history_factors,
-                "history_numeric": history_numeric,
-                "history_lengths": history_lengths,
-                "snapshot_factors": snapshot_factors,
-                "snapshot_numeric": snapshot_numeric,
-                "snapshot_lengths": snapshot_lengths,
+                "actor_factors": actor_factors,
+                "actor_numeric": actor_numeric,
+                "actor_lengths": actor_lengths,
                 "query_rows": query_rows,
                 "query_action_ids": query_action_ids,
                 "query_pair_counts": query_pair_counts,
@@ -455,22 +438,17 @@ if ray is not None:
                 return
             with self.profiler.stage("inference/host_collate"):
                 (
-                    history_factors,
-                    history_numeric,
-                    history_lengths,
-                    snapshot_factors,
-                    snapshot_numeric,
-                    snapshot_lengths,
-                    query_rows,
+                    actor_factors,
+                    actor_numeric,
+                    actor_lengths,
+                    _query_rows,
                     query_action_ids,
                     pair_counts,
                     critic_factors,
                     critic_lengths,
                     legal,
                 ) = collate_request_rows(requests, group)
-            sequence_tokens = (
-                history_lengths + snapshot_lengths + 2 * pair_counts
-            )
+            sequence_tokens = actor_lengths
             max_tokens = int(sequence_tokens.max())
             effective_input_tokens = int(sequence_tokens.sum())
             padded_input_tokens = len(group) * max_tokens
@@ -484,13 +462,9 @@ if ray is not None:
                 device_tensors = {
                     name: torch.as_tensor(value, device=self.device)
                     for name, value in (
-                        ("history_factors", history_factors.astype(np.int64)),
-                        ("history_numeric", history_numeric),
-                        ("history_lengths", history_lengths),
-                        ("snapshot_factors", snapshot_factors.astype(np.int64)),
-                        ("snapshot_numeric", snapshot_numeric),
-                        ("snapshot_lengths", snapshot_lengths),
-                        ("query_rows", query_rows.astype(np.int64)),
+                        ("actor_factors", actor_factors.astype(np.int64)),
+                        ("actor_numeric", actor_numeric),
+                        ("actor_lengths", actor_lengths),
                         ("query_action_ids", query_action_ids.astype(np.int64)),
                         ("pair_counts", pair_counts),
                         ("critic_factors", critic_factors.astype(np.int64)),
@@ -515,13 +489,9 @@ if ray is not None:
                     enabled=torch.cuda.is_bf16_supported(),
                 ):
                     output = model(
-                        device_tensors["history_factors"],
-                        device_tensors["history_numeric"],
-                        device_tensors["history_lengths"],
-                        device_tensors["snapshot_factors"],
-                        device_tensors["snapshot_numeric"],
-                        device_tensors["snapshot_lengths"],
-                        device_tensors["query_rows"],
+                        device_tensors["actor_factors"],
+                        device_tensors["actor_numeric"],
+                        device_tensors["actor_lengths"],
                         device_tensors["query_action_ids"],
                         device_tensors["pair_counts"],
                         device_tensors["legal"],

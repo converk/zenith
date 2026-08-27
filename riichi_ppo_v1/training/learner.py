@@ -37,8 +37,8 @@ def validate_fresh_model_checkpoint_contract(payload: dict[str, Any]) -> None:
     if not isinstance(payload, dict) or not isinstance(payload.get("model"), dict):
         raise RuntimeError("V18 PPO requires a checkpoint with model weights")
     raw_config = payload.get("model_config")
-    if not isinstance(raw_config, dict) or raw_config.get("policy_head_type") != "isolated_action_query":
-        raise RuntimeError("V18 PPO requires an isolated_action_query model checkpoint")
+    if not isinstance(raw_config, dict) or raw_config.get("policy_head_type") != "current_state_snapshot":
+        raise RuntimeError("V18 PPO requires a current_state_snapshot model checkpoint")
 
 
 def scheduled_learning_rate(
@@ -425,13 +425,9 @@ class PPOLearner:
         """统一走 ``__call__`` 分发,DDP 包装后 forward 才能触发梯度同步。"""
         model = self.model_ddp if self.model_ddp is not None else self.model
         return model(
-            history_factors=batch["history_factors"],
-            history_numeric=batch["history_numeric"],
-            history_lengths=batch["history_lengths"],
-            snapshot_factors=batch["snapshot_factors"],
-            snapshot_numeric=batch["snapshot_numeric"],
-            snapshot_lengths=batch["snapshot_lengths"],
-            query_rows=batch["query_rows"],
+            actor_factors=batch["actor_factors"],
+            actor_numeric=batch["actor_numeric"],
+            actor_lengths=batch["actor_lengths"],
             query_action_ids=batch["query_action_ids"],
             query_pair_counts=batch["query_pair_counts"],
             legal_mask=batch["legal_mask"],
@@ -614,13 +610,9 @@ class PPOLearner:
                             assert self.reference_model is not None
                             with torch.no_grad():
                                 reference_output = self.reference_model(
-                                    batch["history_factors"],
-                                    batch["history_numeric"],
-                                    batch["history_lengths"],
-                                    batch["snapshot_factors"],
-                                    batch["snapshot_numeric"],
-                                    batch["snapshot_lengths"],
-                                    batch["query_rows"],
+                                    batch["actor_factors"],
+                                    batch["actor_numeric"],
+                                    batch["actor_lengths"],
                                     batch["query_action_ids"],
                                     batch["query_pair_counts"],
                                     legal_mask,

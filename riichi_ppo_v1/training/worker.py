@@ -542,12 +542,9 @@ if ray is not None:
                 batch_indices=np.asarray(
                     [decision.batch_index for decision in decisions], dtype=np.int64,
                 ),
-                history_factors=batch.history_factors,
-                history_numeric=batch.history_numeric,
-                history_lengths=batch.history_lengths,
-                snapshot_factors=batch.snapshot_factors,
-                snapshot_numeric=batch.snapshot_numeric,
-                snapshot_lengths=batch.snapshot_lengths,
+                actor_factors=batch.actor_factors,
+                actor_numeric=batch.actor_numeric,
+                actor_lengths=batch.actor_lengths,
                 query_rows=batch.query_rows,
                 query_action_ids=batch.query_action_ids,
                 query_pair_counts=batch.query_pair_counts,
@@ -557,12 +554,9 @@ if ray is not None:
                 greedy=greedy,
             )
             return request, {
-                "history_factors": batch.history_factors,
-                "history_numeric": batch.history_numeric,
-                "history_lengths": batch.history_lengths,
-                "snapshot_factors": batch.snapshot_factors,
-                "snapshot_numeric": batch.snapshot_numeric,
-                "snapshot_lengths": batch.snapshot_lengths,
+                "actor_factors": batch.actor_factors,
+                "actor_numeric": batch.actor_numeric,
+                "actor_lengths": batch.actor_lengths,
                 "query_rows": batch.query_rows,
                 "query_action_ids": batch.query_action_ids,
                 "query_pair_counts": batch.query_pair_counts,
@@ -588,17 +582,13 @@ if ray is not None:
             if record:
                 with self.profiler.stage("rollout/transition_materialize"):
                     for row, decision in enumerate(decisions):
-                        history_length = int(prepared["history_lengths"][row])
-                        snapshot_length = int(prepared["snapshot_lengths"][row])
+                        actor_length = int(prepared["actor_lengths"][row])
                         pair_count = int(prepared["query_pair_counts"][row])
                         critic_length = int(prepared["critic_lengths"][row])
                         transitions[row] = Transition(
-                            prepared["history_factors"][row, :history_length].copy(),
-                            prepared["history_numeric"][row, :history_length].copy(),
-                            history_length,
-                            prepared["snapshot_factors"][row, :snapshot_length].copy(),
-                            prepared["snapshot_numeric"][row, :snapshot_length].copy(),
-                            snapshot_length,
+                            prepared["actor_factors"][row, :actor_length].copy(),
+                            prepared["actor_numeric"][row, :actor_length].copy(),
+                            actor_length,
                             prepared["query_rows"][row, : 2 * pair_count].copy(),
                             prepared["query_action_ids"][row, :pair_count].copy(),
                             pair_count,
