@@ -258,13 +258,18 @@ class SemanticMetrics:
         seen: set[str] = set()
         for source in events:
             for raw in source:
-                if raw in seen:
-                    continue
-                seen.add(raw)
-                try:
-                    rows.append(json.loads(raw))
-                except (TypeError, ValueError):
-                    continue
+                if isinstance(raw, str):
+                    if raw in seen:
+                        continue
+                    seen.add(raw)
+                    try:
+                        rows.append(json.loads(raw))
+                    except (TypeError, ValueError):
+                        continue
+                else:
+                    # 调用方(worker/1v3)已解析过的 dict 行直接复用,避免
+                    # 同一局事件被 json.loads 两次。
+                    rows.append(raw)
         horas = [row for row in rows if row.get("type") == "hora"]
         is_draw = any(row.get("type") == "ryukyoku" for row in rows)
         if discard_count is None:
