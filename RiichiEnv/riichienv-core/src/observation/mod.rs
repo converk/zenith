@@ -46,6 +46,11 @@ pub struct Observation {
 
     pub(crate) events: Vec<String>,
 
+    /// 最近一次可供吃碰杠荣响应的公开事件 actor(live 环境由 GameState 增量
+    /// 跟踪;增量事件在响应窗口跨多轮时可能耗尽,因此单独携带该字段)。
+    #[serde(default)]
+    pub offer_actor: Option<u8>,
+
     /// Pre-computed progression tuples (set by GameState for O(1) access).
     /// When Some, encode_seq_progression() returns this directly.
     #[serde(skip)]
@@ -74,6 +79,9 @@ pub struct Observation {
 impl Observation {
     /// 返回最近一次可供吃碰杠荣响应的公开事件 actor。
     pub fn last_offer_actor(&self) -> Option<u8> {
+        if let Some(actor) = self.offer_actor {
+            return Some(actor);
+        }
         self.events.iter().rev().find_map(|event| {
             let value = serde_json::from_str::<serde_json::Value>(event).ok()?;
             matches!(value["type"].as_str(), Some("dahai") | Some("kakan"))
@@ -109,6 +117,7 @@ impl Observation {
         last_tedashis: [Option<u8>; 4],
         last_discard: Option<u32>,
         drawn_tile: Option<u8>,
+        offer_actor: Option<u8>,
     ) -> Self {
         let hands_u32 = hands.map(|h| h.into_iter().map(|x| x as u32).collect());
         let discards_u32 = discards.map(|d| d.into_iter().map(|x| x as u32).collect());
@@ -142,6 +151,7 @@ impl Observation {
             last_tedashis,
             last_discard,
             drawn_tile,
+            offer_actor,
             privileged_hands: None,
         }
     }
@@ -237,6 +247,7 @@ mod tests {
             false,
             [None, None, None, None],
             [None, None, None, None],
+            None,
             None,
             None,
         )

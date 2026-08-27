@@ -46,6 +46,9 @@ pub struct GameState {
     pub last_discard: Option<(u8, u8)>,
     pub current_claims: HashMap<u8, Vec<Action>>,
     pub pending_kan: Option<(u8, Action)>,
+    /// 最近一次 dahai/kakan 的公开事件 actor;增量事件在响应窗口跨多轮时会
+    /// 耗尽,Observation 的 ``last_offer_actor`` 需要独立的增量跟踪。
+    pub offer_actor: Option<u8>,
 
     pub oya: u8,
     pub honba: u8,
@@ -123,6 +126,7 @@ impl GameState {
             last_discard: None,
             current_claims: HashMap::new(),
             pending_kan: None,
+            offer_actor: None,
             oya: 0,
             honba: 0,
             kyoku_idx: 0,
@@ -264,6 +268,7 @@ impl GameState {
             self.last_tedashis,
             self.last_discard.map(|(tile, _pid)| tile as u32),
             self.drawn_tile,
+            self.offer_actor,
         );
         obs.tsumogiri_flags = std::array::from_fn(|player| {
             self.players[player]
@@ -594,6 +599,7 @@ impl GameState {
                         }
 
                         // Log Kakan immediately (before Chankan check)
+                        self.offer_actor = Some(pid);
                         if !self.skip_mjai_logging {
                             let mut ev = serde_json::Map::new();
                             ev.insert("type".to_string(), Value::String("kakan".to_string()));
@@ -1393,6 +1399,8 @@ impl GameState {
             self._reveal_kan_dora();
         }
 
+        self.offer_actor = Some(pid);
+
         if !self.skip_mjai_logging {
             let mut ev = serde_json::Map::new();
             ev.insert("type".to_string(), Value::String("dahai".to_string()));
@@ -1766,6 +1774,7 @@ impl GameState {
         self.pending_oya_won = false;
         self.pending_is_draw = false;
         self.last_discard = None;
+        self.offer_actor = None;
         self.win_results.clear();
         self.last_win_results.clear();
         self.round_end_scores = None;

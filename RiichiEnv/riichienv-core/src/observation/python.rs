@@ -14,7 +14,7 @@ use super::helpers::get_next_tile;
 impl Observation {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (player_id, hands, melds, discards, dora_indicators, scores, riichi_declared, legal_actions, events, honba, riichi_sticks, round_wind, oya, kyoku_index, waits, is_tenpai, riichi_sutehais, last_tedashis, last_discard, riichi_accepted, riichi_declaration_indices, missed_agari_doujun, missed_agari_riichi, tiles_left, tsumogiri_flags, drawn_tile=None))]
+    #[pyo3(signature = (player_id, hands, melds, discards, dora_indicators, scores, riichi_declared, legal_actions, events, honba, riichi_sticks, round_wind, oya, kyoku_index, waits, is_tenpai, riichi_sutehais, last_tedashis, last_discard, riichi_accepted, riichi_declaration_indices, missed_agari_doujun, missed_agari_riichi, tiles_left, tsumogiri_flags, drawn_tile=None, offer_actor=None))]
     pub fn py_new(
         player_id: u8,
         hands: Vec<Vec<u8>>,
@@ -42,6 +42,7 @@ impl Observation {
         tiles_left: u8,
         tsumogiri_flags: Vec<Vec<bool>>,
         drawn_tile: Option<u8>,
+        offer_actor: Option<u8>,
     ) -> Self {
         let hands: [Vec<u8>; 4] = hands.try_into().expect("expected 4 hands");
         let melds: [Vec<Meld>; 4] = melds.try_into().expect("expected 4 melds");
@@ -90,6 +91,7 @@ impl Observation {
             last_tedashis,
             last_discard,
             drawn_tile,
+            offer_actor,
         );
         observation.tsumogiri_flags = tsumogiri_flags;
         observation

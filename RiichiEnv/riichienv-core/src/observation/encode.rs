@@ -622,6 +622,7 @@ mod tests {
             [None; 4],  // last_tedashis
             None,       // last_discard
             None,       // drawn_tile
+            None,       // offer_actor
         )
     }
 
