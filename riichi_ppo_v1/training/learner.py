@@ -172,7 +172,13 @@ def clip_branch_grad_norms(
     branch_parameters: dict[str, list[nn.Parameter]],
     max_norms: dict[str, float],
 ) -> dict[str, torch.Tensor]:
-    """独立裁剪 actor/shared/critic,返回每个分支的裁剪前后与缩放比例。"""
+    """独立裁剪 actor/shared/critic,返回每个分支的裁剪前后与缩放比例。
+
+    裁剪用 ``clip_grad_norm_(..., foreach=True)`` 的融合内核;post 范数由
+    代数恒等式 ``post = pre × clamp(max/(pre+1e-6), 1)`` 直接导出(与
+    clip_grad_norm_ 内部实际应用的缩放系数一致),免去逐参数二次范数扫描;
+    整函数无 ``.item()``/``bool()`` 的 GPU→CPU 同步点。
+    """
     device = next(
         parameter.device
         for parameters in branch_parameters.values()
@@ -182,20 +188,17 @@ def clip_branch_grad_norms(
     for branch in ("actor", "shared", "critic"):
         parameters = branch_parameters[branch]
         max_norm = float(max_norms[branch])
-        pre_clip = nn.utils.clip_grad_norm_(parameters, max_norm)
-        post_clip = torch.zeros((), device=device)
-        for parameter in parameters:
-            if parameter.grad is not None:
-                post_clip.add_(parameter.grad.detach().float().square().sum())
-        post_clip = post_clip.sqrt()
-        scale = torch.ones((), device=device)
-        if float(pre_clip.detach()) > 0.0:
-            scale = (post_clip / pre_clip.to(device=device)).clamp(max=1.0)
-        metrics[f"grad_norm_{branch}_pre_clip"] = pre_clip.to(device=device)
+        pre_clip = nn.utils.clip_grad_norm_(parameters, max_norm, foreach=True)
+        pre_clip_device = pre_clip.to(device=device)
+        # 与 clip_grad_norm_ 内部一致的缩放系数(max/(total+1e-6),clamp 到 1);
+        # pre==0 时系数被 clamp 为 1,post=0,无需分支判断。
+        scale = (max_norm / (pre_clip_device.detach() + 1e-6)).clamp(max=1.0)
+        post_clip = pre_clip_device * scale
+        metrics[f"grad_norm_{branch}_pre_clip"] = pre_clip_device
         metrics[f"grad_norm_{branch}_post_clip"] = post_clip
         metrics[f"grad_norm_{branch}_clip_scale"] = scale
         metrics[f"grad_norm_{branch}_clipped"] = (
-            pre_clip.to(device=device) > max_norm
+            pre_clip_device > max_norm
         ).float()
     return metrics
 
