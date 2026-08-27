@@ -847,15 +847,13 @@ class PPOLearner:
                         )
                     evaluated_loss = loss
                 loss_is_finite = torch.isfinite(evaluated_loss)
-                # loss_detail 只在非有限(异常)分支才物化,避免每个 minibatch
-                # 4 次 mean().item() 的 GPU→CPU 同步。
+                loss_detail = (
+                    f"policy={float(policy_loss_values.mean())} "
+                    f"value={float(value_loss_values_.mean())} "
+                    f"entropy={float(entropy_values.mean())} "
+                    f"sft_kl={float(sft_reference_kl_values.mean())}"
+                )
                 if self.world_size == 1 and not loss_is_finite:
-                    loss_detail = (
-                        f"policy={float(policy_loss_values.mean())} "
-                        f"value={float(value_loss_values_.mean())} "
-                        f"entropy={float(entropy_values.mean())} "
-                        f"sft_kl={float(sft_reference_kl_values.mean())}"
-                    )
                     raise RuntimeError("non-finite PPO loss: " + loss_detail)
                 with self._gpu_stage("update/backward"):
                     # Gradient accumulation:配置 >1 时,loss 除以累积步数后
@@ -894,12 +892,6 @@ class PPOLearner:
                     )
                     dist.all_reduce(finite, op=dist.ReduceOp.MIN)
                     if finite.item() == 0.0:
-                        loss_detail = (
-                            f"policy={float(policy_loss_values.mean())} "
-                            f"value={float(value_loss_values_.mean())} "
-                            f"entropy={float(entropy_values.mean())} "
-                            f"sft_kl={float(sft_reference_kl_values.mean())}"
-                        )
                         raise RuntimeError(
                             "non-finite PPO loss on one of the DDP ranks: "
                             + loss_detail
