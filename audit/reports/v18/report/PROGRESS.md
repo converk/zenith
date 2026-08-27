@@ -641,3 +641,25 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
 **最终实测（2×L20, batch 512, DDP 双卡）**：旧 02cd75e 53ms/步；当前 **~65ms/步**
 （data 3 + fwd 19 + bwd 42 + opt 1）；经 precompute/encode 未改动，数据集无需重生成。
 要生效需重启训练（`validate_semantics:false`、嵌入/校验优化均在进程启动时加载）。
+
+## V18 PPO 训练性能优化（P0-1/P0-2/P1-4 回退/P1-5，2026-08-27）
+
+按 `audit/reports/v18/design/V18 PPO训练性能优化审查提示词.md` 实施并 A/B 验证：
+
+- **P0-1**：RolloutBuffer 因子行 uint8 压缩 + `_gather_padded` 单次分配 + collate 直出 int64
+  （`training/rollout_buffer.py`）——`return_array_bytes` 10.2GB→**4.55GB（−55%）**、
+  `transition_assembly_s` 2.93→1.30s。
+- **P0-2**：learner collate 预取双缓冲线程（防死锁设计,`update_collate_prefetch` 默认 True;
+  `training/learner.py`）+ learner 免 `query_rows` H2D。
+- **P1-5**：推理 `collate_request_rows` 直出 int64 + pinned 缓冲复用 + `non_blocking` H2D
+  （`training/inference.py`）。
+- **P1-4（评估并回退）**：dummy 0 系数接入 policy 项 + `find_unused_parameters=False`
+  使 bootstrap backward 104.2→248.4s（2.3×）,update_wall 251.5→401.4s——**REVERT**,
+  列为 P2 观察项（动态重建 DDP 的 hook 风险中）。
+- **A/B（512 半庄、mb2048、target_kl=0、update_epochs=4、双卡、3 轮）**：
+  update_wall 251.5→227.2s（−9.7%）、187.3→162.0s（−13.5%）、374.3→351.1s（−6.2%）;
+  sps +7.9% / +11.8% / +5.4%。第 3 轮受机器外部负载影响,以第 1/2 轮为准。
+- **回归**：`pytest riichi_ppo_v1/tests` 201 passed（new 4 tests 含预取/uint8）;
+  `cargo test --workspace` 141 passed;`pytest RiichiEnv/tests` 284 passed, 2 skipped;
+  `git diff --check` 通过。详见
+  `audit/reports/v18/report/V18_PPO训练性能优化实施记录.md`。

@@ -8,9 +8,12 @@ early-stop/KL 判定都在进程组内同步。
 from __future__ import annotations
 
 import os
+import queue as _queue
 import random
+import threading
+import time
 from contextlib import contextmanager
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -371,6 +374,54 @@ def transfer_batch_to_device(
         }
 
 
+class _PrefetchAborted(Exception):
+    """collate 预取被正常停止信号中断(early-stop 路径,非错误)。"""
+
+
+@dataclass
+class _PrefetchState:
+    """一次 update 的 collate 预取状态(线程/队列/计时)。"""
+
+    queue: _queue.Queue[Any]
+    stop_event: threading.Event
+    finished_event: threading.Event
+    errors: list[BaseException]
+    times: list[float]
+    thread: threading.Thread | None = None
+
+
+def _prefetch_collate_worker(
+    transitions: RolloutBuffer,
+    epoch_plans: list[tuple[np.ndarray, ...]],
+    state: _PrefetchState,
+) -> None:
+    """预取线程:按主线程预计算的 minibatch 顺序逐批 collate,入有界队列。
+
+    只做纯 CPU numpy 工作,不触碰 CUDA;``put`` 带超时并反复检查
+    ``stop_event``,consumer 提前停止时线程在 ~0.2s 内自行退出,不会永久挂起。
+    """
+    counter = 0
+    try:
+        for plan in epoch_plans:
+            for indices in plan:
+                if state.stop_event.is_set():
+                    return
+                started = time.perf_counter()
+                host_batch = transitions.collate(indices)
+                state.times[counter] = time.perf_counter() - started
+                counter += 1
+                while not state.stop_event.is_set():
+                    try:
+                        state.queue.put((indices, host_batch), timeout=0.2)
+                        break
+                    except _queue.Full:
+                        continue
+    except BaseException as exc:  # noqa: BLE001 - 交由主线程统一抛出
+        state.errors.append(exc)
+    finally:
+        state.finished_event.set()
+
+
 class PPOLearner:
     """V18 Actor-Critic 的 PPO 优化器(单卡或双卡 DDP)。"""
 
@@ -450,10 +501,10 @@ class PPOLearner:
                 self.model,
                 device_ids=[self.device.index],
                 broadcast_buffers=False,
-                # 移除 Q 后必须允许未使用参数:bootstrap 期只训 critic(actor/
-                # shared 不进 loss);DDP
-                # 会在每次 backward 额外扫描未使用参数,模型仅约 3M 参数,
-                # 开销可忽略。
+                # bootstrap 期只训 critic(actor/shared 不进 loss),必须
+                # find_unused_parameters=True;动态重建 DDP 关闭该旗标存在
+                # 旧 hook 清理风险,列为 P2 观察项(实测 dummy 0 系数接入为
+                # 负优化,见 bootstrap loss 注释)。
                 find_unused_parameters=True,
             )
             if self.world_size > 1
@@ -466,6 +517,7 @@ class PPOLearner:
         self.update_batch_mode = str(hyperparameters.get("update_batch_mode", "streaming")).lower()
         if self.update_batch_mode not in {"streaming", "auto"}:
             raise ValueError("update_batch_mode must be one of streaming or auto")
+        self.collate_prefetch = bool(hyperparameters.get("update_collate_prefetch", True))
         self.value_target_normalization = str(
             hyperparameters.get("value_target_normalization", "batch_std")
         ).lower()
@@ -553,6 +605,66 @@ class PPOLearner:
             critic_public_grad_scale=self.critic_public_grad_scale,
             critic_private_embedding_grad_scale=self.critic_private_embedding_grad_scale,
         )
+
+    def _start_collate_prefetch(
+        self,
+        transitions: RolloutBuffer,
+        epoch_plans: list[tuple[np.ndarray, ...]],
+    ) -> _PrefetchState:
+        """启动本 update 的 collate 预取线程(每个 update 新建,不跨 update 复用)。"""
+        flat_size = sum(len(plan) for plan in epoch_plans)
+        state = _PrefetchState(
+            queue=_queue.Queue(maxsize=2),
+            stop_event=threading.Event(),
+            finished_event=threading.Event(),
+            errors=[],
+            times=[0.0] * flat_size,
+        )
+        thread = threading.Thread(
+            target=_prefetch_collate_worker,
+            args=(transitions, epoch_plans, state),
+            name="riichi-ppo-collate-prefetch",
+            daemon=True,
+        )
+        state.thread = thread
+        thread.start()
+        return state
+
+    def _prefetch_get(
+        self,
+        state: _PrefetchState,
+    ) -> tuple[np.ndarray, dict[str, torch.Tensor]]:
+        """从预取队列取下一批;early-stop 中断或线程异常时安全退出/抛出。"""
+        while True:
+            if state.stop_event.is_set():
+                raise _PrefetchAborted()
+            try:
+                return state.queue.get(timeout=0.2)
+            except _queue.Empty:
+                if state.finished_event.is_set():
+                    if state.errors:
+                        raise state.errors[0]
+                    raise RuntimeError(
+                        "collate prefetch producer ended before all minibatches"
+                    )
+                continue
+
+    def _stop_collate_prefetch(self, state: _PrefetchState) -> None:
+        """停止预取线程并合并计时;early-stop/异常路径均安全。"""
+        state.stop_event.set()
+        # 排空队列,解除 producer 可能阻塞的 put。
+        try:
+            while True:
+                state.queue.get_nowait()
+        except _queue.Empty:
+            pass
+        assert state.thread is not None
+        state.thread.join(timeout=5.0)
+        if state.thread.is_alive():
+            raise RuntimeError("collate prefetch thread did not stop within 5s")
+        for duration in state.times:
+            if duration > 0.0:
+                self.profiler.add("update/collate_soa_gather", duration)
 
     def update(
         self,
@@ -725,282 +837,318 @@ class PPOLearner:
         executed_padded_input_tokens = 0
         running_kl_sum: torch.Tensor | None = None
         running_kl_count = 0
-        for _ in range(configured_epochs):
-            epochs_started += 1
-            with self.profiler.stage("update/length_bucket"):
-                minibatches = transitions.bucketed_minibatches(
-                    minibatch_size,
-                    rng=rng,
-                    bucket_window_multiplier=int(
-                        self.hp.get("bucket_window_multiplier", 1)
-                    ),
-                )
-            for batch_number, indices in enumerate(minibatches, start=1):
-                with self.profiler.stage("update/collate_soa_gather"):
-                    host_batch = transitions.collate(indices)
-                batch = transfer_batch_to_device(host_batch, self.device, self.profiler)
-                legal_mask = batch["legal_mask"]
-                actions = batch["actions"]
-                old_logprobs = batch["old_logprobs"]
-                adv = batch["advantages"]
-                batch_returns = torch.as_tensor(returns[indices], device=self.device)
-                executed_samples += len(indices)
-                executed_tokens += int(transitions.sequence_lengths[indices].sum())
-                executed_padded_input_tokens += int(
-                    len(indices) * int(transitions.sequence_lengths[indices].max())
-                )
-                with self._gpu_stage("update/model_forward"):
-                    with torch.autocast(
-                        device_type=self.device.type,
-                        dtype=torch.bfloat16,
-                        enabled=self.use_bf16,
-                    ):
-                        output = self._model_forward(
-                            batch, critic_bootstrap=critic_bootstrap,
+        # collate 预取:先把全部 epoch 的 minibatch 计划在主线程预计算(与串行
+        # 路径同一 RNG 序列,保证分桶可复现),再交由后台线程按序 collate,与
+        # GPU forward/backward 重叠;``update_collate_prefetch`` 默认开启。
+        epoch_plans: list[tuple[np.ndarray, ...]] | None = None
+        prefetch_state: _PrefetchState | None = None
+        if self.collate_prefetch:
+            epoch_plans = []
+            for _ in range(configured_epochs):
+                with self.profiler.stage("update/length_bucket"):
+                    epoch_plans.append(
+                        transitions.bucketed_minibatches(
+                            minibatch_size,
+                            rng=rng,
+                            bucket_window_multiplier=int(
+                                self.hp.get("bucket_window_multiplier", 1)
+                            ),
                         )
-                        reference_output = None
-                        if sft_kl_coef > 0.0:
-                            assert self.reference_model is not None
-                            with torch.no_grad():
-                                reference_output = self.reference_model(
-                                    batch["actor_factors"],
-                                    batch["actor_numeric"],
-                                    batch["actor_lengths"],
-                                    batch["query_action_ids"],
-                                    batch["query_pair_counts"],
-                                    legal_mask,
-                                    policy_only=True,
-                                )
-                        # PPO 数值路径离开模型前统一提升为 FP32。
-                        logits = output["policy_logits"].float()
-                        logprobabilities = F.log_softmax(logits, dim=-1)
-                        probabilities = logprobabilities.exp()
-                with self._gpu_stage("update/distribution_and_loss"):
-                    logprob = logprobabilities.gather(1, actions[:, None]).squeeze(1)
-                    old_logprobs = old_logprobs.float()
-                    adv = adv.float()
-                    ratio = (logprob - old_logprobs).exp()
-                    clipped = ratio.clamp(
-                        1 - float(self.hp["ppo_clip"]), 1 + float(self.hp["ppo_clip"]),
-                    ) * adv
-                    policy_loss_values = -torch.minimum(ratio * adv, clipped)
-                    value = output["value"].float()
-                    normalized_value, normalized_returns = normalize_value_targets(
-                        value,
-                        batch_returns,
-                        mode=self.value_target_normalization,
-                        mean=return_mean,
-                        std=return_std,
-                        std_floor=self.value_target_std_floor,
                     )
-                    value_loss_values_ = value_loss_values(
-                        normalized_value, normalized_returns, str(self.hp.get("value_loss", "huber")),
-                    )
-                    raw_value_loss = value_loss_values(
-                        value, batch_returns, str(self.hp.get("value_loss", "huber")),
-                    )
-                    # 非法动作 logits 为 -inf:必须在乘法前把 log_prob 与概率
-                    # 都替换为 0。仅在乘积上 masked_fill 只救前向,反向仍会因
-                    # -inf × 0 回传 NaN 梯度。
-                    entropy_values, normalized_entropy_values = policy_entropy_values(
-                        logprobabilities, probabilities, legal_mask,
-                    )
-                    if reference_output is None:
-                        sft_reference_kl_values = torch.zeros_like(policy_loss_values)
-                    else:
-                        sft_reference_kl_values = categorical_kl_values(
-                            output["policy_logits"],
-                            reference_output["policy_logits"],
+            prefetch_state = self._start_collate_prefetch(transitions, epoch_plans)
+        try:
+            for epoch_index in range(configured_epochs):
+                epochs_started += 1
+                if prefetch_state is None:
+                    with self.profiler.stage("update/length_bucket"):
+                        minibatches = transitions.bucketed_minibatches(
+                            minibatch_size,
+                            rng=rng,
+                            bucket_window_multiplier=int(
+                                self.hp.get("bucket_window_multiplier", 1)
+                            ),
                         )
-                    if critic_bootstrap:
-                        # 预热期只训 critic:policy/entropy/KL 不进入损失,
-                        # actor/shared 学习率同时为 0。
-                        entropy_loss_values = entropy_values
-                        loss = value_coef * value_loss_values_.mean()
-                    else:
-                        entropy_loss_values = normalized_entropy_values
-                        loss = (
-                            policy_loss_values.mean()
-                            + value_coef * value_loss_values_.mean()
-                            - entropy_coef * entropy_loss_values.mean()
-                            + sft_kl_coef * sft_reference_kl_values.mean()
-                        )
-                    evaluated_loss = loss
-                loss_is_finite = torch.isfinite(evaluated_loss)
-                loss_detail = (
-                    f"policy={float(policy_loss_values.mean())} "
-                    f"value={float(value_loss_values_.mean())} "
-                    f"entropy={float(entropy_values.mean())} "
-                    f"sft_kl={float(sft_reference_kl_values.mean())}"
-                )
-                if self.world_size == 1 and not loss_is_finite:
-                    raise RuntimeError("non-finite PPO loss: " + loss_detail)
-                with self._gpu_stage("update/backward"):
-                    # Gradient accumulation:配置 >1 时,loss 除以累积步数后
-                    # 反向,只在最后一累积步执行梯度裁剪 + optimizer.step,
-                    # 保持 global effective batch ≈ minibatch_size × 累积步数。
-                    accumulation_steps = self.gradient_accumulation_steps
-                    planned_minibatches = (
-                        configured_epochs * planned_minibatches_per_epoch
-                    )
-                    actual_group_size = accumulation_group_size(
-                        planned_minibatches,
-                        accumulation_steps,
-                        updates,
-                    )
-                    scaled_loss = evaluated_loss / float(max(actual_group_size, 1))
-                    scaled_loss.backward()
-                    # ``updates`` 为累计已处理 minibatch 数(从 0 开始),
-                    # 每组 accumulation_steps 的最后一步才 step;最后一个
-                    # minibatch 无论是否整组都强制 step,避免挂起梯度丢失。
-                    step_within_group = (
-                        (updates + 1) % accumulation_steps == 0
-                        if accumulation_steps > 1
-                        else True
-                    )
-                    is_last_batch = updates + 1 == planned_minibatches
-                    should_step = (
-                        accumulation_steps <= 1
-                        or step_within_group
-                        or is_last_batch
-                    )
-                if self.world_size > 1:
-                    # 必须等所有 rank 完成 backward 后再做全局有限性判定,
-                    # 避免单 rank 提前异常导致 NCCL collective 失配。
-                    finite = torch.tensor(
-                        float(loss_is_finite), device=self.device,
-                    )
-                    dist.all_reduce(finite, op=dist.ReduceOp.MIN)
-                    if finite.item() == 0.0:
-                        raise RuntimeError(
-                            "non-finite PPO loss on one of the DDP ranks: "
-                            + loss_detail
-                        )
-                if should_step:
-                    with self._gpu_stage("update/gradient_clip"):
-                        branch_clip_metrics = clip_branch_grad_norms(
-                            self.branch_parameters,
-                            self.branch_max_grad_norms,
-                        )
-                    with self._gpu_stage("update/optimizer_step"):
-                        self.optimizer.step()
-                        self.optimizer.zero_grad(set_to_none=True)
-                    optimizer_steps += 1
                 else:
-                    parameter_device = next(self.model.parameters()).device
-                    branch_clip_metrics = {
-                        f"grad_norm_{branch}_{suffix}": torch.zeros(
-                            (), device=parameter_device,
-                        )
-                        for branch in ("actor", "shared", "critic")
-                        for suffix in ("pre_clip", "post_clip", "clip_scale", "clipped")
-                    }
-                    for branch in ("actor", "shared", "critic"):
-                        branch_clip_metrics[f"grad_norm_{branch}_clip_scale"] = torch.ones(
-                            (), device=parameter_device,
-                        )
-                with self._gpu_stage("update/diagnostic_metrics"):
-                    with torch.no_grad():
-                        kl_values = approximate_kl_values(logprob, old_logprobs)
-                        clipfrac_values = (
-                            (ratio - 1).abs() > float(self.hp["ppo_clip"])
-                        ).float()
-                        if float(self.hp["target_kl"]) > 0 and not critic_bootstrap:
-                            kl_sum = kl_values.sum()
-                            if running_kl_sum is None:
-                                running_kl_sum = kl_sum.detach().clone()
-                            else:
-                                running_kl_sum.add_(kl_sum.detach())
-                            running_kl_count += len(indices)
-                            interval = max(
-                                1,
-                                int(self.hp.get("target_kl_check_interval", 0)) or 1,
-                            )
-                            if should_step and optimizer_steps % interval == 0:
-                                if self.world_size > 1:
-                                    kl_total = running_kl_sum.detach().clone()
-                                    kl_count = torch.tensor(
-                                        float(running_kl_count), device=self.device,
-                                    )
-                                    dist.all_reduce(kl_total, op=dist.ReduceOp.SUM)
-                                    dist.all_reduce(kl_count, op=dist.ReduceOp.SUM)
-                                    checked_kl = kl_total / kl_count.clamp_min(1.0)
-                                else:
-                                    checked_kl = running_kl_sum / max(running_kl_count, 1)
-                                if float(checked_kl) > float(self.hp["target_kl"]):
-                                    stop_early = True
-                for name, values in (
-                    (
-                        "loss",
-                        (
-                            value_coef * value_loss_values_
-                            if critic_bootstrap
-                            else (
-                                policy_loss_values
-                                + value_coef * value_loss_values_
-                                - entropy_coef * entropy_loss_values
-                                + sft_kl_coef * sft_reference_kl_values
-                            )
-                        ),
-                    ),
-                    ("policy_loss", policy_loss_values),
-                    ("value_loss", value_loss_values_),
-                    ("value_loss_raw", raw_value_loss),
-                    ("value_prediction", value),
-                    ("entropy", entropy_values),
-                    ("entropy_normalized", normalized_entropy_values),
-                    ("sft_reference_kl", sft_reference_kl_values),
-                    ("approx_kl", kl_values),
-                    ("clipfrac", clipfrac_values),
-                    ("ratio", ratio),
-                ):
-                    detached = values.detach().sum()
-                    if name in metric_sample_sums:
-                        metric_sample_sums[name].add_(detached)
+                    assert epoch_plans is not None
+                    minibatches = epoch_plans[epoch_index]
+                for indices in minibatches:
+                    if prefetch_state is not None:
+                        indices, host_batch = self._prefetch_get(prefetch_state)
                     else:
-                        metric_sample_sums[name] = detached.clone()
-                metric_sample_count += len(indices)
-                if len(indices):
-                    ratio_samples.append(ratio.detach())
-                if should_step:
-                    for name, value in branch_clip_metrics.items():
-                        detached_value = value.detach()
-                        if name in step_metric_totals:
-                            step_metric_totals[name].add_(detached_value)
+                        with self.profiler.stage("update/collate_soa_gather"):
+                            host_batch = transitions.collate(indices)
+                    # ``query_rows`` 仅作离线一致性校验,模型 forward 不消费;这里
+                    # 不传设备,省去每 minibatch 一次无用 H2D(RolloutBuffer 仍保留
+                    # 该字段供 worker/inference/测试使用)。
+                    host_batch.pop("query_rows", None)
+                    batch = transfer_batch_to_device(host_batch, self.device, self.profiler)
+                    legal_mask = batch["legal_mask"]
+                    actions = batch["actions"]
+                    old_logprobs = batch["old_logprobs"]
+                    adv = batch["advantages"]
+                    batch_returns = torch.as_tensor(returns[indices], device=self.device)
+                    executed_samples += len(indices)
+                    executed_tokens += int(transitions.sequence_lengths[indices].sum())
+                    executed_padded_input_tokens += int(
+                        len(indices) * int(transitions.sequence_lengths[indices].max())
+                    )
+                    with self._gpu_stage("update/model_forward"):
+                        with torch.autocast(
+                            device_type=self.device.type,
+                            dtype=torch.bfloat16,
+                            enabled=self.use_bf16,
+                        ):
+                            output = self._model_forward(
+                                batch, critic_bootstrap=critic_bootstrap,
+                            )
+                            reference_output = None
+                            if sft_kl_coef > 0.0:
+                                assert self.reference_model is not None
+                                with torch.no_grad():
+                                    reference_output = self.reference_model(
+                                        batch["actor_factors"],
+                                        batch["actor_numeric"],
+                                        batch["actor_lengths"],
+                                        batch["query_action_ids"],
+                                        batch["query_pair_counts"],
+                                        legal_mask,
+                                        policy_only=True,
+                                    )
+                            # PPO 数值路径离开模型前统一提升为 FP32。
+                            logits = output["policy_logits"].float()
+                            logprobabilities = F.log_softmax(logits, dim=-1)
+                            probabilities = logprobabilities.exp()
+                    with self._gpu_stage("update/distribution_and_loss"):
+                        logprob = logprobabilities.gather(1, actions[:, None]).squeeze(1)
+                        old_logprobs = old_logprobs.float()
+                        adv = adv.float()
+                        ratio = (logprob - old_logprobs).exp()
+                        clipped = ratio.clamp(
+                            1 - float(self.hp["ppo_clip"]), 1 + float(self.hp["ppo_clip"]),
+                        ) * adv
+                        policy_loss_values = -torch.minimum(ratio * adv, clipped)
+                        value = output["value"].float()
+                        normalized_value, normalized_returns = normalize_value_targets(
+                            value,
+                            batch_returns,
+                            mode=self.value_target_normalization,
+                            mean=return_mean,
+                            std=return_std,
+                            std_floor=self.value_target_std_floor,
+                        )
+                        value_loss_values_ = value_loss_values(
+                            normalized_value, normalized_returns, str(self.hp.get("value_loss", "huber")),
+                        )
+                        raw_value_loss = value_loss_values(
+                            value, batch_returns, str(self.hp.get("value_loss", "huber")),
+                        )
+                        # 非法动作 logits 为 -inf:必须在乘法前把 log_prob 与概率
+                        # 都替换为 0。仅在乘积上 masked_fill 只救前向,反向仍会因
+                        # -inf × 0 回传 NaN 梯度。
+                        entropy_values, normalized_entropy_values = policy_entropy_values(
+                            logprobabilities, probabilities, legal_mask,
+                        )
+                        if reference_output is None:
+                            sft_reference_kl_values = torch.zeros_like(policy_loss_values)
                         else:
-                            step_metric_totals[name] = detached_value.clone()
-                    pre_values = [
-                        branch_clip_metrics[f"grad_norm_{branch}_pre_clip"]
-                        for branch in ("actor", "shared", "critic")
-                    ]
-                    post_values = [
-                        branch_clip_metrics[f"grad_norm_{branch}_post_clip"]
-                        for branch in ("actor", "shared", "critic")
-                    ]
-                    for name, value in (
-                        ("grad_norm", torch.stack(pre_values).square().sum().sqrt()),
-                        ("grad_norm_post_clip", torch.stack(post_values).square().sum().sqrt()),
+                            sft_reference_kl_values = categorical_kl_values(
+                                output["policy_logits"],
+                                reference_output["policy_logits"],
+                            )
+                        if critic_bootstrap:
+                            # 预热期只训 critic:policy/entropy/KL 不进入损失,
+                            # actor/shared 学习率同时为 0。实测把 policy 项以
+                            # 0 系数接入损失图会让 bootstrap backward 多走整条
+                            # policy 反传(104→246ms/step,负优化),故不采用。
+                            entropy_loss_values = entropy_values
+                            loss = value_coef * value_loss_values_.mean()
+                        else:
+                            entropy_loss_values = normalized_entropy_values
+                            loss = (
+                                policy_loss_values.mean()
+                                + value_coef * value_loss_values_.mean()
+                                - entropy_coef * entropy_loss_values.mean()
+                                + sft_kl_coef * sft_reference_kl_values.mean()
+                            )
+                        evaluated_loss = loss
+                    loss_is_finite = torch.isfinite(evaluated_loss)
+                    loss_detail = (
+                        f"policy={float(policy_loss_values.mean())} "
+                        f"value={float(value_loss_values_.mean())} "
+                        f"entropy={float(entropy_values.mean())} "
+                        f"sft_kl={float(sft_reference_kl_values.mean())}"
+                    )
+                    if self.world_size == 1 and not loss_is_finite:
+                        raise RuntimeError("non-finite PPO loss: " + loss_detail)
+                    with self._gpu_stage("update/backward"):
+                        # Gradient accumulation:配置 >1 时,loss 除以累积步数后
+                        # 反向,只在最后一累积步执行梯度裁剪 + optimizer.step,
+                        # 保持 global effective batch ≈ minibatch_size × 累积步数。
+                        accumulation_steps = self.gradient_accumulation_steps
+                        planned_minibatches = (
+                            configured_epochs * planned_minibatches_per_epoch
+                        )
+                        actual_group_size = accumulation_group_size(
+                            planned_minibatches,
+                            accumulation_steps,
+                            updates,
+                        )
+                        scaled_loss = evaluated_loss / float(max(actual_group_size, 1))
+                        scaled_loss.backward()
+                        # ``updates`` 为累计已处理 minibatch 数(从 0 开始),
+                        # 每组 accumulation_steps 的最后一步才 step;最后一个
+                        # minibatch 无论是否整组都强制 step,避免挂起梯度丢失。
+                        step_within_group = (
+                            (updates + 1) % accumulation_steps == 0
+                            if accumulation_steps > 1
+                            else True
+                        )
+                        is_last_batch = updates + 1 == planned_minibatches
+                        should_step = (
+                            accumulation_steps <= 1
+                            or step_within_group
+                            or is_last_batch
+                        )
+                    if self.world_size > 1:
+                        # 必须等所有 rank 完成 backward 后再做全局有限性判定,
+                        # 避免单 rank 提前异常导致 NCCL collective 失配。
+                        finite = torch.tensor(
+                            float(loss_is_finite), device=self.device,
+                        )
+                        dist.all_reduce(finite, op=dist.ReduceOp.MIN)
+                        if finite.item() == 0.0:
+                            raise RuntimeError(
+                                "non-finite PPO loss on one of the DDP ranks: "
+                                + loss_detail
+                            )
+                    if should_step:
+                        with self._gpu_stage("update/gradient_clip"):
+                            branch_clip_metrics = clip_branch_grad_norms(
+                                self.branch_parameters,
+                                self.branch_max_grad_norms,
+                            )
+                        with self._gpu_stage("update/optimizer_step"):
+                            self.optimizer.step()
+                            self.optimizer.zero_grad(set_to_none=True)
+                        optimizer_steps += 1
+                    else:
+                        parameter_device = next(self.model.parameters()).device
+                        branch_clip_metrics = {
+                            f"grad_norm_{branch}_{suffix}": torch.zeros(
+                                (), device=parameter_device,
+                            )
+                            for branch in ("actor", "shared", "critic")
+                            for suffix in ("pre_clip", "post_clip", "clip_scale", "clipped")
+                        }
+                        for branch in ("actor", "shared", "critic"):
+                            branch_clip_metrics[f"grad_norm_{branch}_clip_scale"] = torch.ones(
+                                (), device=parameter_device,
+                            )
+                    with self._gpu_stage("update/diagnostic_metrics"):
+                        with torch.no_grad():
+                            kl_values = approximate_kl_values(logprob, old_logprobs)
+                            clipfrac_values = (
+                                (ratio - 1).abs() > float(self.hp["ppo_clip"])
+                            ).float()
+                            if float(self.hp["target_kl"]) > 0 and not critic_bootstrap:
+                                kl_sum = kl_values.sum()
+                                if running_kl_sum is None:
+                                    running_kl_sum = kl_sum.detach().clone()
+                                else:
+                                    running_kl_sum.add_(kl_sum.detach())
+                                running_kl_count += len(indices)
+                                interval = max(
+                                    1,
+                                    int(self.hp.get("target_kl_check_interval", 0)) or 1,
+                                )
+                                if should_step and optimizer_steps % interval == 0:
+                                    if self.world_size > 1:
+                                        kl_total = running_kl_sum.detach().clone()
+                                        kl_count = torch.tensor(
+                                            float(running_kl_count), device=self.device,
+                                        )
+                                        dist.all_reduce(kl_total, op=dist.ReduceOp.SUM)
+                                        dist.all_reduce(kl_count, op=dist.ReduceOp.SUM)
+                                        checked_kl = kl_total / kl_count.clamp_min(1.0)
+                                    else:
+                                        checked_kl = running_kl_sum / max(running_kl_count, 1)
+                                    if float(checked_kl) > float(self.hp["target_kl"]):
+                                        stop_early = True
+                    for name, values in (
+                        (
+                            "loss",
+                            (
+                                value_coef * value_loss_values_
+                                if critic_bootstrap
+                                else (
+                                    policy_loss_values
+                                    + value_coef * value_loss_values_
+                                    - entropy_coef * entropy_loss_values
+                                    + sft_kl_coef * sft_reference_kl_values
+                                )
+                            ),
+                        ),
+                        ("policy_loss", policy_loss_values),
+                        ("value_loss", value_loss_values_),
+                        ("value_loss_raw", raw_value_loss),
+                        ("value_prediction", value),
+                        ("entropy", entropy_values),
+                        ("entropy_normalized", normalized_entropy_values),
+                        ("sft_reference_kl", sft_reference_kl_values),
+                        ("approx_kl", kl_values),
+                        ("clipfrac", clipfrac_values),
+                        ("ratio", ratio),
                     ):
-                        detached_value = value.detach()
-                        if name in step_metric_totals:
-                            step_metric_totals[name].add_(detached_value)
+                        detached = values.detach().sum()
+                        if name in metric_sample_sums:
+                            metric_sample_sums[name].add_(detached)
                         else:
-                            step_metric_totals[name] = detached_value.clone()
-                    for branch in ("actor", "shared", "critic"):
-                        name = f"grad_norm_{branch}"
-                        detached_value = branch_clip_metrics[
-                            f"grad_norm_{branch}_pre_clip"
-                        ].detach()
-                        if name in step_metric_totals:
-                            step_metric_totals[name].add_(detached_value)
-                        else:
-                            step_metric_totals[name] = detached_value.clone()
-                updates += 1
+                            metric_sample_sums[name] = detached.clone()
+                    metric_sample_count += len(indices)
+                    if len(indices):
+                        ratio_samples.append(ratio.detach())
+                    if should_step:
+                        for name, value in branch_clip_metrics.items():
+                            detached_value = value.detach()
+                            if name in step_metric_totals:
+                                step_metric_totals[name].add_(detached_value)
+                            else:
+                                step_metric_totals[name] = detached_value.clone()
+                        pre_values = [
+                            branch_clip_metrics[f"grad_norm_{branch}_pre_clip"]
+                            for branch in ("actor", "shared", "critic")
+                        ]
+                        post_values = [
+                            branch_clip_metrics[f"grad_norm_{branch}_post_clip"]
+                            for branch in ("actor", "shared", "critic")
+                        ]
+                        for name, value in (
+                            ("grad_norm", torch.stack(pre_values).square().sum().sqrt()),
+                            ("grad_norm_post_clip", torch.stack(post_values).square().sum().sqrt()),
+                        ):
+                            detached_value = value.detach()
+                            if name in step_metric_totals:
+                                step_metric_totals[name].add_(detached_value)
+                            else:
+                                step_metric_totals[name] = detached_value.clone()
+                        for branch in ("actor", "shared", "critic"):
+                            name = f"grad_norm_{branch}"
+                            detached_value = branch_clip_metrics[
+                                f"grad_norm_{branch}_pre_clip"
+                            ].detach()
+                            if name in step_metric_totals:
+                                step_metric_totals[name].add_(detached_value)
+                            else:
+                                step_metric_totals[name] = detached_value.clone()
+                    updates += 1
+                    if stop_early:
+                        break
                 if stop_early:
                     break
-            if stop_early:
-                break
-            epochs_completed += 1
+                epochs_completed += 1
+        finally:
+            if prefetch_state is not None:
+                self._stop_collate_prefetch(prefetch_state)
         self.iteration += 1
         if not executed_samples:
             raise RuntimeError("PPO update completed without a minibatch")

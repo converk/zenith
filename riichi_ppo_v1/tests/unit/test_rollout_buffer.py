@@ -437,3 +437,102 @@ def test_accumulation_clips_and_steps_only_at_group_boundaries(monkeypatch) -> N
     for name in ("grad_norm_actor_pre_clip", "grad_norm_shared_pre_clip",
                  "grad_norm_critic_pre_clip", "loss", "value_loss"):
         assert np.isfinite(metrics[name]), name
+
+
+def test_factor_flatten_compacts_to_uint8_and_fail_closed() -> None:
+    """V18 token 因子行压成 uint8 存储,collate 仍输出 int64 且逐位一致;
+    超出 255 的因子列 fail-closed,防止静默回绕。"""
+    transitions = _transitions(np.random.default_rng(31), 12)
+    buffer = RolloutBuffer(transitions)
+    assert buffer.actor_factors_flat.dtype == np.uint8
+    assert buffer.query_rows_flat.dtype == np.uint8
+    assert buffer.query_ids_flat.dtype == np.uint8
+    batch = buffer.collate(np.arange(5))
+    assert batch["actor_factors"].dtype == torch.int64
+    assert batch["query_action_ids"].dtype == torch.int64
+    assert batch["critic_factors"].dtype == torch.int64
+    assert batch["query_rows"].dtype == torch.int32
+
+    # 超 255 的因子必须显式报错(绝不能静默回绕)。
+    bad = _transitions(np.random.default_rng(33), 3)
+    bad[1].actor_factors = bad[1].actor_factors.copy()
+    bad[1].actor_factors[0, 0] = 300
+    with pytest.raises(ValueError, match="uint8 range"):
+        RolloutBuffer(bad)
+
+
+def test_prefetch_collate_matches_serial_update() -> None:
+    """collate 预取线程与串行路径产出完全一致的 minibatch 与训练指标。"""
+    kwargs = _learner_kwargs(
+        update_epochs=2, minibatch_size=8, target_kl=0.0,
+    )
+    torch.manual_seed(1234)
+    serial = PPOLearner("v18", "cpu", **kwargs)
+    torch.manual_seed(1234)
+    prefetch = PPOLearner(
+        "v18", "cpu", **{**kwargs, "update_collate_prefetch": True},
+    )
+    serial_metrics = serial.update(
+        RolloutBuffer(_transitions(np.random.default_rng(21), 40)),
+        shuffle_seed=7,
+    )
+    prefetch_metrics = prefetch.update(
+        RolloutBuffer(_transitions(np.random.default_rng(21), 40)),
+        shuffle_seed=7,
+    )
+    assert prefetch_metrics["update/executed_minibatches"] == (
+        serial_metrics["update/executed_minibatches"]
+    )
+    assert prefetch_metrics["update/executed_transition_samples"] == (
+        serial_metrics["update/executed_transition_samples"]
+    )
+    for name in (
+        "loss", "policy_loss", "value_loss", "entropy", "approx_kl",
+        "clipfrac", "grad_norm_actor_pre_clip", "grad_norm_shared_pre_clip",
+        "grad_norm_critic_pre_clip", "ratio_p95",
+    ):
+        assert prefetch_metrics[name] == pytest.approx(
+            serial_metrics[name], rel=1e-6,
+        ), name
+
+
+def test_prefetch_early_stop_does_not_hang() -> None:
+    """预取模式下 target_kl 提前停止:线程被安全停止,不挂起,指标口径不变。"""
+    transitions = RolloutBuffer(_transitions(np.random.default_rng(11), 40))
+    learner = PPOLearner(
+        "v18", "cpu",
+        **_learner_kwargs(
+            target_kl=0.01, update_epochs=4, minibatch_size=8,
+            update_collate_prefetch=True,
+        ),
+    )
+    metrics = learner.update(transitions, shuffle_seed=7)
+    assert metrics["update/early_stop"] == 1.0
+    assert metrics["update/epochs_completed"] < 4.0
+    assert metrics["update/executed_minibatches"] == 8.0
+    for name in ("loss", "policy_loss", "value_loss", "approx_kl", "entropy"):
+        assert np.isfinite(metrics[name]), name
+
+
+def test_prefetch_propagates_collate_exception(monkeypatch) -> None:
+    """预取线程内 collate 抛错:异常经队列安全传播到主线程,不挂起。"""
+    transitions = RolloutBuffer(_transitions(np.random.default_rng(17), 30))
+    original_collate = transitions.collate
+    calls = {"count": 0}
+
+    def failing_collate(indices):
+        calls["count"] += 1
+        if calls["count"] == 3:
+            raise RuntimeError("boom in collate")
+        return original_collate(indices)
+
+    monkeypatch.setattr(transitions, "collate", failing_collate)
+    learner = PPOLearner(
+        "v18", "cpu",
+        **_learner_kwargs(
+            update_epochs=2, minibatch_size=8, target_kl=0.0,
+            update_collate_prefetch=True,
+        ),
+    )
+    with pytest.raises(RuntimeError, match="boom in collate"):
+        learner.update(transitions, shuffle_seed=7)

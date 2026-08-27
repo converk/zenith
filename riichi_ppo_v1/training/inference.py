@@ -79,11 +79,13 @@ def collate_request_rows(
     max_pairs = int(pair_counts.max())
     max_critic = int(critic_lengths.max(initial=0))
     batch = len(group)
-    actor_factors = np.zeros((batch, max_actor, TOKEN_ROW_WIDTH), dtype=np.int32)
+    # 索引型字段直接以 int64 分配并写入:模型 embedding 需要 long,直接在
+    # copy 时转型,省去旧路径「int32 拼装 → 整块 .astype(int64) 再拷贝」。
+    actor_factors = np.zeros((batch, max_actor, TOKEN_ROW_WIDTH), dtype=np.int64)
     actor_numeric = np.zeros((batch, max_actor, TOKEN_NUMERIC_WIDTH), dtype=np.float32)
     query_rows = np.zeros((batch, 2 * max_pairs, QUERY_ROW_WIDTH), dtype=np.int32)
-    query_action_ids = np.zeros((batch, max_pairs), dtype=np.int32)
-    critic_factors = np.zeros((batch, max_critic, TOKEN_ROW_WIDTH), dtype=np.uint8)
+    query_action_ids = np.zeros((batch, max_pairs), dtype=np.int64)
+    critic_factors = np.zeros((batch, max_critic, TOKEN_ROW_WIDTH), dtype=np.int64)
     legal = np.empty((batch, NUM_ACTIONS), dtype=np.bool_)
     for index, (request_index, row) in enumerate(group):
         request = requests[request_index]
@@ -154,6 +156,9 @@ if ray is not None:
             self._weights: dict[str, torch.Tensor] | None = None
             self.sft_model: torch.nn.Module | None = None
             self.history_models: dict[str, torch.nn.Module] = {}
+            # 按名称复用的 pinned host 缓冲:消除每 dispatch 的 pageable H2D
+            # 同步等待与临时分配(H2D 用 non_blocking 异步发起)。
+            self._pinned_pool: dict[str, torch.Tensor] = {}
             self.profiler = StageProfiler(enabled=bool(config.get("profile_enabled", True)))
             self.profile_cuda_sync = bool(config.get("profile_cuda_sync", False))
             self.cuda_event_interval = max(0, int(config.get("profile_cuda_event_interval", 100)))
@@ -177,6 +182,48 @@ if ray is not None:
         def _sync_cuda(self) -> None:
             if self.profile_cuda_sync:
                 torch.cuda.synchronize(self.device)
+
+        def _pinned_capacity_shape(
+            self, name: str, value: np.ndarray,
+        ) -> tuple[int, ...]:
+            """按配置上限返回该字段的 pinned 缓冲容量(每名 actor 只分配一次)。"""
+            batch_cap = max(1, int(self.config.get("inference_max_batch_size", 512)))
+            token_cap = max(1, int(self.config.get("context_tokens", 256)))
+            if name in {"actor_factors", "critic_factors"}:
+                return (batch_cap, token_cap, int(value.shape[2]))
+            if name == "actor_numeric":
+                return (batch_cap, token_cap, int(value.shape[2]))
+            if name == "query_action_ids":
+                return (batch_cap, token_cap)
+            if name == "legal":
+                return (batch_cap, int(value.shape[1]))
+            if name in {"actor_lengths", "pair_counts", "critic_lengths"}:
+                return (batch_cap,)
+            return tuple(value.shape)
+
+        def _host_tensor_to_device(
+            self, name: str, value: np.ndarray,
+        ) -> torch.Tensor:
+            """host 数组 → 设备张量:复用 pinned 缓冲并以 non_blocking 发起 H2D。
+
+            旧路径为 ``astype(int64) 全量拷贝 + torch.as_tensor(device)`` 的
+            同步 pageable 传输;新路径只做一次 pinned 视图复制 + 异步 DMA,
+            数值逐位一致(纯数据通路优化,不改模型输入值)。
+            """
+            if self.device.type != "cuda":
+                return torch.from_numpy(np.ascontiguousarray(value))
+            host = torch.from_numpy(np.ascontiguousarray(value))
+            pinned = self._pinned_pool.get(name)
+            if pinned is None:
+                pinned = torch.empty(
+                    self._pinned_capacity_shape(name, value),
+                    dtype=host.dtype,
+                    pin_memory=True,
+                )
+                self._pinned_pool[name] = pinned
+            view = pinned[tuple(slice(0, dim) for dim in host.shape)]
+            view.copy_(host)
+            return view.to(self.device, non_blocking=True)
 
         @contextmanager
         def _gpu_stage(self, name: str):
@@ -475,14 +522,14 @@ if ray is not None:
             self._rollout_forward_max_tokens.append(max_tokens)
             with self._gpu_stage("inference/h2d"):
                 device_tensors = {
-                    name: torch.as_tensor(value, device=self.device)
+                    name: self._host_tensor_to_device(name, value)
                     for name, value in (
-                        ("actor_factors", actor_factors.astype(np.int64)),
+                        ("actor_factors", actor_factors),
                         ("actor_numeric", actor_numeric),
                         ("actor_lengths", actor_lengths),
-                        ("query_action_ids", query_action_ids.astype(np.int64)),
+                        ("query_action_ids", query_action_ids),
                         ("pair_counts", pair_counts),
-                        ("critic_factors", critic_factors.astype(np.int64)),
+                        ("critic_factors", critic_factors),
                         ("critic_lengths", critic_lengths),
                         ("legal", legal),
                     )

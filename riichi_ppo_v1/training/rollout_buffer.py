@@ -37,28 +37,50 @@ def _gather_padded(
     default: int | float,
     *,
     width: int | None = None,
+    dtype: np.dtype | type | None = None,
 ) -> np.ndarray:
     """把 flat 数组按 ``(starts, lengths)`` gather 成 ``[B, max_len(, width)]``。
 
     向量化版本,避免逐 transition 循环。``flat`` 是按行拼接的连续存储,
     ``starts``/``lengths`` 指向每行在 flat 中的起点与长度;超出长度的位置填
     ``default``。``width`` 为 None 时返回 2D,否则返回 3D。
+
+    优化:单次分配目标 dtype 的输出并只写合法区,替代「advanced-index 拷贝 +
+    ``np.where`` 再拷贝 + ``.long()`` 再拷贝」的三次全量复制;输出值与旧实现
+    逐位一致(``dtype`` 缺省时与 ``flat`` 相同)。
     """
     batch = int(len(lengths))
     if max_len == 0:
         if width is None:
-            return np.zeros((batch, 0), dtype=flat.dtype)
-        return np.zeros((batch, 0, width), dtype=flat.dtype)
+            return np.zeros((batch, 0), dtype=dtype or flat.dtype)
+        return np.zeros((batch, 0, width), dtype=dtype or flat.dtype)
     positions = np.arange(max_len, dtype=np.int64)[None, :] + starts[:, None]
     valid = positions < (starts + lengths)[:, None]
     safe = np.where(valid, positions, 0)
+    target_dtype = np.dtype(dtype if dtype is not None else flat.dtype)
     if width is None:
-        out = flat[safe]
-        out = np.where(valid, out, default)
+        out = np.empty((batch, max_len), dtype=target_dtype)
+        out[valid] = flat[safe[valid]]
+        out[~valid] = default
     else:
-        out = flat[safe]
-        out = np.where(valid[:, :, None], out, default)
+        out = np.empty((batch, max_len, width), dtype=target_dtype)
+        out[valid] = flat[safe[valid]]
+        out[~valid] = default
     return out
+
+
+def _compact_factor_flat(flat: np.ndarray, name: str) -> np.ndarray:
+    """把 V18 token 因子行压成 uint8(所有字段值 < 256,见 schema 单源)。
+
+    存储与 Ray/多进程传输体积缩小 4 倍(实测 512 半庄全量缓冲 ~8GB → ~2GB),
+    ``collate`` 输出仍按模型需求一次性转 int64,数值逐位一致。超出 uint8
+    域时 fail-closed,避免静默回绕。
+    """
+    if flat.size == 0:
+        return flat.astype(np.uint8, copy=False)
+    if int(flat.max()) > 255:
+        raise ValueError(f"{name} factor exceeds uint8 range (max={int(flat.max())})")
+    return flat.astype(np.uint8, copy=False)
 
 
 class RolloutBuffer:
@@ -103,9 +125,12 @@ class RolloutBuffer:
         )
 
         # ---- 可变长字段:flat + offset ----
-        self.actor_offsets, self.actor_factors_flat, _ = self._concat_var(
+        self.actor_offsets, actor_factors_flat, _ = self._concat_var(
             transitions,
             lambda item: item.actor_factors.astype(np.int32, copy=False),
+        )
+        self.actor_factors_flat = _compact_factor_flat(
+            actor_factors_flat, "actor_factors",
         )
         (
             self.actor_numeric_offsets,
@@ -116,18 +141,20 @@ class RolloutBuffer:
         )
         (
             self.query_rows_offsets,
-            self.query_rows_flat,
+            query_rows_flat,
             _,
         ) = self._concat_var(
             transitions, lambda item: item.query_rows.astype(np.int32, copy=False)
         )
+        self.query_rows_flat = _compact_factor_flat(query_rows_flat, "query_rows")
         (
             self.query_ids_offsets,
-            self.query_ids_flat,
+            query_ids_flat,
             _,
         ) = self._concat_var(
             transitions, lambda item: item.query_action_ids.astype(np.int32, copy=False)
         )
+        self.query_ids_flat = _compact_factor_flat(query_ids_flat, "query_action_ids")
 
         # critic 是可选字段;长度为 0 时为空 array。
         critic_parts = []
@@ -290,6 +317,7 @@ class RolloutBuffer:
             max_actor,
             0,
             width=_ACTOR_W,
+            dtype=np.int64,
         )
         actor_numeric = _gather_padded(
             self.actor_numeric_flat,
@@ -306,6 +334,7 @@ class RolloutBuffer:
             2 * max_pairs,
             0,
             width=_QUERY_W,
+            dtype=np.int32,
         )
         query_action_ids = _gather_padded(
             self.query_ids_flat,
@@ -313,6 +342,7 @@ class RolloutBuffer:
             pair_counts,
             max_pairs,
             0,
+            dtype=np.int64,
         )
         if max_critic > 0:
             critic_factors = _gather_padded(
@@ -322,9 +352,10 @@ class RolloutBuffer:
                 max_critic,
                 0,
                 width=_CRITIC_W,
+                dtype=np.int64,
             )
         else:
-            critic_factors = np.zeros((batch, 0, _CRITIC_W), dtype=np.uint8)
+            critic_factors = np.zeros((batch, 0, _CRITIC_W), dtype=np.int64)
 
         # 标量长度/动作使用 long,legal mask 使用 bool。
         actor_lengths = torch.from_numpy(actor_lens)
@@ -336,14 +367,14 @@ class RolloutBuffer:
         legal = torch.from_numpy(self.legal_mask[idx])
 
         return {
-            "actor_factors": torch.from_numpy(np.ascontiguousarray(actor_factors)).long(),
+            "actor_factors": torch.from_numpy(np.ascontiguousarray(actor_factors)),
             "actor_numeric": torch.from_numpy(np.ascontiguousarray(actor_numeric)),
             "actor_lengths": actor_lengths,
             "query_rows": torch.from_numpy(np.ascontiguousarray(query_rows)),
-            "query_action_ids": torch.from_numpy(np.ascontiguousarray(query_action_ids)).long(),
+            "query_action_ids": torch.from_numpy(np.ascontiguousarray(query_action_ids)),
             "query_pair_counts": query_pair_counts,
             "legal_mask": legal,
-            "critic_factors": torch.from_numpy(np.ascontiguousarray(critic_factors)).long(),
+            "critic_factors": torch.from_numpy(np.ascontiguousarray(critic_factors)),
             "critic_lengths": critic_lengths,
             "actions": actions,
             "old_logprobs": old_logprobs,
