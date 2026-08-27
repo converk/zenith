@@ -140,6 +140,9 @@ class BatchedStateBridge:
         self.last_rust_stats: dict[str, int] = {}
         self.last_events: list[list[list[str]]] = [[[] for _ in range(NUM_PLAYERS)] for _ in range(num_envs)]
         self.observations_by_env: list[dict[int, Any]] | None = None
+        # batch_index → {action_id: Action 对象};prepare 时直接登记状态机给
+        # 出的 action_id→源下标映射,decode 免掉状态机模板往返与逐动作匹配。
+        self._action_by_id: dict[int, dict[int, Any]] = {}
 
     def sync(self, observations_by_env: list[dict[int, Any]]) -> tuple[np.ndarray, np.ndarray]:
         if len(observations_by_env) != self.num_envs:
@@ -160,18 +163,36 @@ class BatchedStateBridge:
     def decode(self, decisions: list[Decision], action_ids: list[int]) -> list[Any]:
         if len(decisions) != len(action_ids):
             raise ValueError("decisions and action_ids must have the same length")
-        with self.profiler.stage("state/rust_decode_actions"):
-            mjai_actions = self.state_machine.decode_actions(
-                [decision.batch_index for decision in decisions], [int(action_id) for action_id in action_ids]
-            )
-        result: list[Any] = []
-        with self.profiler.stage("state/env_select_action_from_mjai"):
-            for decision, action_id, mjai in zip(decisions, action_ids, mjai_actions):
-                action = decision.observation.select_action_from_mjai(mjai)
-                if action is None:
-                    raise RuntimeError(f"MJAI action was rejected: env={decision.env_index} seat={decision.seat_id} action_id={action_id} mjai={mjai}")
-                result.append(action)
-        return result
+        # 本步 prepare 已登记 action_id→Action 对象映射(与状态机
+        # action_ids_with_source_indices 同一来源),直接本地查表,免去
+        # decode_actions + select_action_from_mjai 的逐决策往返。
+        final: list[Any] = []
+        unhandled: list[int] = []
+        for index, (decision, action_id) in enumerate(zip(decisions, action_ids, strict=True)):
+            action = self._action_by_id.get(decision.batch_index, {}).get(int(action_id))
+            if action is None:
+                unhandled.append(index)
+                final.append(None)
+            else:
+                final.append(action)
+        if unhandled:
+            # 兜底:未走 prepare(或映射缺失)的回退到状态机模板 + env 匹配路径。
+            with self.profiler.stage("state/rust_decode_actions"):
+                mjai_actions = self.state_machine.decode_actions(
+                    [decisions[index].batch_index for index in unhandled],
+                    [int(action_ids[index]) for index in unhandled],
+                )
+            with self.profiler.stage("state/env_select_action_from_mjai"):
+                for index, mjai in zip(unhandled, mjai_actions, strict=True):
+                    decision = decisions[index]
+                    action = decision.observation.select_action_from_mjai(mjai)
+                    if action is None:
+                        raise RuntimeError(
+                            f"MJAI action was rejected: env={decision.env_index} "
+                            f"seat={decision.seat_id} action_id={action_ids[index]} mjai={mjai}"
+                        )
+                    final[index] = action
+        return final
 
     def prepare(
         self,
@@ -216,6 +237,11 @@ class BatchedStateBridge:
                 if [action_id for _action, action_id in actions_by_id] != expected:
                     raise RuntimeError("state machine action-index mapping disagrees with legal mask")
                 per_row_actions.append(actions_by_id)
+        with self.profiler.stage("state/action_id_to_object_map"):
+            for decision, actions_by_id in zip(decisions, per_row_actions, strict=True):
+                self._action_by_id[decision.batch_index] = {
+                    int(action_id): action for action, action_id in actions_by_id
+                }
         with self.profiler.stage("state/current_state_assembly"):
             state_batch: EncodedStateBatch = encode_batch(
                 [
