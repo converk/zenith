@@ -26,7 +26,7 @@ import torch
 from ..model.bridge import BatchedStateBridge, NUM_PLAYERS
 from ..training.metrics import SemanticMetrics
 from ..training.rewards import PublicStateTracker
-from ..training.worker import _parse_kyoku_events, active_decisions
+from ..training.worker import active_decisions
 from ..model.action_groups import action_group as _action_group
 from .mechanism import DEFAULT_1V3_HANCHANS_PER_PROCESS, TOTAL_1V3_HANCHANS
 from .policy_adapter import load_policy_adapter
@@ -202,11 +202,13 @@ def evaluate_1v3(
                 kyoku_counts[env_index] += 1
                 scores = [int(value) for value in scores_by_env[env_index]]
                 seat = candidate_seats[env_index]
-                # 事件只解析一次:原因扫描与业务指标共用同一份 dict 行。
-                parsed_events = _parse_kyoku_events(bridge.last_events[env_index])
                 ryukyoku_reason = None
-                for rows in parsed_events:
-                    for event in rows:
+                for rows in bridge.last_events[env_index]:
+                    for raw in rows:
+                        try:
+                            event = json.loads(raw)
+                        except (TypeError, ValueError):
+                            continue
                         if event.get("type") == "ryukyoku":
                             ryukyoku_reason = event.get("reason")
                 tenpai_flags = final_tenpai_by_env.get(env_index)
@@ -220,14 +222,14 @@ def evaluate_1v3(
                 metric_a.record_kyoku(
                     [seat],
                     score_deltas,
-                    parsed_events,
+                    bridge.last_events[env_index],
                     draw_tenpai=tenpai_flags if exhaustive_draw else None,
                     exhaustive_draw=exhaustive_draw,
                 )
                 metric_b.record_kyoku(
                     [player_seat for player_seat in range(NUM_PLAYERS) if player_seat != seat],
                     score_deltas,
-                    parsed_events,
+                    bridge.last_events[env_index],
                     draw_tenpai=tenpai_flags if exhaustive_draw else None,
                     exhaustive_draw=exhaustive_draw,
                 )

@@ -321,39 +321,22 @@ class GrpRollout:
         return rewards
 
 
-def _parse_kyoku_events(
-    events: list[list[str]] | list[list[dict[str, Any]]],
-) -> list[list[dict[str, Any]]]:
-    """把一个小局的增量事件解析/去重为 dict 行,供结果结算与业务指标复用。
-
-    ``record_kyoku`` 与 ``_previous_result`` 都消费同一份事件:若这里一次性
-    解析,两者不再各自 json.loads;字符串形式的冒烟/测试调用仍可直接传入。
-    """
-    rows_by_seat: list[list[dict[str, Any]]] = []
-    seen: set[str] = set()
-    for seat_events in events:
-        rows: list[dict[str, Any]] = []
-        for raw in seat_events:
-            if isinstance(raw, str):
-                if raw in seen:
-                    continue
-                seen.add(raw)
-                try:
-                    rows.append(json.loads(raw))
-                except (TypeError, ValueError):
-                    continue
-            else:
-                rows.append(raw)
-        rows_by_seat.append(rows)
-    return rows_by_seat
-
-
 def _previous_result(
-    rows_by_seat: list[list[dict[str, Any]]],
+    events: list[list[str]],
     tenpai_flags: dict[int, bool] | None = None,
 ) -> KyokuResult | None:
-    """从刚结束小局的已解析事件行构造 KyokuResult(无结果则为 None)。"""
-    rows = [row for rows in rows_by_seat for row in rows]
+    """从刚结束小局的事件流解析结果(无结果则为 None)。"""
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for seat_events in events:
+        for raw in seat_events:
+            if raw in seen:
+                continue
+            seen.add(raw)
+            try:
+                rows.append(json.loads(raw))
+            except (TypeError, ValueError):
+                continue
     horas = [row for row in rows if row.get("type") == "hora"]
     if horas:
         first = horas[0]
@@ -745,12 +728,8 @@ if ray is not None:
                 completed_kyokus += 1
                 ended_kyoku_indices.append(env_index)
                 self.match_kyoku_counts[env_index] += 1
-                # 事件只解析一次:结果结算与业务指标共用同一份 dict 行。
-                parsed_events = _parse_kyoku_events(
-                    self.bridge.last_events[env_index]
-                )
                 previous = _previous_result(
-                    parsed_events,
+                    self.bridge.last_events[env_index],
                     self._pending_tenpai.get(env_index),
                 )
                 boundary = self._boundary_from_observations(env_index, previous)
@@ -775,7 +754,7 @@ if ray is not None:
                         - self.start_scores[env_index][seat]
                         for seat in range(NUM_PLAYERS)
                     ],
-                    parsed_events,
+                    self.bridge.last_events[env_index],
                     # 只传牌山耗尽前算好的座位听牌掩码;exhaustive_draw 由
                     # metrics 从终局事件 reason 自动判定,非荒牌流局不计入。
                     draw_tenpai=self._pending_tenpai.get(env_index),
