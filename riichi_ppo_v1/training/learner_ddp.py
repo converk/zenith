@@ -12,6 +12,7 @@ collective 严格对齐(不依赖 ``model.join``);early-stop 与 loss 有限性�
 from __future__ import annotations
 
 import ctypes
+import datetime
 import multiprocessing
 import os
 import queue as _queue
@@ -265,7 +266,15 @@ def _learner_worker(
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
-        dist.init_process_group("nccl", rank=rank, world_size=world_size, device_id=device)
+        # 长训练/机器高负载时 NCCL 心跳与 collective 可能被争抢拖慢,默认
+        # 超时(30min)可能误判为死局;放宽到 2h 只影响等待判定,不改训练语义。
+        dist.init_process_group(
+            "nccl",
+            rank=rank,
+            world_size=world_size,
+            device_id=device,
+            timeout=datetime.timedelta(seconds=7200),
+        )
         learner_hp = {
             key: value
             for key, value in config.items()
