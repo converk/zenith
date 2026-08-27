@@ -31,12 +31,12 @@ def test_v18_ppo_config_matches_stability_plan() -> None:
     assert config["ppo_clip"] == 0.20
     assert config["critic_bootstrap_updates"] == 2
     assert config["critic_bootstrap_learning_rate"] == pytest.approx(2e-5)
-    assert config["actor_learning_rate"] == pytest.approx(4e-5)
-    assert config["actor_learning_rate_min"] == pytest.approx(1.5e-5)
-    assert config["shared_learning_rate"] == pytest.approx(5e-6)
-    assert config["shared_learning_rate_min"] == pytest.approx(2.5e-6)
-    assert config["critic_learning_rate"] == pytest.approx(4e-5)
-    assert config["critic_learning_rate_min"] == pytest.approx(1.5e-5)
+    assert config["actor_learning_rate"] == pytest.approx(1.2e-4)
+    assert config["actor_learning_rate_min"] == pytest.approx(4.5e-5)
+    assert config["shared_learning_rate"] == pytest.approx(1.5e-5)
+    assert config["shared_learning_rate_min"] == pytest.approx(7.5e-6)
+    assert config["critic_learning_rate"] == pytest.approx(1.2e-4)
+    assert config["critic_learning_rate_min"] == pytest.approx(4.5e-5)
     assert config["adam_beta1"] == 0.9
     assert config["weight_decay"] == 0.0
     assert config["actor_max_grad_norm"] == 0.5
