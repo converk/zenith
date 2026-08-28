@@ -365,6 +365,13 @@ class LearnerDDP:
         self.iteration = 0
         self._minibatch_size = int(config["minibatch_size"])
         self._gamma = float(config.get("gamma", 1.0))
+        # update 时长 ∝ games×epochs,与 minibatch 大小无关;固定 600s 会
+        # 误杀 2048 局配置的首个全量更新(基线实测 512 局 166-184s,
+        # 外推 2048 局 665-735s > 600s),默认放宽到 1800s,可由配置
+        # update_timeout_s 覆盖。启动就绪等待仍用 120s。
+        self._update_timeout = float(config.get("update_timeout_s", 1800.0))
+        if self._update_timeout <= 0:
+            raise ValueError("update_timeout_s must be positive")
         self._context = multiprocessing.get_context("spawn")
         self._command_queues = [
             self._context.Queue() for _ in range(self.world_size)
@@ -448,7 +455,10 @@ class LearnerDDP:
                 "advantages": advantages[index_shards[rank]],
                 "returns": returns[index_shards[rank]],
             })
-        messages = [self._recv(rank) for rank in range(self.world_size)]
+        messages = [
+            self._recv(rank, timeout=self._update_timeout)
+            for rank in range(self.world_size)
+        ]
         per_rank = [messages[rank]["metrics"] for rank in range(self.world_size)]
         self.iteration = int(messages[0]["iteration"])
         return aggregate_learner_metrics(

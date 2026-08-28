@@ -31,28 +31,32 @@ def test_v18_ppo_config_matches_stability_plan() -> None:
     assert config["ppo_clip"] == 0.20
     assert config["critic_bootstrap_updates"] == 2
     assert config["critic_bootstrap_learning_rate"] == pytest.approx(2e-5)
-    assert config["actor_learning_rate"] == pytest.approx(1.4e-4)
-    assert config["actor_learning_rate_min"] == pytest.approx(5.25e-5)
-    assert config["shared_learning_rate"] == pytest.approx(1.75e-5)
-    assert config["shared_learning_rate_min"] == pytest.approx(8.75e-6)
-    assert config["critic_learning_rate"] == pytest.approx(1.4e-4)
-    assert config["critic_learning_rate_min"] == pytest.approx(5.25e-5)
+    assert config["actor_learning_rate"] == pytest.approx(6e-5)
+    assert config["actor_learning_rate_min"] == pytest.approx(2.25e-5)
+    assert config["shared_learning_rate"] == pytest.approx(7.5e-6)
+    assert config["shared_learning_rate_min"] == pytest.approx(3.75e-6)
+    assert config["critic_learning_rate"] == pytest.approx(6e-5)
+    assert config["critic_learning_rate_min"] == pytest.approx(2.25e-5)
     assert config["adam_beta1"] == 0.9
     assert config["weight_decay"] == 0.0
     assert config["actor_max_grad_norm"] == 0.5
     assert config["shared_max_grad_norm"] == 0.5
-    assert config["critic_max_grad_norm"] == 1.0
+    assert config["critic_max_grad_norm"] == 0.5
+    assert config["value_coef"] == 0.3
+    assert config["sft_kl_coef_end"] == pytest.approx(5e-4)
     assert config["critic_public_grad_scale"] == 0.25
     assert config["critic_private_embedding_grad_scale"] == 0.25
     assert config["entropy_loss_mode"] == "normalized"
-    assert config["entropy_start"] == pytest.approx(0.020)
-    assert config["entropy_middle"] == pytest.approx(0.012)
-    assert config["entropy_end"] == pytest.approx(0.0045)
+    assert config["entropy_start"] == pytest.approx(0.014)
+    assert config["entropy_middle"] == pytest.approx(0.006)
+    assert config["entropy_end"] == pytest.approx(0.002)
     assert config["entropy_middle_fraction"] == pytest.approx(0.33)
     assert config["target_kl"] == 0.01
     assert config["target_kl_check_interval"] == 8
     assert config["bucket_window_multiplier"] == 8
     assert config["checkpoint_interval_updates"] == 5
+    assert config["checkpoint_force_first_updates"] == 5
+    assert config["update_timeout_s"] == 1800
     assert config["eval1v3_interval_updates"] == 5
     assert config["init_model"].endswith("train_riichi_v18/sft/best.pt")
     assert config["grp_checkpoint"].endswith("train_riichi_v18/grp/best.pt")

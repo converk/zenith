@@ -30,8 +30,8 @@ games_per_update: 2048
 
 # PPO 主超参:Actor 用归一化 advantage,Critic 拟合 old_value + raw GAE。
 # 梯度累积=10:每 10 个 minibatch 的(已 DDP 平均)梯度累加后再 step 一次,
-# 等效每步有效 batch = 1536×10×2 = 30720;LR 已按维护者决定上调 3.5×
-# (actor/critic 1.4e-4,shared 1.75e-5)。
+# 等效每步有效 batch = 1536×10×2 = 30720;保留累积以降噪,LR 不再按步数
+# 补偿,下调至 6e-5 以抑制分支梯度上升(维护者决定:2026-08-28)。
 gamma: 1.0
 gae_lambda: 0.95
 ppo_clip: 0.20
@@ -41,26 +41,30 @@ gradient_accumulation_steps: 10
 update_batch_mode: streaming
 bucket_window_multiplier: 8
 
-value_coef: 0.5
+# critic 侧降温:0.5→0.3,直接压低 critic 分支 pre-clip 梯度,并同步降低
+# 回流 shared 公共表示的 value 梯度。
+value_coef: 0.3
 value_loss: huber
 value_target_normalization: batch_std
 value_target_std_floor: 0.01
 
 # 三点分段 entropy schedule,loss 使用按合法动作数归一化的 entropy。
 entropy_loss_mode: normalized
-entropy_start: 0.020
-entropy_middle: 0.012
-entropy_end: 0.0045
+# 熵项是 actor/shared 梯度的主要常量来源,三项整体下调(0.014/0.006/0.002)
+# 以压低梯度底座;不强制熵坍塌,熵曲线顺其自然。
+entropy_start: 0.014
+entropy_middle: 0.006
+entropy_end: 0.002
 entropy_middle_fraction: 0.33
 
 # 三分支独立学习率调度,bootstrap 不消耗 policy schedule。
-learning_rate: 0.00014
-actor_learning_rate: 0.00014
-actor_learning_rate_min: 0.0000525
-shared_learning_rate: 0.0000175
-shared_learning_rate_min: 0.00000875
-critic_learning_rate: 0.00014
-critic_learning_rate_min: 0.0000525
+learning_rate: 0.00006
+actor_learning_rate: 0.00006
+actor_learning_rate_min: 0.0000225
+shared_learning_rate: 0.0000075
+shared_learning_rate_min: 0.00000375
+critic_learning_rate: 0.00006
+critic_learning_rate_min: 0.0000225
 critic_bootstrap_learning_rate: 0.00002
 warmup_fraction: 0.02
 # β1 0.95→0.9:配合 accumulation=10 的大有效 batch,一阶动量回到标准响应速度
@@ -75,20 +79,24 @@ critic_bootstrap_updates: 2
 max_grad_norm: 0.5
 actor_max_grad_norm: 0.5
 shared_max_grad_norm: 0.5
-critic_max_grad_norm: 1.0
+critic_max_grad_norm: 0.5
 critic_public_grad_scale: 0.25
 critic_private_embedding_grad_scale: 0.25
 target_kl: 0.01
 target_kl_check_interval: 8
 
-# SFT reference KL 保持 V17 的 U 形 anchor。
+# SFT reference KL:前段保留中等弱锚,后段不再回锚(0.002→0.0005),
+# 避免策略偏离 SFT 后 KL 梯度抬升 actor/shared。
 sft_kl_coef_start: 0.0025
 sft_kl_coef_middle: 0.001
-sft_kl_coef_end: 0.002
+sft_kl_coef_end: 0.0005
 sft_kl_middle_fraction: 0.5
 
 # 每 5 updates 保存 checkpoint 并执行固定 1v3 评测(与宪法机制一致)。
 checkpoint_interval_updates: 5
+# learner 驱动接收超时:update 时长 ∝ games×epochs,与 minibatch 无关;
+# 2048 局全量更新实测外推 ~665-735s,固定 600s 会在 update 3 误杀训练。
+update_timeout_s: 1800
 eval1v3_interval_updates: 5
 checkpoint_dir: checkpoints/train_riichi_v18/ppo
 resume: null
