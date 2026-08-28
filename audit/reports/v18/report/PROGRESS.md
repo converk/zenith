@@ -829,3 +829,42 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
 - **B34 合并 A/B**(日志 `logs/v18/ppo_perf2_B34_20260828.log`,r3):algo
   372.2s(B2 375.6,基线 423.7)、update 298.9s(B2 305.2)、sps 1050.3。
 - **回滚**:B3 `git revert d6a9e50`;B4 已 revert(0f22103)。
+
+## 2026-08-28 V18 PPO 性能优化第二轮:C 组结论(C2 保留;C1/C3/C4 放弃;C5 跳过)
+
+- **C1(torch.compile 三 Decoder,放弃)**:GPU 探针证实 fullgraph 编译成功且
+  固定形状下 step 44.6→37.9ms(1.25×),数值在 T2 容差内;但 (a) 属性替换后
+  state_dict 键引入 `_orig_mod` 前缀,破坏 checkpoint 契约;(b) `dynamic=False`
+  要求静态形状,而生产 minibatch 的 token 容量 L 随分桶变化、推理 B×L 均变化,
+  形状签名爆炸式重编译(探针 2 个形状已产生 6 张图);(c) 文档预设回退路径
+  `dynamic=True` 实测 185ms/step(较 eager 44.6ms 慢 4.2 倍)。按放弃判据
+  (回退仍无收益)放弃;形状分桶 padding 方案(改变 padding 计算与
+  executed 语义)超出本轮"不改语义"边界,列为后续轮次候选。
+- **C2(token_embedding host 行表,保留,8283f6d)**:`compute_kind_row_plan`
+  在 collate/推理 host 装配时以纯 numpy 计算各类别升序行表(与旧 stable
+  argsort 段内顺序逐位一致),forward 新增 `kind_row_plan`/
+  `critic_kind_row_plan` 走静态键表迭代;分隔符改算术掩蔽(0 号 padding 行
+  + 掩蔽,x+0.0==x);行表合并单次 pinned 异步 H2D(逐类别 pageable 拷贝
+  每次都是一个同步点)。单测:两路 `torch.equal` 逐位一致(GPU 复验含全模型
+  policy_logits/value);一次 forward 同步点 23→7(仅剩 critic 组装 6 + torch
+  内部 1)。回归 1 failed(既有)219 passed。
+- **C3(推理 CUDA Graph,放弃)**:图捕获要求区域内全静态形状且零设备同步;
+  各批类别行组成是逐批动态数据,静态化需 K×桶静态索引缓冲 + dummy 行补齐
+  (与 C2 行表路径冲突;旧 argsort 路径含 tolist 无法捕获);B4 实测批均值
+  ~169 行 ≪ 512 也压缩了可寻址 launch 开销池。复杂度最高,允许放弃。
+- **C4(FlexAttention,放弃)**:前置"C1 成功后追加"未满足,其融合 Triton
+  内核同样依赖 torch.compile,受同一形状爆炸约束;三套 mask_mod 重写的 T2
+  收益不确定性高。
+- **C5(Rust 下沉 critic_feature_encode,跳过)**:文档明确仅在 B4/C3 落地后
+  worker CPU 成为新约束时才有意义;两者均未落地,worker CPU 仍被推理 RPC
+  等待掩盖。
+- **C2 A/B**(日志 `logs/v18/ppo_perf2_C2_20260828.log`,r3,对比 B34):
+
+  | 指标 | B34 r3 | C2 r3 |
+  | --- | --- | --- |
+  | algorithm_wall_s | 372.2 | **363.9(−2.2%)** |
+  | update/wall_s | 298.9 | **289.2(−3.2%)** |
+  | bwd ms/批/rank | 369.6 | **324.8(−12.1%)** |
+  | collate_soa_gather s | 14.8 | 28.2(plan 计算入预取线程,净收益仍正) |
+  | sps | 1050.3 | **1105.6(+5.3%)** |
+- **回滚**:C2 `git revert 8283f6d`。
