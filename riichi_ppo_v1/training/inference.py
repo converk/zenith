@@ -240,6 +240,10 @@ if ray is not None:
 
         def _target_workers(self) -> int:
             configured = int(self.config.get("inference_batch_target_workers", 0))
+            if configured < 0:
+                # 负值显式禁用「按 worker 数触发」,只按行数阈值或超时 flush,
+                # 避免 6 个 worker 各自 ~32 行时过早切成小批。
+                return 1 << 30
             return max(1, configured or self._rollout_target_workers)
 
         def update_weights(self, weights: dict[str, torch.Tensor]) -> dict[str, float]:

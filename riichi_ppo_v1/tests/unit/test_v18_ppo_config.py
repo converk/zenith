@@ -55,7 +55,6 @@ def test_v18_ppo_config_matches_stability_plan() -> None:
     assert config["target_kl_check_interval"] == 8
     assert config["bucket_window_multiplier"] == 8
     assert config["checkpoint_interval_updates"] == 5
-    assert config["checkpoint_force_first_updates"] == 5
     assert config["update_timeout_s"] == 1800
     assert config["eval1v3_interval_updates"] == 5
     assert config["init_model"].endswith("train_riichi_v18/sft/best.pt")

@@ -4,8 +4,11 @@
 //! 扁平行；Action Query 行由 Python 侧沿用 `riichi.encode_query_batch` 生成并拼接。
 //! 行布局与 `riichi_ppo_v1/model/encoding_protocol.py` 镜像（见 specs/010 契约 §3）。
 
-use numpy::ndarray::Array2;
-use numpy::{IntoPyArray, PyArray1, PyArray2};
+use numpy::ndarray::{Array2, Array3};
+use numpy::{
+    IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2,
+    PyUntypedArrayMethods,
+};
 use pyo3::{exceptions::PyValueError, prelude::*};
 
 use riichi::analysis;
@@ -981,6 +984,279 @@ pub fn prepare_current_state_batch(
         rows: rows_array.unbind(),
         numeric: numeric_array.unbind(),
         offsets: offsets_array.unbind(),
+    })
+}
+
+// ---- V18 完整 Actor 批装配（Rust 侧一次性物化，替代 Python 逐决策 numpy 拼接）----
+
+/// Action Query 行宽（与 ``encoding_protocol.QUERY_ROW_WIDTH`` 镜像）。
+const QUERY_ROW_WIDTH: usize = 15;
+/// Query 行中答案特征起始下标（与 ``encoding_protocol.QUERY_ROW_ANSWER_START`` 镜像）。
+const QUERY_ROW_ANSWER_START: usize = 5;
+/// Query 行中 action id 下标。
+const QUERY_ROW_ACTION_ID: usize = 1;
+/// 动作段与 O/D Query kind（与 ``encoding_protocol`` 镜像）。
+const SEGMENT_ACTIONS: u8 = 3;
+const KIND_ACTION_OFFENSE_QUERY: i32 = 11;
+const KIND_ACTION_DEFENSE_QUERY: i32 = 12;
+const KIND_SEP_ACTIONS: i32 = 110;
+/// 固定 241 维动作空间（断言用）。
+const NUM_ACTIONS: usize = 241;
+
+/// Rust 装配后的完整 V18 Actor 批（含动作 token/分隔符、query 元数据与合法掩码）。
+#[pyclass(name = "AssembledCurrentStateBatch", frozen)]
+pub struct AssembledCurrentStateBatch {
+    #[pyo3(get)]
+    actor_factors: Py<PyArray3<i32>>,
+    #[pyo3(get)]
+    actor_numeric: Py<PyArray3<f32>>,
+    #[pyo3(get)]
+    actor_lengths: Py<PyArray1<i64>>,
+    #[pyo3(get)]
+    query_rows: Py<PyArray3<i32>>,
+    #[pyo3(get)]
+    action_ids: Py<PyArray2<i32>>,
+    #[pyo3(get)]
+    query_pair_counts: Py<PyArray1<i64>>,
+    #[pyo3(get)]
+    legal_mask: Py<PyArray2<bool>>,
+}
+
+fn tsumogiri_mode(action_id: i32) -> i32 {
+    if (1..75).contains(&action_id) {
+        (action_id - 1) % 2
+    } else {
+        0
+    }
+}
+
+/// 把一条 15 宽 query 行展开成 32 宽 action token 行（段/kind + 15 个嵌入特征）。
+fn write_action_row(
+    out: &mut [i32],
+    offset: usize,
+    query_row: &[i32],
+    kind: i32,
+    action_id: i32,
+) {
+    debug_assert!(query_row.len() >= QUERY_ROW_WIDTH);
+    out[offset] = i32::from(SEGMENT_ACTIONS);
+    out[offset + 1] = kind;
+    out[offset + 2] = query_row[2];
+    out[offset + 3] = query_row[3];
+    out[offset + 4] = query_row[4];
+    out[offset + 5] = tsumogiri_mode(action_id);
+    out[offset + 6] = query_row[QUERY_ROW_ACTION_ID];
+    for (index, value) in query_row
+        .iter()
+        .enumerate()
+        .skip(QUERY_ROW_ANSWER_START)
+        .take(QUERY_ROW_WIDTH - QUERY_ROW_ANSWER_START)
+    {
+        out[offset + 7 + (index - QUERY_ROW_ANSWER_START)] = *value;
+    }
+}
+
+/// 一次装配完整 Actor 批：Shared/Analysis 行 + SEP_ACTIONS + O/D Query 行。
+///
+/// 输入均为 ``encode_batch`` 已有中间产物（Rust 编码行与 query 行），输出布局与
+/// 旧 Python 装配逐位一致：``actor_factors`` 容量 =
+/// ``max(最大共享/分析行数 + 1 + 2×最大动作对数, 1)``。
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_current_state_batch<'py>(
+    py: Python<'py>,
+    rows: PyReadonlyArray2<'py, i32>,
+    numerics: PyReadonlyArray2<'py, f32>,
+    offsets: PyReadonlyArray1<'py, i64>,
+    query_rows: PyReadonlyArray2<'py, i32>,
+    action_ids: PyReadonlyArray1<'py, i32>,
+    pair_counts: PyReadonlyArray1<'py, i64>,
+    legal_mask: Option<PyReadonlyArray2<'py, bool>>,
+) -> PyResult<AssembledCurrentStateBatch> {
+    let rows_shape = rows.shape();
+    let numerics_shape = numerics.shape();
+    let query_shape = query_rows.shape();
+    if rows_shape[1] != ROW_WIDTH || numerics_shape[1] != NUMERIC_WIDTH {
+        return Err(PyValueError::new_err(
+            "rows/numerics row width must be 32/8",
+        ));
+    }
+    if query_shape[1] != QUERY_ROW_WIDTH {
+        return Err(PyValueError::new_err("query_rows row width must be 15"));
+    }
+    let batch = pair_counts.len();
+    if batch == 0 {
+        return Err(PyValueError::new_err("assemble batch cannot be empty"));
+    }
+    if offsets.len() != batch + 1 {
+        return Err(PyValueError::new_err(
+            "offsets must have batch+1 entries",
+        ));
+    }
+    if let Some(legal) = &legal_mask {
+        if legal.shape() != [batch, NUM_ACTIONS] {
+            return Err(PyValueError::new_err("legal_mask must be [batch, 241]"));
+        }
+    }
+    let rows_slice = rows
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("rows must be contiguous"))?;
+    let numerics_slice = numerics
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("numerics must be contiguous"))?;
+    let offsets_slice = offsets
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("offsets must be contiguous"))?;
+    let query_slice = query_rows
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("query_rows must be contiguous"))?;
+    let ids_slice = action_ids
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("action_ids must be contiguous"))?;
+    let counts_slice = pair_counts
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("pair_counts must be contiguous"))?;
+    let provided_legal: Option<Vec<bool>> = match &legal_mask {
+        Some(array) => Some(
+            array
+                .as_slice()
+                .map_err(|_| PyValueError::new_err("legal_mask must be contiguous"))?
+                .to_vec(),
+        ),
+        None => None,
+    };
+    let total_pairs: usize = counts_slice.iter().map(|&count| count as usize).sum();
+    if query_rows.shape()[0] < total_pairs * 2 {
+        return Err(PyValueError::new_err(
+            "query_rows row count must cover 2×total action pairs",
+        ));
+    }
+    if action_ids.len() != total_pairs {
+        return Err(PyValueError::new_err(
+            "action_ids length must equal total action pairs",
+        ));
+    }
+    let native_total = rows_shape[0];
+    if offsets_slice[batch] as usize != native_total {
+        return Err(PyValueError::new_err(
+            "offsets must cover exactly the native rows",
+        ));
+    }
+
+    // 兼容旧 Python 容量公式：max_native + 1 + 2×max_pairs。
+    let native_max = counts_slice
+        .iter()
+        .zip(offsets_slice.windows(2))
+        .map(|(_count, window)| (window[1] - window[0]) as usize)
+        .max()
+        .unwrap_or(0);
+    let pair_max = counts_slice.iter().map(|&count| count as usize).max().unwrap_or(0);
+    let capacity = std::cmp::max(native_max + 1 + 2 * pair_max, 1);
+
+    let mut actor_factors = vec![0_i32; batch * capacity * ROW_WIDTH];
+    let mut actor_numeric = vec![0_f32; batch * capacity * NUMERIC_WIDTH];
+    let mut query_out = vec![0_i32; batch * 2 * pair_max * QUERY_ROW_WIDTH];
+    let mut ids_out = vec![0_i32; batch * pair_max];
+    let mut lengths_out = vec![0_i64; batch];
+    let mut pair_cursor = 0usize;
+    for batch_index in 0..batch {
+        let native_length = (offsets_slice[batch_index + 1] - offsets_slice[batch_index]) as usize;
+        let pair_count = counts_slice[batch_index] as usize;
+        let assembled_length = native_length + 1 + 2 * pair_count;
+        lengths_out[batch_index] = assembled_length as i64;
+        let base = batch_index * capacity * ROW_WIDTH;
+        let numeric_base = batch_index * capacity * NUMERIC_WIDTH;
+        let native_start = offsets_slice[batch_index] as usize;
+        for row_index in 0..native_length {
+            let src = (native_start + row_index) * ROW_WIDTH;
+            let dst = base + row_index * ROW_WIDTH;
+            actor_factors[dst..dst + ROW_WIDTH]
+                .copy_from_slice(&rows_slice[src..src + ROW_WIDTH]);
+            let numeric_src = (native_start + row_index) * NUMERIC_WIDTH;
+            let numeric_dst = numeric_base + row_index * NUMERIC_WIDTH;
+            actor_numeric[numeric_dst..numeric_dst + NUMERIC_WIDTH].copy_from_slice(
+                &numerics_slice[numeric_src..numeric_src + NUMERIC_WIDTH],
+            );
+        }
+        let sep_offset = base + native_length * ROW_WIDTH;
+        actor_factors[sep_offset] = i32::from(SEGMENT_ACTIONS);
+        actor_factors[sep_offset + 1] = KIND_SEP_ACTIONS;
+        let query_base = batch_index * 2 * pair_max * QUERY_ROW_WIDTH;
+        let ids_base = batch_index * pair_max;
+        for pair_index in 0..pair_count {
+            let query_src = (pair_cursor + pair_index) * 2 * QUERY_ROW_WIDTH;
+            let action_id = ids_slice[pair_cursor + pair_index];
+            let offense_offset = sep_offset + (1 + 2 * pair_index) * ROW_WIDTH;
+            write_action_row(
+                &mut actor_factors,
+                offense_offset,
+                &query_slice[query_src..query_src + QUERY_ROW_WIDTH],
+                KIND_ACTION_OFFENSE_QUERY,
+                action_id,
+            );
+            let defense_offset = offense_offset + ROW_WIDTH;
+            write_action_row(
+                &mut actor_factors,
+                defense_offset,
+                &query_slice[query_src + QUERY_ROW_WIDTH..query_src + 2 * QUERY_ROW_WIDTH],
+                KIND_ACTION_DEFENSE_QUERY,
+                action_id,
+            );
+            let dst = query_base + 2 * pair_index * QUERY_ROW_WIDTH;
+            query_out[dst..dst + QUERY_ROW_WIDTH]
+                .copy_from_slice(&query_slice[query_src..query_src + QUERY_ROW_WIDTH]);
+            query_out[dst + QUERY_ROW_WIDTH..dst + 2 * QUERY_ROW_WIDTH].copy_from_slice(
+                &query_slice[query_src + QUERY_ROW_WIDTH..query_src + 2 * QUERY_ROW_WIDTH],
+            );
+            ids_out[ids_base + pair_index] = action_id;
+        }
+        pair_cursor += pair_count;
+    }
+
+    let legal_out: Vec<bool> = match provided_legal {
+        Some(values) => values,
+        None => {
+            let mut values = vec![false; batch * NUM_ACTIONS];
+            for batch_index in 0..batch {
+                for pair_index in 0..counts_slice[batch_index] as usize {
+                    let action_id = ids_out[batch_index * pair_max + pair_index] as usize;
+                    if action_id < NUM_ACTIONS {
+                        values[batch_index * NUM_ACTIONS + action_id] = true;
+                    }
+                }
+            }
+            values
+        }
+    };
+
+    let actor_factors = Array3::from_shape_vec((batch, capacity, ROW_WIDTH), actor_factors)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?
+        .into_pyarray(py);
+    let actor_numeric = Array3::from_shape_vec((batch, capacity, NUMERIC_WIDTH), actor_numeric)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?
+        .into_pyarray(py);
+    let actor_lengths = PyArray1::from_vec(py, lengths_out);
+    let query_rows = Array3::from_shape_vec(
+        (batch, 2 * pair_max, QUERY_ROW_WIDTH),
+        query_out,
+    )
+    .map_err(|error| PyValueError::new_err(error.to_string()))?
+    .into_pyarray(py);
+    let action_ids = Array2::from_shape_vec((batch, pair_max), ids_out)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?
+        .into_pyarray(py);
+    let query_pair_counts = PyArray1::from_vec(py, counts_slice.to_vec());
+    let legal_mask = Array2::from_shape_vec((batch, NUM_ACTIONS), legal_out)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?
+        .into_pyarray(py);
+    Ok(AssembledCurrentStateBatch {
+        actor_factors: actor_factors.unbind(),
+        actor_numeric: actor_numeric.unbind(),
+        actor_lengths: actor_lengths.unbind(),
+        query_rows: query_rows.unbind(),
+        action_ids: action_ids.unbind(),
+        query_pair_counts: query_pair_counts.unbind(),
+        legal_mask: legal_mask.unbind(),
     })
 }
 

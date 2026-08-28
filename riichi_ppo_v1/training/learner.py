@@ -556,6 +556,32 @@ class PPOLearner:
         if self.profile_cuda_sync and self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
 
+    def _rebuild_ddp_without_unused_when_ready(self, critic_bootstrap: bool) -> None:
+        """bootstrap 结束后重建 DDP,关闭 ``find_unused_parameters``。
+
+        V18 PPO 只在 critic bootstrap 期存在未参与 loss 的 actor/shared 参数,
+        因此必须保留 ``find_unused_parameters=True`` 才能通过 DDP 训练;bootstrap
+        结束后所有参数都进入 loss,DDP 官方告警明确该旗标每次 backward 都会多走
+        一次 autograd 图遍历,对双卡大更新(≈2000 minibatch)是可观的固定开销。
+        这里在首次非 bootstrap update 时重建一次(旧 wrapper 无在途图,删除安全),
+        之后更新不再承担该遍历开销。
+        """
+        if (
+            self.world_size <= 1
+            or self.model_ddp is None
+            or critic_bootstrap
+            or not bool(getattr(self.model_ddp, "find_unused_parameters", False))
+        ):
+            return
+        old_wrapper = self.model_ddp
+        self.model_ddp = DistributedDataParallel(
+            self.model,
+            device_ids=[self.device.index],
+            broadcast_buffers=False,
+            find_unused_parameters=False,
+        )
+        del old_wrapper
+
     @contextmanager
     def _gpu_stage(self, name: str):
         self._sync_cuda()
@@ -822,6 +848,8 @@ class PPOLearner:
             )
         value_coef = float(self.hp.get("value_coef", 0.5))
 
+        # bootstrap 结束后关闭 DDP unused 检测,消除每次 backward 的额外图遍历。
+        self._rebuild_ddp_without_unused_when_ready(critic_bootstrap)
         self.model.train()
         stop_early = False
         rank_seed = (
