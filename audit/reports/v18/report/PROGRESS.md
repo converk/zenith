@@ -775,3 +775,36 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
   CPU 负载(约 5.4)。r3 fwd −34% 显著超出预期带(−10~20%),收益方向兑现,
   判定保留。
 - **回滚**:`git revert 669b1c1`(纯 Python/配置/文档,无 wheel)。
+
+## 2026-08-28 V18 PPO 性能优化第二轮:B2(SFT reference 每 update 预计算)
+
+- **改动**(5a8dcf4):`PPOLearner.update()` 在 epoch 循环前对整份 rank 分片以
+  大批量(`update_reference_precompute_batch_size`,默认 8192)inference_mode +
+  bf16 autocast 一次性预计算冻结 reference 的 policy_logits(fp32 [N,241] 驻留
+  GPU);minibatch 内按 indices gather 取代每批一次 reference 前向(约占 update
+  forward 40%)。bootstrap 期(sft_kl_coef=0)跳过。
+- **等价性(T2)**:GPU 探针实测预计算(8192 块)与逐批前向(1536 行)的
+  reference logits 差为 bf16 内核形状级(有限位 ≤1.7e-3 ≈1 ULP,-inf 位置
+  完全一致),KL 差 ≤5.6e-5;按文档预案回退 1536/3072 分块仍为 2.5e-5/5.6e-5
+  ——分块组成与分桶 minibatch 的 padding 维度不同,bf16 内核选择随形状变化,
+  「1536 分块必然逐位一致」前提在本模型栈不成立。影响评估:sft_kl_coef≤0.0025
+  时 loss 偏差 ≤1.4e-7(相对 ~1.4e-6);且旧路径逐 epoch 批组成不同,reference
+  logits 本就带同类形状噪声。按 T2 精神(容差级一致、无训练语义变化)保留
+  8192 默认并如实记录。回归 1 failed(既有)216 passed。
+- **A/B**(日志 `logs/v18/ppo_perf2_B2_20260828.log`,第 2/3 轮):
+
+  | 指标 | 基线 r3 | 阶段A r3 | B1 r3 | B2 r3 |
+  | --- | --- | --- | --- | --- |
+  | algorithm_wall_s | 423.7 | 403.2 | 408.1 | **375.6(较 B1 −8.0%)** |
+  | update/wall_s | 348.9 | 331.1 | 333.9 | **305.2(较 B1 −8.6%)** |
+  | rollout/wall_s | 73.9 | 71.1 | 73.2 | 69.4 |
+  | fwd ms/批/rank | 233.3 | 227.2 | 154.1 | **141.5** |
+  | bwd ms/批/rank | 372.8 | 369.6 | 436.2(*) | 368.9 |
+  | reference_precompute s | — | — | — | 16.1(update 3;1/2 bootstrap 跳过) |
+  | sps | 924.0 | 978.0 | 987.6 | **1064.8** |
+
+  (*) B1 r3 的 bwd 上浮未被 B2 复现(同代码路径 368.9ms),确认为运行窗外部
+  负载噪声。B2 收益方向兑现:reference 前向 4 遍 → 1 遍 + 大批量效率,
+  update −28.7s/update(512 局规模),按样本量外推生产约 −55s,处预期带
+  (−40~70s)内。
+- **回滚**:`git revert 5a8dcf4`。
