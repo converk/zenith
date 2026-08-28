@@ -1000,14 +1000,19 @@ class PPOLearner:
                             )
                         evaluated_loss = loss
                     loss_is_finite = torch.isfinite(evaluated_loss)
-                    loss_detail = (
-                        f"policy={float(policy_loss_values.mean())} "
-                        f"value={float(value_loss_values_.mean())} "
-                        f"entropy={float(entropy_values.mean())} "
-                        f"sft_kl={float(sft_reference_kl_values.mean())}"
-                    )
+
+                    def loss_detail() -> str:
+                        # 诊断字符串仅在判定失败时构造:每 minibatch 无条件
+                        # float() 取均值会引入 4 次 GPU→CPU 同步。
+                        return (
+                            f"policy={float(policy_loss_values.mean())} "
+                            f"value={float(value_loss_values_.mean())} "
+                            f"entropy={float(entropy_values.mean())} "
+                            f"sft_kl={float(sft_reference_kl_values.mean())}"
+                        )
+
                     if self.world_size == 1 and not loss_is_finite:
-                        raise RuntimeError("non-finite PPO loss: " + loss_detail)
+                        raise RuntimeError("non-finite PPO loss: " + loss_detail())
                     with self._gpu_stage("update/backward"):
                         # Gradient accumulation:配置 >1 时,loss 除以累积步数后
                         # 反向,只在最后一累积步执行梯度裁剪 + optimizer.step,
@@ -1047,7 +1052,7 @@ class PPOLearner:
                         if finite.item() == 0.0:
                             raise RuntimeError(
                                 "non-finite PPO loss on one of the DDP ranks: "
-                                + loss_detail
+                                + loss_detail()
                             )
                     if should_step:
                         with self._gpu_stage("update/gradient_clip"):
