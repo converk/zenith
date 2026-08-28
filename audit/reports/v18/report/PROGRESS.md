@@ -663,3 +663,9 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
   `cargo test --workspace` 141 passed;`pytest RiichiEnv/tests` 284 passed, 2 skipped;
   `git diff --check` 通过。详见
   `audit/reports/v18/report/V18_PPO训练性能优化实施记录.md`。
+
+## 2026-08-28 update=10
+
+- reward_mean=1.6517e-11 value_loss=0.31248 entropy=0.44712 actor_grad_norm=0.046277 critic_grad_norm=1.8799 shared_grad_norm=0.054686
+- rollout_wall_s=246.75 update_wall_s=610.07 sps=1596.2 grp_calls=22133 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.2955 top2_rate=0.5393 mean_rank=2.392 point_diff_mean=+2111.3 ci95=[1505.8575, 2721.4091666666664]
