@@ -931,3 +931,10 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
   train.py 在 `run_1v3_evaluation` 前统一调用。显存余量恢复到接近空卡水平。
 - **配置回归标准**:根因修复后不再需要降批,从头重跑使用标准
   `v18_ppo.yaml`(mb1536 + accumulation 10)。
+- 归档:本次中止运行的 checkpoints(u5/u10/u15)与本轮 eval 产物(u5/u10 评测、
+  u15 部分分片)移至 `logs/v18/v18_ppo_r3_20260829/`(run.log、rerun_eval_u5、
+  checkpoints、eval);随后以标准 v18_ppo.yaml 从头重跑(日志
+  `logs/v18/v18_ppo_r4_20260829.log`)。
+- 注:1c86401 的 learner.py 部分同时包含当时工作区中维护者并行重构的片段
+  (ACTOR_ROOTS/SHARED_ROOTS 收敛与 scheduled_u_coefficient 移除),与其
+  model 重构同属一套、套件当时全绿,特此说明。
