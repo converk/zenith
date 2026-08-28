@@ -669,3 +669,28 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
 - reward_mean=1.6517e-11 value_loss=0.31248 entropy=0.44712 actor_grad_norm=0.046277 critic_grad_norm=1.8799 shared_grad_norm=0.054686
 - rollout_wall_s=246.75 update_wall_s=610.07 sps=1596.2 grp_calls=22133 history_pool_size=0
 - 1v3 vs SFT: first_place_rate=0.2955 top2_rate=0.5393 mean_rank=2.392 point_diff_mean=+2111.3 ci95=[1505.8575, 2721.4091666666664]
+
+## 2026-08-28 update=10
+
+- reward_mean=2.7881e-11 value_loss=0.32252 entropy=0.45077 actor_grad_norm=0.044847 critic_grad_norm=3.9424 shared_grad_norm=0.054813
+- rollout_wall_s=235.43 update_wall_s=595.37 sps=1609.5 grp_calls=21656 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.2955 top2_rate=0.5393 mean_rank=2.392 point_diff_mean=+2111.3 ci95=[1505.8575, 2721.4091666666664]
+
+> 注:本条为第二轮(9e-5/8e-5)自动记录,其中 1v3 数字是训练循环按 update 编号
+> 复用了旧 run 缓存(vs_sft_u010.json)的结果,非本轮真实评测。真实重跑
+> (CUDA 2/3 → 物理 GPU 3/4):u5=0.2695/0.5065/2.470,u10=0.2860/0.5295/2.425,
+> u15=0.3010/0.5527/2.371(first_place/top2/mean_rank)。eval 缓存复用的代码
+> 缺陷(training/train.py:482-490)留待后续修复:缓存应绑定 checkpoint 身份。
+
+## 2026-08-28 第二轮(actor 9e-5/critic 8e-5)停止归档
+
+- 运行窗口:2026-08-28 17:08 – 20:39,完成 update 1–15 + update 5/10/15 三次 1v3 评测(全部真实)
+- 配置:`riichi_ppo_v1/configs/v18_ppo.yaml`(第二轮,actor 9e-5/critic 8e-5/shared 7.5e-6,
+  epochs=2、累积=10、2048 局/update;提交 f28b958)
+- 归档:`logs/v18/ppo_lr9e5_20260828_1708/`(checkpoint_00005/00010/00015.pt + metrics/performance/
+  tensorboard + v18_ppo_run2.log + eval/)
+- 关键指标(u12→u15):EV(λ)=0.113→0.127、value_loss_raw≈0.014–0.015、grad_norm 回落至 1.4–2.2、
+  KL/update≈1.0–1.03e-3(较第一轮 ~0.8e-3 提升约 25%,符合 1.5× LR 预期)
+- 1v3 vs SFT:u5=0.2695、u10=0.2860、u15=0.3010(first_place);run1 同点为
+  0.2652/0.2955/0.3118,差值均在 4000 半庄置信区间内——无回归、暂无明显提升
+- 停止原因:维护者手动停训并归档;后续按需从 SFT init 重训或调参后再启
