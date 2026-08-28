@@ -808,3 +808,24 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
   update −28.7s/update(512 局规模),按样本量外推生产约 −55s,处预期带
   (−40~70s)内。
 - **回滚**:`git revert 5a8dcf4`。
+
+## 2026-08-28 V18 PPO 性能优化第二轮:B3 保留 / B4 放弃
+
+- **B3(SDPA 后端锁定,保留,d6a9e50)**:GQA 的 SDPA 调用在 CUDA 上以
+  `sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION)` 包裹,结构化 bool mask 下
+  约束不满足时 fail-fast 报错,杜绝静默回退 math 后端(实测 5.2 倍悬崖);
+  CPU 路径保持默认调度(无 mem_efficient 内核)。单测证:默认调度本就选中
+  mem_efficient(输出 torch.equal 逐位一致)、flash-only 上下文对该 mask 报错。
+  B34 perftest 全程无后端回退报错,推理 mean_ms 20.5(B2 19.9,噪声带内)。
+- **B4(推理批按长度排序,放弃,13dbd25 → revert 0f22103)**:
+  A/B 实测 `padding_fraction_of_padded_tokens` 0.2552 与基线持平、rollout/wall_s
+  72.4s(噪声带内),预期收益(−25~40s)未兑现。归因:padding = 行数 × 批内
+  最大长度 − Σ长度,与批内顺序无关;排序仅在单批超过 max_batch=512 需要切块时
+  有效,而实测 `full_forward_rows_mean ≈ 169 ≪ 512`(每个 16ms 等待窗的快照
+  本身就是一批,排序改变不了批的长度跨度)。文档前提(批会跨 512 切块)与
+  实际批动力学不符。真正的 padding 杠杆是跨等待窗累积凑批(需改批装配机制/
+  等待参数,属本轮明确排除的配置/机制类变更),列为后续轮次候选。回归
+  1 failed(既有)220 passed → revert 后复测通过。
+- **B34 合并 A/B**(日志 `logs/v18/ppo_perf2_B34_20260828.log`,r3):algo
+  372.2s(B2 375.6,基线 423.7)、update 298.9s(B2 305.2)、sps 1050.3。
+- **回滚**:B3 `git revert d6a9e50`;B4 已 revert(0f22103)。
