@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import numpy as np
 import pytest
 
 from riichi_ppo_v1.evaluation.head_to_head_1v3_shards import (
+    checkpoint_sha256,
     merge_1v3_shards,
     pooled_bootstrap_ci,
+    summary_matches_checkpoint,
     validate_1v3_shard_plan,
     validate_non_overlapping_seed_ranges,
 )
@@ -182,3 +185,30 @@ def test_project_1v3_protocol_requires_ten_exact_disjoint_shards() -> None:
 def test_pooled_bootstrap_ci_is_deterministic() -> None:
     samples = np.asarray([1.0, 2.0, 3.0, 4.0, 5.0], dtype=np.float64)
     assert pooled_bootstrap_ci(samples, 42) == pooled_bootstrap_ci(samples, 42)
+
+
+def test_checkpoint_sha256_matches_hashlib(tmp_path) -> None:
+    checkpoint = tmp_path / "checkpoint_00001.pt"
+    checkpoint.write_bytes(b"checkpoint-bytes")
+    assert checkpoint_sha256(checkpoint) == hashlib.sha256(
+        b"checkpoint-bytes"
+    ).hexdigest()
+
+
+def test_summary_cache_validation(tmp_path) -> None:
+    """缓存命中校验:旧格式(无指纹)/同哈希/异哈希三例,仅同哈希可复用。"""
+    checkpoint = tmp_path / "checkpoint_00001.pt"
+    checkpoint.write_bytes(b"checkpoint-bytes")
+    digest = checkpoint_sha256(checkpoint)
+
+    # 旧格式:summary 无 checkpoint_sha256 记录 → 一律视为未命中(需重跑)。
+    assert not summary_matches_checkpoint({"shards": []}, checkpoint)
+    assert not summary_matches_checkpoint({"checkpoint_sha256": ""}, checkpoint)
+    assert not summary_matches_checkpoint(None, checkpoint)
+    # 指纹与 checkpoint 内容一致 → 命中。
+    assert summary_matches_checkpoint({"checkpoint_sha256": digest}, checkpoint)
+    # 指纹不一致(checkpoint 已被覆盖为不同内容)→ 未命中(需重跑覆盖)。
+    assert not summary_matches_checkpoint(
+        {"checkpoint_sha256": hashlib.sha256(b"other-content").hexdigest()},
+        checkpoint,
+    )

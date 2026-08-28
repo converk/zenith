@@ -45,6 +45,7 @@ from .learner_ddp import LearnerDDP
 from .rollout_buffer import RolloutBuffer
 from ..evaluation.head_to_head_1v3_shards import (
     run_sharded_1v3,
+    summary_matches_checkpoint,
     validate_1v3_shard_plan,
 )
 from ..evaluation.mechanism import (
@@ -480,15 +481,21 @@ def run(config: dict[str, Any]) -> None:
             config.get("eval1v3_parallel_hanchans", hanchans_per_process)
         )
         summary_path = output_dir / f"vs_sft_u{int(update):03d}.json"
+        summary: dict[str, Any] | None = None
         if summary_path.is_file():
             with open(summary_path, encoding="utf-8") as file:
-                summary = json.load(file)
-            validate_1v3_shard_plan(
-                list(summary.get("shards", [])),
-                seed_base=seed_base,
-                hanchans_per_process=hanchans_per_process,
-            )
-        else:
+                cached = json.load(file)
+            # 缓存命中以 checkpoint 内容指纹为准:sha256 一致才复用;旧格式
+            # (无记录)或内容不一致一律视为未命中,由 run_sharded_1v3 重跑并
+            # 原子覆盖,防止跨 run 复用同名旧 JSON 污染评测记录。
+            if summary_matches_checkpoint(cached, checkpoint_path):
+                validate_1v3_shard_plan(
+                    list(cached.get("shards", [])),
+                    seed_base=seed_base,
+                    hanchans_per_process=hanchans_per_process,
+                )
+                summary = cached
+        if summary is None:
             summary = run_sharded_1v3(
                 checkpoint_path,
                 model_b,

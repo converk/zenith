@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -33,6 +34,33 @@ def shard_path(output_dir: str | Path, update: int, shard: int) -> Path:
     return Path(output_dir) / "shards" / (
         f"vs_sft_u{int(update):03d}_shard{int(shard):02d}.json"
     )
+
+
+def checkpoint_sha256(checkpoint: str | Path) -> str:
+    """计算 checkpoint 文件的 sha256 内容指纹(分块读取,93MB 约 0.3s)。"""
+    digest = hashlib.sha256()
+    with open(checkpoint, "rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def summary_matches_checkpoint(
+    summary: dict[str, Any],
+    checkpoint: str | Path,
+) -> bool:
+    """缓存 summary 与 checkpoint 内容指纹是否一致。
+
+    缓存命中必须以 checkpoint 内容为准:summary 无 ``checkpoint_sha256``
+    记录(旧格式)或指纹不一致一律视为不匹配,防止跨 run 复用同名旧结果
+    (如 run1/run2 复用同一 vs_sft_uNNN.json 导致评测记录污染的事故)。
+    """
+    if not isinstance(summary, dict):
+        return False
+    recorded = summary.get("checkpoint_sha256")
+    if not isinstance(recorded, str) or not recorded:
+        return False
+    return recorded == checkpoint_sha256(checkpoint)
 
 
 def validate_non_overlapping_seed_ranges(shards: list[dict[str, Any]]) -> None:
@@ -311,7 +339,11 @@ def run_sharded_1v3(
     shards_dir.mkdir(parents=True, exist_ok=True)
     summary_path = shard_summary_path(output, update)
     if summary_path.is_file():
-        return json.loads(summary_path.read_text(encoding="utf-8"))
+        cached = json.loads(summary_path.read_text(encoding="utf-8"))
+        # 缓存命中必须校验 checkpoint 内容指纹;旧格式(无记录)或内容不一致
+        # 一律视为未命中,继续走重跑路径并以 .tmp 原子覆盖旧汇总。
+        if summary_matches_checkpoint(cached, checkpoint):
+            return cached
     if int(processes) != REQUIRED_1V3_PROCESSES:
         raise ValueError(
             f"all 1v3 evaluations require exactly {REQUIRED_1V3_PROCESSES} processes"
@@ -382,6 +414,8 @@ def run_sharded_1v3(
         hanchans_per_process=int(hanchans_per_process),
     )
     summary = merge_1v3_shards(shards, seed_base=seed_base, update=update)
+    # 记录 checkpoint 内容指纹,供后续缓存命中校验(防跨 run 复用旧结果)。
+    summary["checkpoint_sha256"] = checkpoint_sha256(checkpoint)
     temporary = summary_path.with_suffix(summary_path.suffix + ".tmp")
     temporary.write_text(
         json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
