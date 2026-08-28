@@ -32,7 +32,8 @@ games_per_update: 2048
 # PPO 主超参:Actor 用归一化 advantage,Critic 拟合 old_value + raw GAE。
 # 梯度累积=10:每 10 个 minibatch 的(已 DDP 平均)梯度累加后再 step 一次,
 # 等效每步有效 batch = 1536×10×2 = 30720;保留累积以降噪,LR 不再按步数
-# 补偿,下调至 6e-5 以抑制分支梯度上升(维护者决定:2026-08-28)。
+# 补偿。2026-08-28 第二轮起:actor 上调至 9e-5 加快策略前进步长(≈1.5×),
+# critic 上调至 8e-5 跟踪移动目标;shared 维持原值保护公共主干。
 gamma: 1.0
 gae_lambda: 0.95
 ppo_clip: 0.20
@@ -59,12 +60,15 @@ entropy_end: 0.002
 entropy_middle_fraction: 0.33
 
 # 三分支独立学习率调度,bootstrap 不消耗 policy schedule。
-learning_rate: 0.00006
-actor_learning_rate: 0.00006
+# 2026-08-28 第二轮(从头再训)起:actor 9e-5(原 6e-5,策略前进步长≈1.5×,
+# KL/update 目标 1.2-1.5e-3,后续可视效果上调)、critic 8e-5(跟踪 actor
+# 提速后移动的 value 目标)、shared 维持 7.5e-6 保护公共主干。
+learning_rate: 0.00009
+actor_learning_rate: 0.00009
 actor_learning_rate_min: 0.0000225
 shared_learning_rate: 0.0000075
 shared_learning_rate_min: 0.00000375
-critic_learning_rate: 0.00006
+critic_learning_rate: 0.00008
 critic_learning_rate_min: 0.0000225
 critic_bootstrap_learning_rate: 0.00002
 warmup_fraction: 0.02
