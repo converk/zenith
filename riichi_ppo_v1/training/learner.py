@@ -229,10 +229,15 @@ def _rollout_values(
     return np.asarray(getattr(transitions, field), dtype=dtype)
 
 
-def discounted_empirical_returns(
+def _discounted_empirical_returns_loop(
     transitions: RolloutBuffer, gamma: float,
 ) -> np.ndarray:
-    """Monte Carlo reward-to-go,每局终局时重置。"""
+    """gamma≠1 的 MC reward-to-go:保留原 Python 循环。
+
+    gamma≠1 的 ``reward + gamma * running`` 递推是 Horner 求值,每一步的
+    乘加依赖前一步结果,``np.add.accumulate`` 后缀和无法逐位复现其浮点
+    结合顺序,故按参数分派保留此路径(通用性:按 gamma 值判断,不硬编码)。
+    """
     returns = np.zeros(len(transitions), dtype=np.float32)
     running = 0.0
     rewards = _rollout_values(transitions, "rewards", np.dtype(np.float32))
@@ -243,6 +248,46 @@ def discounted_empirical_returns(
         running = float(rewards[index]) + float(gamma) * running
         returns[index] = np.float32(running)
     return returns
+
+
+def _discounted_empirical_returns_gamma1(
+    rewards: np.ndarray, done: np.ndarray,
+) -> np.ndarray:
+    """gamma=1.0 的 MC reward-to-go:按局分段做 float64 反向后缀和。
+
+    与原 Python 循环逐位一致:每段(以 done 行结尾)内
+    ``np.add.accumulate`` 从段末起以 float64 顺序累加,与旧循环逐步
+    ``running = reward + 1.0 * running`` 的浮点加法序列完全相同
+    (IEEE 加法交换律保证操作数顺序无关);旧循环逐元素 np.float32 截断
+    与末端一次性 cast 等价。
+    """
+    total = len(rewards)
+    returns = np.zeros(total, dtype=np.float32)
+    # 段以 done 行结尾;末尾若残留未终局的尾段(rollout 截断),从其起点单独成段。
+    segment_ends = np.flatnonzero(done).tolist()
+    if not segment_ends or segment_ends[-1] != total - 1:
+        segment_ends.append(total - 1)
+    start = 0
+    for end in segment_ends:
+        segment = rewards[start:end + 1].astype(np.float64)
+        returns[start:end + 1] = np.add.accumulate(segment[::-1])[::-1]
+        start = end + 1
+    return returns
+
+
+def discounted_empirical_returns(
+    transitions: RolloutBuffer, gamma: float,
+) -> np.ndarray:
+    """Monte Carlo reward-to-go,每局终局时重置。
+
+    gamma=1.0(生产值)走分段向量化后缀和,与原 Python 循环逐位一致
+    (单测以 ``np.array_equal`` 断言);gamma≠1 保留原循环路径。
+    """
+    if float(gamma) == 1.0:
+        rewards = _rollout_values(transitions, "rewards", np.dtype(np.float32))
+        done = _rollout_values(transitions, "done", np.dtype(np.bool_))
+        return _discounted_empirical_returns_gamma1(rewards, done)
+    return _discounted_empirical_returns_loop(transitions, gamma)
 
 
 def rollout_update_targets(
