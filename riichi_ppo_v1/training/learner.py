@@ -25,7 +25,7 @@ from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
-from ..model.schema import TOKEN_SCHEMA_VERSION
+from ..model.schema import NUM_ACTIONS, TOKEN_SCHEMA_VERSION
 from .profiling import StageProfiler
 from .rollout_buffer import RolloutBuffer
 
@@ -570,6 +570,10 @@ class PPOLearner:
         self.update_validate_structure = bool(
             hyperparameters.get("update_validate_structure", True)
         )
+        # B2:SFT reference logits 预计算的分块行数(大批量提升 GPU 利用率)。
+        self.reference_precompute_batch_size = max(
+            1, int(hyperparameters.get("update_reference_precompute_batch_size", 8192))
+        )
         self.value_target_normalization = str(
             hyperparameters.get("value_target_normalization", "batch_std")
         ).lower()
@@ -688,6 +692,51 @@ class PPOLearner:
             shared_capacity=shared_capacity,
             critic_total_capacity=critic_total_capacity,
         )
+
+    def _precompute_reference_logits(self, transitions: RolloutBuffer) -> torch.Tensor:
+        """对整个 rank 分片一次性预计算冻结 SFT reference 的 policy_logits。
+
+        大批量(``update_reference_precompute_batch_size``,默认 8192 行)在
+        ``inference_mode`` + bf16 autocast 下前向,与 minibatch 内的 reference
+        前向同构(同一 forward 路径,含 legal mask 的 -inf masking);冻结模型
+        行值跨 epoch 不变,故每 update 一次取代每 minibatch 一次(约占 update
+        forward 的 40%)。结果 [N, NUM_ACTIONS] fp32 驻留 GPU 至 update 结束,
+        由 minibatch 按 indices gather(常量,无梯度)。
+        """
+        model = self.reference_model
+        assert model is not None
+        total = len(transitions)
+        chunk = self.reference_precompute_batch_size
+        chunks: list[torch.Tensor] = []
+        with torch.inference_mode():
+            for start in range(0, total, chunk):
+                stop = min(start + chunk, total)
+                host_batch = transitions.collate(
+                    np.arange(start, stop), include_query_rows=False,
+                )
+                shared_capacity = host_batch.pop("shared_capacity", None)
+                host_batch.pop("critic_total_capacity", None)
+                batch = transfer_batch_to_device(host_batch, self.device, None)
+                with torch.autocast(
+                    device_type=self.device.type,
+                    dtype=torch.bfloat16,
+                    enabled=self.use_bf16,
+                ):
+                    logits = model(
+                        batch["actor_factors"],
+                        batch["actor_numeric"],
+                        batch["actor_lengths"],
+                        batch["query_action_ids"],
+                        batch["query_pair_counts"],
+                        batch["legal_mask"],
+                        policy_only=True,
+                        validate_structure=self.update_validate_structure,
+                        shared_capacity=shared_capacity,
+                    )["policy_logits"]
+                chunks.append(logits)
+        # inference_mode 张量不能参与 autograd 记录;在 inference_mode 之外
+        # cat 出普通张量,供 minibatch 内的 KL 计算安全使用。
+        return torch.cat(chunks, dim=0) if len(chunks) > 1 else chunks[0].clone()
 
     def _start_collate_prefetch(
         self,
@@ -903,6 +952,13 @@ class PPOLearner:
                 "SFT KL anchor is enabled but no frozen reference model was loaded; "
                 "start PPO with --init-model or resume an anchored PPO checkpoint"
             )
+        # B2:SFT reference logits 每 update 预计算一次(冻结模型,行值跨 epoch
+        # 不变),取代每 minibatch 一次的 reference 前向;bootstrap 期
+        # (sft_kl_coef=0)跳过。
+        reference_logits: torch.Tensor | None = None
+        if sft_kl_coef > 0.0:
+            with self.profiler.stage("update/reference_precompute"):
+                reference_logits = self._precompute_reference_logits(transitions)
         value_coef = float(self.hp.get("value_coef", 0.5))
 
         # bootstrap 结束后关闭 DDP unused 检测,消除每次 backward 的额外图遍历。
@@ -1030,24 +1086,13 @@ class PPOLearner:
                                     shared_capacity=shared_capacity,
                                     critic_total_capacity=critic_total_capacity,
                                 )
-                                reference_output = None
-                                if sft_kl_coef > 0.0:
-                                    assert self.reference_model is not None
-                                    with torch.no_grad():
-                                        reference_output = self.reference_model(
-                                            batch["actor_factors"],
-                                            batch["actor_numeric"],
-                                            batch["actor_lengths"],
-                                            batch["query_action_ids"],
-                                            batch["query_pair_counts"],
-                                            legal_mask,
-                                            policy_only=True,
-                                            # 与主 forward 同批同输入,校验与 host
-                                            # 容量同步随之消除(校验在主 forward
-                                            # 已做或跳过)。
-                                        validate_structure=self.update_validate_structure,
-                                        shared_capacity=shared_capacity,
-                                    )
+                                # B2:reference logits 每 update 预计算一次,
+                                # 这里按 minibatch indices gather(冻结常量)。
+                                reference_logits_batch = (
+                                    reference_logits[indices]
+                                    if reference_logits is not None
+                                    else None
+                                )
                                 # PPO 数值路径离开模型前统一提升为 FP32。
                                 logits = output["policy_logits"].float()
                                 logprobabilities = F.log_softmax(logits, dim=-1)
@@ -1082,12 +1127,12 @@ class PPOLearner:
                             entropy_values, normalized_entropy_values = policy_entropy_values(
                                 logprobabilities, probabilities, legal_mask,
                             )
-                            if reference_output is None:
+                            if reference_logits_batch is None:
                                 sft_reference_kl_values = torch.zeros_like(policy_loss_values)
                             else:
                                 sft_reference_kl_values = categorical_kl_values(
                                     output["policy_logits"],
-                                    reference_output["policy_logits"],
+                                    reference_logits_batch,
                                 )
                             if critic_bootstrap:
                                 # 预热期只训 critic:policy/entropy/KL 不进入损失,
