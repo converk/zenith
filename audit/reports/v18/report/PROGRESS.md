@@ -868,3 +868,30 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
   | collate_soa_gather s | 14.8 | 28.2(plan 计算入预取线程,净收益仍正) |
   | sps | 1050.3 | **1105.6(+5.3%)** |
 - **回滚**:C2 `git revert 8283f6d`。
+
+## 评测失败记录
+
+- update=5：1v3 shard 子进程失败，训练已中止；已尝试路径与证据见下方失败详情。
+  - shard 0: returncode=1            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^;   File "/mnt/disk1/hubowen/zenith/riichi_ppo_v1/model/architecture.py", line 112, in forward;     value = F.scaled_dot_product_attention(;             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^; torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 MiB. GPU 0 has a total capacity of 44.42 GiB of which 22.00 MiB is free. Process 2631739 has 39.84 GiB memory in use. Process 2632187 has 0 bytes memory in use. Process 578837 has 666.00 MiB memory in use. Process 578789 has 666.00 MiB memory in use. Including non-PyTorch memory, this process has 488.00 MiB memory in use. Process 578885 has 392.00 MiB memory in use. Process 578933 has 392.00 MiB memory in use. Of the allocated memory 124.41 MiB is allocated by PyTorch, and 17.59 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+  - shard 3: returncode=1            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^;   File "/mnt/disk1/hubowen/zenith/riichi_ppo_v1/model/dense_embedding.py", line 227, in forward;     base = self.segment(segment.clamp(0, 5)) + self.kind(kind.clamp(0, 127));            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~; torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 MiB. GPU 0 has a total capacity of 44.42 GiB of which 22.00 MiB is free. Process 2631739 has 39.84 GiB memory in use. Process 2632187 has 0 bytes memory in use. Process 578837 has 666.00 MiB memory in use. Process 578789 has 666.00 MiB memory in use. Process 578787 has 488.00 MiB memory in use. Including non-PyTorch memory, this process has 392.00 MiB memory in use. Process 578933 has 392.00 MiB memory in use. Of the allocated memory 55.75 MiB is allocated by PyTorch, and 6.25 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+  - shard 4: returncode=1            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^;   File "/mnt/disk1/hubowen/zenith/riichi_ppo_v1/model/dense_embedding.py", line 227, in forward;     base = self.segment(segment.clamp(0, 5)) + self.kind(kind.clamp(0, 127));            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~; torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 MiB. GPU 0 has a total capacity of 44.42 GiB of which 22.00 MiB is free. Process 2631739 has 39.84 GiB memory in use. Process 2632187 has 0 bytes memory in use. Process 578837 has 666.00 MiB memory in use. Process 578789 has 666.00 MiB memory in use. Process 578787 has 488.00 MiB memory in use. Process 578885 has 392.00 MiB memory in use. Including non-PyTorch memory, this process has 392.00 MiB memory in use. Of the allocated memory 55.75 MiB is allocated by PyTorch, and 6.25 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+
+## 2026-08-29 第三轮训练启动与 u5 评测 OOM 处置
+
+- **启动**:v18_ppo.yaml(tmux 会话 ppo,日志 logs/v18/v18_ppo_r3_20260829.log)。
+  u1-u5 全部完成:u1=608s(上轮同配置 825-900s,u_forward 194→96s)、u3(首个
+  全 policy)828s、u4=816s;显存 learner rank0 峰值 ~40GiB(B2 reference 预计算
+  常驻 + 激活缓存,高于上轮 ~35GiB),无 OOM、无异常。
+- **事故**:u5 评测 3/10 分片 CUDA OOM(全部在 GPU0):learner rank0 进程占
+  39.84GiB,GPU0 仅余 ~3GiB,评测分片(每卡 5 个、各 ~0.4-0.7GiB)挤爆;
+  GPU1(11GiB 余量)5 分片全部成功。机制按设计中止训练(checkpoint_00005.pt
+  已先行保存)。失败详情由机制写入本文件。
+- **处置**:按维护者指示下调 minibatch,同时保持有效批量不变——
+  `v18_ppo_resume_mb1024.yaml`(自包含副本):mb 1536→1024、accumulation
+  10→15(1024×15×2=30720 与原一致)、resume checkpoint_00005.pt、init_model
+  置空。
+- **u5 评测补跑**(空闲 GPU,`logs/v18/rerun_eval_u5_20260829.log`):10/10 分片
+  成功,first_place_rate=0.2685、top2_rate=0.4965、mean_rank=2.500、
+  point_diff_mean=+365.60 ci95=[-311.98, 1021.26](与上轮 u5 0.2695 交叉印证)。
+  vs_sft_u005.json 已含 checkpoint_sha256(A1 修复生效)。
+- 随后以 resume 配置续训(u6 起,150 updates 目标不变)。
