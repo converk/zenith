@@ -152,6 +152,28 @@ def test_collate_preserves_all_segments_and_padding() -> None:
         assert batch["advantages"][row] == np.float32(item.advantage)
 
 
+def test_collate_include_query_rows_false_skips_only_query_rows() -> None:
+    """include_query_rows=False:除 query_rows 外逐键一致,键序不变。"""
+    transitions = _transitions(np.random.default_rng(5), 24)
+    buffer = RolloutBuffer(transitions)
+    indices = np.random.default_rng(6).permutation(len(transitions))[:12]
+    default_batch = buffer.collate(indices)
+    lean_batch = buffer.collate(indices, include_query_rows=False)
+
+    assert "query_rows" not in lean_batch
+    assert "query_rows" in default_batch
+    # 默认路径的键序保持历史行为(query_rows 排在 actor_lengths 之后)。
+    lean_keys = list(lean_batch.keys())
+    assert list(default_batch.keys()) == [
+        *lean_keys[:3], "query_rows", *lean_keys[3:],
+    ]
+    assert set(lean_batch.keys()) == set(default_batch.keys()) - {"query_rows"}
+    for name, value in default_batch.items():
+        if name == "query_rows":
+            continue
+        torch.testing.assert_close(lean_batch[name], value)
+
+
 def test_bucketed_minibatches_are_deterministic_and_cover_all_rows() -> None:
     buffer = RolloutBuffer(_transitions(np.random.default_rng(3), 1500))
     left = buffer.bucketed_minibatches(
@@ -520,11 +542,11 @@ def test_prefetch_propagates_collate_exception(monkeypatch) -> None:
     original_collate = transitions.collate
     calls = {"count": 0}
 
-    def failing_collate(indices):
+    def failing_collate(indices, **kwargs):
         calls["count"] += 1
         if calls["count"] == 3:
             raise RuntimeError("boom in collate")
-        return original_collate(indices)
+        return original_collate(indices, **kwargs)
 
     monkeypatch.setattr(transitions, "collate", failing_collate)
     learner = PPOLearner(

@@ -295,8 +295,19 @@ class RolloutBuffer:
         flat = np.concatenate(parts, axis=0) if parts else np.zeros((0,), dtype=np.float32)
         return np.asarray(offsets, dtype=np.int64), flat, (flat.shape[1] if flat.ndim >= 2 else 0)
 
-    def collate(self, indices: Sequence[int]) -> dict[str, torch.Tensor]:
-        """把一个 minibatch 的下标数组 gather 成 V18 padded host 张量(CPU)。"""
+    def collate(
+        self,
+        indices: Sequence[int],
+        *,
+        include_query_rows: bool = True,
+    ) -> dict[str, torch.Tensor]:
+        """把一个 minibatch 的下标数组 gather 成 V18 padded host 张量(CPU)。
+
+        ``include_query_rows=False`` 时跳过 ``query_rows`` 的 gather 与输出:
+        该字段仅作离线一致性校验,模型 forward 不消费,learner 侧传 False
+        省去每 minibatch 一次无用的拼装/拷贝;默认 True 保持其余调用方
+        (worker/inference/测试)的历史行为不变。
+        """
         idx = np.asarray([int(index) for index in indices], dtype=np.int64)
         if len(idx) == 0:
             raise ValueError("cannot collate an empty minibatch")
@@ -327,15 +338,17 @@ class RolloutBuffer:
             0.0,
             width=_NUMERIC_W,
         )
-        query_rows = _gather_padded(
-            self.query_rows_flat,
-            self.query_rows_offsets[idx],
-            2 * pair_counts,
-            2 * max_pairs,
-            0,
-            width=_QUERY_W,
-            dtype=np.int32,
-        )
+        query_rows = None
+        if include_query_rows:
+            query_rows = _gather_padded(
+                self.query_rows_flat,
+                self.query_rows_offsets[idx],
+                2 * pair_counts,
+                2 * max_pairs,
+                0,
+                width=_QUERY_W,
+                dtype=np.int32,
+            )
         query_action_ids = _gather_padded(
             self.query_ids_flat,
             self.query_ids_offsets[idx],
@@ -366,11 +379,17 @@ class RolloutBuffer:
         advantages = torch.from_numpy(self.advantages[idx])
         legal = torch.from_numpy(self.legal_mask[idx])
 
-        return {
+        # 键顺序与历史实现保持一致(query_rows 缺省时原位跳过)。
+        batch_tensors = {
             "actor_factors": torch.from_numpy(np.ascontiguousarray(actor_factors)),
             "actor_numeric": torch.from_numpy(np.ascontiguousarray(actor_numeric)),
             "actor_lengths": actor_lengths,
-            "query_rows": torch.from_numpy(np.ascontiguousarray(query_rows)),
+        }
+        if include_query_rows:
+            batch_tensors["query_rows"] = torch.from_numpy(
+                np.ascontiguousarray(query_rows)
+            )
+        batch_tensors.update({
             "query_action_ids": torch.from_numpy(np.ascontiguousarray(query_action_ids)),
             "query_pair_counts": query_pair_counts,
             "legal_mask": legal,
@@ -379,7 +398,8 @@ class RolloutBuffer:
             "actions": actions,
             "old_logprobs": old_logprobs,
             "advantages": advantages,
-        }
+        })
+        return batch_tensors
 
     def bucketed_minibatches(
         self,

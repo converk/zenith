@@ -452,7 +452,8 @@ def _prefetch_collate_worker(
                 if state.stop_event.is_set():
                     return
                 started = time.perf_counter()
-                host_batch = transitions.collate(indices)
+                # learner 不消费 query_rows(仅离线一致性校验用),collate 跳过。
+                host_batch = transitions.collate(indices, include_query_rows=False)
                 state.times[counter] = time.perf_counter() - started
                 counter += 1
                 while not state.stop_event.is_set():
@@ -949,11 +950,11 @@ class PPOLearner:
                         indices, host_batch = self._prefetch_get(prefetch_state)
                     else:
                         with self.profiler.stage("update/collate_soa_gather"):
-                            host_batch = transitions.collate(indices)
-                    # ``query_rows`` 仅作离线一致性校验,模型 forward 不消费;这里
-                    # 不传设备,省去每 minibatch 一次无用 H2D(RolloutBuffer 仍保留
-                    # 该字段供 worker/inference/测试使用)。
-                    host_batch.pop("query_rows", None)
+                            # learner 不消费 query_rows(仅离线一致性校验用),
+                            # collate 跳过以省预取线程/主线程的拼装与拷贝。
+                            host_batch = transitions.collate(
+                                indices, include_query_rows=False,
+                            )
                     batch = transfer_batch_to_device(host_batch, self.device, self.profiler)
                     legal_mask = batch["legal_mask"]
                     actions = batch["actions"]
