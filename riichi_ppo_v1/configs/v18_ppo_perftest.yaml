@@ -1,10 +1,15 @@
-# V18 PPO 稳定性训练正式配置:150 updates × 2048 完整半庄。
-# 自包含配置,不与 training.yaml 或其他历史配置叠加。
+# V18 PPO 性能 A/B 基准配置(自包含,不与任何配置叠加)。
+# 以 v18_ppo.yaml 全文为底本复制,仅允许改动以下键(§8 A/B 协议):
+#   iterations/total_updates: 3、games_per_update: 512、update_epochs: 4、
+#   target_kl: 0.0、eval1v3_enabled: false、
+#   checkpoint_dir: checkpoints/train_riichi_v18/ppo_perftest。
+# 其余键(minibatch 1536 / accumulation 10 / 12 worker / 32 env / wait 16ms 等)
+# 与生产配置逐键一致;本文件只作短程性能基准,不是训练配置。
 seed: 20260828
 device: cuda
 learner_gpus: 2
-iterations: 150
-total_updates: 150
+iterations: 3
+total_updates: 3
 model_size: v18
 context_tokens: 256
 policy_head_type: current_state_snapshot
@@ -27,24 +32,18 @@ inference_max_batch_size: 512
 inference_batch_wait_ms: 16.0
 inference_batch_target_rows: 0
 inference_batch_target_workers: -1
-games_per_update: 2048
+games_per_update: 512
 
-# PPO 主超参:Actor 用归一化 advantage,Critic 拟合 old_value + raw GAE。
-# 梯度累积=10:每 10 个 minibatch 的(已 DDP 平均)梯度累加后再 step 一次,
-# 等效每步有效 batch = 1536×10×2 = 30720;保留累积以降噪,LR 不再按步数
-# 补偿。2026-08-28 第二轮起:actor 上调至 9e-5 加快策略前进步长(≈1.5×),
-# critic 上调至 8e-5 跟踪移动目标;shared 维持原值保护公共主干。
+# PPO 主超参:与生产配置逐键一致(update_epochs 按 A/B 协议固定为 4)。
 gamma: 1.0
 gae_lambda: 0.95
 ppo_clip: 0.20
-update_epochs: 2
+update_epochs: 4
 minibatch_size: 1536
 gradient_accumulation_steps: 10
 update_batch_mode: streaming
 bucket_window_multiplier: 8
-# 训练期跳过前向 GPU 侧结构校验(新增键,B1):输入由 Rust 编码器 fail-closed
-# 生成 + SFT 契约校验 + 单测覆盖,校验在训练期是重复检查,且每次 forward 引入
-# 十余次 GPU→CPU 同步;关闭不影响数值路径。默认 True(不配置时行为不变)。
+# B1 新增键:与生产配置保持一致(训练期跳过前向结构校验)。
 update_validate_structure: false
 
 # critic 侧降温:0.5→0.3,直接压低 critic 分支 pre-clip 梯度,并同步降低
@@ -56,17 +55,12 @@ value_target_std_floor: 0.01
 
 # 三点分段 entropy schedule,loss 使用按合法动作数归一化的 entropy。
 entropy_loss_mode: normalized
-# 熵项是 actor/shared 梯度的主要常量来源,三项整体下调(0.014/0.006/0.002)
-# 以压低梯度底座;不强制熵坍塌,熵曲线顺其自然。
 entropy_start: 0.014
 entropy_middle: 0.006
 entropy_end: 0.002
 entropy_middle_fraction: 0.33
 
-# 三分支独立学习率调度,bootstrap 不消耗 policy schedule。
-# 2026-08-28 第二轮(从头再训)起:actor 9e-5(原 6e-5,策略前进步长≈1.5×,
-# KL/update 目标 1.2-1.5e-3,后续可视效果上调)、critic 8e-5(跟踪 actor
-# 提速后移动的 value 目标)、shared 维持 7.5e-6 保护公共主干。
+# 三分支独立学习率调度,bootstrap 不消耗 policy schedule(与生产配置一致)。
 learning_rate: 0.00009
 actor_learning_rate: 0.00009
 actor_learning_rate_min: 0.0000225
@@ -76,14 +70,13 @@ critic_learning_rate: 0.00008
 critic_learning_rate_min: 0.0000225
 critic_bootstrap_learning_rate: 0.00002
 warmup_fraction: 0.02
-# β1 0.95→0.9:配合 accumulation=10 的大有效 batch,一阶动量回到标准响应速度
-# (维护者决定:2026-08-27)。
 adam_beta1: 0.9
 adam_beta2: 0.999
 adam_epsilon: 0.00001
 weight_decay: 0.0
 
 # 稳定性:分支裁剪、critic 公共/私有 embedding 梯度隔离、old-policy KL guardrail。
+# target_kl=0.0 为性能基准约定(禁用 KL guardrail,AGENTS.md 基线要求)。
 critic_bootstrap_updates: 2
 max_grad_norm: 0.5
 actor_max_grad_norm: 0.5
@@ -91,29 +84,28 @@ shared_max_grad_norm: 0.5
 critic_max_grad_norm: 0.5
 critic_public_grad_scale: 0.25
 critic_private_embedding_grad_scale: 0.25
-target_kl: 0.01
+target_kl: 0.0
 target_kl_check_interval: 8
 
-# SFT reference KL:前段保留中等弱锚,后段不再回锚(0.002→0.0005),
-# 避免策略偏离 SFT 后 KL 梯度抬升 actor/shared。
+# SFT reference KL:与生产配置一致(perftest 仍覆盖 sft_kl_coef>0 路径)。
 sft_kl_coef_start: 0.0025
 sft_kl_coef_middle: 0.001
 sft_kl_coef_end: 0.0005
 sft_kl_middle_fraction: 0.5
 
-# 每 5 updates 保存 checkpoint 并执行固定 1v3 评测(与宪法机制一致)。
+# 每 5 updates 保存 checkpoint;3 updates 的基准不会触发中途保存。
 checkpoint_interval_updates: 5
-# learner 驱动接收超时:update 时长 ∝ games×epochs,与 minibatch 无关;
-# 2048 局全量更新实测外推 ~665-735s,固定 600s 会在 update 3 误杀训练。
 update_timeout_s: 1800
 eval1v3_interval_updates: 5
-checkpoint_dir: checkpoints/train_riichi_v18/ppo
+# A/B 基准专用输出目录(与生产 checkpoint 隔离;每轮 A/B 后整体删除)。
+checkpoint_dir: checkpoints/train_riichi_v18/ppo_perftest
 resume: null
 
 opponent_mix:
   enabled: false
 
-eval1v3_enabled: true
+# 基准关闭 1v3 评测(正确性不受影响,纯性能对比)。
+eval1v3_enabled: false
 eval1v3_model_b: checkpoints/train_riichi_v18/sft/best.pt
 eval1v3_seed_base: 20260827
 eval1v3_devices: ["0", "1"]

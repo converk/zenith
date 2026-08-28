@@ -564,6 +564,12 @@ class PPOLearner:
         if self.update_batch_mode not in {"streaming", "auto"}:
             raise ValueError("update_batch_mode must be one of streaming or auto")
         self.collate_prefetch = bool(hyperparameters.get("update_collate_prefetch", True))
+        # 训练期跳过前向 GPU 侧结构校验:输入由 Rust 编码器 fail-closed 生成 +
+        # SFT 契约校验 + 单测覆盖,校验本身每次 forward 引入十余次 GPU→CPU
+        # 同步。默认 True 保持历史行为;关闭仅移除重复检查,不改数值。
+        self.update_validate_structure = bool(
+            hyperparameters.get("update_validate_structure", True)
+        )
         self.value_target_normalization = str(
             hyperparameters.get("value_target_normalization", "batch_std")
         ).lower()
@@ -661,6 +667,8 @@ class PPOLearner:
         batch: dict[str, torch.Tensor],
         *,
         critic_bootstrap: bool,
+        shared_capacity: int | None = None,
+        critic_total_capacity: int | None = None,
     ) -> dict[str, torch.Tensor]:
         """统一走 ``__call__`` 分发,DDP 包装后 forward 才能触发梯度同步。"""
         model = self.model_ddp if self.model_ddp is not None else self.model
@@ -676,6 +684,9 @@ class PPOLearner:
             detach_critic_public=critic_bootstrap,
             critic_public_grad_scale=self.critic_public_grad_scale,
             critic_private_embedding_grad_scale=self.critic_private_embedding_grad_scale,
+            validate_structure=self.update_validate_structure,
+            shared_capacity=shared_capacity,
+            critic_total_capacity=critic_total_capacity,
         )
 
     def _start_collate_prefetch(
@@ -955,6 +966,10 @@ class PPOLearner:
                             host_batch = transitions.collate(
                                 indices, include_query_rows=False,
                             )
+                    # host 侧容量标量为非张量,不能进 H2D;取出后透传 forward,
+                    # 消除 forward 内 shared/critic_total 两次 max().item() 同步。
+                    shared_capacity = host_batch.pop("shared_capacity", None)
+                    critic_total_capacity = host_batch.pop("critic_total_capacity", None)
                     batch = transfer_batch_to_device(host_batch, self.device, self.profiler)
                     legal_mask = batch["legal_mask"]
                     actions = batch["actions"]
@@ -1012,6 +1027,8 @@ class PPOLearner:
                             ):
                                 output = self._model_forward(
                                     batch, critic_bootstrap=critic_bootstrap,
+                                    shared_capacity=shared_capacity,
+                                    critic_total_capacity=critic_total_capacity,
                                 )
                                 reference_output = None
                                 if sft_kl_coef > 0.0:
@@ -1025,7 +1042,12 @@ class PPOLearner:
                                             batch["query_pair_counts"],
                                             legal_mask,
                                             policy_only=True,
-                                        )
+                                            # 与主 forward 同批同输入,校验与 host
+                                            # 容量同步随之消除(校验在主 forward
+                                            # 已做或跳过)。
+                                        validate_structure=self.update_validate_structure,
+                                        shared_capacity=shared_capacity,
+                                    )
                                 # PPO 数值路径离开模型前统一提升为 FP32。
                                 logits = output["policy_logits"].float()
                                 logprobabilities = F.log_softmax(logits, dim=-1)

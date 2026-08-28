@@ -18,7 +18,12 @@ from typing import Iterator, Sequence
 import numpy as np
 import torch
 
-from ..model.encoding_protocol import QUERY_ROW_WIDTH, TOKEN_NUMERIC_WIDTH, TOKEN_ROW_WIDTH
+from ..model.encoding_protocol import (
+    QUERY_ROW_WIDTH,
+    TOKEN_NUMERIC_WIDTH,
+    TOKEN_ROW_WIDTH,
+    SEGMENT_SHARED,
+)
 from ..model.schema import NUM_ACTIONS
 from .trajectory import Transition, transition_sequence_length
 
@@ -307,6 +312,10 @@ class RolloutBuffer:
         该字段仅作离线一致性校验,模型 forward 不消费,learner 侧传 False
         省去每 minibatch 一次无用的拼装/拷贝;默认 True 保持其余调用方
         (worker/inference/测试)的历史行为不变。
+
+        额外输出 host 侧标量 ``shared_capacity``/``critic_total_capacity``
+        (numpy 预计算,与 forward 内 GPU 推导逐位同义):learner 侧透传给
+        forward 以消除 ``max().item()`` 同步;调用方不消费时忽略即可。
         """
         idx = np.asarray([int(index) for index in indices], dtype=np.int64)
         if len(idx) == 0:
@@ -379,6 +388,15 @@ class RolloutBuffer:
         advantages = torch.from_numpy(self.advantages[idx])
         legal = torch.from_numpy(self.legal_mask[idx])
 
+        # host 侧容量预计算:shared 行数 = segment==SHARED 的有效行数(padding
+        # 行 segment 为 0 不污染计数);critic 总长 = shared + critic + value 行。
+        # 语义与 architecture.forward 内 GPU 推导逐位同义,经单测 torch.equal 对照。
+        shared_per_row = (actor_factors[..., 0] == SEGMENT_SHARED).sum(-1)
+        shared_capacity = int(shared_per_row.max(initial=0))
+        critic_total_capacity = int(
+            (shared_per_row + critic_lens + 1).max(initial=0)
+        )
+
         # 键顺序与历史实现保持一致(query_rows 缺省时原位跳过)。
         batch_tensors = {
             "actor_factors": torch.from_numpy(np.ascontiguousarray(actor_factors)),
@@ -398,6 +416,9 @@ class RolloutBuffer:
             "actions": actions,
             "old_logprobs": old_logprobs,
             "advantages": advantages,
+            # host 侧标量放末尾;非张量,learner 侧 pop 后透传 forward。
+            "shared_capacity": shared_capacity,
+            "critic_total_capacity": critic_total_capacity,
         })
         return batch_tensors
 

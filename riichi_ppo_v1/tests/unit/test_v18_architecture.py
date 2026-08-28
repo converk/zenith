@@ -246,3 +246,119 @@ def test_critic_private_embedding_grad_scale_preserves_forward_and_scales_backwa
     torch.testing.assert_close(outputs[0], outputs[2])
     assert grads[0] == 0.0
     assert grads[1] == pytest.approx(grads[2] * 0.25, rel=1e-4, abs=1e-6)
+
+
+def _kind_constants() -> tuple[int, int]:
+    from riichi_ppo_v1.model.encoding_protocol import (
+        KIND_ACTION_DEFENSE_QUERY,
+        KIND_ACTION_OFFENSE_QUERY,
+    )
+
+    return KIND_ACTION_OFFENSE_QUERY, KIND_ACTION_DEFENSE_QUERY
+
+
+def test_action_query_rows_are_canonical_tail_window() -> None:
+    """canonical 契约:action query 行恒为每行序列尾部连续 2×pair_count 行。
+
+    forward 的算术索引(取代 torch.nonzero)以此为前提;契约来源为 Rust
+    编码器 fail-closed 构造,fixtures 按同一布局构造。
+    """
+    offense_kind, defense_kind = _kind_constants()
+    for batch in (1, 4):
+        inputs = actor_inputs(batch=batch, action_ids=(1, 7, 12))
+        factors = inputs["actor_factors"]
+        lengths = inputs["actor_lengths"]
+        counts = inputs["query_pair_counts"]
+        capacity = factors.shape[1]
+        positions = torch.arange(capacity)[None, :]
+        kind = factors[..., 1]
+        mask = (kind.eq(offense_kind) | kind.eq(defense_kind)) & (
+            positions < lengths[:, None]
+        )
+        tail = (positions >= lengths[:, None] - 2 * counts[:, None]) & (
+            positions < lengths[:, None]
+        )
+        assert torch.equal(mask, tail)
+        # tail 窗口内 O 先 D 后相邻成对:偶数位 O、奇数位 D。
+        window = kind[0, lengths[0] - 2 * counts[0]:lengths[0]]
+        assert torch.equal(window[0::2], torch.full_like(window[0::2], offense_kind))
+        assert torch.equal(window[1::2], torch.full_like(window[1::2], defense_kind))
+
+
+def _forward_kwargs(batch: int = 3) -> dict:
+    from riichi_ppo_v1.tests.v18_fixtures import critic_inputs
+
+    inputs = actor_inputs(batch=batch, action_ids=(2, 9))
+    critic = critic_inputs(batch=batch)
+    return dict(
+        actor_factors=inputs["actor_factors"],
+        actor_numeric=inputs["actor_numeric"],
+        actor_lengths=inputs["actor_lengths"],
+        query_action_ids=inputs["action_ids"],
+        query_pair_counts=inputs["query_pair_counts"],
+        legal_mask=inputs["legal_mask"],
+        critic_factors=critic["critic_factors"],
+        critic_lengths=critic["critic_lengths"],
+    )
+
+
+def _host_capacities(kwargs: dict) -> tuple[int, int]:
+    """与 rollout_buffer.collate 相同语义的 host 容量预计算。"""
+    shared_per_row = (kwargs["actor_factors"][..., 0] == SEGMENT_SHARED).sum(-1)
+    shared_capacity = int(shared_per_row.max())
+    critic_total_capacity = int(
+        (shared_per_row + kwargs["critic_lengths"] + 1).max()
+    )
+    return shared_capacity, critic_total_capacity
+
+
+def test_forward_validate_switch_and_host_capacity_bitwise_equal() -> None:
+    """validate_structure 两态、host capacity 两来源在合法输入上 torch.equal。"""
+    model = KyokuTransformerActorCritic()
+    model.eval()
+    kwargs = _forward_kwargs()
+    shared_capacity, critic_total_capacity = _host_capacities(kwargs)
+    with torch.no_grad():
+        base = model(**kwargs)
+        no_validate = model(**kwargs, validate_structure=False)
+        host = model(
+            **kwargs,
+            shared_capacity=shared_capacity,
+            critic_total_capacity=critic_total_capacity,
+        )
+        lean = model(
+            **kwargs,
+            validate_structure=False,
+            shared_capacity=shared_capacity,
+            critic_total_capacity=critic_total_capacity,
+        )
+    for output in (no_validate, host, lean):
+        for key in ("raw_policy_logits", "policy_logits", "value"):
+            assert torch.equal(base[key], output[key]), key
+
+
+def test_validate_structure_true_rejects_contract_violations() -> None:
+    """validate=True 拒绝 tail 窗口违约/重复 id;False 依契约放行不抛错。"""
+    from riichi_ppo_v1.model.encoding_protocol import (
+        KIND_ACTION_DEFENSE_QUERY,
+        KIND_ACTION_OFFENSE_QUERY,
+    )
+
+    model = KyokuTransformerActorCritic()
+    model.eval()
+    # 重复 action id:tail 窗口位置合法但行内相邻重复。
+    kwargs = _forward_kwargs(batch=1)
+    kwargs["query_action_ids"][0, 1] = kwargs["query_action_ids"][0, 0]
+    with pytest.raises(ValueError, match="unique"):
+        model(**kwargs, validate_structure=True)
+    with torch.no_grad():
+        model(**kwargs, validate_structure=False)
+    # tail 窗口违约:声明 pair 数少于实际 query 行(tail 窗口与 kind mask 失配;
+    # 直接改 kind 会先撞上 segment/kind schema 校验,故用 pair_counts 失配)。
+    broken = _forward_kwargs(batch=1)
+    broken["query_pair_counts"][0] -= 1
+    with pytest.raises(ValueError, match="tail window"):
+        model(**broken, validate_structure=True)
+    with torch.no_grad():
+        model(**broken, validate_structure=False)
+    assert KIND_ACTION_OFFENSE_QUERY != KIND_ACTION_DEFENSE_QUERY

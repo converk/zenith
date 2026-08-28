@@ -367,7 +367,20 @@ class KyokuTransformerActorCritic(nn.Module):
         critic_public_grad_scale: float = 1.0,
         critic_private_embedding_grad_scale: float = 1.0,
         policy_only: bool = False,
+        validate_structure: bool = True,
+        shared_capacity: int | None = None,
+        critic_total_capacity: int | None = None,
     ) -> dict[str, Tensor]:
+        """V18 前向。
+
+        ``validate_structure=False`` 时跳过全部 GPU 侧结构校验(训练期由 Rust
+        编码器 fail-closed 生成 + SFT 契约校验 + 单测覆盖,重复校验每次
+        forward 引入十余次 GPU→CPU 同步);默认 True 保持历史行为。
+
+        ``shared_capacity``/``critic_total_capacity`` 为 host 侧预计算的容量
+        (collate 在 numpy 里算好传入);为 None 时回退到 GPU ``max().item()``
+        同步推导,保证其他调用方零改动。
+        """
         if self.config.policy_head_type != "current_state_snapshot":
             raise ValueError("V18 forward requires current_state_snapshot")
         batch, actor_capacity, _width = actor_factors.shape
@@ -381,11 +394,12 @@ class KyokuTransformerActorCritic(nn.Module):
             raise ValueError("query_pair_counts must be [batch]")
         if legal_mask.shape != (batch, NUM_ACTIONS):
             raise ValueError(f"legal_mask must be [batch, {NUM_ACTIONS}]")
-        if torch.any(actor_lengths < 0) or torch.any(actor_lengths > actor_capacity):
-            raise ValueError("actor_lengths out of range")
-        if torch.any(actor_lengths > self.config.context_tokens):
-            raise ValueError("actor context overflow")
-        _assert_structure(actor_factors, actor_lengths, critic=False)
+        if validate_structure:
+            if torch.any(actor_lengths < 0) or torch.any(actor_lengths > actor_capacity):
+                raise ValueError("actor_lengths out of range")
+            if torch.any(actor_lengths > self.config.context_tokens):
+                raise ValueError("actor context overflow")
+            _assert_structure(actor_factors, actor_lengths, critic=False)
 
         device = actor_factors.device
         actor_lengths = actor_lengths.to(device=device, dtype=torch.long)
@@ -394,7 +408,12 @@ class KyokuTransformerActorCritic(nn.Module):
         # —— Shared 公共前缀（segment 1）双向 backbone ——
         shared_mask = actor_factors[..., 0].eq(SEGMENT_SHARED)
         shared_lengths = (shared_mask & (torch.arange(actor_capacity, device=device)[None] < actor_lengths[:, None])).sum(dim=1)
-        shared_capacity = max(int(shared_lengths.max().item()), 1)
+        if shared_capacity is None:
+            shared_capacity = max(int(shared_lengths.max().item()), 1)
+        else:
+            # host 侧 capacity:collate 在 numpy 里按同一语义(segment==SHARED 的
+            # 有效行数)取批内最大;padding 行 segment 为 0 不污染计数。
+            shared_capacity = max(int(shared_capacity), 1)
         shared_tokens = actor_embeddings[:, :shared_capacity]
         shared_mask_bool, shared_valid = _bidirectional_layout(shared_lengths, shared_capacity)
         shared_hidden = self.public_backbone(
@@ -422,40 +441,57 @@ class KyokuTransformerActorCritic(nn.Module):
         )
         pair_counts = query_pair_counts.to(device=device, dtype=torch.long)
         action_capacity = query_action_ids.shape[1]
-        if torch.any(pair_counts < 0) or torch.any(pair_counts > action_capacity):
-            raise ValueError("query_pair_counts out of range")
-        # 整批向量化：一次 nonzero 取代逐行 torch.nonzero（每行一次 GPU→CPU 同步，
-        # 旧实现 256 行/批造成大量同步开销）。nonzero 默认返回 CPU 张量，随后统一
-        # 搬到设备上参与索引；结果按行主序，行内 O/D 相邻成对。
-        flat_positions = torch.nonzero(query_mask).to(device=device)
-        if flat_positions.shape[0] != 2 * int(pair_counts.sum()):
-            raise ValueError("action query rows do not match query_pair_counts")
-        if flat_positions.shape[0] > 0:
-            row_indices = flat_positions[:, 0]
-            col_indices = flat_positions[:, 1]
-            offense_hidden = actor_hidden[row_indices[0::2], col_indices[0::2]]
-            defense_hidden = actor_hidden[row_indices[1::2], col_indices[1::2]]
-            pair_hiddens = self.action_fusion(
-                torch.cat((offense_hidden, defense_hidden), dim=-1)
+        if validate_structure:
+            if torch.any(pair_counts < 0) or torch.any(pair_counts > action_capacity):
+                raise ValueError("query_pair_counts out of range")
+            # canonical 契约:action query 行为每行序列尾部连续 2×pair_count 行
+            # (O 先 D 后相邻成对;来源:Rust 编码器 fail-closed 构造 +
+            # test_v18_architecture 的契约断言)。校验路径比旧实现更严:旧实现
+            # 只核对数量,这里核对整个 tail 窗口位置一一对应。
+            tail_window = (
+                torch.arange(actor_capacity, device=device)[None]
+                >= actor_lengths[:, None] - 2 * pair_counts[:, None]
+            ) & (
+                torch.arange(actor_capacity, device=device)[None] < actor_lengths[:, None]
             )
-            action_logits = self.policy_mlp(pair_hiddens).squeeze(-1).float()
-        else:
-            action_logits = actor_hidden.new_zeros((0,), dtype=torch.float32)
-
+            if bool((query_mask != tail_window).any()):
+                raise ValueError(
+                    "action query rows are not the canonical contiguous tail window"
+                )
+        # 算术索引取代 torch.nonzero/repeat_interleave:两者输出形状依赖数据,
+        # 必然 GPU→CPU 同步,且是 torch.compile fullgraph 的断裂源。无效槽位
+        # clamp 到界内取占位 hidden,logits 以 where 置 0,scatter 加 0 无影响
+        # (x + 0.0 == x,softmax/log 对 ±0.0 亦不变)。
+        pair_index = torch.arange(action_capacity, device=device)
+        valid_pair = pair_index[None, :] < pair_counts[:, None]
+        offense_cols = (
+            actor_lengths[:, None] - 2 * pair_counts[:, None] + 2 * pair_index[None, :]
+        )
+        col_upper = max(int(actor_capacity) - 1, 0)
+        safe_cols = offense_cols.clamp(0, col_upper)
+        rows_matrix = torch.arange(batch, device=device)[:, None].expand(
+            batch, action_capacity
+        )
+        offense_hidden = actor_hidden[rows_matrix, safe_cols]
+        defense_hidden = actor_hidden[rows_matrix, (safe_cols + 1).clamp(0, col_upper)]
+        pair_hiddens = self.action_fusion(
+            torch.cat((offense_hidden, defense_hidden), dim=-1)
+        )
+        action_logits = self.policy_mlp(pair_hiddens).squeeze(-1).float()
+        action_logits = torch.where(
+            valid_pair, action_logits, action_logits.new_zeros(()),
+        )
+        flat_ids = query_action_ids.to(device=device, dtype=torch.long)
+        if validate_structure and action_capacity > 1:
+            # 行内升序(canonical 契约保证),相邻重复即非法;跨行重复属正常。
+            duplicate = valid_pair[:, 1:] & (flat_ids[:, 1:] == flat_ids[:, :-1])
+            if bool(duplicate.any()):
+                raise ValueError(
+                    "query action ids must be unique (duplicate action id rejected)"
+                )
         raw = torch.zeros((batch, NUM_ACTIONS), dtype=torch.float32, device=device)
-        if action_logits.shape[0] > 0:
-            pair_row = torch.repeat_interleave(
-                torch.arange(batch, device=device), pair_counts
-            )
-            starts = (pair_counts.cumsum(0) - pair_counts).repeat_interleave(pair_counts)
-            within = torch.arange(action_logits.shape[0], device=device) - starts
-            flat_ids = query_action_ids.to(device=device, dtype=torch.long)[pair_row, within]
-            # 行内升序（canonical 契约保证），跨行重复属正常；只检测相邻同行的重复。
-            if flat_ids.numel() > 0:
-                same_row = pair_row[1:] == pair_row[:-1]
-                if torch.any(same_row & (flat_ids[1:] == flat_ids[:-1])):
-                    raise ValueError("query action ids must be unique (duplicate action id rejected)")
-            raw.view(-1).scatter_add_(0, pair_row * NUM_ACTIONS + flat_ids, action_logits)
+        targets = rows_matrix * NUM_ACTIONS + flat_ids
+        raw.view(-1).scatter_add_(0, targets.reshape(-1), action_logits.reshape(-1))
         logits = raw.masked_fill(~legal_mask.to(device=device, dtype=torch.bool), float("-inf"))
         output: dict[str, Tensor] = {"raw_policy_logits": raw, "policy_logits": logits}
         if policy_only:
@@ -470,9 +506,12 @@ class KyokuTransformerActorCritic(nn.Module):
             raise ValueError(f"critic_factors must be [batch, tokens, {TOKEN_ROW_WIDTH}]")
         if critic_lengths.shape != (batch,):
             raise ValueError("critic_lengths must be [batch]")
-        _assert_structure(critic_factors, critic_lengths, critic=True)
+        if validate_structure:
+            _assert_structure(critic_factors, critic_lengths, critic=True)
         critic_capacity = int(critic_factors.shape[1])
-        if torch.any(critic_lengths > self.config.context_tokens - shared_lengths - 1):
+        if validate_structure and torch.any(
+            critic_lengths > self.config.context_tokens - shared_lengths - 1
+        ):
             raise ValueError("critic context overflow")
         critic_embeddings = self.token_embedding(critic_factors, critic_factors.new_zeros((batch, critic_capacity, TOKEN_NUMERIC_WIDTH)))
         private_grad_scale = float(critic_private_embedding_grad_scale)
@@ -486,7 +525,11 @@ class KyokuTransformerActorCritic(nn.Module):
                 critic_embeddings - detached_private
             )
         critic_total_lengths = shared_lengths + critic_lengths + 1
-        critic_total = int(critic_total_lengths.max().item())
+        if critic_total_capacity is None:
+            critic_total = int(critic_total_lengths.max().item())
+        else:
+            # host 侧 capacity:collate 按 max(shared_len + critic_len + 1) 预计算。
+            critic_total = int(critic_total_capacity)
         critic_sequence = critic_embeddings.new_zeros((batch, critic_total, self.config.d_model))
         # 公共表示（可 detach/缩放）。
         public_grad_scale = 0.0 if detach_critic_public else float(critic_public_grad_scale)

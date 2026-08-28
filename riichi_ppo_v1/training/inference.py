@@ -563,6 +563,12 @@ if ray is not None:
                         device_tensors["legal"],
                         critic_factors=device_tensors["critic_factors"],
                         critic_lengths=device_tensors["critic_lengths"],
+                        # 训练期 rollout 推理与 learner 共用同一配置开关:输入
+                        # 由 Rust 编码器 fail-closed 生成,推理路径跳过 GPU 侧
+                        # 重复校验。默认 True 保持历史行为(评测路径不受影响)。
+                        validate_structure=bool(
+                            self.config.get("update_validate_structure", True)
+                        ),
                     )
                     logits = output["policy_logits"].float()
                     probabilities = F.softmax(logits, dim=-1)
