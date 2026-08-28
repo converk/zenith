@@ -694,3 +694,50 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
 - 1v3 vs SFT:u5=0.2695、u10=0.2860、u15=0.3010(first_place);run1 同点为
   0.2652/0.2955/0.3118,差值均在 4000 半庄置信区间内——无回归、暂无明显提升
 - 停止原因:维护者手动停训并归档;后续按需从 SFT init 重训或调参后再启
+
+## 2026-08-28 V18 PPO 性能优化第二轮:阶段 A(A1-A5)
+
+按 `audit/reports/v18/design/V18 PPO性能优化第二轮执行提示词.md` 实施,基线 tag
+`perf-v18-round2-baseline`(b9af8a3),perftest 配置
+`riichi_ppo_v1/configs/v18_ppo_perftest.yaml`(512 局、epochs 4、target_kl=0、双卡)。
+
+- **A1(fix)**:1v3 评测缓存按 checkpoint sha256 内容校验(`summary_matches_checkpoint`),
+  旧格式(无 `checkpoint_sha256` 记录)一律视为未命中并重跑原子覆盖;修复 run1/run2
+  复用同名旧 JSON 的评测记录污染(即上文 update=10 注记遗留缺陷)。9524e60
+- **A2(perf)**:loss 诊断字符串延迟构造,消除每 minibatch 4 次 float() GPU 同步。3cbe094
+- **A3(perf)**:梯度累积非组末 minibatch 以 no_sync 包裹 forward+backward(单卡/无
+  DDP 不受影响),有限性 all_reduce(MIN) 降到每累积组一次(与 optimizer step 同节拍;
+  组边界由 learner_shard_indices 补齐后的 planned_minibatches 跨 rank 严格对齐)。
+  新增双 rank gloo CPU 对照单测:与逐批 allreduce 最终参数 allclose(atol=1e-6)。
+  cd267a4
+- **A4(perf)**:`discounted_empirical_returns` gamma=1.0 走分段 float64 反向
+  accumulate 后缀和(50 万行 178ms→3ms),与旧 Python 循环 `np.array_equal` 逐位一致;
+  gamma≠1 保留旧循环按参数分派。新增 9 例单测。5d50409
+- **A5(perf)**:collate 新增 `include_query_rows`(默认 True 保持其余调用方行为),
+  learner 预取与直取路径传 False 跳过未消费的 query_rows。85ee52f
+
+- **回归**:基线 `pytest riichi_ppo_v1/tests` = 1 failed, 200 passed(唯一失败为既有
+  `test_v18_ppo_config_matches_stability_plan`:断言 actor LR 6e-5,而第二轮配置为
+  9e-5,f28b958 引入,与本轮无关);阶段 A 后 = 1 failed, 213 passed(新增 13 测试
+  全绿,不低于基线)。
+- **A/B**(基线日志 `logs/v18/ppo_perf2_baseline_20260828.log`,阶段 A
+  `logs/v18/ppo_perf2_phaseA_20260828.log`;第 1 轮预热,报第 2/3 轮):
+
+  | 指标 | 基线 r2 | A 后 r2 | 基线 r3 | A 后 r3 |
+  | --- | --- | --- | --- | --- |
+  | algorithm_wall_s | 226.9 | 223.3(−1.6%) | 423.7 | 403.2(−4.8%) |
+  | rollout/wall_s | 69.1 | 70.0(+1.3%) | 73.9 | 71.1(−3.8%) |
+  | update/wall_s | 156.8 | 152.3(−2.8%) | 348.9 | 331.1(−5.1%) |
+  | sps | 1652.6 | 1724.5(+4.4%) | 924.0 | 978.0(+5.8%) |
+  | fwd ms/批/rank | 95.0 | 93.3 | 233.3 | 227.2 |
+  | bwd ms/批/rank | 149.3 | 182.8(*) | 372.8 | 369.6 |
+
+  (*) bootstrap 轮 backward stage 计时升高为同步点移除后的归因变化:基线每批
+  backward 后的 `float(loss_is_finite)` + MIN allreduce + `.item()` 强制同步发生在
+  计时 stage 之外;移除后主机先行入队,等待落入 stage 计时。端到端 update/wall_s
+  与 sps 均改善,判定不劣化。r3(全 policy update,与生产结构一致)update −17.7s,
+  按样本量外推生产规模约 −35s/轮,处于预期带(−35~70s)下沿。注:推理批组成受
+  RPC 到达时序影响,bf16 内核随批形有微差,跨 run rollout 数据不逐位一致(既有
+  非确定性),损失/熵/grad_norm 量级两侧均正常。
+- **回滚**:单主题 `git revert <sha>`;全量 `git reset --hard perf-v18-round2-baseline`
+  (本轮无 Rust/wheel 改动,无需重装扩展)。
