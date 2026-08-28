@@ -112,23 +112,6 @@ def collate_request_rows(
     )
 
 
-def sort_rows_by_sequence_length(
-    requests: list[dict[str, Any]],
-    rows: list[tuple[int, int]],
-) -> None:
-    """按 actor 序列长度降序就地排序请求行(B4:批内长度相近,消除跨局 padding)。
-
-    次序键 critic_lengths 仅作稳定次序;Python 排序稳定,同长度保持原到达
-    顺序。只重排批的组装顺序,不改变任何 (request_index, row) 的归属。
-    """
-    rows.sort(
-        key=lambda item: (
-            -int(requests[item[0]]["actor_lengths"][item[1]]),
-            -int(requests[item[0]]["critic_lengths"][item[1]]),
-        )
-    )
-
-
 def assign_batch_outputs(
     responses: list[dict[str, Any]],
     group: list[tuple[int, int]],
@@ -503,11 +486,6 @@ if ray is not None:
             max_batch = max(1, int(self.config.get("inference_max_batch_size", 512)))
             for (namespace, greedy), rows in rows_by_mode.items():
                 model = self._model_for_namespace(namespace)
-                # B4:批内按 actor 序列长度降序排序后切块,同批长度相近,推理
-                # padding(跨局混合实测 ~25%)大幅下降;输出路由
-                # assign_batch_outputs 按 group 顺序回填,排序不改变每行收到
-                # 自己的结果。
-                sort_rows_by_sequence_length(requests, rows)
                 for offset in range(0, len(rows), max_batch):
                     group = rows[offset : offset + max_batch]
                     self._run_full_forward(requests, responses, group, greedy, model)
