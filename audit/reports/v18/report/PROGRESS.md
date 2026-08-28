@@ -895,3 +895,20 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
   point_diff_mean=+365.60 ci95=[-311.98, 1021.26](与上轮 u5 0.2695 交叉印证)。
   vs_sft_u005.json 已含 checkpoint_sha256(A1 修复生效)。
 - 随后以 resume 配置续训(u6 起,150 updates 目标不变)。
+
+## 2026-08-29 update=10
+
+- reward_mean=-3.0923e-12 value_loss=0.31339 entropy=0.44784 actor_grad_norm=0.0471 critic_grad_norm=2.2242 shared_grad_norm=0.053643
+- rollout_wall_s=239.2 update_wall_s=527.91 sps=1796.9 grp_calls=22212 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.2910 top2_rate=0.5260 mean_rank=2.430 point_diff_mean=+1547.2 ci95=[948.0366666666667, 2178.010416666667]
+
+## 2026-08-29 续训(u6 起,mb1024+accum15)监控结论
+
+- u6=866.9s、u7=788.2s、u8=774.1s、u9=775.0s、u10=811s 级,全部无错误;
+  mb1024 后 learner 驻留显存 37.4/34.4GiB(mb1536 时 rank0 曾达 ~40GiB)。
+- **u10 评测在 learner 驻留显存之上成功运行(10/10 分片)**:first_place_rate=
+  0.2910、top2_rate=0.5260、mean_rank=2.430、point_diff_mean=+1547.22
+  ci95=[948.04, 2178.01]——与上轮 u10(0.2860/0.5295/2.425)轨迹一致,
+  mb1024+accum15 的显存余量修复得到验证。
+- 训练在 tmux 会话 ppo 中按 v18_ppo_resume_mb1024.yaml 继续向 150 updates
+  运行,转入免值守。
