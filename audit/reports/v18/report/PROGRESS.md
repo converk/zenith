@@ -741,3 +741,37 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
   非确定性),损失/熵/grad_norm 量级两侧均正常。
 - **回滚**:单主题 `git revert <sha>`;全量 `git reset --hard perf-v18-round2-baseline`
   (本轮无 Rust/wheel 改动,无需重装扩展)。
+
+## 2026-08-28 V18 PPO 性能优化第二轮:B1(前向去同步化)
+
+- **改动**(669b1c1):forward 新增 `validate_structure`(默认 True)与
+  `shared_capacity`/`critic_total_capacity`(host 预计算,默认 None 回退 .item());
+  collate 额外输出两个 host 容量标量;learner/reference/rollout 推理按新配置键
+  `update_validate_structure`(生产配置新增该键=false)传入;策略头以算术索引
+  取代 torch.nonzero + repeat_interleave(变长输出同步 + compile 断裂源),校验
+  路径新增 tail 窗口 canonical 契约检查(比旧数量检查更严)。新增 3 单测
+  (契约断言/两态+容量两来源 torch.equal/违约拒绝);新增
+  `riichi_ppo_v1/docs/v18_ppo_training.md` 开关说明。
+- **同步点**:一次 forward 实测 45 个同步点 → lean 路径 23 个(剩余:dense
+  embedding 16 个 = C2 目标;critic 组装 bool 索引 6 个;C1 前置已完成)。
+- **等价性**:生产 bf16 autocast 路径与改前快照 `torch.equal` 逐位一致
+  (validate 两态 × host 容量两来源 共 4 组合);fp32 路径仅 ~1e-7(6.7e-8,
+  18/1928 元素)GEMM 形状舍入差,远小于 T2 的 1e-4 容差;回归 1 failed(既有)
+  216 passed 不低于基线。
+- **A/B**(同 perftest 协议,日志 `logs/v18/ppo_perf2_B1_20260828.log`,第 2/3 轮):
+
+  | 指标 | 基线 r2/r3 | 阶段A r2/r3 | B1 r2/r3 |
+  | --- | --- | --- | --- |
+  | algorithm_wall_s | 226.9 / 423.7 | 223.3 / 403.2 | 222.0 / 408.1 |
+  | update/wall_s | 156.8 / 348.9 | 152.3 / 331.1 | 145.7 / 333.9 |
+  | rollout/wall_s | 69.1 / 73.9 | 70.0 / 71.1 | 75.3 / 73.2 |
+  | fwd ms/批/rank(r3) | 233.3 | 227.2 | **154.1(−34%)** |
+  | bwd ms/批/rank(r3) | 372.8 | 369.6 | 436.2(*) |
+  | 推理 full_forward mean_ms(r3) | 22.4 | 21.9 | **19.9(−11%)** |
+
+  (*) bootstrap 轮(1/2)bwd 与阶段 A 逐位一致(183ms);r3 的 bwd 上浮经
+  微基准证伪为非代码因素:同权重同输入下,新算术索引路径的配对+策略头
+  fwd+bwd 比旧 nonzero 路径快 8.0 倍(30.7→3.9ms/批),且运行窗存在外部
+  CPU 负载(约 5.4)。r3 fwd −34% 显著超出预期带(−10~20%),收益方向兑现,
+  判定保留。
+- **回滚**:`git revert 669b1c1`(纯 Python/配置/文档,无 wheel)。
