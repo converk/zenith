@@ -150,3 +150,125 @@ def test_termination_handler_raises_system_exit() -> None:
     with pytest.raises(SystemExit) as excinfo:
         _termination_handler(signal.SIGTERM, None)
     assert excinfo.value.code == 128 + signal.SIGTERM
+
+
+def _ddp_no_sync_worker(
+    rank: int,
+    world_size: int,
+    init_file: str,
+    output,
+) -> None:
+    """双 rank 子进程:no_sync 累积路径与逐批 allreduce 路径各跑一组。"""
+    import traceback
+    from contextlib import nullcontext
+
+    import torch
+    import torch.distributed as dist
+    from torch.nn.parallel import DistributedDataParallel
+
+    try:
+        torch.manual_seed(20260828)
+        torch.set_num_threads(1)
+        dist.init_process_group(
+            "gloo",
+            init_method=f"file://{init_file}",
+            rank=rank,
+            world_size=world_size,
+        )
+        model = torch.nn.Sequential(
+            torch.nn.Linear(8, 16),
+            torch.nn.Tanh(),
+            torch.nn.Linear(16, 4),
+        )
+        ddp = DistributedDataParallel(model)
+        rng = np.random.default_rng(100 + rank)
+        batches = [
+            torch.from_numpy(rng.normal(size=(16, 8)).astype(np.float32))
+            for _ in range(5)
+        ]
+        targets = [
+            torch.from_numpy(rng.normal(size=(16, 4)).astype(np.float32))
+            for _ in range(5)
+        ]
+        accumulation_steps = 5  # 单组 5 批,模拟生产 accumulation 组语义
+
+        def run_path(*, use_no_sync: bool):
+            initial_params = [
+                param.detach().clone() for param in model.parameters()
+            ]
+            # SGD 无动量,优化器状态不跨路径污染;每次重建保证两路径一致。
+            optimizer = torch.optim.SGD(model.parameters(), lr=0.05)
+            for index, (batch, target) in enumerate(zip(batches, targets)):
+                should_step = (index + 1) % accumulation_steps == 0
+                # 与 learner 一致:no_sync 同时覆盖 forward 与 backward,
+                # 组末(同步批)backward 才整体平均梯度。
+                context = (
+                    nullcontext()
+                    if (should_step or not use_no_sync)
+                    else ddp.no_sync()
+                )
+                with context:
+                    loss = ((ddp(batch) - target) ** 2).mean()
+                    loss.backward()
+                if should_step:
+                    optimizer.step()
+                    optimizer.zero_grad(set_to_none=True)
+            final_params = [param.detach().clone() for param in model.parameters()]
+            # 恢复初始参数,保证两条路径从同一状态出发。
+            with torch.no_grad():
+                for param, value in zip(model.parameters(), initial_params):
+                    param.copy_(value)
+            return initial_params, final_params
+
+        initial_no_sync, final_no_sync = run_path(use_no_sync=True)
+        initial_sync, final_sync = run_path(use_no_sync=False)
+        max_diff = max(
+            float((a - b).abs().max())
+            for a, b in zip(final_no_sync, final_sync)
+        )
+        moved = max(
+            float((a - b).abs().max())
+            for a, b in zip(final_no_sync, initial_no_sync)
+        )
+        output[rank] = {"max_diff": max_diff, "moved": moved}
+    except BaseException:  # noqa: BLE001 - 交由父进程断言并展示
+        output[rank] = {"error": traceback.format_exc()}
+    finally:
+        dist.destroy_process_group()
+
+
+def test_ddp_no_sync_accumulation_matches_per_step_allreduce(tmp_path) -> None:
+    """no_sync 累积路径与逐批 allreduce 路径最终参数一致(atol=1e-6)。
+
+    双 rank gloo CPU,两 rank 各持不同批数据:no_sync 路径在组末一次性
+    平均累积梯度,对照路径逐批平均后累积;两者数学等价,仅浮点结合顺序
+    不同(learner A3 改动的等价性依据)。
+    """
+    context = multiprocessing.get_context("spawn")
+    manager = context.Manager()
+    output = manager.dict()
+    init_file = str(tmp_path / "ddp_init")
+    processes = [
+        context.Process(
+            target=_ddp_no_sync_worker,
+            args=(rank, 2, init_file, output),
+        )
+        for rank in range(2)
+    ]
+    try:
+        for process in processes:
+            process.start()
+        for process in processes:
+            process.join(timeout=180)
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=10)
+    assert [process.exitcode for process in processes] == [0, 0]
+    for rank in range(2):
+        result = dict(output[rank])
+        assert "error" not in result, result["error"]
+        # 参数确实移动过,排除"两路径都因梯度为零而平凡相等"的假阳性。
+        assert result["moved"] > 1e-8
+        assert result["max_diff"] < 1e-6

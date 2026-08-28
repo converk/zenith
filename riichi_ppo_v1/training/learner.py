@@ -12,7 +12,7 @@ import queue as _queue
 import random
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -920,130 +920,152 @@ class PPOLearner:
                     executed_padded_input_tokens += int(
                         len(indices) * int(transitions.sequence_lengths[indices].max())
                     )
-                    with self._gpu_stage("update/model_forward"):
-                        with torch.autocast(
-                            device_type=self.device.type,
-                            dtype=torch.bfloat16,
-                            enabled=self.use_bf16,
-                        ):
-                            output = self._model_forward(
-                                batch, critic_bootstrap=critic_bootstrap,
+                    # 组边界与 should_step 先于 forward 计算:它们只依赖
+                    # minibatch 计数与配置,而 planned_minibatches 经
+                    # learner_shard_indices 的分片补齐后跨 rank 严格一致,
+                    # should_step 因此天然同步,collective 次数在两 rank 对齐。
+                    accumulation_steps = self.gradient_accumulation_steps
+                    planned_minibatches = (
+                        configured_epochs * planned_minibatches_per_epoch
+                    )
+                    actual_group_size = accumulation_group_size(
+                        planned_minibatches,
+                        accumulation_steps,
+                        updates,
+                    )
+                    # ``updates`` 为累计已处理 minibatch 数(从 0 开始),
+                    # 每组 accumulation_steps 的最后一步才 step;最后一个
+                    # minibatch 无论是否整组都强制 step,避免挂起梯度丢失。
+                    step_within_group = (
+                        (updates + 1) % accumulation_steps == 0
+                        if accumulation_steps > 1
+                        else True
+                    )
+                    is_last_batch = updates + 1 == planned_minibatches
+                    should_step = (
+                        accumulation_steps <= 1
+                        or step_within_group
+                        or is_last_batch
+                    )
+                    # 非组末 minibatch 用 no_sync 跳过梯度 allreduce:梯度仅
+                    # 本地累加,到组末 backward(同步批)才一次性整体平均。
+                    # DDP 的同步开关在 wrapper.forward 时读取,因此 no_sync
+                    # 必须同时覆盖 forward 与 backward。结果与逐批 allreduce
+                    # + 累积数学等价(sum_b mean_r g == mean_r sum_b g),仅
+                    # 浮点结合顺序不同;单卡/无 DDP 路径不受影响。
+                    sync_grads = self.model_ddp is None or should_step
+                    sync_context = (
+                        nullcontext() if sync_grads else self.model_ddp.no_sync()
+                    )
+                    with sync_context:
+                        with self._gpu_stage("update/model_forward"):
+                            with torch.autocast(
+                                device_type=self.device.type,
+                                dtype=torch.bfloat16,
+                                enabled=self.use_bf16,
+                            ):
+                                output = self._model_forward(
+                                    batch, critic_bootstrap=critic_bootstrap,
+                                )
+                                reference_output = None
+                                if sft_kl_coef > 0.0:
+                                    assert self.reference_model is not None
+                                    with torch.no_grad():
+                                        reference_output = self.reference_model(
+                                            batch["actor_factors"],
+                                            batch["actor_numeric"],
+                                            batch["actor_lengths"],
+                                            batch["query_action_ids"],
+                                            batch["query_pair_counts"],
+                                            legal_mask,
+                                            policy_only=True,
+                                        )
+                                # PPO 数值路径离开模型前统一提升为 FP32。
+                                logits = output["policy_logits"].float()
+                                logprobabilities = F.log_softmax(logits, dim=-1)
+                                probabilities = logprobabilities.exp()
+                        with self._gpu_stage("update/distribution_and_loss"):
+                            logprob = logprobabilities.gather(1, actions[:, None]).squeeze(1)
+                            old_logprobs = old_logprobs.float()
+                            adv = adv.float()
+                            ratio = (logprob - old_logprobs).exp()
+                            clipped = ratio.clamp(
+                                1 - float(self.hp["ppo_clip"]), 1 + float(self.hp["ppo_clip"]),
+                            ) * adv
+                            policy_loss_values = -torch.minimum(ratio * adv, clipped)
+                            value = output["value"].float()
+                            normalized_value, normalized_returns = normalize_value_targets(
+                                value,
+                                batch_returns,
+                                mode=self.value_target_normalization,
+                                mean=return_mean,
+                                std=return_std,
+                                std_floor=self.value_target_std_floor,
                             )
-                            reference_output = None
-                            if sft_kl_coef > 0.0:
-                                assert self.reference_model is not None
-                                with torch.no_grad():
-                                    reference_output = self.reference_model(
-                                        batch["actor_factors"],
-                                        batch["actor_numeric"],
-                                        batch["actor_lengths"],
-                                        batch["query_action_ids"],
-                                        batch["query_pair_counts"],
-                                        legal_mask,
-                                        policy_only=True,
-                                    )
-                            # PPO 数值路径离开模型前统一提升为 FP32。
-                            logits = output["policy_logits"].float()
-                            logprobabilities = F.log_softmax(logits, dim=-1)
-                            probabilities = logprobabilities.exp()
-                    with self._gpu_stage("update/distribution_and_loss"):
-                        logprob = logprobabilities.gather(1, actions[:, None]).squeeze(1)
-                        old_logprobs = old_logprobs.float()
-                        adv = adv.float()
-                        ratio = (logprob - old_logprobs).exp()
-                        clipped = ratio.clamp(
-                            1 - float(self.hp["ppo_clip"]), 1 + float(self.hp["ppo_clip"]),
-                        ) * adv
-                        policy_loss_values = -torch.minimum(ratio * adv, clipped)
-                        value = output["value"].float()
-                        normalized_value, normalized_returns = normalize_value_targets(
-                            value,
-                            batch_returns,
-                            mode=self.value_target_normalization,
-                            mean=return_mean,
-                            std=return_std,
-                            std_floor=self.value_target_std_floor,
-                        )
-                        value_loss_values_ = value_loss_values(
-                            normalized_value, normalized_returns, str(self.hp.get("value_loss", "huber")),
-                        )
-                        raw_value_loss = value_loss_values(
-                            value, batch_returns, str(self.hp.get("value_loss", "huber")),
-                        )
-                        # 非法动作 logits 为 -inf:必须在乘法前把 log_prob 与概率
-                        # 都替换为 0。仅在乘积上 masked_fill 只救前向,反向仍会因
-                        # -inf × 0 回传 NaN 梯度。
-                        entropy_values, normalized_entropy_values = policy_entropy_values(
-                            logprobabilities, probabilities, legal_mask,
-                        )
-                        if reference_output is None:
-                            sft_reference_kl_values = torch.zeros_like(policy_loss_values)
-                        else:
-                            sft_reference_kl_values = categorical_kl_values(
-                                output["policy_logits"],
-                                reference_output["policy_logits"],
+                            value_loss_values_ = value_loss_values(
+                                normalized_value, normalized_returns, str(self.hp.get("value_loss", "huber")),
                             )
-                        if critic_bootstrap:
-                            # 预热期只训 critic:policy/entropy/KL 不进入损失,
-                            # actor/shared 学习率同时为 0。实测把 policy 项以
-                            # 0 系数接入损失图会让 bootstrap backward 多走整条
-                            # policy 反传(104→246ms/step,负优化),故不采用。
-                            entropy_loss_values = entropy_values
-                            loss = value_coef * value_loss_values_.mean()
-                        else:
-                            entropy_loss_values = normalized_entropy_values
-                            loss = (
-                                policy_loss_values.mean()
-                                + value_coef * value_loss_values_.mean()
-                                - entropy_coef * entropy_loss_values.mean()
-                                + sft_kl_coef * sft_reference_kl_values.mean()
+                            raw_value_loss = value_loss_values(
+                                value, batch_returns, str(self.hp.get("value_loss", "huber")),
                             )
-                        evaluated_loss = loss
-                    loss_is_finite = torch.isfinite(evaluated_loss)
+                            # 非法动作 logits 为 -inf:必须在乘法前把 log_prob 与概率
+                            # 都替换为 0。仅在乘积上 masked_fill 只救前向,反向仍会因
+                            # -inf × 0 回传 NaN 梯度。
+                            entropy_values, normalized_entropy_values = policy_entropy_values(
+                                logprobabilities, probabilities, legal_mask,
+                            )
+                            if reference_output is None:
+                                sft_reference_kl_values = torch.zeros_like(policy_loss_values)
+                            else:
+                                sft_reference_kl_values = categorical_kl_values(
+                                    output["policy_logits"],
+                                    reference_output["policy_logits"],
+                                )
+                            if critic_bootstrap:
+                                # 预热期只训 critic:policy/entropy/KL 不进入损失,
+                                # actor/shared 学习率同时为 0。实测把 policy 项以
+                                # 0 系数接入损失图会让 bootstrap backward 多走整条
+                                # policy 反传(104→246ms/step,负优化),故不采用。
+                                entropy_loss_values = entropy_values
+                                loss = value_coef * value_loss_values_.mean()
+                            else:
+                                entropy_loss_values = normalized_entropy_values
+                                loss = (
+                                    policy_loss_values.mean()
+                                    + value_coef * value_loss_values_.mean()
+                                    - entropy_coef * entropy_loss_values.mean()
+                                    + sft_kl_coef * sft_reference_kl_values.mean()
+                                )
+                            evaluated_loss = loss
+                        loss_is_finite = torch.isfinite(evaluated_loss)
 
-                    def loss_detail() -> str:
-                        # 诊断字符串仅在判定失败时构造:每 minibatch 无条件
-                        # float() 取均值会引入 4 次 GPU→CPU 同步。
-                        return (
-                            f"policy={float(policy_loss_values.mean())} "
-                            f"value={float(value_loss_values_.mean())} "
-                            f"entropy={float(entropy_values.mean())} "
-                            f"sft_kl={float(sft_reference_kl_values.mean())}"
-                        )
+                        def loss_detail() -> str:
+                            # 诊断字符串仅在判定失败时构造:每 minibatch 无条件
+                            # float() 取均值会引入 4 次 GPU→CPU 同步。
+                            return (
+                                f"policy={float(policy_loss_values.mean())} "
+                                f"value={float(value_loss_values_.mean())} "
+                                f"entropy={float(entropy_values.mean())} "
+                                f"sft_kl={float(sft_reference_kl_values.mean())}"
+                            )
 
-                    if self.world_size == 1 and not loss_is_finite:
-                        raise RuntimeError("non-finite PPO loss: " + loss_detail())
-                    with self._gpu_stage("update/backward"):
-                        # Gradient accumulation:配置 >1 时,loss 除以累积步数后
-                        # 反向,只在最后一累积步执行梯度裁剪 + optimizer.step,
-                        # 保持 global effective batch ≈ minibatch_size × 累积步数。
-                        accumulation_steps = self.gradient_accumulation_steps
-                        planned_minibatches = (
-                            configured_epochs * planned_minibatches_per_epoch
-                        )
-                        actual_group_size = accumulation_group_size(
-                            planned_minibatches,
-                            accumulation_steps,
-                            updates,
-                        )
-                        scaled_loss = evaluated_loss / float(max(actual_group_size, 1))
-                        scaled_loss.backward()
-                        # ``updates`` 为累计已处理 minibatch 数(从 0 开始),
-                        # 每组 accumulation_steps 的最后一步才 step;最后一个
-                        # minibatch 无论是否整组都强制 step,避免挂起梯度丢失。
-                        step_within_group = (
-                            (updates + 1) % accumulation_steps == 0
-                            if accumulation_steps > 1
-                            else True
-                        )
-                        is_last_batch = updates + 1 == planned_minibatches
-                        should_step = (
-                            accumulation_steps <= 1
-                            or step_within_group
-                            or is_last_batch
-                        )
-                    if self.world_size > 1:
-                        # 必须等所有 rank 完成 backward 后再做全局有限性判定,
+                        if self.world_size == 1 and not loss_is_finite:
+                            raise RuntimeError("non-finite PPO loss: " + loss_detail())
+                        with self._gpu_stage("update/backward"):
+                            # Gradient accumulation:配置 >1 时,loss 除以累积
+                            # 步数后反向,只在最后一累积步执行梯度裁剪 +
+                            # optimizer.step,保持 global effective batch ≈
+                            # minibatch_size × 累积步数。组边界计算见本 minibatch
+                            # 开头(forward 之前,no_sync 需要提前知道 should_step)。
+                            scaled_loss = evaluated_loss / float(max(actual_group_size, 1))
+                            scaled_loss.backward()
+                    if self.world_size > 1 and should_step:
+                        # 有限性检查从每 minibatch 降到每累积组一次(与
+                        # optimizer step 同节拍,同步次数 868→87/update)。
+                        # 组边界由 learner_shard_indices 补齐后的
+                        # planned_minibatches 跨 rank 严格对齐,should_step
+                        # 同步为真,故该 collective 的调用次数在两 rank 天然
+                        # 一致。仍必须在所有 rank backward 完成后做全局判定,
                         # 避免单 rank 提前异常导致 NCCL collective 失配。
                         finite = torch.tensor(
                             float(loss_is_finite), device=self.device,
