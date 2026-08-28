@@ -362,3 +362,33 @@ def test_validate_structure_true_rejects_contract_violations() -> None:
     with torch.no_grad():
         model(**broken, validate_structure=False)
     assert KIND_ACTION_OFFENSE_QUERY != KIND_ACTION_DEFENSE_QUERY
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="SDPA 后端锁定仅 CUDA 可验")
+def test_sdpa_backend_lock_matches_default_and_rejects_flash() -> None:
+    """B3:结构化 bool mask 下 mem_efficient 锁定输出与默认调度逐位一致,
+    flash-only 上下文 fail-fast 报错(防静默 5 倍回退悬崖)。"""
+    import torch.nn.functional as F
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    device = torch.device("cuda")
+    torch.manual_seed(5)
+    batch, heads, tokens, head_dim = 4, 4, 48, 8
+    q = torch.randn(batch, heads, tokens, head_dim, device=device)
+    k = torch.randn(batch, heads, tokens, head_dim, device=device)
+    v = torch.randn(batch, heads, tokens, head_dim, device=device)
+    # 结构化 bool mask 的等价形态:任意 [B,1,L,L] 布尔掩蔽(含整行 False)。
+    pair_mask = torch.rand(batch, tokens, tokens, device=device) > 0.2
+    pair_mask[0, 5] = False  # 制造整行 False(等价 -inf 掩蔽行)。
+    attn_mask = pair_mask[:, None]
+
+    with torch.no_grad():
+        default_value = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+        with sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION):
+            locked_value = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+        with pytest.raises(RuntimeError):
+            with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+                F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+    # 锁定前后同后端:逐位一致(若默认调度并非 mem_efficient,此处即失败,
+    # 需重新核对 B3 前提)。
+    assert torch.equal(default_value, locked_value)

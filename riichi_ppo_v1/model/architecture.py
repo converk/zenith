@@ -14,6 +14,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from .dense_embedding import StateTokenEmbedding
 from .encoding_protocol import (
@@ -99,9 +100,20 @@ class GQA(nn.Module):
         q, k, v = _rope(shape(q_raw, self.qh), rope), _rope(shape(k_raw, self.kvh), rope), shape(v_raw, self.kvh)
         repeat = self.qh // self.kvh
         k, v = k.repeat_interleave(repeat, dim=1), v.repeat_interleave(repeat, dim=1)
-        value = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=attention_mask[:, None], dropout_p=0.0,
-        )
+        # 锁定 mem_efficient 后端(B3,仅 CUDA):结构化 bool mask 下 flash
+        # 不可用,math 后端慢 5.2 倍(实测 78.8ms vs 15.1ms);锁定后约束不满足
+        # 会 fail-fast 报错而非静默 5 倍变慢。当前生产默认即选中 mem_efficient,
+        # 锁定不改变数值(单测 torch.equal 断言)。CPU 无 mem_efficient 内核,
+        # 保持默认调度。
+        if attention_mask.is_cuda:
+            with sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION):
+                value = F.scaled_dot_product_attention(
+                    q, k, v, attn_mask=attention_mask[:, None], dropout_p=0.0,
+                )
+        else:
+            value = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=attention_mask[:, None], dropout_p=0.0,
+            )
         return self.out(value.transpose(1, 2).reshape(batch, tokens, self.qh * self.head_dim))
 
 
