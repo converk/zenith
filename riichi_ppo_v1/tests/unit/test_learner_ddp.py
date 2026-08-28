@@ -9,6 +9,7 @@ import pytest
 import signal
 import sys
 
+from riichi_ppo_v1.training.learner import PPOLearner
 from riichi_ppo_v1.training.learner_ddp import (
     LearnerDDP,
     aggregate_learner_metrics,
@@ -17,7 +18,7 @@ from riichi_ppo_v1.training.learner_ddp import (
 from riichi_ppo_v1.training.rollout_buffer import RolloutBuffer
 from riichi_ppo_v1.training.trajectory import transition_sequence_length
 
-from .test_rollout_buffer import _random_transition
+from .test_rollout_buffer import _learner_kwargs, _random_transition
 
 
 def transition(reward: float, action: int = 0):
@@ -272,3 +273,9 @@ def test_ddp_no_sync_accumulation_matches_per_step_allreduce(tmp_path) -> None:
         # 参数确实移动过,排除"两路径都因梯度为零而平凡相等"的假阳性。
         assert result["moved"] > 1e-8
         assert result["max_diff"] < 1e-6
+
+
+def test_release_cache_is_safe_without_cuda() -> None:
+    """release_cache 在 CPU(无 CUDA 分支)与未加载模型时不抛错。"""
+    learner = PPOLearner("v18", "cpu", **_learner_kwargs())
+    learner.release_cache()

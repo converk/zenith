@@ -912,3 +912,22 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
   mb1024+accum15 的显存余量修复得到验证。
 - 训练在 tmux 会话 ppo 中按 v18_ppo_resume_mb1024.yaml 继续向 150 updates
   运行,转入免值守。
+
+## 评测失败记录
+
+- update=15：1v3 shard 子进程失败，训练已中止；已尝试路径与证据见下方失败详情。
+  - shard 4: returncode=1            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^;   File "/mnt/disk1/hubowen/zenith/riichi_ppo_v1/model/architecture.py", line 205, in forward;     x = x + self.down(F.silu(gate) * value);                       ~~~~~~~~~~~~~^~~~~~~; torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 34.00 MiB. GPU 0 has a total capacity of 44.42 GiB of which 20.00 MiB is free. Process 1840348 has 38.14 GiB memory in use. Process 1840808 has 0 bytes memory in use. Process 2970691 has 854.00 MiB memory in use. Process 2970617 has 856.00 MiB memory in use. Process 2970616 has 1010.00 MiB memory in use. Including non-PyTorch memory, this process has 710.00 MiB memory in use. Process 2970713 has 906.00 MiB memory in use. Of the allocated memory 265.29 MiB is allocated by PyTorch, and 98.71 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+
+## 2026-08-29 u15 评测 OOM(1/10 分片)与根因修复
+
+- **事故**:u15 评测 1/10 分片 CUDA OOM(GPU0 44.42GiB 仅余 20MiB,shard 4 差
+  34MiB;失败详情由机制写入上文)。mb1024 只是把余量从 3GiB 抬到 ~7GiB,
+  仍属边缘;根因是 **learner 进程的 PyTorch 缓存分配器在 update 后保留大量
+  cached-unallocated 块**(参考 logits 预计算 + 激活缓存),同卡评测分片
+  无法使用这部分显存。
+- **根因修复**(非调参):评测前显式释放缓存显存——`PPOLearner.release_cache()`
+  (gc + `torch.cuda.empty_cache()`,活跃张量不受影响)、LearnerDDP 新增
+  `_CMD_RELEASE_CACHE` 命令、推理 actor 新增 `release_cache` 远程方法、
+  train.py 在 `run_1v3_evaluation` 前统一调用。显存余量恢复到接近空卡水平。
+- **配置回归标准**:根因修复后不再需要降批,从头重跑使用标准
+  `v18_ppo.yaml`(mb1536 + accumulation 10)。

@@ -211,7 +211,7 @@ def summarize_worker_rollout(
         ]
         if not values:
             continue
-        target = name if name.startswith(("train/", "reward_schedule/")) else f"rollout/{name}"
+        target = name if name.startswith("train/") else f"rollout/{name}"
         if (
             name.endswith("/count")
             or name.endswith("_count")
@@ -480,6 +480,11 @@ def run(config: dict[str, Any]) -> None:
         parallel_hanchans = int(
             config.get("eval1v3_parallel_hanchans", hanchans_per_process)
         )
+        # 评测分片与 learner/推理 actor 同卡共存:先释放 update 遗留的缓存
+        # 显存(cached-unallocated 块),否则分片在 GPU0 仅余数 GiB 时 OOM
+        # (u5/u15 两次实测)。模型/优化器等活跃张量不受影响。
+        learner.release_cache()
+        ray.get([actor.release_cache.remote() for actor in inference_actors])
         summary_path = output_dir / f"vs_sft_u{int(update):03d}.json"
         summary: dict[str, Any] | None = None
         if summary_path.is_file():
@@ -696,7 +701,7 @@ def run(config: dict[str, Any]) -> None:
                     **{
                         name: value
                         for name, value in rollout_metrics.items()
-                        if name.startswith(("train/", "reward_schedule/"))
+                        if name.startswith("train/")
                     },
                     **{f"ppo/{name}": value for name, value in metrics.items()},
                     **gpu_metrics,
@@ -761,19 +766,13 @@ def _parser(smoke: bool = False) -> argparse.ArgumentParser:
         parser.add_argument("--num-workers", type=int, default=None)
         parser.add_argument("--learner-gpus", type=int, default=None)
         parser.add_argument("--envs-per-worker", type=int, default=None)
-        parser.add_argument("--kyokus-per-worker", type=int, default=None)
         parser.add_argument("--update-epochs", type=int, default=None)
         parser.add_argument("--minibatch-size", type=int, default=None)
-        parser.add_argument(
-            "--update-batch-mode",
-            choices=("streaming", "auto"),
-            default=None,
-        )
         parser.add_argument("--inference-batch-wait-ms", type=float, default=None)
         parser.add_argument("--target-kl", type=float, default=None)
         parser.add_argument("--profile-cuda-sync", action=argparse.BooleanOptionalAction, default=None)
     if smoke:
-        parser.add_argument("--kyokus", type=int, default=1)
+        parser.add_argument("--games", type=int, default=1)
         parser.add_argument("--num-workers", type=int, default=None)
         parser.add_argument("--learner-gpus", type=int, default=None)
         parser.add_argument("--envs-per-worker", type=int, default=None)
@@ -786,10 +785,8 @@ def apply_cli_overrides(config: dict[str, Any], args: argparse.Namespace) -> Non
         "num_workers": getattr(args, "num_workers", None),
         "learner_gpus": getattr(args, "learner_gpus", None),
         "envs_per_worker": getattr(args, "envs_per_worker", None),
-        "kyokus_per_worker": getattr(args, "kyokus_per_worker", None),
         "update_epochs": getattr(args, "update_epochs", None),
         "minibatch_size": getattr(args, "minibatch_size", None),
-        "update_batch_mode": getattr(args, "update_batch_mode", None),
         "inference_batch_wait_ms": getattr(args, "inference_batch_wait_ms", None),
         "target_kl": getattr(args, "target_kl", None),
         "profile_cuda_sync": getattr(args, "profile_cuda_sync", None),
@@ -827,12 +824,11 @@ def smoke_main() -> None:
         "num_workers": 1,
         "learner_gpus": 1,
         "envs_per_worker": 1,
-        "games_per_update": args.kyokus,
+        "games_per_update": args.games,
         "iterations": 1,
         "update_epochs": 4,
         "target_kl": 0.0,
         "minibatch_size": 32,
-        "update_batch_mode": "streaming",
         "checkpoint_dir": "checkpoints/riichi_ppo_v1_smoke",
     })
     if args.iterations is not None:

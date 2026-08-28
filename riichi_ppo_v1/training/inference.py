@@ -8,6 +8,8 @@ from pathlib import Path
 import time
 from typing import Any
 
+import gc
+
 import numpy as np
 import torch
 from torch.nn import functional as F
@@ -19,7 +21,7 @@ except ImportError:
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
 from ..model.dense_embedding import compute_kind_row_plan
-from ..model.encoding_protocol import QUERY_ROW_WIDTH, TOKEN_NUMERIC_WIDTH, TOKEN_ROW_WIDTH
+from ..model.encoding_protocol import TOKEN_NUMERIC_WIDTH, TOKEN_ROW_WIDTH
 from ..model.schema import NUM_ACTIONS
 from .profiling import StageProfiler
 
@@ -60,7 +62,7 @@ def dispatch_reason(
 def collate_request_rows(
     requests: list[dict[str, Any]], group: list[tuple[int, int]],
 ) -> tuple[
-    np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+    np.ndarray, np.ndarray, np.ndarray, np.ndarray,
     np.ndarray, np.ndarray, np.ndarray, np.ndarray,
 ]:
     """把选中请求行按 V18 完整 Actor 序列 host-padding,保留请求/行映射。"""
@@ -84,7 +86,6 @@ def collate_request_rows(
     # copy 时转型,省去旧路径「int32 拼装 → 整块 .astype(int64) 再拷贝」。
     actor_factors = np.zeros((batch, max_actor, TOKEN_ROW_WIDTH), dtype=np.int64)
     actor_numeric = np.zeros((batch, max_actor, TOKEN_NUMERIC_WIDTH), dtype=np.float32)
-    query_rows = np.zeros((batch, 2 * max_pairs, QUERY_ROW_WIDTH), dtype=np.int32)
     query_action_ids = np.zeros((batch, max_pairs), dtype=np.int64)
     critic_factors = np.zeros((batch, max_critic, TOKEN_ROW_WIDTH), dtype=np.int64)
     legal = np.empty((batch, NUM_ACTIONS), dtype=np.bool_)
@@ -94,7 +95,6 @@ def collate_request_rows(
         actor_factors[index, :actor_length] = request["actor_factors"][row, :actor_length]
         actor_numeric[index, :actor_length] = request["actor_numeric"][row, :actor_length]
         pair_count = int(pair_counts[index])
-        query_rows[index, : 2 * pair_count] = request["query_rows"][row, : 2 * pair_count]
         query_action_ids[index, :pair_count] = request["query_action_ids"][row, :pair_count]
         critic_length = int(critic_lengths[index])
         if critic_length:
@@ -104,7 +104,6 @@ def collate_request_rows(
         actor_factors,
         actor_numeric,
         actor_lengths,
-        query_rows,
         query_action_ids,
         pair_counts,
         critic_factors,
@@ -247,6 +246,11 @@ if ray is not None:
                 return 1 << 30
             return max(1, configured or self._rollout_target_workers)
 
+        def release_cache(self) -> None:
+            """评测前释放本 actor 的缓存显存(与 learner 释放同机制)。"""
+            gc.collect()
+            torch.cuda.empty_cache()
+
         def update_weights(self, weights: dict[str, torch.Tensor]) -> dict[str, float]:
             """接收 driver learner 的最新权重并加载到 rollout 模型。"""
             self._weights = {
@@ -365,7 +369,6 @@ if ray is not None:
             actor_factors: np.ndarray,
             actor_numeric: np.ndarray,
             actor_lengths: np.ndarray,
-            query_rows: np.ndarray,
             query_action_ids: np.ndarray,
             query_pair_counts: np.ndarray,
             legal_mask: np.ndarray,
@@ -380,8 +383,7 @@ if ray is not None:
             ):
                 raise ValueError("decision metadata batch dimensions differ")
             if (
-                query_rows.shape[0] != len(batch_indices)
-                or query_action_ids.shape[0] != len(batch_indices)
+                query_action_ids.shape[0] != len(batch_indices)
                 or len(query_pair_counts) != len(batch_indices)
             ):
                 raise ValueError("query metadata batch dimensions differ")
@@ -400,7 +402,6 @@ if ray is not None:
                 "actor_factors": actor_factors,
                 "actor_numeric": actor_numeric,
                 "actor_lengths": actor_lengths,
-                "query_rows": query_rows,
                 "query_action_ids": query_action_ids,
                 "query_pair_counts": query_pair_counts,
                 "legal_mask": legal_mask,
@@ -508,7 +509,6 @@ if ray is not None:
                     actor_factors,
                     actor_numeric,
                     actor_lengths,
-                    _query_rows,
                     query_action_ids,
                     pair_counts,
                     critic_factors,

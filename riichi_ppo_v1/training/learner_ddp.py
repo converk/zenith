@@ -41,6 +41,7 @@ _CMD_WEIGHTS = "weights"
 _CMD_RNG_STATE = "rng_state"
 _CMD_SAVE = "save"
 _CMD_SHUTDOWN = "shutdown"
+_CMD_RELEASE_CACHE = "release_cache"
 
 
 def _enable_parent_death_signal() -> None:
@@ -315,6 +316,9 @@ def _learner_worker(
                 result_queue.put({"kind": "result", "weights": learner.weights()})
             elif kind == _CMD_RNG_STATE:
                 result_queue.put({"kind": "result", "rng_state": learner.rng_state()})
+            elif kind == _CMD_RELEASE_CACHE:
+                learner.release_cache()
+                result_queue.put({"kind": "result", "ok": True})
             elif kind == _CMD_SAVE:
                 learner.save(
                     command["path"],
@@ -464,6 +468,12 @@ class LearnerDDP:
         return aggregate_learner_metrics(
             per_rank, transitions, gamma=self._gamma,
         ), per_rank
+
+    def release_cache(self) -> None:
+        """评测前释放全部 rank 的缓存显存(见 ``PPOLearner.release_cache``)。"""
+        self._send_all({"kind": _CMD_RELEASE_CACHE})
+        for rank in range(self.world_size):
+            self._recv(rank)
 
     def weights(self) -> dict[str, torch.Tensor]:
         self._command_queues[0].put({"kind": _CMD_WEIGHTS})

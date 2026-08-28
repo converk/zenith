@@ -7,6 +7,7 @@ early-stop/KL 判定都在进程组内同步。
 
 from __future__ import annotations
 
+import gc
 import os
 import queue as _queue
 import random
@@ -30,9 +31,9 @@ from .profiling import StageProfiler
 from .rollout_buffer import RolloutBuffer
 
 # V18 参数分支:actor/critic/shared 三组独立调度,gradient 按参数根分发。
-ACTOR_ROOTS = {"actor_backbone", "query_embedding", "action_fusion", "policy_mlp"}
+ACTOR_ROOTS = {"actor_backbone", "action_fusion", "policy_mlp"}
 CRITIC_ROOTS = {"critic_embedding", "critic_backbone", "value_head", "value_query"}
-SHARED_ROOTS = {"token_embedding", "snapshot_embeddings", "public_backbone"}
+SHARED_ROOTS = {"token_embedding", "public_backbone"}
 
 
 def validate_fresh_model_checkpoint_contract(payload: dict[str, Any]) -> None:
@@ -96,27 +97,6 @@ def scheduled_piecewise_coefficient(
     middle_fraction: float,
 ) -> float:
     """三点分段单调调度,精确命中首/中/末锚点。"""
-    if not 0.0 < float(middle_fraction) < 1.0:
-        raise ValueError("middle_fraction must be in (0, 1)")
-    total = max(1, int(total_updates))
-    step = min(max(int(update), 1), total)
-    middle_update = min(total, max(1, round(total * float(middle_fraction))))
-    if step <= middle_update:
-        local = (step - 1) / max(middle_update - 1, 1)
-        return float(start) + (float(middle) - float(start)) * local
-    local = (step - middle_update) / max(total - middle_update, 1)
-    return float(middle) + (float(end) - float(middle)) * local
-
-
-def scheduled_u_coefficient(
-    start: float,
-    middle: float,
-    end: float,
-    update: int,
-    total_updates: int,
-    middle_fraction: float = 0.5,
-) -> float:
-    """分段线性 U 形调度,精确锚定 start/middle/end。"""
     if not 0.0 < float(middle_fraction) < 1.0:
         raise ValueError("middle_fraction must be in (0, 1)")
     total = max(1, int(total_updates))
@@ -452,8 +432,7 @@ def _prefetch_collate_worker(
                 if state.stop_event.is_set():
                     return
                 started = time.perf_counter()
-                # learner 不消费 query_rows(仅离线一致性校验用),collate 跳过。
-                host_batch = transitions.collate(indices, include_query_rows=False)
+                host_batch = transitions.collate(indices)
                 state.times[counter] = time.perf_counter() - started
                 counter += 1
                 while not state.stop_event.is_set():
@@ -560,9 +539,6 @@ class PPOLearner:
         self.iteration = 0
         self.profiler = StageProfiler(enabled=bool(hyperparameters.get("profile_enabled", True)))
         self.profile_cuda_sync = bool(hyperparameters.get("profile_cuda_sync", False))
-        self.update_batch_mode = str(hyperparameters.get("update_batch_mode", "streaming")).lower()
-        if self.update_batch_mode not in {"streaming", "auto"}:
-            raise ValueError("update_batch_mode must be one of streaming or auto")
         self.collate_prefetch = bool(hyperparameters.get("update_collate_prefetch", True))
         # 训练期跳过前向 GPU 侧结构校验:输入由 Rust 编码器 fail-closed 生成 +
         # SFT 契约校验 + 单测覆盖,校验本身每次 forward 引入十余次 GPU→CPU
@@ -607,6 +583,18 @@ class PPOLearner:
         )
         if self.gradient_accumulation_steps < 1:
             raise ValueError("gradient_accumulation_steps must be positive")
+
+    def release_cache(self) -> None:
+        """评测前释放缓存显存:gc + ``empty_cache`` 归还未分配的缓存块。
+
+        update 结束后缓存分配器保留大量 cached-unallocated 块(参考 logits
+        预计算与激活缓存),与 learner 同卡的 1v3 评测分片无法使用而被挤爆
+        (实测 GPU0 44.42GiB 仅余 20MiB,分片 OOM);显式释放后评测分片可用
+        显存恢复到接近空卡水平。模型/优化器等活跃张量不受影响。
+        """
+        gc.collect()
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
 
     def _sync_cuda(self) -> None:
         if self.profile_cuda_sync and self.device.type == "cuda":
@@ -715,9 +703,7 @@ class PPOLearner:
         with torch.inference_mode():
             for start in range(0, total, chunk):
                 stop = min(start + chunk, total)
-                host_batch = transitions.collate(
-                    np.arange(start, stop), include_query_rows=False,
-                )
+                host_batch = transitions.collate(np.arange(start, stop))
                 shared_capacity = host_batch.pop("shared_capacity", None)
                 host_batch.pop("critic_total_capacity", None)
                 kind_row_plan = host_batch.pop("kind_row_plan", None)
@@ -945,7 +931,7 @@ class PPOLearner:
         if critic_bootstrap:
             sft_kl_coef = 0.0
         elif "sft_kl_coef_middle" in self.hp:
-            sft_kl_coef = scheduled_u_coefficient(
+            sft_kl_coef = scheduled_piecewise_coefficient(
                 float(self.hp.get("sft_kl_coef_start", 0.0)),
                 float(self.hp["sft_kl_coef_middle"]),
                 float(self.hp.get("sft_kl_coef_end", 0.0)),
@@ -1025,11 +1011,7 @@ class PPOLearner:
                         indices, host_batch = self._prefetch_get(prefetch_state)
                     else:
                         with self.profiler.stage("update/collate_soa_gather"):
-                            # learner 不消费 query_rows(仅离线一致性校验用),
-                            # collate 跳过以省预取线程/主线程的拼装与拷贝。
-                            host_batch = transitions.collate(
-                                indices, include_query_rows=False,
-                            )
+                            host_batch = transitions.collate(indices)
                     # host 侧容量标量与类别行表为非张量,不能进 H2D;取出后
                     # 透传 forward,消除 max().item() 与 argsort/tolist 同步。
                     shared_capacity = host_batch.pop("shared_capacity", None)
