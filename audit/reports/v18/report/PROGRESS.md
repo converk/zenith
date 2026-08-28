@@ -938,3 +938,8 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
 - 注:1c86401 的 learner.py 部分同时包含当时工作区中维护者并行重构的片段
   (ACTOR_ROOTS/SHARED_ROOTS 收敛与 scheduled_u_coefficient 移除),与其
   model 重构同属一套、套件当时全绿,特此说明。
+- **修复验证(r4,u5)**:learner 满配显存(mb1536)下评测前 release_cache
+  生效,u5 评测 10/10 分片成功:first_place_rate=0.2557、top2_rate=0.5078、
+  mean_rank=2.483、point_diff_mean=+441.02 ci95=[-190.19, 1043.09]
+  (u5 距 SFT init 仅 4 update,与 r3 0.2685/run2 0.2695 交叉一致)。
+  训练在 tmux ppo 继续向 150 updates 运行,转入免值守。
