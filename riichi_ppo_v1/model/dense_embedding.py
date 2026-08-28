@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import torch
 from torch import Tensor, nn
 
@@ -41,6 +42,24 @@ _MAX_SIMPLE_SLOTS = max(
 
 def _clip_normalize(values: Tensor, scale: float) -> Tensor:
     return (values.float() / scale).clamp(-1.0, 1.0)
+
+
+def compute_kind_row_plan(actor_factors: np.ndarray) -> dict[int, np.ndarray]:
+    """在 host 侧按静态类别键表计算各 kind 的平坦行下标(C2)。
+
+    返回 ``{kind_value: 行下标数组(升序)}``,下标为 padded 批展平后的行号。
+    升序与 forward 内 stable argsort 的段内顺序逐位一致;仅包含
+    ``CATEGORY_SCHEMAS`` 注册的类别,未注册 kind 的行不进入任何段(与旧实现
+    的 continue 语义一致)。纯 numpy 向量化,无任何 GPU 同步,供 collate/
+    推理 host 装配时顺带计算后传入 forward 的 ``kind_row_plan``。
+    """
+    kinds = np.asarray(actor_factors)[..., 1].reshape(-1)
+    plan: dict[int, np.ndarray] = {}
+    for kind_value in CATEGORY_SCHEMAS:
+        indices = np.flatnonzero(kinds == kind_value)
+        if indices.size:
+            plan[int(kind_value)] = indices
+    return plan
 
 
 class SharedSimpleProjection(nn.Module):
@@ -119,6 +138,13 @@ class StateTokenEmbedding(nn.Module):
         self.slot_ids = nn.ModuleDict({})
         for kind, schema in sorted(CATEGORY_SCHEMAS.items()):
             self._register_category(schema)
+        # C2:静态类别元数据表(键序固定)。配合 host 侧 kind_row_plan,
+        # forward 免去 argsort/边界计算/3 次 tolist 同步与按动态 kind 值的
+        # Python 分派(键序与表引用在编译期已知,init 一次预计算)。
+        self._static_categories = tuple(
+            (int(kind), str(kind), schema.cls, schema)
+            for kind, schema in sorted(CATEGORY_SCHEMAS.items())
+        )
 
     def _register_category(self, schema: CategorySchema) -> None:
         key = str(schema.kind)
@@ -187,58 +213,115 @@ class StateTokenEmbedding(nn.Module):
             for index, table in enumerate(tables)
         ]
 
-    def forward(self, factors: Tensor, numeric: Tensor, valid: Tensor | None = None) -> Tensor:
+    def forward(
+        self,
+        factors: Tensor,
+        numeric: Tensor,
+        valid: Tensor | None = None,
+        *,
+        kind_row_plan: dict[int, np.ndarray] | None = None,
+    ) -> Tensor:
         batch, tokens, _width = factors.shape
         segment = factors[..., 0].long()
         kind = factors[..., 1].long()
         base = self.segment(segment.clamp(0, 5)) + self.kind(kind.clamp(0, 127))
         base_flat = base.reshape(-1, self.d_model)
         # 分隔符：类别专属 embedding（纯向量化；kind=100+separator_id ∈ [101,111]）。
+        # C2:算术掩蔽取代布尔索引读写(布尔变长索引必同步);非分隔行查到
+        # separator 的 0 号 padding 行(严格零)再乘 0 掩蔽,x+0.0==x 逐位等价。
         flat_kind = kind.reshape(-1)
-        sep_mask = (flat_kind >= 101) & (flat_kind <= 111)
-        sep_ids = flat_kind[sep_mask] - 100
-        base_flat[sep_mask] = base_flat[sep_mask] + self.separator(sep_ids)
+        sep_mask = ((flat_kind >= 101) & (flat_kind <= 111)).to(base_flat.dtype)
+        sep_ids = (flat_kind - 100).clamp(0, self.separator.num_embeddings - 1)
+        base_flat = base_flat + self.separator(sep_ids) * sep_mask[:, None]
         content_flat = base_flat
         flat_factors = factors.reshape(batch * tokens, -1)
         flat_numeric = numeric.reshape(batch * tokens, -1)
-        # 一次稳定排序得到按 kind 连续区段，替代逐类别 torch.nonzero
-        # （旧实现每类一次 GPU 操作 + 同步）。
-        order = torch.argsort(flat_kind, stable=True)
-        sorted_kind = flat_kind[order]
-        change = sorted_kind[1:] != sorted_kind[:-1]
-        starts = torch.cat([
-            torch.zeros(1, dtype=torch.long, device=kind.device),
-            torch.nonzero(change, as_tuple=False).squeeze(-1) + 1,
-        ])
-        ends = torch.cat([
-            starts[1:],
-            torch.tensor([sorted_kind.numel()], dtype=torch.long, device=kind.device),
-        ])
-        starts_list = starts.tolist()
-        ends_list = ends.tolist()
-        kind_values = sorted_kind[starts].tolist()
-        for offset, kind_value in enumerate(kind_values):
-            schema = CATEGORY_SCHEMAS.get(kind_value)
-            if schema is None:
-                continue
-            start, end = starts_list[offset], ends_list[offset]
-            if start >= end:
-                continue
-            idx = order[start:end]
-            row_factors = flat_factors[idx]
-            row_numeric = flat_numeric[idx]
-            if schema.cls == "DENSE":
-                parts = self._dense_parts(str(kind_value), schema, row_factors, row_numeric)
-                embedded = self.shared_mlp(self.dense_input(parts))
-            elif schema.cls == "SIMPLE":
-                if schema.discrete:
-                    embedded = self.simple_input(self._simple_parts(str(kind_value), row_factors))
-                else:
-                    # BOS：无字段类别，直接使用 kind/segment 基础向量。
-                    embedded = content_flat[idx]
-            else:  # pragma: no cover
-                continue
-            content_flat[idx] = content_flat[idx] + embedded.to(content_flat.dtype)
+        if kind_row_plan is not None:
+            # C2 host 计划路径:静态类别键序迭代 + host 行表(升序,与旧路径
+            # 段内顺序一致),全程无 argsort/tolist/item 同步;行内容与累加
+            # 语义逐位等价(单测 torch.equal 断言)。行表先合并为单次 pinned
+            # 异步 H2D(逐类别 pageable 拷贝每次都是一个同步点),再按 host
+            # 偏移交量切片取视图。
+            arrays = [
+                kind_row_plan[kind_value]
+                for kind_value, _key, _cls, _schema in self._static_categories
+                if kind_row_plan.get(kind_value) is not None
+                and kind_row_plan[kind_value].size
+            ]
+            idx_by_kind: list[Tensor] = []
+            if arrays:
+                total = int(sum(arr.size for arr in arrays))
+                pinned = torch.empty(
+                    total, dtype=torch.long,
+                    pin_memory=(kind.device.type == "cuda"),
+                )
+                pinned.copy_(torch.from_numpy(np.concatenate(arrays)))
+                all_idx = pinned.to(kind.device, non_blocking=True)
+                cursor = 0
+                for arr in arrays:
+                    size = int(arr.size)
+                    idx_by_kind.append(all_idx[cursor:cursor + size])
+                    cursor += size
+            cursor = 0
+            for kind_value, key, cls, schema in self._static_categories:
+                indices = kind_row_plan.get(kind_value)
+                if indices is None or indices.size == 0:
+                    continue
+                idx = idx_by_kind[cursor]
+                cursor += 1
+                row_factors = flat_factors[idx]
+                row_numeric = flat_numeric[idx]
+                if cls == "DENSE":
+                    parts = self._dense_parts(key, schema, row_factors, row_numeric)
+                    embedded = self.shared_mlp(self.dense_input(parts))
+                elif cls == "SIMPLE":
+                    if schema.discrete:
+                        embedded = self.simple_input(self._simple_parts(key, row_factors))
+                    else:
+                        # BOS：无字段类别，直接使用 kind/segment 基础向量。
+                        embedded = content_flat[idx]
+                else:  # pragma: no cover
+                    continue
+                content_flat[idx] = content_flat[idx] + embedded.to(content_flat.dtype)
+        else:
+            # 一次稳定排序得到按 kind 连续区段，替代逐类别 torch.nonzero
+            # （旧实现每类一次 GPU 操作 + 同步）。
+            order = torch.argsort(flat_kind, stable=True)
+            sorted_kind = flat_kind[order]
+            change = sorted_kind[1:] != sorted_kind[:-1]
+            starts = torch.cat([
+                torch.zeros(1, dtype=torch.long, device=kind.device),
+                torch.nonzero(change, as_tuple=False).squeeze(-1) + 1,
+            ])
+            ends = torch.cat([
+                starts[1:],
+                torch.tensor([sorted_kind.numel()], dtype=torch.long, device=kind.device),
+            ])
+            starts_list = starts.tolist()
+            ends_list = ends.tolist()
+            kind_values = sorted_kind[starts].tolist()
+            for offset, kind_value in enumerate(kind_values):
+                schema = CATEGORY_SCHEMAS.get(kind_value)
+                if schema is None:
+                    continue
+                start, end = starts_list[offset], ends_list[offset]
+                if start >= end:
+                    continue
+                idx = order[start:end]
+                row_factors = flat_factors[idx]
+                row_numeric = flat_numeric[idx]
+                if schema.cls == "DENSE":
+                    parts = self._dense_parts(str(kind_value), schema, row_factors, row_numeric)
+                    embedded = self.shared_mlp(self.dense_input(parts))
+                elif schema.cls == "SIMPLE":
+                    if schema.discrete:
+                        embedded = self.simple_input(self._simple_parts(str(kind_value), row_factors))
+                    else:
+                        # BOS：无字段类别，直接使用 kind/segment 基础向量。
+                        embedded = content_flat[idx]
+                else:  # pragma: no cover
+                    continue
+                content_flat[idx] = content_flat[idx] + embedded.to(content_flat.dtype)
         content = content_flat.reshape(batch, tokens, -1)
         if valid is not None:
             content = content * valid[..., None].to(content.dtype)

@@ -18,6 +18,7 @@ from typing import Iterator, Sequence
 import numpy as np
 import torch
 
+from ..model.dense_embedding import compute_kind_row_plan
 from ..model.encoding_protocol import (
     QUERY_ROW_WIDTH,
     TOKEN_NUMERIC_WIDTH,
@@ -419,6 +420,11 @@ class RolloutBuffer:
             # host 侧标量放末尾;非张量,learner 侧 pop 后透传 forward。
             "shared_capacity": shared_capacity,
             "critic_total_capacity": critic_total_capacity,
+            # C2:host 侧类别行表(纯 numpy,预取线程内计算),learner 侧 pop
+            # 后透传 forward,消除 token_embedding 的 argsort/tolist 同步;
+            # actor 与 critic 展平尺寸不同,行表各自独立计算。
+            "kind_row_plan": compute_kind_row_plan(actor_factors),
+            "critic_kind_row_plan": compute_kind_row_plan(critic_factors),
         })
         return batch_tensors
 

@@ -18,6 +18,7 @@ except ImportError:
     ray = None
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
+from ..model.dense_embedding import compute_kind_row_plan
 from ..model.encoding_protocol import QUERY_ROW_WIDTH, TOKEN_NUMERIC_WIDTH, TOKEN_ROW_WIDTH
 from ..model.schema import NUM_ACTIONS
 from .profiling import StageProfiler
@@ -514,6 +515,10 @@ if ray is not None:
                     critic_lengths,
                     legal,
                 ) = collate_request_rows(requests, group)
+            # C2:host 侧类别行表(纯 numpy,无同步),供 token_embedding
+            # 走静态键表路径。
+            kind_row_plan = compute_kind_row_plan(actor_factors)
+            critic_kind_row_plan = compute_kind_row_plan(critic_factors)
             sequence_tokens = actor_lengths
             max_tokens = int(sequence_tokens.max())
             effective_input_tokens = int(sequence_tokens.sum())
@@ -569,6 +574,8 @@ if ray is not None:
                         validate_structure=bool(
                             self.config.get("update_validate_structure", True)
                         ),
+                        kind_row_plan=kind_row_plan,
+                        critic_kind_row_plan=critic_kind_row_plan,
                     )
                     logits = output["policy_logits"].float()
                     probabilities = F.softmax(logits, dim=-1)

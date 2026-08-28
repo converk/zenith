@@ -11,6 +11,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from typing import Any
+
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
@@ -382,6 +384,8 @@ class KyokuTransformerActorCritic(nn.Module):
         validate_structure: bool = True,
         shared_capacity: int | None = None,
         critic_total_capacity: int | None = None,
+        kind_row_plan: dict[int, Any] | None = None,
+        critic_kind_row_plan: dict[int, Any] | None = None,
     ) -> dict[str, Tensor]:
         """V18 前向。
 
@@ -392,6 +396,11 @@ class KyokuTransformerActorCritic(nn.Module):
         ``shared_capacity``/``critic_total_capacity`` 为 host 侧预计算的容量
         (collate 在 numpy 里算好传入);为 None 时回退到 GPU ``max().item()``
         同步推导,保证其他调用方零改动。
+
+        ``kind_row_plan``/``critic_kind_row_plan`` 为 host 侧类别行表
+        (``dense_embedding.compute_kind_row_plan``,分别对应 actor/critic
+        输入的展平行号);传入时 token_embedding 走静态键表路径,免去
+        argsort/tolist 同步;None 时保持旧路径。
         """
         if self.config.policy_head_type != "current_state_snapshot":
             raise ValueError("V18 forward requires current_state_snapshot")
@@ -415,7 +424,9 @@ class KyokuTransformerActorCritic(nn.Module):
 
         device = actor_factors.device
         actor_lengths = actor_lengths.to(device=device, dtype=torch.long)
-        actor_embeddings = self.token_embedding(actor_factors, actor_numeric)
+        actor_embeddings = self.token_embedding(
+            actor_factors, actor_numeric, kind_row_plan=kind_row_plan,
+        )
 
         # —— Shared 公共前缀（segment 1）双向 backbone ——
         shared_mask = actor_factors[..., 0].eq(SEGMENT_SHARED)
@@ -525,7 +536,11 @@ class KyokuTransformerActorCritic(nn.Module):
             critic_lengths > self.config.context_tokens - shared_lengths - 1
         ):
             raise ValueError("critic context overflow")
-        critic_embeddings = self.token_embedding(critic_factors, critic_factors.new_zeros((batch, critic_capacity, TOKEN_NUMERIC_WIDTH)))
+        critic_embeddings = self.token_embedding(
+            critic_factors,
+            critic_factors.new_zeros((batch, critic_capacity, TOKEN_NUMERIC_WIDTH)),
+            kind_row_plan=critic_kind_row_plan,
+        )
         private_grad_scale = float(critic_private_embedding_grad_scale)
         if not 0.0 <= private_grad_scale <= 1.0:
             raise ValueError("critic_private_embedding_grad_scale must be in [0, 1]")

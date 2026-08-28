@@ -162,3 +162,56 @@ def test_metadata_ablation_changes_action_embedding_and_logits() -> None:
         query_pair_counts=inputs["query_pair_counts"], legal_mask=inputs["legal_mask"], policy_only=True,
     )
     assert not torch.allclose(base["raw_policy_logits"], out2["raw_policy_logits"])
+
+
+def test_kind_row_plan_host_computation() -> None:
+    """host 行表:升序、成员正确、未注册 kind 不入表。"""
+    from riichi_ppo_v1.model.dense_embedding import compute_kind_row_plan
+
+    registered = {int(kind) for kind in CATEGORY_SCHEMAS}
+    kinds = [999, registered.pop(), 5, registered.pop(), 5, 999]
+    factors = np.zeros((1, len(kinds), TOKEN_ROW_WIDTH), dtype=np.int64)
+    for position, kind in enumerate(kinds):
+        factors[0, position, 1] = kind
+    plan = compute_kind_row_plan(factors)
+    assert set(plan) == {k for k in kinds if k in registered or k in plan}
+    for kind_value, indices in plan.items():
+        assert list(indices) == [p for p, k in enumerate(kinds) if k == kind_value]
+    assert 999 not in plan
+
+
+def test_forward_plan_path_bitwise_equal_to_legacy_path() -> None:
+    """C2:plan 路径与旧 argsort/tolist 路径输出 torch.equal 逐位一致。"""
+    from riichi_ppo_v1.model.dense_embedding import compute_kind_row_plan
+
+    torch.manual_seed(11)
+    embedding = StateTokenEmbedding(256)
+    rng = np.random.default_rng(4)
+    batch, tokens = 6, 48
+    factors = np.zeros((batch, tokens, TOKEN_ROW_WIDTH), dtype=np.int64)
+    # 覆盖:未注册 kind(999)、分隔符(101-111)、BOS/各类别混合、padding 行 0。
+    kind_pool = sorted(int(kind) for kind in CATEGORY_SCHEMAS)
+    for b in range(batch):
+        kinds = [0, *rng.choice(kind_pool, size=tokens - 3, replace=True).tolist(), 999, 0]
+        factors[b, :, 0] = [CATEGORY_SCHEMAS[k].segment if k in CATEGORY_SCHEMAS else 1 for k in kinds]
+        factors[b, :, 1] = kinds
+        fields = rng.integers(0, 4, size=(batch, tokens, 10))
+        factors[b, :, 2:12] = fields[b]
+    factors_t = torch.from_numpy(factors)
+    numeric = torch.from_numpy(rng.random((batch, tokens, 8)).astype(np.float32) * 0.1)
+    valid = torch.ones(batch, tokens, dtype=torch.bool)
+    valid[:, -6:] = False  # 触发 valid 掩蔽分支
+
+    with torch.no_grad():
+        legacy = embedding(factors_t, numeric, valid)
+        plan = compute_kind_row_plan(factors)
+        fast = embedding(factors_t, numeric, valid, kind_row_plan=plan)
+    assert torch.equal(legacy, fast)
+    # 空批(全部 padding 行 0 kind)也须一致。
+    empty_factors = torch.zeros(2, 5, TOKEN_ROW_WIDTH, dtype=torch.long)
+    empty_numeric = torch.zeros(2, 5, 8)
+    with torch.no_grad():
+        assert torch.equal(
+            embedding(empty_factors, empty_numeric),
+            embedding(empty_factors, empty_numeric, kind_row_plan=compute_kind_row_plan(empty_factors.numpy())),
+        )

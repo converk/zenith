@@ -673,6 +673,8 @@ class PPOLearner:
         critic_bootstrap: bool,
         shared_capacity: int | None = None,
         critic_total_capacity: int | None = None,
+        kind_row_plan: dict[int, Any] | None = None,
+        critic_kind_row_plan: dict[int, Any] | None = None,
     ) -> dict[str, torch.Tensor]:
         """统一走 ``__call__`` 分发,DDP 包装后 forward 才能触发梯度同步。"""
         model = self.model_ddp if self.model_ddp is not None else self.model
@@ -691,6 +693,8 @@ class PPOLearner:
             validate_structure=self.update_validate_structure,
             shared_capacity=shared_capacity,
             critic_total_capacity=critic_total_capacity,
+            kind_row_plan=kind_row_plan,
+            critic_kind_row_plan=critic_kind_row_plan,
         )
 
     def _precompute_reference_logits(self, transitions: RolloutBuffer) -> torch.Tensor:
@@ -716,6 +720,8 @@ class PPOLearner:
                 )
                 shared_capacity = host_batch.pop("shared_capacity", None)
                 host_batch.pop("critic_total_capacity", None)
+                kind_row_plan = host_batch.pop("kind_row_plan", None)
+                critic_kind_row_plan = host_batch.pop("critic_kind_row_plan", None)
                 batch = transfer_batch_to_device(host_batch, self.device, None)
                 with torch.autocast(
                     device_type=self.device.type,
@@ -732,6 +738,8 @@ class PPOLearner:
                         policy_only=True,
                         validate_structure=self.update_validate_structure,
                         shared_capacity=shared_capacity,
+                        kind_row_plan=kind_row_plan,
+                        critic_kind_row_plan=critic_kind_row_plan,
                     )["policy_logits"]
                 chunks.append(logits)
         # inference_mode 张量不能参与 autograd 记录;在 inference_mode 之外
@@ -1022,10 +1030,12 @@ class PPOLearner:
                             host_batch = transitions.collate(
                                 indices, include_query_rows=False,
                             )
-                    # host 侧容量标量为非张量,不能进 H2D;取出后透传 forward,
-                    # 消除 forward 内 shared/critic_total 两次 max().item() 同步。
+                    # host 侧容量标量与类别行表为非张量,不能进 H2D;取出后
+                    # 透传 forward,消除 max().item() 与 argsort/tolist 同步。
                     shared_capacity = host_batch.pop("shared_capacity", None)
                     critic_total_capacity = host_batch.pop("critic_total_capacity", None)
+                    kind_row_plan = host_batch.pop("kind_row_plan", None)
+                    critic_kind_row_plan = host_batch.pop("critic_kind_row_plan", None)
                     batch = transfer_batch_to_device(host_batch, self.device, self.profiler)
                     legal_mask = batch["legal_mask"]
                     actions = batch["actions"]
@@ -1085,6 +1095,8 @@ class PPOLearner:
                                     batch, critic_bootstrap=critic_bootstrap,
                                     shared_capacity=shared_capacity,
                                     critic_total_capacity=critic_total_capacity,
+                                    kind_row_plan=kind_row_plan,
+                                    critic_kind_row_plan=critic_kind_row_plan,
                                 )
                                 # B2:reference logits 每 update 预计算一次,
                                 # 这里按 minibatch indices gather(冻结常量)。
