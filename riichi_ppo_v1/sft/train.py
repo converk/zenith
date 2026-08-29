@@ -11,9 +11,11 @@ from .trainer import (
     evaluate,
     length_bucketed_batches,
     load_config,
-    main as train_main,
     train_worker,
     validate_config,
+)
+from .trainer import (
+    main as train_main,
 )
 
 __all__ = (

@@ -30,7 +30,6 @@ def _records(limit: int = 3) -> list[str]:
 
 
 def test_different_action_ids_produce_different_od_features() -> None:
-    from riichi_ppo_v1.model.encoding_protocol import KIND_ACTION_DEFENSE_QUERY, KIND_ACTION_OFFENSE_QUERY
     from riichienv import MjaiReplay
 
     collisions: list[str] = []

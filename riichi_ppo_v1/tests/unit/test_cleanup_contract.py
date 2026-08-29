@@ -5,11 +5,13 @@ import inspect
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import riichi_lab_bot.client as client  # bot 仅 import 兼容；运行路径列入 V18 待迁移项
-from riichi_lab_bot import cli  # noqa: F401
+from riichi_lab_bot import (
+    cli,  # noqa: F401
+    client,  # bot 仅 import 兼容；运行路径列入 V18 待迁移项
+)
+
 from riichi_ppo_v1.sft.train import load_config as load_sft_config
 from riichi_ppo_v1.training.train import cleanup_smoke_artifacts, load_config
-
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_NAMES = ("training.yaml", "monitoring.yaml", "sft.yaml")

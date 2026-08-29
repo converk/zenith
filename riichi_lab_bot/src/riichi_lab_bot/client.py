@@ -92,7 +92,7 @@ async def play_connection(
                     raw = await asyncio.wait_for(
                         websocket.recv(), timeout=10.0
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     recorder.emit(
                         "validation_result_timeout", scores=end_scores
                     )

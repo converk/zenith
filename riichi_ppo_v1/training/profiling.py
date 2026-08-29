@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
-from contextlib import contextmanager
 import ctypes
-from dataclasses import dataclass
 import os
-from pathlib import Path
 import threading
 import time
-from typing import Iterator
+from collections import defaultdict
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass

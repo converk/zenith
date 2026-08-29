@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import gc
+import time
 from contextlib import contextmanager
 from pathlib import Path
-import time
 from typing import Any
-
-import gc
 
 import numpy as np
 import torch

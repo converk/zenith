@@ -6,6 +6,7 @@ import sys
 import textwrap
 
 import riichi
+
 import riichienv
 
 

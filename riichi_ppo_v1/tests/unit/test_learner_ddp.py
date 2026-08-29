@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import ctypes
 import multiprocessing
-import numpy as np
-import pytest
 import signal
 import sys
+
+import numpy as np
+import pytest
 
 from riichi_ppo_v1.training.learner import PPOLearner
 from riichi_ppo_v1.training.learner_ddp import (

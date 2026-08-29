@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import torch
 import pytest
+import torch
 
 from riichi_ppo_v1.model import KyokuTransformerActorCritic, ModelConfig
 from riichi_ppo_v1.model.architecture import (

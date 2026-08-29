@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-
 from typing import Any
 
 import torch
@@ -75,13 +74,13 @@ class ModelConfig:
             raise ValueError("policy_head_type must be current_state_snapshot")
 
     @classmethod
-    def preset(cls, size: str) -> "ModelConfig":
+    def preset(cls, size: str) -> ModelConfig:
         if size != "v18":
             raise ValueError("model size must be 'v18'")
         return cls()
 
     @classmethod
-    def from_mapping(cls, values: dict[str, object]) -> "ModelConfig":
+    def from_mapping(cls, values: dict[str, object]) -> ModelConfig:
         """从纯 V18 checkpoint/config 映射恢复精确拓扑。"""
         return cls(**dict(values))
 

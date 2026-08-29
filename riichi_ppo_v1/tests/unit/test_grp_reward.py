@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 import torch
 
+from riichi_ppo_v1.training.grp.prepare import Boundary
 from riichi_ppo_v1.training.grp.reward import (
     grp_delta,
     grp_expected_value,
     grp_expected_values_from_matrix,
     rank_utility,
 )
-from riichi_ppo_v1.training.grp.prepare import Boundary
 from riichi_ppo_v1.training.worker import GrpRollout
 
 

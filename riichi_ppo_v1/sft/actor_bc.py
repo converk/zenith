@@ -6,7 +6,7 @@ bot 等推理端直接加载该 payload,本模块只负责 Actor/Critic 参数�
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 from torch import nn
 

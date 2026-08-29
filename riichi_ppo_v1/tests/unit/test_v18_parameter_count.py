@@ -1,7 +1,7 @@
 """V18 参数量、分项与 state-key 门槛。"""
 
 from riichi_ppo_v1.model import KyokuTransformerActorCritic
-from riichi_ppo_v1.model.parameter_count import assert_v18_parameter_contract, parameter_report
+from riichi_ppo_v1.model.parameter_count import assert_v18_parameter_contract
 
 
 def test_parameter_contract() -> None:

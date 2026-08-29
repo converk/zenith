@@ -7,7 +7,6 @@ from riichi_ppo_v1.sft.contract import (
     STATE_PROTOCOL_VERSION,
     validate_manifest,
 )
-from riichi_ppo_v1.sft.precompute import precompute  # 保证模块可导入
 
 
 def _base_manifest() -> dict[str, object]:

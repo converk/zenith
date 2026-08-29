@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 import gzip
 import hashlib
 import json
-from multiprocessing import Manager
 import os
-from pathlib import Path
-from queue import Empty
 import random
 import shutil
 import tarfile
 import time
-from typing import Any, Iterator
 import zipfile
+from collections.abc import Iterator
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from multiprocessing import Manager
+from pathlib import Path
+from queue import Empty
+from typing import Any
 
 import numpy as np
 
@@ -27,10 +28,10 @@ from ..model.encoding_protocol import (
     ENCODING_PROTOCOL_VERSION,
     OFFENSE_SLOT_ORDER,
     QUERY_ROW_ANSWER_START,
-    SLOT_CARDINALITIES,
-    STATE_PROTOCOL_VERSION,
     SEGMENT_CRITIC_FUTURE,
     SEGMENT_CRITIC_PRIVATE,
+    SLOT_CARDINALITIES,
+    STATE_PROTOCOL_VERSION,
     TOKEN_NUMERIC_WIDTH,
     TOKEN_ROW_WIDTH,
 )
@@ -97,7 +98,7 @@ def _count_selected_kyokus(
                         )
                     record_ids[split].add(member.name)
                     game_ids[split].add(_member_metadata(member.name)[1])
-                    selection_digest.update(f"{split}\0{member.name}\n".encode("utf-8"))
+                    selection_digest.update(f"{split}\0{member.name}\n".encode())
             if index == len(shards) or index % 25 == 0:
                 print(
                     f"preflight split={split} scanned_shards={index}/{len(shards)} "

@@ -7,12 +7,12 @@ critic-only feature is retained by the metric stream.
 
 from __future__ import annotations
 
-from collections import Counter, deque
-from dataclasses import dataclass, field
 import json
 import math
+from collections import Counter, deque
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Mapping
 
 import numpy as np
 
@@ -188,8 +188,8 @@ class SemanticMetrics:
 
     def record_transition_reward(self, transition: object) -> None:
         """记录一条 V18 决策的奖励流(总奖励与 GRP 小局奖励两路)。"""
-        self.rewards.append(float(getattr(transition, "reward")))
-        self.reward_kyoku.append(float(getattr(transition, "kyoku_reward")))
+        self.rewards.append(float(transition.reward))
+        self.reward_kyoku.append(float(transition.kyoku_reward))
 
     def record_lineup(self, policies: Iterable[str]) -> None:
         for policy in policies:
@@ -208,7 +208,7 @@ class SemanticMetrics:
         alternatives: Iterable[object] = (),
     ) -> None:
         if best_rank is not None:
-            rank = tuple(getattr(candidate, "rank"))
+            rank = tuple(candidate.rank)
             self.structural_optimal.append(float(rank[0] == best_rank[0]))
             relevant = [
                 item for item in alternatives

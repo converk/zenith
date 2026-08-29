@@ -12,14 +12,14 @@ from __future__ import annotations
 
 import argparse
 import datetime
-from importlib import resources
 import json
 import os
-from pathlib import Path
 import random
 import shutil
 import signal
 import time
+from importlib import resources
+from pathlib import Path
 from typing import Any, NoReturn
 
 # 保持项目自定义 CUDA_DEVICE 约定,同时在启动 torch(以及 Ray 拉起子进程)前
@@ -32,17 +32,6 @@ import torch
 import yaml
 from torch.utils.tensorboard import SummaryWriter
 
-from .profiling import GpuSampler, append_jsonl
-from .metrics import RollingKyokuMetrics, append_metric_jsonl, metric_counters
-from .tensorboard import (
-    eval_summary_scalars,
-    learner_peak_allocated_mb,
-    write_curated_scalars,
-)
-from ..model.schema import TOKEN_SCHEMA_VERSION
-from .learner import PPOLearner, validate_fresh_model_checkpoint_contract
-from .learner_ddp import LearnerDDP
-from .rollout_buffer import RolloutBuffer
 from ..evaluation.head_to_head_1v3_shards import (
     run_sharded_1v3,
     summary_matches_checkpoint,
@@ -54,7 +43,17 @@ from ..evaluation.mechanism import (
     REQUIRED_1V3_PROCESSES,
     progress_md_path,
 )
-
+from ..model.schema import TOKEN_SCHEMA_VERSION
+from .learner import PPOLearner, validate_fresh_model_checkpoint_contract
+from .learner_ddp import LearnerDDP
+from .metrics import RollingKyokuMetrics, append_metric_jsonl, metric_counters
+from .profiling import GpuSampler, append_jsonl
+from .rollout_buffer import RolloutBuffer
+from .tensorboard import (
+    eval_summary_scalars,
+    learner_peak_allocated_mb,
+    write_curated_scalars,
+)
 
 _CONFIG_GROUPS = ("training", "monitoring")
 
@@ -326,8 +325,8 @@ def run(config: dict[str, Any]) -> None:
         import ray
     except ImportError as exc:
         raise RuntimeError("Ray is required: pip install -e riichi_ppo_v1") from exc
-    from .worker import RolloutWorker
     from .inference import RolloutInferenceActor
+    from .worker import RolloutWorker
     if RolloutWorker is None:
         raise RuntimeError("Ray rollout worker could not be defined")
     if RolloutInferenceActor is None:

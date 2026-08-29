@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 import gzip
 import hashlib
 import io
 import json
 import multiprocessing
 import os
-from pathlib import Path
 import tarfile
-from typing import Any, Iterable
-from urllib.request import Request, urlopen
 import zipfile
-
+from collections.abc import Iterable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+from urllib.request import Request, urlopen
 
 DATASET_URLS = {
     2024: "https://github.com/NikkeTryHard/tenhou-to-mjai/releases/download/v2.0.0/2024.zip",

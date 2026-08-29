@@ -1,5 +1,5 @@
-import json
 import inspect
+import json
 
 from riichienv import Action, ActionType, Observation
 

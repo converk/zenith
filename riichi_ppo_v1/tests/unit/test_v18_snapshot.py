@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-
 import riichienv
 from riichienv import MjaiReplay
 
@@ -17,7 +16,6 @@ from riichi_ppo_v1.model.encoding_protocol import (
     SEGMENT_ANALYSIS,
     SEGMENT_SHARED,
     TOKEN_ROW_WIDTH,
-    is_separator_kind,
 )
 
 

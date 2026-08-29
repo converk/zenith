@@ -10,17 +10,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
-import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from .mechanism import (
     DEFAULT_1V3_HANCHANS_PER_PROCESS,
-    DEFAULT_1V3_INTERVAL_UPDATES,
     REQUIRED_1V3_PROCESSES,
     progress_md_path,
 )

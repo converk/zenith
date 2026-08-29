@@ -5,9 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 
-from ..model.validation import run_random_coverage, write_coverage
 from ..model import KyokuTransformerActorCritic
 from ..model.parameter_count import assert_v18_parameter_contract
+from ..model.validation import run_random_coverage, write_coverage
 
 
 def main() -> None:

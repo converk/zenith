@@ -28,13 +28,12 @@ import torch
 import torch.distributed as dist
 
 from .learner import (
-    discounted_empirical_returns,
     PPOLearner,
+    discounted_empirical_returns,
     rollout_target_metrics,
     rollout_update_targets,
 )
 from .rollout_buffer import RolloutBuffer
-
 
 _CMD_UPDATE = "update"
 _CMD_WEIGHTS = "weights"

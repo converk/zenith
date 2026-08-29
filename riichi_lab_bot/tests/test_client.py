@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+
 from riichi_lab_bot.bridge import action_jsons_and_decision_flag
 from riichi_lab_bot.client import (
     AuthenticationError,

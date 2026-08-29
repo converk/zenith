@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from riichi_ppo_v1.sft.data import encode_kyoku
 from riichi_ppo_v1.model.semantic_validation import assert_actor_input_semantics
+from riichi_ppo_v1.sft.data import encode_kyoku
 from riichi_ppo_v1.tests.v18_fixtures import first_kyoku_record
 
 

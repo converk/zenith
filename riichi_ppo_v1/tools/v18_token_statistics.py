@@ -61,8 +61,7 @@ def calculate(dataset: Path, split: str) -> dict[str, Any]:
             lengths_all.append(integer := length)
             if minimum is None or integer < minimum:
                 minimum = integer
-            if integer > maximum:
-                maximum = integer
+            maximum = max(maximum, integer)
             for segment, name in _SEGMENT_NAMES.items():
                 segment_sums[name] += int(np.count_nonzero(rows[:, 0].astype(int) == segment))
     if count == 0:

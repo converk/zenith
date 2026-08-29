@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from ..model.encoding_protocol import (
     ACTION_TYPE_CARDINALITY,
@@ -24,7 +25,7 @@ from ..model.encoding_protocol import (
     TOKEN_NUMERIC_WIDTH,
     TOKEN_ROW_WIDTH,
 )
-from ..model.schema import NUM_ACTIONS, TILE_KINDS, TID_COUNT
+from ..model.schema import NUM_ACTIONS, TID_COUNT, TILE_KINDS
 
 SFT_CONTRACT_VERSION = "riichi-sft-v18-2"
 RUNTIME_CONTRACT_ID = "riichi-runtime-v18-1"

@@ -8,16 +8,17 @@ Offense/Defense Query），网络为 current_state_snapshot 策略头。节奏�
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 import itertools
 import json
 import math
 import os
-from pathlib import Path
 import random
 import socket
 import time
-from typing import Any, Iterable, Iterator
+from collections.abc import Iterable, Iterator
+from contextlib import nullcontext
+from pathlib import Path
+from typing import Any
 
 if os.environ.get("CUDA_DEVICE") and not os.environ.get("CUDA_VISIBLE_DEVICES"):
     os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["CUDA_DEVICE"]
@@ -25,16 +26,16 @@ if os.environ.get("CUDA_DEVICE") and not os.environ.get("CUDA_VISIBLE_DEVICES"):
 import numpy as np
 import torch
 import torch.distributed as dist
+import yaml
 from torch import nn
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.tensorboard import SummaryWriter
-import yaml
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
 from ..model.schema import NUM_ACTIONS
-from .checkpoint import checkpoint_payload, load_exact_resume
 from .actor_bc import actor_parameters, freeze_critic
+from .checkpoint import checkpoint_payload, load_exact_resume
 from .contract import (
     SFT_CADENCE_STEPS,
     dataset_manifest_hash,
@@ -44,7 +45,6 @@ from .contract import (
 )
 from .data import EncodedSample, iter_split_samples
 from .tensorboard import SftMetricWindow, write_sft_scalars
-
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "seed": 1,

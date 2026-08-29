@@ -15,8 +15,8 @@ def _reference_loop_returns(buffer: RolloutBuffer, gamma: float) -> np.ndarray:
     """旧实现的逐字拷贝(向量化改造前 learner.py 的原循环),作为对照。"""
     returns = np.zeros(len(buffer), dtype=np.float32)
     running = 0.0
-    rewards = np.asarray(getattr(buffer, "rewards"), dtype=np.float32)
-    done = np.asarray(getattr(buffer, "done"), dtype=np.bool_)
+    rewards = np.asarray(buffer.rewards, dtype=np.float32)
+    done = np.asarray(buffer.done, dtype=np.bool_)
     for index in range(len(buffer) - 1, -1, -1):
         if done[index]:
             running = 0.0

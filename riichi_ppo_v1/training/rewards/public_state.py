@@ -12,7 +12,6 @@ import numpy as np
 
 from ...model.bridge import NUM_PLAYERS
 
-
 _TILE_TYPES = {
     **{f"{rank}{suit}": (suit_index * 9 + rank - 1) for suit_index, suit in enumerate("mps") for rank in range(1, 10)},
     "E": 27, "S": 28, "W": 29, "N": 30, "P": 31, "F": 32, "C": 33,

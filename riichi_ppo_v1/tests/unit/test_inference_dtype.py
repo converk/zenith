@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import torch
 import pytest
+import torch
 from torch.nn import functional as F
 
 from riichi_ppo_v1.training.inference import inference_autocast_config

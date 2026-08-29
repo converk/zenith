@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections import Counter
 import json
-from typing import Iterable
+from collections import Counter
+from collections.abc import Iterable
 
 
 def canonical_step_events(

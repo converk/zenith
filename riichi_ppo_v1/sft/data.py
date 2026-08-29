@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
 
 import numpy as np
 
 from ..model.action_groups import action_id
-from ..model.current_state import EncodedStateBatch, encode_batch
 from ..model.bridge import (
     action_jsons,
 )
+from ..model.current_state import EncodedStateBatch, encode_batch
 from ..model.encoding_protocol import ENCODED_FORMAT
 
 

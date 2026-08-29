@@ -13,18 +13,17 @@ worker 在 GAE 完成后把 ``list[Transition]`` 一次性物化成扁平 SoA �
 
 from __future__ import annotations
 
-from typing import Iterator, Sequence
+from collections.abc import Iterator, Sequence
 
 import numpy as np
 import torch
 
 from ..model.dense_embedding import compute_kind_row_plan
 from ..model.encoding_protocol import (
+    SEGMENT_SHARED,
     TOKEN_NUMERIC_WIDTH,
     TOKEN_ROW_WIDTH,
-    SEGMENT_SHARED,
 )
-from ..model.schema import NUM_ACTIONS
 from .trajectory import Transition, transition_sequence_length
 
 # V18 当前局面行宽与 critic 私有行宽共享 token schema。
@@ -190,7 +189,7 @@ class RolloutBuffer:
         return offsets
 
     @classmethod
-    def concatenate(cls, buffers: Sequence["RolloutBuffer"]) -> "RolloutBuffer":
+    def concatenate(cls, buffers: Sequence[RolloutBuffer]) -> RolloutBuffer:
         """按 worker 顺序合并 SoA shard,不恢复百万级 Transition 对象。"""
         if not buffers:
             raise ValueError("cannot concatenate an empty rollout buffer list")
@@ -237,7 +236,7 @@ class RolloutBuffer:
         source_indices = bases + np.arange(total, dtype=np.int64)
         return selected_offsets, np.ascontiguousarray(flat[source_indices])
 
-    def select(self, indices: Sequence[int]) -> "RolloutBuffer":
+    def select(self, indices: Sequence[int]) -> RolloutBuffer:
         """构造训练分片;字段与顺序严格遵循给定下标。"""
         idx = np.asarray(indices, dtype=np.int64)
         if idx.ndim != 1 or not len(idx):

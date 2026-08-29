@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import math
-from typing import Mapping, Protocol
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import Protocol
 
 import torch
 from torch import Tensor

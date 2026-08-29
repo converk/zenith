@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-from collections import Counter
-from pathlib import Path
 import re
 import resource
 import time
+from collections import Counter
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -20,13 +20,13 @@ except ImportError:  # imported lazily by the command line program
 
 from ..model.bridge import NUM_PLAYERS, BatchedStateBridge, Decision
 from ..model.grp import (
-    GRPModel,
     GRP_HIDDEN,
     GRP_INPUT_SIZE,
     GRP_LAYERS,
     PREV_RESULT_RON,
     PREV_RESULT_RYUKYOKU,
     PREV_RESULT_TSUMO,
+    GRPModel,
 )
 from .grp.prepare import (
     Boundary,

@@ -1,4 +1,5 @@
 import json
+
 from riichi_ppo_v1.model.bridge import (
     action_jsons,
     tile_id_to_mjai,

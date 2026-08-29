@@ -12,29 +12,28 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from pathlib import Path
 import random
+from pathlib import Path
 
 if os.environ.get("CUDA_DEVICE") and not os.environ.get("CUDA_VISIBLE_DEVICES"):
     os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["CUDA_DEVICE"]
 
 import numpy as np
 import torch
+import yaml
 from torch import nn
 from torch.nn import functional as F
-import yaml
 
 from ...model.grp import (
-    GRPModel,
     GRP_HIDDEN,
     GRP_INPUT_LAYOUT,
     GRP_INPUT_SIZE,
     GRP_LAYERS,
     GRP_NUM_CLASSES,
     GRP_UTILITY,
+    GRPModel,
 )
 from .prepare import iter_grp_samples
-
 
 DEFAULT_CONFIG = {
     "seed": 1,

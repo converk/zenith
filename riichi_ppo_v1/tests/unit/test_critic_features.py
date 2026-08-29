@@ -1,9 +1,14 @@
 """Critic 私有行新行宽编码测试。"""
 
-from types import SimpleNamespace
 
-import numpy as np
 
+from riichi_ppo_v1.model.critic_features import (
+    TableState,
+    encode_critic_features,
+    encode_future_wall_tokens,
+    encode_opponent_hand_tokens,
+    tile_id_to_type,
+)
 from riichi_ppo_v1.model.encoding_protocol import (
     KIND_CRITIC_FUTURE,
     KIND_CRITIC_HAND,
@@ -11,13 +16,6 @@ from riichi_ppo_v1.model.encoding_protocol import (
     SEGMENT_CRITIC_FUTURE,
     SEGMENT_CRITIC_PRIVATE,
     TOKEN_ROW_WIDTH,
-)
-from riichi_ppo_v1.model.critic_features import (
-    TableState,
-    encode_critic_features,
-    encode_future_wall_tokens,
-    encode_opponent_hand_tokens,
-    tile_id_to_type,
 )
 
 

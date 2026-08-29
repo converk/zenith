@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import torch
 from torch import nn
@@ -17,6 +18,7 @@ from .contract import (
     SFT_CONTRACT_VERSION,
     TRAINING_MODES,
 )
+
 
 def _require_mapping(payload: Mapping[str, Any], field: str) -> Mapping[str, Any]:
     value = payload.get(field)

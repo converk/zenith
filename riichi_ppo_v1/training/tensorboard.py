@@ -7,7 +7,8 @@ only the small set of signals useful for routine training decisions.
 from __future__ import annotations
 
 import math
-from typing import Any, Mapping, Protocol
+from collections.abc import Mapping
+from typing import Any, Protocol
 
 
 class ScalarWriter(Protocol):

@@ -26,7 +26,7 @@ from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
-from ..model.schema import NUM_ACTIONS, TOKEN_SCHEMA_VERSION
+from ..model.schema import TOKEN_SCHEMA_VERSION
 from .profiling import StageProfiler
 from .rollout_buffer import RolloutBuffer
 

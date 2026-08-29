@@ -16,17 +16,16 @@ from torch.nn import functional as F
 
 from riichi_ppo_v1.model.grp import (
     GAME_TYPE_HALF,
-    GRPModel,
     GRP_INPUT_LAYOUT,
     GRP_INPUT_SIZE,
     GRP_NUM_CLASSES,
     GRP_UTILITY,
+    GRPModel,
     expected_rank_utility,
 )
 from riichi_ppo_v1.training.grp.prepare import (
     Boundary,
     KyokuResult,
-    feature_row,
     features_from_boundaries,
     final_scores,
     game_type_from_content,

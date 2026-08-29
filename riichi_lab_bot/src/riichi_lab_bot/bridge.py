@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-
 from riichi_ppo_v1.model.bridge import (
     NUM_PLAYERS,
     BatchedStateBridge,

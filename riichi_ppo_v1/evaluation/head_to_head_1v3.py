@@ -10,9 +10,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from collections import Counter
 from pathlib import Path
-import time
 from typing import Any
 
 # Keep the project-facing device convention consistent with the training entry
@@ -23,11 +23,11 @@ if os.environ.get("CUDA_DEVICE") and not os.environ.get("CUDA_VISIBLE_DEVICES"):
 import numpy as np
 import torch
 
-from ..model.bridge import BatchedStateBridge, NUM_PLAYERS
+from ..model.action_groups import action_group as _action_group
+from ..model.bridge import NUM_PLAYERS, BatchedStateBridge
 from ..training.metrics import SemanticMetrics
 from ..training.rewards import PublicStateTracker
 from ..training.worker import active_decisions
-from ..model.action_groups import action_group as _action_group
 from .mechanism import DEFAULT_1V3_HANCHANS_PER_PROCESS, TOTAL_1V3_HANCHANS
 from .policy_adapter import load_policy_adapter
 

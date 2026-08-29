@@ -10,8 +10,8 @@ try:
 except ImportError:  # pragma: no cover
     riichi = None
 
-from riichi_ppo_v1.model.validation import all_action_templates, assert_full_action_space, canonical
 from riichi_ppo_v1.model.encoding_protocol import ACTION_TYPE_CODES, SUPPLIER_REQUIRED_ACTION_TYPES
+from riichi_ppo_v1.model.validation import all_action_templates, assert_full_action_space, canonical
 
 
 @unittest.skipUnless(riichi is not None, "local riichi extension is not installed")

@@ -9,7 +9,6 @@ from typing import Any
 
 import numpy as np
 import torch
-
 from riichi_ppo_v1.model.architecture import (
     KyokuTransformerActorCritic,
     ModelConfig,
