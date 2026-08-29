@@ -1,10 +1,5 @@
-# checkpoints 整体忽略;下列 V17 最佳检查点是只读冷存储的历史例外。
-checkpoints/*
-!checkpoints/train_riichi_v17/
-checkpoints/train_riichi_v17/*
-!checkpoints/train_riichi_v17/ppo/
-checkpoints/train_riichi_v17/ppo/*
-!checkpoints/train_riichi_v17/ppo/checkpoint_00045.pt
+# checkpoints 整体忽略
+checkpoints/
 datasets/
 runs/
 __pycache__/
@@ -23,6 +18,3 @@ audit/reports/*/*
 !audit/reports/*/design/
 !audit/reports/*/report/
 !audit/reports/*/scripts/
-
-# 忽略在线分析脚本
-online_game_analysis/
