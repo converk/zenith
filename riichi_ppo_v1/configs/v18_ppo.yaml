@@ -101,7 +101,7 @@ sft_kl_coef_middle: 0.001
 sft_kl_coef_end: 0.0005
 sft_kl_middle_fraction: 0.5
 
-# 每 5 updates 保存 checkpoint 并执行固定 1v3 评测(与宪法机制一致)。
+# 每 5 updates 保存 checkpoint 并执行固定 1v3 评测(机制常量见 evaluation/mechanism.py)。
 checkpoint_interval_updates: 5
 # learner 驱动接收超时:update 时长 ∝ games×epochs,与 minibatch 无关;
 # 2048 局全量更新实测外推 ~665-735s,固定 600s 会在 update 3 误杀训练。

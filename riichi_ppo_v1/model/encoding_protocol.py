@@ -33,7 +33,7 @@ NUM_ACTIONS = 241
 # 行布局：row[:, 0]=segment, row[:, 1]=token_kind, row[:, 2:]=类别字段。
 TOKEN_ROW_WIDTH = 32
 TOKEN_NUMERIC_WIDTH = 8
-# 生产 context 上限（严格上界见 specs/010 的 research §2.7）。
+# 生产 context 上限。
 CONTEXT_TOKENS = 256
 
 # ---- segment 编号 ----

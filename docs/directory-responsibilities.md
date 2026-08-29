@@ -1,7 +1,7 @@
 # 目录职责清单
 
 每个目录的职责用一句话说明,与仓库实际结构一致;新增代码前先核对本清单与
-宪法原则 I。治理范围覆盖 riichi_ppo_v1、riichi_lab_bot、RiichiEnv 三组件。
+AGENTS.md 的结构约定。治理范围覆盖 riichi_ppo_v1、riichi_lab_bot、RiichiEnv 三组件。
 
 ## riichi_ppo_v1(训练框架)
 

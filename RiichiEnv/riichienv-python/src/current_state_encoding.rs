@@ -2,7 +2,7 @@
 //!
 //! 直接以原生 `Observation` 当前字段构造共享公共前缀 + 三个 Opponent Analysis 的
 //! 扁平行；Action Query 行由 Python 侧沿用 `riichi.encode_query_batch` 生成并拼接。
-//! 行布局与 `riichi_ppo_v1/model/encoding_protocol.py` 镜像（见 specs/010 契约 §3）。
+//! 行布局与 `riichi_ppo_v1/model/encoding_protocol.py` 镜像。
 
 use numpy::ndarray::{Array2, Array3};
 use numpy::{

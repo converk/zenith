@@ -33,8 +33,9 @@ DATA_PLAN_VERSION = 2
 DATA_CURSOR_VERSION = 1
 TRAINING_MODES = frozenset({"actor_only", "actor_public_value", "joint_actor_critic"})
 
-# 固定 SFT 节奏(宪法原则 IV):验证、checkpoint 保存每 3000 steps 一次,
-# 最终评估保持 96 半庄。参数只在代码中定义一处,禁止在实验配置里复制。
+# 固定 SFT 节奏(见 AGENTS.md「评测与验证机制」):验证、checkpoint 保存每
+# 3000 steps 一次,最终评估保持 96 半庄。参数只在代码中定义一处,禁止在实验
+# 配置里复制。
 SFT_CADENCE_STEPS = 3000
 SFT_FINAL_EVAL_HANCHAN_COUNT = 96
 
