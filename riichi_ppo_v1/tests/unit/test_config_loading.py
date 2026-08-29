@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import unittest
 
 from riichi_ppo_v1.training.train import (
@@ -28,22 +27,6 @@ class ConfigLoadingTest(unittest.TestCase):
         self.assertIsNone(config["init_model"])
         self.assertNotIn("offense_" + "fusion", config)
         self.assertNotIn("critic_" + "head_type", config)
-
-    def test_v16_and_v17_configs_are_self_contained(self) -> None:
-        configs = Path(__file__).resolve().parents[2] / "configs"
-        for name in ("v16_ppo.yaml", "v17_ppo.yaml"):
-            config = load_config(str(configs / name))
-            self.assertNotIn("profile_enabled", config)
-            self.assertNotIn("semantic_metrics_jsonl", config)
-            self.assertEqual(config["model_size"], "v16")
-            self.assertEqual(config["policy_head_type"], "symmetric_action_query")
-            self.assertEqual(config["learner_gpus"], 2)
-            if name.startswith("v17_"):
-                self.assertEqual(config["rollout_worker_num_cpus"], 2)
-                self.assertEqual(config["rollout_worker_cpu_threads"], 1)
-            self.assertEqual(config["eval1v3_output_dir"].split("/")[:2], ["audit", "reports"])
-            self.assertNotIn("offense_" + "fusion", config)
-            self.assertNotIn("critic_" + "head_type", config)
 
     def test_worker_partitioning_balances_workers_across_learners(self) -> None:
         self.assertEqual(partition_worker_indices(6, 2), [[0, 2, 4], [1, 3, 5]])

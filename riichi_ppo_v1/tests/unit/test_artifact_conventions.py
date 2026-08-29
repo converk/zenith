@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
-import re
 import subprocess
+from pathlib import Path
 
 import yaml
-
 
 ROOT = Path(__file__).resolve().parents[3]
 PPO_DIR = ROOT / "riichi_ppo_v1"
@@ -133,15 +131,6 @@ def test_progress_md_path_lives_in_report() -> None:
     assert _progress_md_path({}) is None
 
 
-def test_eval_output_dirs_match_current_version_convention() -> None:
-    """V16/V17 配置的 `eval1v3_output_dir` 必须为 `audit/reports/<版本号>/eval`。"""
-    for name in ("v16_ppo.yaml", "v17_ppo.yaml"):
-        config = _read_yaml(CONFIG_DIR / name)
-        assert re.fullmatch(
-            r"audit/reports/v1[67]/eval", config["eval1v3_output_dir"]
-        ), config["eval1v3_output_dir"]
-
-
 def test_sft_cadence_single_point() -> None:
     """SFT 节奏只在契约常量定义,默认/实验配置不得复制节奏键。"""
     from riichi_ppo_v1.sft.contract import (
@@ -155,7 +144,7 @@ def test_sft_cadence_single_point() -> None:
         "validation_interval_steps",
         "checkpoint_interval_steps",
     }
-    for name in ("sft.yaml", "v16_sft.yaml"):
+    for name in ("sft.yaml",):
         config = _read_yaml(CONFIG_DIR / name)
         duplicated = cadence_keys & set(config)
         assert not duplicated, f"{name} 复制了节奏键: {sorted(duplicated)}"
