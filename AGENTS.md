@@ -4,14 +4,10 @@
   对应物理 GPU 4。仅当显式要求单卡运行时才使用 `CUDA_DEVICE=0`。训练入口在
   启动 PyTorch 或 Ray 前,会把 `CUDA_DEVICE` 映射为 CUDA 标准的
   `CUDA_VISIBLE_DEVICES`。
-- `CUDA_DEVICE=0`(亦称 `CUDA=0`)映射到物理 GPU 0。
-- `CUDA_DEVICE=1`(亦称 `CUDA=1`)映射到物理 GPU 1。
-- `CUDA_DEVICE=2`(亦称 `CUDA=2`)映射到物理 GPU 3。
-- `CUDA_DEVICE=3`(亦称 `CUDA=3`)映射到物理 GPU 4。
+- `CUDA_DEVICE` 映射:`0`→物理 GPU 0,`1`→GPU 1,`2`→GPU 3,`3`→GPU 4。
 - 所有 Python 命令与训练使用名为 `Mahjong-AI` 的 Conda 环境。
-- `RiichiEnv` 是本项目的训练环境。
-- `RiichiEnv/riichienv-state-machine/` 是 MJAI 协议状态转换与持久化子包;公开
-  模块名保持 `riichi`,且不依赖 `riichienv`。
+- `RiichiEnv` 是本项目的训练环境;`RiichiEnv/riichienv-state-machine/` 是 MJAI
+  协议状态转换与持久化子包,公开模块名保持 `riichi`,且不依赖 `riichienv`。
 - `riichi_ppo_v1/` 是本项目的主训练代码框架。
 - 无需与 `evaluations/` 兼容;该组件将被整体重写。
 - 默认的性能与训练测试必须显式使用 `target_kl=0.0`、`update_epochs=4`;历史 V16
@@ -20,25 +16,27 @@
 - 运行测试时默认打印耗时监控和所有相关性能指标。默认运行三轮;将第一轮视为
   潜在预热,并单独报告后续轮次的性能统计。
 
-# 项目结构与文件组织
+# 版本契约(最高工程约定)
 
-- 修改代码时保持项目结构整洁。不要仅仅因为某个文件就近,就把不相关的职责堆进
-  现有文件。
-- 当组件具有独立职责时,应新建文件并放入相应目录,而不是强塞进不相关的模块。
-- 添加新文件前,先核对当前包布局与命名约定;相关的实现、测试、文档和配置放在
-  对应目录。
-
-# 治理与版本契约
-
-- 最高治理文档是 `.specify/memory/constitution.md`(当前 v1.8.0)。本文件是运行时
-  指导,与其冲突时以宪法为准。
-- 现行版本契约:encoding protocol 与活跃训练代均为 V18。V16/V17 的 checkpoint、
-  数据集、配置、日志和历史报告仅作冷存储,不再被活跃代码加载或迁移。
+- 本文件是项目工程约定的最高治理文档;与其他文档冲突时,以本文件为准,并回改
+  其余文档保持同步。
+- 现行版本契约:encoding protocol 与活跃训练代均为 V18,全仓只保留一个活跃的
+  输入、schema、模型与 checkpoint 契约。V16/V17 及更早代次的 checkpoint、数据集、
+  配置、日志和历史报告仅作冷存储,不得被活跃代码加载或迁移,也不得为其保留协议
+  适配、旧输入转换、双模型分支、legacy adapter、旧字段 fallback 或 state-dict
+  迁移。
 - V18 输入协议为**当前局面状态快照**(Shared 公共前缀 + 三家 Opponent Analysis +
   每个合法动作一对 Offense/Defense Query;全 token RoPE、公共双向 GQA、结构化 Actor
   mask;`d_model=256`/16Q/4KV GQA/`dense_slot_dim=32`/`dense_fusion_dim=512`/
   `context_tokens=256`);MJAI 事件仅用于同步/生命周期/动作执行,不再作为模型输入。
   PPO/rollout 与 `riichi_lab_bot` 对旧输入契约的引用为 V18 后续待迁移项。
+- V18 Actor 的公开信息边界与 Critic 的私有信息边界属于协议契约:任何扩大 Actor
+  可见信息、改变 Critic 私有输入或恢复 Q scorer/Q-boosting 的变更,必须先以显式
+  规范文档登记并同步协议文档,不得直接修改代码。
+- 禁止为旧 checkpoint 长期保留双版本兼容代码;确需新增兼容层时,必须先行显式
+  说明并获批准。
+- 每个版本的配置必须自包含地写在自己的文件中,禁止 overlay/继承式覆盖;resume
+  类配置同样必须是完整自包含副本(参照 `v17_ppo_resume.yaml` 的做法)。
 
 # 目录与组件职责
 
@@ -48,8 +46,6 @@
 - `RiichiEnv/` — 训练环境(Rust core + PyO3 绑定 + MJAI 状态机)。
 - `riichi_lab_bot/` — 在线对局机器人(独立包,`src/` 布局)。
 - `docs/` — 跨组件文档(含 `directory-responsibilities.md` 目录职责清单)。
-- `specs/` — spec-kit 的 spec/plan/tasks 三件套,按 `specs/<NNN-name>/` 存放。
-- `.specify/` — spec-kit 治理目录(宪法、模板、脚本),由 CLI 管理。
 
 `riichi_ppo_v1/` 包内布局:
 
@@ -62,16 +58,23 @@
 - `configs/` — 版本与默认配置
 - `docs/` — 协议与训练文档
 
-补充规则:
+文件组织规则:
 
+- 修改代码时保持项目结构整洁。不要仅仅因为某个文件就近,就把不相关的职责堆进
+  现有文件;当组件具有独立职责时,应新建文件并放入相应目录,而不是强塞进不相关
+  的模块。
+- 添加新文件前,先核对当前包布局、命名约定与 `docs/directory-responsibilities.md`;
+  相关的实现、测试、文档和配置放在对应目录。
 - 禁止跨阶段放置:训练期使用的评测代码不得留在 SFT 目录,生产 CLI 入口不得放在
   tests 包内。
+- 代码与文档不得引用已删除的目录或失效路径。
 
 # 产物存储与命名约定
 
 - checkpoint 目录固定为 `checkpoints/train_riichi_<版本号>/`,阶段产物放其下子目录
   (现行为 `train_riichi_v18/sft` 与后续 `train_riichi_v18/ppo`);每个 checkpoint 内部
-  保存配置快照以便追溯。现有 checkpoint 一律只归档移动,禁止删除。
+  保存配置快照以便追溯。
+- 现有 checkpoint 一律保留,只允许归档移动,禁止删除(除非另行显式批准)。
 - 所有运行日志(json、txt、log 等)写入 `logs/<版本号>/`,禁止在 `logs/` 根目录或
   他处单独生成日志文件。
 - `audit/reports/<版本号>/` 是每个版本的初始设计文档、实验报告、测试与验证脚本
@@ -90,10 +93,10 @@
 - 通用性优先:代码不得硬编码实验版本、checkpoint 名、数据集名、对手模型、
   schema/契约 ID、种子基数、计数与间隔、默认路径等,一律通过 CLI 参数或配置项
   传入,默认值不得锁定任何历史版本。
-- 领域不变常量(如 136 TID、34 类牌、241 维动作空间)必须收敛为单一命名常量、
-  单一来源,禁止散落各处。
-- 每个版本的配置必须自包含地写在自己的文件中,禁止 overlay/继承式覆盖;resume
-  类配置同样必须是完整自包含副本(参照 `v17_ppo_resume.yaml` 的做法)。
+- 允许的例外:与领域本身绑定、不随版本变化的常量(如 136 TID、34 类牌、241 维
+  动作空间);这类常量必须收敛为单一命名常量、单一来源,禁止散落各处。
+- 新版本迭代通过参数与配置切换实现,不得以复制粘贴代码文件并加版本后缀的方式
+  派生实现。
 - 评测与验证的节奏参数单点定义:PPO 的 1v3 机制常量在
   `riichi_ppo_v1/evaluation/mechanism.py`,SFT 的节奏在
   `riichi_ppo_v1/sft/contract.py`,禁止在实验配置中复制。
@@ -104,13 +107,20 @@
 # 评测与验证机制
 
 - PPO 唯一评测机制为 1v3 对抗:固定 10 进程 × 600 = 6000 hanchan(双卡各
-  5 进程),每 5 updates 一次(自 V17 起,2026-08-29 宪法修订 v1.9.0);对手模型、
-  种子基数、设备与输出目录由版本配置提供,不得硬编码具体版本;输出到
-  `audit/reports/<版本号>/eval`,进度与
-  失败记录写 `audit/reports/<版本号>/report/PROGRESS.md`。
+  5 进程),每 5 updates 一次;对手模型、种子基数、设备与输出目录由版本配置
+  提供,不得硬编码具体版本;输出到 `audit/reports/<版本号>/eval`,进度与失败
+  记录写 `audit/reports/<版本号>/report/PROGRESS.md`。
 - SFT 的验证与 checkpoint 保存统一固定为每 3000 steps 一次,最终评估规模为
   96 hanchan。
-- 评测机制的任何改动必须走宪法修订,不得在单个实验配置里悄悄修改。
+- 上述机制常量(进程数、单进程半庄数、间隔、SFT 节奏)的任何改动,必须先更新
+  本文件的机制描述与 `mechanism.py`/`contract.py` 的文档说明,再改代码;禁止在
+  单个实验配置里悄悄修改。
+
+# 测试与质量门槛
+
+- 新增或修改代码必须附带对应测试;交付前测试通过。
+- 文档(README、docs、AGENTS.md)必须与代码路径同步;协议契约变更必须同步更新
+  `KyokuEventTupleProtocol.md` 等协议文档。
 
 # 运行与运维
 
@@ -123,12 +133,3 @@
 - 重要教训:长时间训练运行期间禁止重构、移动模块或产物目录——运行中的进程按旧
   路径拉起评测分片子进程会全部失败。恢复训练用「`resume: <checkpoint>` +
   `init_model: null`」的完整自包含配置。
-
-# 治理与工作流程
-
-- 宪法修订通过 `$speckit-constitution` 完成并记录 Sync Impact Report;版本语义
-  为 MAJOR/MINOR/PATCH。
-- 新特性与重构走 spec-kit 流程:`$speckit-specify` → `$speckit-plan` →
-  `$speckit-tasks` → `$speckit-implement`,产物保留在 `specs/<NNN-name>/`。
-- README、docs、AGENTS.md 必须与代码路径同步;协议契约变更必须同步更新
-  `KyokuEventTupleProtocol.md` 等协议文档。
