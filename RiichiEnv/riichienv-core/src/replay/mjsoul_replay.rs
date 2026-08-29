@@ -117,23 +117,6 @@ pub enum RawAction {
     Dora { dora_marker: String },
     #[serde(rename = "NoTile")]
     NoTile {},
-    #[serde(rename = "BaBei")]
-    BaBei {
-        seat: usize,
-        #[serde(default)]
-        moqie: bool,
-        #[serde(default)]
-        doras: Vec<String>,
-    },
-    #[serde(rename = "LiuJu")]
-    LiuJu {
-        #[serde(rename = "type", default)]
-        lj_type: u8,
-        #[serde(default)]
-        seat: usize,
-        #[serde(default)]
-        tiles: Vec<String>,
-    },
     #[serde(other)]
     Other,
 }
@@ -227,7 +210,7 @@ impl MjSoulReplay {
             ));
         };
 
-        // Detect 3P from the first round's scores length
+        // 本仓库仅支持四麻:三人日志(首轮得分列表长度为 3)直接拒绝。
         let is_3p = rounds_raw
             .first()
             .and_then(|r| {
@@ -238,16 +221,16 @@ impl MjSoulReplay {
                 }
             })
             .unwrap_or(false);
-        let rule = if is_3p {
-            crate::rule::GameRule::default_mjsoul()
-        } else {
-            _rule
-        };
+        if is_3p {
+            return Err(PyValueError::new_err(
+                "3-player (sanma) logs are not supported",
+            ));
+        }
 
         let mut rounds = Vec::with_capacity(rounds_raw.len());
         for r_raw in rounds_raw {
             let mut kyoku = Self::kyoku_from_raw_actions(r_raw);
-            kyoku.rule = rule;
+            kyoku.rule = _rule;
             rounds.push(kyoku);
         }
 
@@ -256,77 +239,38 @@ impl MjSoulReplay {
             rounds[i].end_scores = rounds[i + 1].scores.clone();
         }
 
-        // Calculate game end scores using the last round
-        let is_3p = rounds.first().map(|r| r.scores.len() == 3).unwrap_or(false);
-
         let game_end_scores = if let Some(last) = rounds.last_mut() {
-            if is_3p {
-                // For 3P, simulate using GameState3P
-                let mut state = crate::state_3p::GameState3P::new(0, false, None, 0, last.rule);
-                let initial_scores: [i32; 3] = last.scores.clone().try_into().unwrap_or([35000; 3]);
-                let oya = last.ju % 3;
-                let bakaze = match last.chang {
-                    0 => crate::types::Wind::East,
-                    1 => crate::types::Wind::South,
-                    2 => crate::types::Wind::West,
-                    3 => crate::types::Wind::North,
-                    _ => crate::types::Wind::East,
-                } as u8;
-                state._initialize_round(
-                    oya,
-                    bakaze,
-                    last.ben,
-                    last.liqibang as u32,
-                    None,
-                    Some(initial_scores.to_vec()),
-                );
-                // Replace the randomly-dealt hands with the actual replay
-                // hands so that tenpai detection in NoTile is correct.
-                for (i, hand) in last.hands.iter().enumerate() {
-                    if i < state.players.len() {
-                        state.players[i].hand = hand.clone();
-                        state.players[i].hand.sort();
-                    }
+            let mut state = crate::state::GameState::new(0, false, None, 0, last.rule);
+            let initial_scores: [i32; 4] = last.scores.clone().try_into().unwrap_or([25000; 4]);
+            let oya = last.ju % 4;
+            let bakaze = match last.chang {
+                0 => crate::types::Wind::East,
+                1 => crate::types::Wind::South,
+                2 => crate::types::Wind::West,
+                3 => crate::types::Wind::North,
+                _ => crate::types::Wind::East,
+            } as u8;
+            state._initialize_round(
+                oya,
+                bakaze,
+                last.ben,
+                last.liqibang as u32,
+                None,
+                Some(initial_scores.to_vec()),
+            );
+            // Replace the randomly-dealt hands with the actual replay
+            // hands so that tenpai detection in NoTile is correct.
+            for (i, hand) in last.hands.iter().enumerate() {
+                if i < state.players.len() {
+                    state.players[i].hand = hand.clone();
+                    state.players[i].hand.sort();
                 }
-                for action in last.actions.iter() {
-                    state.apply_log_action(action);
-                }
-                last.end_scores = state.players.iter().map(|p| p.score).collect();
-                Some(last.end_scores.clone())
-            } else {
-                // 4P path
-                let mut state = crate::state::GameState::new(0, false, None, 0, last.rule);
-                let initial_scores: [i32; 4] = last.scores.clone().try_into().unwrap_or([25000; 4]);
-                let oya = last.ju % 4;
-                let bakaze = match last.chang {
-                    0 => crate::types::Wind::East,
-                    1 => crate::types::Wind::South,
-                    2 => crate::types::Wind::West,
-                    3 => crate::types::Wind::North,
-                    _ => crate::types::Wind::East,
-                } as u8;
-                state._initialize_round(
-                    oya,
-                    bakaze,
-                    last.ben,
-                    last.liqibang as u32,
-                    None,
-                    Some(initial_scores.to_vec()),
-                );
-                // Replace the randomly-dealt hands with the actual replay
-                // hands so that tenpai detection in NoTile is correct.
-                for (i, hand) in last.hands.iter().enumerate() {
-                    if i < state.players.len() {
-                        state.players[i].hand = hand.clone();
-                        state.players[i].hand.sort();
-                    }
-                }
-                for action in last.actions.iter() {
-                    state.apply_log_action(action);
-                }
-                last.end_scores = state.players.iter().map(|p| p.score).collect();
-                Some(last.end_scores.clone())
             }
+            for action in last.actions.iter() {
+                state.apply_log_action(action);
+            }
+            last.end_scores = state.players.iter().map(|p| p.score).collect();
+            Some(last.end_scores.clone())
         } else {
             None
         };
@@ -665,23 +609,6 @@ impl MjSoulReplay {
                 dora_marker: TileConverter::parse_tile_136(&dora_marker),
             },
             RawAction::NoTile {} => Action::NoTile,
-            RawAction::BaBei {
-                seat,
-                moqie,
-                doras: _,
-            } => Action::BaBei { seat, moqie },
-            RawAction::LiuJu {
-                lj_type,
-                seat,
-                tiles,
-            } => Action::LiuJu {
-                lj_type,
-                seat,
-                tiles: tiles
-                    .iter()
-                    .map(|v| TileConverter::parse_tile_136(v))
-                    .collect(),
-            },
             _ => Action::Other("Other".to_string()),
         }
     }

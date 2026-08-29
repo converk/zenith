@@ -1,23 +1,11 @@
 //! 进攻「役/基础番」内核(Offense Query O4/O5)。
 //!
-//! 向听、有效牌与等待牌由 state-machine 的 `analyze_offense_v16` 计算(其 shanten
+//! 向听、有效牌与等待牌由 state-machine 的 query 编码路径计算(其 shanten
 //! 是既有生产路径);本模块只复用 `HandEvaluator` 对每个等待牌逐张计算是否有役
 //! (O4)与无立直荣和路线的基础番(O5,不含一发/里宝/海底)。
 
-#[cfg(feature = "python")]
-use numpy::{PyArray1, PyReadonlyArray1, PyUntypedArrayMethods};
-#[cfg(feature = "python")]
-use pyo3::{exceptions::PyValueError, prelude::*};
-
 use crate::hand_evaluator::HandEvaluator;
 use crate::types::{Conditions, Meld, Wind};
-
-#[cfg(feature = "python")]
-#[pyclass(name = "YakuAnalysis", frozen)]
-pub struct YakuAnalysis {
-    yaku_class: Py<PyArray1<u8>>,
-    base_han: Py<PyArray1<u8>>,
-}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct YakuRow {
@@ -102,96 +90,6 @@ pub fn analyze_offense_rows(
         }
     }
     Ok(output)
-}
-
-#[cfg(feature = "python")]
-#[pymethods]
-impl YakuAnalysis {
-    #[getter]
-    fn yaku_class(&self, py: Python<'_>) -> Py<PyArray1<u8>> {
-        self.yaku_class.clone_ref(py)
-    }
-    #[getter]
-    fn base_han(&self, py: Python<'_>) -> Py<PyArray1<u8>> {
-        self.base_han.clone_ref(py)
-    }
-}
-
-#[cfg(feature = "python")]
-#[pyfunction]
-#[allow(clippy::too_many_arguments)]
-pub fn analyze_offense_v16(
-    py: Python<'_>,
-    concealed_tiles: Vec<Vec<u8>>,
-    melds: Vec<Vec<Meld>>,
-    wait_masks: PyReadonlyArray1<'_, u64>,
-    dora_indicators: Vec<Vec<u8>>,
-    player_wind: PyReadonlyArray1<'_, u8>,
-    round_wind: PyReadonlyArray1<'_, u8>,
-    honba: PyReadonlyArray1<'_, u8>,
-    riichi_sticks: PyReadonlyArray1<'_, u8>,
-) -> PyResult<YakuAnalysis> {
-    let rows = concealed_tiles.len();
-    if melds.len() != rows || dora_indicators.len() != rows {
-        return Err(PyValueError::new_err(
-            "concealed_tiles/melds/dora_indicators must have one entry per row",
-        ));
-    }
-    for (name, length) in [
-        ("wait_masks", wait_masks.len()),
-        ("player_wind", player_wind.len()),
-        ("round_wind", round_wind.len()),
-        ("honba", honba.len()),
-        ("riichi_sticks", riichi_sticks.len()),
-    ] {
-        if length != rows {
-            return Err(PyValueError::new_err(format!(
-                "{name} must have length {rows}, got {length}"
-            )));
-        }
-    }
-    let wait_values = wait_masks
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("wait_masks must be contiguous"))?;
-    let wind_values = player_wind
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("player_wind must be contiguous"))?;
-    let round_values = round_wind
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("round_wind must be contiguous"))?;
-    let honba_values = honba
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("honba must be contiguous"))?;
-    let sticks_values = riichi_sticks
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("riichi_sticks must be contiguous"))?;
-
-    let output = py
-        .detach(|| {
-            analyze_offense_rows(
-                &concealed_tiles,
-                &melds,
-                wait_values,
-                &dora_indicators,
-                wind_values,
-                round_values,
-                honba_values,
-                sticks_values,
-            )
-        })
-        .map_err(PyValueError::new_err)?;
-    let out_class = output.iter().map(|row| row.yaku_class).collect();
-    let out_han = output.iter().map(|row| row.base_han).collect();
-
-    let class_array = PyArray1::from_vec(py, out_class);
-    let han_array = PyArray1::from_vec(py, out_han);
-    for array in [class_array.as_any(), han_array.as_any()] {
-        array.call_method1("setflags", (false,))?;
-    }
-    Ok(YakuAnalysis {
-        yaku_class: class_array.unbind(),
-        base_han: han_array.unbind(),
-    })
 }
 
 #[cfg(test)]

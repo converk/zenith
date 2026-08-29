@@ -35,7 +35,6 @@ pub struct PlayerState {
     pub pao: HashMap<u8, u8>,
     pub forbidden_discards: Vec<u8>,
     pub mjai_log: Vec<String>,
-    pub kita_tiles: Vec<u8>,
 }
 
 impl PlayerState {
@@ -59,7 +58,6 @@ impl PlayerState {
             pao: HashMap::new(),
             forbidden_discards: Vec::new(),
             mjai_log: Vec::new(),
-            kita_tiles: Vec::new(),
         }
     }
 
@@ -79,7 +77,6 @@ impl PlayerState {
         self.ippatsu_cycle = false;
         self.forbidden_discards.clear();
         self.mjai_log.clear();
-        self.kita_tiles.clear();
         self.score_delta = 0;
         // pao is usually cleared? Original code: self.pao = [HashMap::new(); 4]; in _initialize_round
         self.pao.clear();

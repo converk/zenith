@@ -3,53 +3,17 @@ use pyo3::prelude::*;
 use std::collections::HashMap;
 use std::thread;
 
-use riichienv_core::action::{Action, Action3P, ActionEncoder, Phase};
-
-/// Wrapper that accepts both `Action` and `Action3P` from Python.
-pub struct AnyAction(Action);
-
-impl<'a, 'py> FromPyObject<'a, 'py> for AnyAction {
-    type Error = PyErr;
-
-    fn extract(obj: pyo3::Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
-        if let Ok(a) = obj.extract::<Action>() {
-            Ok(AnyAction(a))
-        } else if let Ok(a3p) = obj.extract::<Action3P>() {
-            Ok(AnyAction(Action::from(a3p)))
-        } else {
-            Err(pyo3::exceptions::PyTypeError::new_err(
-                "expected Action or Action3P",
-            ))
-        }
-    }
-}
-use riichienv_core::game_variant::GameStateVariant;
+use riichienv_core::action::{Action, Phase};
 use riichienv_core::replay::MjaiEvent;
 use riichienv_core::rule::GameRule;
 use riichienv_core::state::GameState;
 use riichienv_core::state::legal_actions::GameStateLegalActions;
-use riichienv_core::state_3p::legal_actions::GameState3PLegalActions;
 use riichienv_core::types::{Meld, WinResult};
 
-/// Dispatch macro for immutable access to the inner variant.
-/// Both GameState and GameState3P share identical field names.
-macro_rules! with_variant {
-    ($self:expr, |$s:ident| $body:expr) => {
-        match &$self.variant {
-            GameStateVariant::FourPlayer($s) => $body,
-            GameStateVariant::ThreePlayer($s) => $body,
-        }
-    };
-}
-
-/// Dispatch macro for mutable access to the inner variant.
-macro_rules! with_variant_mut {
-    ($self:expr, |$s:ident| $body:expr) => {
-        match &mut $self.variant {
-            GameStateVariant::FourPlayer($s) => $body,
-            GameStateVariant::ThreePlayer($s) => $body,
-        }
-    };
+#[pyclass(module = "riichienv._riichienv", from_py_object)]
+#[derive(Debug, Clone)]
+pub struct RiichiEnv {
+    pub state: GameState,
 }
 
 /// Shared logic for apply_event / observe_event: optionally reset logs on
@@ -72,12 +36,6 @@ macro_rules! apply_and_log {
     };
 }
 
-#[pyclass(module = "riichienv._riichienv", from_py_object)]
-#[derive(Debug, Clone)]
-pub struct RiichiEnv {
-    pub variant: GameStateVariant,
-}
-
 /// Native vector environment for high-throughput self-play.
 ///
 /// It intentionally supports only the training protocol's 4p-red-half mode.
@@ -91,25 +49,18 @@ pub struct BatchedRiichiEnv {
 
 impl BatchedRiichiEnv {
     fn reset_native(env: &mut RiichiEnv) {
-        with_variant_mut!(env, |s| {
-            s.reset();
-            s._initialize_round(0, 0, 0, 0, None, Some(vec![25_000; 4]));
-        });
+        let s = &mut env.state;
+        s.reset();
+        s._initialize_round(0, 0, 0, 0, None, Some(vec![25_000; 4]));
     }
 
     fn observations_for_env<'py>(env: &mut RiichiEnv, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        match &mut env.variant {
-            GameStateVariant::FourPlayer(state) => {
-                let mut map = HashMap::new();
-                for player in 0..4 {
-                    map.insert(player, state.get_observation(player));
-                }
-                map.into_pyobject(py).map(|value| value.unbind().into())
-            }
-            GameStateVariant::ThreePlayer(_) => Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "BatchedRiichiEnv only supports four-player environments",
-            )),
+        let state = &mut env.state;
+        let mut map = HashMap::new();
+        for player in 0..4 {
+            map.insert(player, state.get_observation(player));
         }
+        map.into_pyobject(py).map(|value| value.unbind().into())
     }
 
     fn observations_all<'py>(&mut self, py: Python<'py>) -> PyResult<Py<PyAny>> {
@@ -137,7 +88,7 @@ impl BatchedRiichiEnv {
         Ok(Self {
             envs: (0..num_envs)
                 .map(|index| RiichiEnv {
-                    variant: GameStateVariant::new(2, false, Some(seed + index as u64), 0, GameRule::default()),
+                    state: GameState::new(2, false, Some(seed + index as u64), 0, GameRule::default()),
                 })
                 .collect(),
             step_threads: step_threads.max(1).min(num_envs),
@@ -167,17 +118,14 @@ impl BatchedRiichiEnv {
     fn step_batch<'py>(
         &mut self,
         py: Python<'py>,
-        actions_by_env: Vec<HashMap<u8, AnyAction>>,
+        actions_by_env: Vec<HashMap<u8, Action>>,
     ) -> PyResult<Py<PyAny>> {
         if actions_by_env.len() != self.envs.len() {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "actions_by_env length must equal num_envs",
             ));
         }
-        let mut actions: Vec<HashMap<u8, Action>> = actions_by_env
-            .into_iter()
-            .map(|row| row.into_iter().map(|(seat, action)| (seat, action.0)).collect())
-            .collect();
+        let mut actions: Vec<HashMap<u8, Action>> = actions_by_env;
         py.detach(|| {
             thread::scope(|scope| {
                 let chunk = self.envs.len().div_ceil(self.step_threads);
@@ -185,7 +133,7 @@ impl BatchedRiichiEnv {
                     scope.spawn(move || {
                         for (env, row) in envs.iter_mut().zip(action_rows.iter()) {
                             if !row.is_empty() {
-                                with_variant_mut!(env, |state| state.step(row));
+                                env.state.step(row);
                             }
                         }
                     });
@@ -221,11 +169,14 @@ impl BatchedRiichiEnv {
     }
 
     fn done(&self) -> Vec<bool> {
-        self.envs.iter().map(|env| with_variant!(env, |state| state.is_done)).collect()
+        self.envs.iter().map(|env| env.state.is_done).collect()
     }
 
     fn scores(&self) -> Vec<Vec<i32>> {
-        self.envs.iter().map(|env| with_variant!(env, |state| state.players.iter().map(|p| p.score).collect())).collect()
+        self.envs
+            .iter()
+            .map(|env| env.state.players.iter().map(|p| p.score).collect())
+            .collect()
     }
 
     /// Return every table's remaining wall tiles, one row per env.
@@ -239,15 +190,13 @@ impl BatchedRiichiEnv {
         self.envs
             .iter()
             .map(|env| {
-                with_variant!(env, |state| {
-                    state
-                        .wall
-                        .tiles
-                        .iter()
-                        .rev()
-                        .map(|&tile| tile as u32)
-                        .collect()
-                })
+                env.state
+                    .wall
+                    .tiles
+                    .iter()
+                    .rev()
+                    .map(|&tile| tile as u32)
+                    .collect()
             })
             .collect()
     }
@@ -266,26 +215,35 @@ impl RiichiEnv {
         round_wind: Option<u8>,
         rule: Option<GameRule>,
     ) -> PyResult<Self> {
+        // 本仓库仅支持四麻:3p-* 模式与 >=3 的数值模式一律拒绝。
         let gt = if let Some(val) = game_mode {
             if let Ok(s) = val.extract::<String>() {
                 match s.as_str() {
                     "4p-red-single" => 0,
                     "4p-red-east" => 1,
                     "4p-red-half" => 2,
-                    "3p-red-single" => 3,
-                    "3p-red-east" => 4,
-                    "3p-red-half" => 5,
+                    other if other.starts_with("3p") => {
+                        return Err(pyo3::exceptions::PyValueError::new_err(
+                            "3-player (sanma) game modes are not supported",
+                        ));
+                    }
                     _ => 0,
                 }
             } else {
-                val.extract::<u8>().unwrap_or_default()
+                let gt = val.extract::<u8>().unwrap_or_default();
+                if gt >= 3 {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "3-player (sanma) game modes are not supported",
+                    ));
+                }
+                gt
             }
         } else {
             0
         };
 
         Ok(RiichiEnv {
-            variant: GameStateVariant::new(
+            state: GameState::new(
                 gt,
                 skip_mjai_logging,
                 seed,
@@ -299,245 +257,207 @@ impl RiichiEnv {
 
     #[getter]
     pub fn get_state(&self) -> PyResult<GameState> {
-        match &self.variant {
-            GameStateVariant::FourPlayer(s) => Ok(*s.clone()),
-            GameStateVariant::ThreePlayer(_) => Err(pyo3::exceptions::PyAttributeError::new_err(
-                "state property is not available for 3P games. Use individual getters instead.",
-            )),
-        }
+        Ok(self.state.clone())
     }
 
     // --- Delegation Getters/Setters ---
 
     #[getter]
     pub fn get_wall(&self) -> Vec<u32> {
-        with_variant!(self, |s| s.wall.tiles.iter().map(|&x| x as u32).collect())
+        self.state.wall.tiles.iter().map(|&x| x as u32).collect()
     }
     #[setter]
     pub fn set_wall(&mut self, v: Vec<u32>) {
-        with_variant_mut!(self, |s| s.wall.tiles =
-            v.iter().map(|&x| x as u8).collect());
+        self.state.wall.tiles = v.iter().map(|&x| x as u8).collect();
     }
 
     #[getter]
     pub fn get_hands(&self) -> Vec<Vec<u32>> {
-        with_variant!(self, |s| s
+        self.state
             .players
             .iter()
             .map(|p| p.hand.iter().map(|&x| x as u32).collect())
-            .collect())
+            .collect()
     }
     #[setter]
     pub fn set_hands(&mut self, v: Vec<Vec<u32>>) {
-        let np = self.variant.num_players() as usize;
-        if v.len() == np {
-            with_variant_mut!(self, |s| {
-                for (i, h) in v.into_iter().enumerate() {
-                    s.players[i].hand = h.iter().map(|&x| x as u8).collect();
-                }
-            });
+        if v.len() == 4 {
+            for (i, h) in v.into_iter().enumerate() {
+                self.state.players[i].hand = h.iter().map(|&x| x as u8).collect();
+            }
         }
     }
 
     #[getter]
     pub fn get_melds(&self) -> Vec<Vec<Meld>> {
-        with_variant!(self, |s| s
-            .players
-            .iter()
-            .map(|p| p.melds.clone())
-            .collect())
+        self.state.players.iter().map(|p| p.melds.clone()).collect()
     }
     #[setter]
     pub fn set_melds(&mut self, v: Vec<Vec<Meld>>) {
-        let np = self.variant.num_players() as usize;
-        if v.len() == np {
-            with_variant_mut!(self, |s| {
-                for (i, m) in v.into_iter().enumerate() {
-                    s.players[i].melds = m;
-                }
-            });
+        if v.len() == 4 {
+            for (i, m) in v.into_iter().enumerate() {
+                self.state.players[i].melds = m;
+            }
         }
     }
 
     #[getter]
     pub fn get_discards(&self) -> Vec<Vec<u32>> {
-        with_variant!(self, |s| s
+        self.state
             .players
             .iter()
             .map(|p| p.discards.iter().map(|&x| x as u32).collect())
-            .collect())
+            .collect()
     }
     #[setter]
     pub fn set_discards(&mut self, v: Vec<Vec<u32>>) {
-        let np = self.variant.num_players() as usize;
-        if v.len() == np {
-            with_variant_mut!(self, |s| {
-                for (i, d) in v.into_iter().enumerate() {
-                    s.players[i].discards = d.iter().map(|&x| x as u8).collect();
-                }
-            });
+        if v.len() == 4 {
+            for (i, d) in v.into_iter().enumerate() {
+                self.state.players[i].discards = d.iter().map(|&x| x as u8).collect();
+            }
         }
     }
 
     #[getter]
     pub fn get_discard_from_hand(&self) -> Vec<Vec<bool>> {
-        with_variant!(self, |s| s
+        self.state
             .players
             .iter()
             .map(|p| p.discard_from_hand.clone())
-            .collect())
+            .collect()
     }
     #[setter]
     pub fn set_discard_from_hand(&mut self, v: Vec<Vec<bool>>) {
-        let np = self.variant.num_players() as usize;
-        if v.len() == np {
-            with_variant_mut!(self, |s| {
-                for (i, d) in v.into_iter().enumerate() {
-                    s.players[i].discard_from_hand = d;
-                }
-            });
+        if v.len() == 4 {
+            for (i, d) in v.into_iter().enumerate() {
+                self.state.players[i].discard_from_hand = d;
+            }
         }
     }
 
     #[getter]
     pub fn get_discard_is_riichi(&self) -> Vec<Vec<bool>> {
-        with_variant!(self, |s| s
+        self.state
             .players
             .iter()
             .map(|p| p.discard_is_riichi.clone())
-            .collect())
+            .collect()
     }
     #[setter]
     pub fn set_discard_is_riichi(&mut self, v: Vec<Vec<bool>>) {
-        let np = self.variant.num_players() as usize;
-        if v.len() == np {
-            with_variant_mut!(self, |s| {
-                for (i, d) in v.into_iter().enumerate() {
-                    s.players[i].discard_is_riichi = d;
-                }
-            });
+        if v.len() == 4 {
+            for (i, d) in v.into_iter().enumerate() {
+                self.state.players[i].discard_is_riichi = d;
+            }
         }
     }
 
     #[getter]
     pub fn get_dora_indicators(&self) -> Vec<u32> {
-        with_variant!(self, |s| s
+        self.state
             .wall
             .dora_indicators
             .iter()
             .map(|&x| x as u32)
-            .collect())
+            .collect()
     }
     #[setter]
     pub fn set_dora_indicators(&mut self, v: Vec<u32>) {
-        with_variant_mut!(self, |s| s.wall.dora_indicators =
-            v.iter().map(|&x| x as u8).collect());
+        self.state.wall.dora_indicators = v.iter().map(|&x| x as u8).collect();
     }
 
     #[getter]
     pub fn get_rinshan_draw_count(&self) -> u8 {
-        with_variant!(self, |s| s.wall.rinshan_draw_count)
+        self.state.wall.rinshan_draw_count
     }
     #[setter]
     pub fn set_rinshan_draw_count(&mut self, v: u8) {
-        with_variant_mut!(self, |s| s.wall.rinshan_draw_count = v);
+        self.state.wall.rinshan_draw_count = v;
     }
 
     #[getter]
     pub fn get_pending_kan_dora_count(&self) -> u8 {
-        with_variant!(self, |s| s.wall.pending_kan_dora_count)
+        self.state.wall.pending_kan_dora_count
     }
     #[setter]
     pub fn set_pending_kan_dora_count(&mut self, v: u8) {
-        with_variant_mut!(self, |s| s.wall.pending_kan_dora_count = v);
+        self.state.wall.pending_kan_dora_count = v;
     }
 
     #[getter]
     pub fn get_is_rinshan_flag(&self) -> bool {
-        with_variant!(self, |s| s.is_rinshan_flag)
+        self.state.is_rinshan_flag
     }
     #[setter]
     pub fn set_is_rinshan_flag(&mut self, v: bool) {
-        with_variant_mut!(self, |s| s.is_rinshan_flag = v);
+        self.state.is_rinshan_flag = v;
     }
 
     #[getter]
     pub fn get_riichi_declaration_index(&self) -> Vec<Option<usize>> {
-        with_variant!(self, |s| s
+        self.state
             .players
             .iter()
             .map(|p| p.riichi_declaration_index)
-            .collect())
+            .collect()
     }
     #[setter]
     pub fn set_riichi_declaration_index(&mut self, v: Vec<Option<usize>>) {
-        let np = self.variant.num_players() as usize;
-        if v.len() == np {
-            with_variant_mut!(self, |s| {
-                for (i, d) in v.into_iter().enumerate() {
-                    s.players[i].riichi_declaration_index = d;
-                }
-            });
+        if v.len() == 4 {
+            for (i, d) in v.into_iter().enumerate() {
+                self.state.players[i].riichi_declaration_index = d;
+            }
         }
     }
 
     #[getter]
     pub fn get_current_player(&self) -> u8 {
-        with_variant!(self, |s| s.current_player)
+        self.state.current_player
     }
     #[setter]
     pub fn set_current_player(&mut self, v: u8) {
-        with_variant_mut!(self, |s| s.current_player = v);
+        self.state.current_player = v;
     }
 
     #[getter]
     pub fn get_game_mode(&self) -> u8 {
-        with_variant!(self, |s| s.game_mode)
+        self.state.game_mode
     }
 
     #[getter]
     pub fn get_num_players(&self) -> u8 {
-        self.variant.num_players()
+        riichienv_core::state::game_mode::num_players()
     }
 
     #[getter]
     pub fn get_action_space_size(&self) -> usize {
-        ActionEncoder::from_num_players(self.variant.num_players()).action_space_size()
-    }
-
-    #[getter]
-    pub fn get_kita_tiles(&self) -> Vec<Vec<u8>> {
-        with_variant!(self, |s| s
-            .players
-            .iter()
-            .map(|p| p.kita_tiles.clone())
-            .collect())
+        riichienv_core::action::ACTION_SPACE_4P
     }
 
     #[getter]
     pub fn get_turn_count(&self) -> u32 {
-        with_variant!(self, |s| s.turn_count)
+        self.state.turn_count
     }
     #[setter]
     pub fn set_turn_count(&mut self, v: u32) {
-        with_variant_mut!(self, |s| s.turn_count = v);
+        self.state.turn_count = v;
     }
 
     #[getter]
     pub fn get_kyoku_idx(&self) -> u8 {
-        with_variant!(self, |s| s.kyoku_idx)
+        self.state.kyoku_idx
     }
 
     #[pyo3(name = "done")]
     pub fn done_method(&self) -> bool {
-        with_variant!(self, |s| s.is_done)
+        self.state.is_done
     }
 
     /// Return a deep copy of this environment (full game state clone).
     #[pyo3(name = "clone")]
     pub fn py_clone(&self) -> Self {
         Self {
-            variant: self.variant.clone(),
+            state: self.state.clone(),
         }
     }
 
@@ -551,110 +471,98 @@ impl RiichiEnv {
 
     #[getter]
     pub fn get_is_done(&self) -> bool {
-        with_variant!(self, |s| s.is_done)
+        self.state.is_done
     }
     #[setter]
     pub fn set_is_done(&mut self, v: bool) {
-        with_variant_mut!(self, |s| s.is_done = v);
+        self.state.is_done = v;
     }
 
     #[getter]
     pub fn get_needs_tsumo(&self) -> bool {
-        with_variant!(self, |s| s.needs_tsumo)
+        self.state.needs_tsumo
     }
     #[setter]
     pub fn set_needs_tsumo(&mut self, v: bool) {
-        with_variant_mut!(self, |s| s.needs_tsumo = v);
+        self.state.needs_tsumo = v;
     }
 
     #[getter]
     pub fn get_needs_initialize_next_round(&self) -> bool {
-        with_variant!(self, |s| s.needs_initialize_next_round)
+        self.state.needs_initialize_next_round
     }
     #[setter]
     pub fn set_needs_initialize_next_round(&mut self, v: bool) {
-        with_variant_mut!(self, |s| s.needs_initialize_next_round = v);
+        self.state.needs_initialize_next_round = v;
     }
 
     #[pyo3(name = "scores")]
     pub fn scores_method(&self) -> Vec<i32> {
-        with_variant!(self, |s| s.players.iter().map(|p| p.score).collect())
+        self.state.players.iter().map(|p| p.score).collect()
     }
     #[pyo3(name = "set_scores")]
     pub fn set_scores_method(&mut self, v: Vec<i32>) {
-        let np = self.variant.num_players() as usize;
-        if v.len() == np {
-            with_variant_mut!(self, |s| {
-                for (i, &sc) in v.iter().enumerate() {
-                    s.players[i].score = sc;
-                }
-            });
+        if v.len() == 4 {
+            for (i, &sc) in v.iter().enumerate() {
+                self.state.players[i].score = sc;
+            }
         }
     }
     #[getter]
     pub fn get_scores(&self) -> Vec<i32> {
-        with_variant!(self, |s| s.players.iter().map(|p| p.score).collect())
+        self.state.players.iter().map(|p| p.score).collect()
     }
     #[setter]
     pub fn set_scores(&mut self, v: Vec<i32>) {
-        let np = self.variant.num_players() as usize;
-        if v.len() == np {
-            with_variant_mut!(self, |s| {
-                for (i, &sc) in v.iter().enumerate() {
-                    s.players[i].score = sc;
-                }
-            });
+        if v.len() == 4 {
+            for (i, &sc) in v.iter().enumerate() {
+                self.state.players[i].score = sc;
+            }
         }
     }
 
     #[getter]
     pub fn get_riichi_sticks(&self) -> u32 {
-        with_variant!(self, |s| s.riichi_sticks)
+        self.state.riichi_sticks
     }
     #[setter]
     pub fn set_riichi_sticks(&mut self, v: u32) {
-        with_variant_mut!(self, |s| s.riichi_sticks = v);
+        self.state.riichi_sticks = v;
     }
 
     #[getter]
     pub fn get_riichi_declared(&self) -> Vec<bool> {
-        with_variant!(self, |s| s
+        self.state
             .players
             .iter()
             .map(|p| p.riichi_declared)
-            .collect())
+            .collect()
     }
     #[setter]
     pub fn set_riichi_declared(&mut self, v: Vec<bool>) {
-        let np = self.variant.num_players() as usize;
-        if v.len() == np {
-            with_variant_mut!(self, |s| {
-                for (i, &val) in v.iter().enumerate() {
-                    s.players[i].riichi_declared = val;
-                }
-            });
+        if v.len() == 4 {
+            for (i, &val) in v.iter().enumerate() {
+                self.state.players[i].riichi_declared = val;
+            }
         }
     }
 
     #[getter]
     pub fn get_riichi_stage(&self) -> Vec<bool> {
-        with_variant!(self, |s| s.players.iter().map(|p| p.riichi_stage).collect())
+        self.state.players.iter().map(|p| p.riichi_stage).collect()
     }
     #[setter]
     pub fn set_riichi_stage(&mut self, v: Vec<bool>) {
-        let np = self.variant.num_players() as usize;
-        if v.len() == np {
-            with_variant_mut!(self, |s| {
-                for (i, &val) in v.iter().enumerate() {
-                    s.players[i].riichi_stage = val;
-                }
-            });
+        if v.len() == 4 {
+            for (i, &val) in v.iter().enumerate() {
+                self.state.players[i].riichi_stage = val;
+            }
         }
     }
 
     #[getter]
     pub fn get_phase(&self) -> Phase {
-        with_variant!(self, |s| s.phase)
+        self.state.phase
     }
     #[setter]
     pub fn set_phase(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -671,145 +579,138 @@ impl RiichiEnv {
                 "Expected Phase or int",
             ));
         };
-        with_variant_mut!(self, |s| s.phase = phase);
+        self.state.phase = phase;
         Ok(())
     }
 
     #[getter]
     pub fn get_active_players(&self) -> Vec<u32> {
-        with_variant!(self, |s| s
+        self.state
             .active_players
             .iter()
             .map(|&x| x as u32)
-            .collect())
+            .collect()
     }
     #[setter]
     pub fn set_active_players(&mut self, v: Vec<u32>) {
-        with_variant_mut!(self, |s| s.active_players =
-            v.iter().map(|&x| x as u8).collect());
+        self.state.active_players = v.iter().map(|&x| x as u8).collect();
     }
 
     #[getter]
     pub fn get_oya(&self) -> u8 {
-        with_variant!(self, |s| s.oya)
+        self.state.oya
     }
     #[setter]
     pub fn set_oya(&mut self, v: u8) {
-        with_variant_mut!(self, |s| s.oya = v);
+        self.state.oya = v;
     }
 
     #[getter]
     pub fn get_honba(&self) -> u8 {
-        with_variant!(self, |s| s.honba)
+        self.state.honba
     }
     #[setter]
     pub fn set_honba(&mut self, v: u8) {
-        with_variant_mut!(self, |s| s.honba = v);
+        self.state.honba = v;
     }
 
     #[getter]
     pub fn is_first_turn(&self) -> bool {
-        with_variant!(self, |s| s.is_first_turn)
+        self.state.is_first_turn
     }
     #[setter]
     pub fn set_is_first_turn(&mut self, v: bool) {
-        with_variant_mut!(self, |s| s.is_first_turn = v);
+        self.state.is_first_turn = v;
     }
 
     #[getter]
     pub fn get_drawn_tile(&self) -> Option<u8> {
-        with_variant!(self, |s| s.drawn_tile)
+        self.state.drawn_tile
     }
     #[setter]
     pub fn set_drawn_tile(&mut self, v: Option<u8>) {
-        with_variant_mut!(self, |s| s.drawn_tile = v);
+        self.state.drawn_tile = v;
     }
 
     #[getter]
     pub fn current_claims(&self) -> HashMap<u8, Vec<Action>> {
-        with_variant!(self, |s| s.current_claims.clone())
+        self.state.current_claims.clone()
     }
     #[setter]
     pub fn set_current_claims(&mut self, v: HashMap<u8, Vec<Action>>) {
-        with_variant_mut!(self, |s| s.current_claims = v);
+        self.state.current_claims = v;
     }
 
     #[getter]
     pub fn get_last_discard(&self) -> Option<(u32, u32)> {
-        with_variant!(self, |s| s.last_discard.map(|(a, b)| (a as u32, b as u32)))
+        self.state.last_discard.map(|(a, b)| (a as u32, b as u32))
     }
     #[setter]
     pub fn set_last_discard(&mut self, v: Option<(u32, u32)>) {
         let ld = v.map(|(pid, tile)| (pid as u8, tile as u8));
-        with_variant_mut!(self, |s| s.last_discard = ld);
+        self.state.last_discard = ld;
     }
 
     #[getter]
     pub fn get_pao(&self) -> Vec<HashMap<u8, u8>> {
-        with_variant!(self, |s| s.players.iter().map(|p| p.pao.clone()).collect())
+        self.state.players.iter().map(|p| p.pao.clone()).collect()
     }
     #[setter]
     pub fn set_pao(&mut self, v: Vec<HashMap<u8, u8>>) {
-        let np = self.variant.num_players() as usize;
-        if v.len() == np {
-            with_variant_mut!(self, |s| {
-                for (i, p) in v.into_iter().enumerate() {
-                    s.players[i].pao = p;
-                }
-            });
+        if v.len() == 4 {
+            for (i, p) in v.into_iter().enumerate() {
+                self.state.players[i].pao = p;
+            }
         }
     }
 
     #[getter]
     pub fn get_missed_agari_doujun(&self) -> Vec<bool> {
-        with_variant!(self, |s| s
+        self.state
             .players
             .iter()
             .map(|p| p.missed_agari_doujun)
-            .collect())
+            .collect()
     }
     #[setter]
     pub fn set_missed_agari_doujun(&mut self, v: Vec<bool>) {
-        let np = self.variant.num_players() as usize;
-        if v.len() == np {
-            with_variant_mut!(self, |s| {
-                for (i, &val) in v.iter().enumerate() {
-                    s.players[i].missed_agari_doujun = val;
-                }
-            });
+        if v.len() == 4 {
+            for (i, &val) in v.iter().enumerate() {
+                self.state.players[i].missed_agari_doujun = val;
+            }
         }
     }
 
     #[getter]
     pub fn get_win_results(&self) -> HashMap<u8, WinResult> {
-        with_variant!(self, |s| s.win_results.clone())
+        self.state.win_results.clone()
     }
 
     #[getter]
     pub fn get_score_deltas(&self) -> Vec<i32> {
-        with_variant!(self, |s| s.players.iter().map(|p| p.score_delta).collect())
+        self.state.players.iter().map(|p| p.score_delta).collect()
     }
 
     #[getter]
     pub fn get_round_wind(&self) -> u8 {
-        with_variant!(self, |s| s.round_wind)
+        self.state.round_wind
     }
     #[setter]
     pub fn set_round_wind(&mut self, v: u8) {
-        with_variant_mut!(self, |s| s.round_wind = v);
+        self.state.round_wind = v;
     }
 
     pub fn _reveal_kan_dora(&mut self) {
-        with_variant_mut!(self, |s| s._reveal_kan_dora());
+        self.state._reveal_kan_dora();
     }
 
     pub fn _get_ura_markers(&self) -> Vec<String> {
-        with_variant!(self, |s| s._get_ura_markers())
+        self.state._get_ura_markers()
     }
 
     #[getter(_custom_round_wind)]
     pub fn get_custom_round_wind(&self) -> u8 {
-        with_variant!(self, |s| s.round_wind)
+        self.state.round_wind
     }
 
     // --- Methods ---
@@ -823,34 +724,33 @@ impl RiichiEnv {
         scores: Option<Vec<i32>>,
         round_wind: Option<u8>,
     ) {
-        let np = self.variant.num_players() as usize;
-        with_variant_mut!(self, |s| {
-            if let Some(o) = oya {
-                s.oya = o;
-                s.kyoku_idx = o;
+        let np = riichienv_core::state::game_mode::num_players() as usize;
+        let s = &mut self.state;
+        if let Some(o) = oya {
+            s.oya = o;
+            s.kyoku_idx = o;
+        }
+        if let Some(h) = honba {
+            s.honba = h;
+        }
+        if let Some(r) = riichi_sticks {
+            s.riichi_sticks = r;
+        }
+        if let Some(ref sc) = scores
+            && sc.len() == np
+        {
+            for (i, &val) in sc.iter().enumerate() {
+                s.players[i].score = val;
             }
-            if let Some(h) = honba {
-                s.honba = h;
-            }
-            if let Some(r) = riichi_sticks {
-                s.riichi_sticks = r;
-            }
-            if let Some(ref sc) = scores
-                && sc.len() == np
-            {
-                for (i, &val) in sc.iter().enumerate() {
-                    s.players[i].score = val;
-                }
-            }
-            if let Some(rw) = round_wind {
-                s.round_wind = rw;
-            }
-        });
+        }
+        if let Some(rw) = round_wind {
+            s.round_wind = rw;
+        }
     }
 
     pub fn ranks(&self) -> Vec<usize> {
-        let np = self.variant.num_players() as usize;
-        let scores: Vec<i32> = with_variant!(self, |s| s.players.iter().map(|p| p.score).collect());
+        let np = 4usize;
+        let scores: Vec<i32> = self.state.players.iter().map(|p| p.score).collect();
         let mut indices: Vec<usize> = (0..np).collect();
         indices.sort_by(|&a, &b| {
             if scores[a] != scores[b] {
@@ -867,32 +767,20 @@ impl RiichiEnv {
     }
 
     pub fn points(&self, rule_name: &str) -> PyResult<Vec<f64>> {
-        let np = self.variant.num_players() as usize;
-        let (soten_weight, soten_base, jun_weight) = if np == 3 {
-            match rule_name {
-                "basic" => (1.0, 35000.0, vec![40.0, 0.0, -40.0]),
-                _ => {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "Unknown preset rule for 3P: {}",
-                        rule_name
-                    )));
-                }
-            }
-        } else {
-            match rule_name {
-                "basic" => (1.0, 25000.0, vec![50.0, 10.0, -10.0, -50.0]),
-                "ouza-tyoujyo" => (0.0, 25000.0, vec![100.0, 40.0, -40.0, -100.0]),
-                "ouza-normal" => (0.0, 25000.0, vec![50.0, 20.0, -20.0, -50.0]),
-                _ => {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "Unknown preset rule: {}",
-                        rule_name
-                    )));
-                }
+        let np = 4usize;
+        let (soten_weight, soten_base, jun_weight) = match rule_name {
+            "basic" => (1.0, 25000.0, vec![50.0, 10.0, -10.0, -50.0]),
+            "ouza-tyoujyo" => (0.0, 25000.0, vec![100.0, 40.0, -40.0, -100.0]),
+            "ouza-normal" => (0.0, 25000.0, vec![50.0, 20.0, -20.0, -50.0]),
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "Unknown preset rule: {}",
+                    rule_name
+                )));
             }
         };
 
-        let scores: Vec<i32> = with_variant!(self, |s| s.players.iter().map(|p| p.score).collect());
+        let scores: Vec<i32> = self.state.players.iter().map(|p| p.score).collect();
         let ranks = self.ranks();
         let mut points = vec![0.0; np];
         for i in 0..np {
@@ -909,8 +797,7 @@ impl RiichiEnv {
         let json = py.import("json")?;
         let loads = json.getattr("loads")?;
         let list = pyo3::types::PyList::empty(py);
-        let log: &Vec<String> = with_variant!(self, |s| &s.mjai_log);
-        for s in log {
+        for s in &self.state.mjai_log {
             list.append(loads.call1((s,))?)?;
         }
         Ok(list.unbind().into())
@@ -922,37 +809,21 @@ impl RiichiEnv {
         py: Python<'py>,
         players: Option<Vec<u8>>,
     ) -> PyResult<Py<PyAny>> {
-        let np = self.variant.num_players();
+        let np = riichienv_core::state::game_mode::num_players();
         let targets = players.unwrap_or_else(|| (0..np).collect());
-        match &mut self.variant {
-            GameStateVariant::FourPlayer(s) => {
-                let mut map = HashMap::new();
-                for p in targets {
-                    map.insert(p, s.get_observation(p));
-                }
-                map.into_pyobject(py).map(|o| o.unbind().into())
-            }
-            GameStateVariant::ThreePlayer(s) => {
-                let mut map = HashMap::new();
-                for p in targets {
-                    map.insert(p, s.get_observation(p));
-                }
-                map.into_pyobject(py).map(|o| o.unbind().into())
-            }
+        let s = &mut self.state;
+        let mut map = HashMap::new();
+        for p in targets {
+            map.insert(p, s.get_observation(p));
         }
+        map.into_pyobject(py).map(|o| o.unbind().into())
     }
 
     pub fn get_observation<'py>(&mut self, py: Python<'py>, player_id: u8) -> PyResult<Py<PyAny>> {
-        match &mut self.variant {
-            GameStateVariant::FourPlayer(s) => s
-                .get_observation(player_id)
-                .into_pyobject(py)
-                .map(|o| o.unbind().into()),
-            GameStateVariant::ThreePlayer(s) => s
-                .get_observation(player_id)
-                .into_pyobject(py)
-                .map(|o| o.unbind().into()),
-        }
+        self.state
+            .get_observation(player_id)
+            .into_pyobject(py)
+            .map(|o| o.unbind().into())
     }
 
     fn get_obs_py<'py>(
@@ -987,7 +858,7 @@ impl RiichiEnv {
         kyotaku: Option<u32>,
         seed: Option<u64>,
     ) -> PyResult<Py<PyAny>> {
-        let np = self.variant.num_players() as usize;
+        let np = 4usize;
 
         // Validate scores length when explicitly provided.
         if let Some(ref sc) = scores
@@ -1000,54 +871,43 @@ impl RiichiEnv {
             )));
         }
 
-        // For a new game, default starting scores based on the variant
-        // (25000 for 4-player, 35000 for 3-player).
-        let default_scores = match &self.variant {
-            GameStateVariant::FourPlayer(_) => {
-                vec![riichienv_core::state::game_mode::starting_score(); 4]
-            }
-            GameStateVariant::ThreePlayer(_) => {
-                vec![riichienv_core::state_3p::game_mode::starting_score(); 3]
-            }
-        };
+        // For a new game, default to the 4P starting scores (25000).
+        let default_scores = vec![riichienv_core::state::game_mode::starting_score(); 4];
 
-        with_variant_mut!(self, |s| {
-            if let Some(sd) = seed {
-                s.seed = Some(sd);
-            }
-            s.reset();
-            s._initialize_round(
-                oya.unwrap_or(0),
-                round_wind.unwrap_or(0),
-                honba.unwrap_or(0),
-                kyotaku.unwrap_or(0),
-                wall,
-                Some(scores.unwrap_or(default_scores)),
-            );
-        });
+        let s = &mut self.state;
+        if let Some(sd) = seed {
+            s.seed = Some(sd);
+        }
+        s.reset();
+        s._initialize_round(
+            oya.unwrap_or(0),
+            round_wind.unwrap_or(0),
+            honba.unwrap_or(0),
+            kyotaku.unwrap_or(0),
+            wall,
+            Some(scores.unwrap_or(default_scores)),
+        );
 
-        let active = with_variant!(self, |s| s.active_players.clone());
+        let active = s.active_players.clone();
         self.get_obs_py(py, Some(active))
     }
 
     pub fn _get_legal_actions(&mut self, pid: u8) -> Vec<Action> {
-        with_variant_mut!(self, |s| s._get_legal_actions_internal(pid))
+        self.state._get_legal_actions_internal(pid)
     }
 
     #[pyo3(signature = (actions))]
     pub fn step<'py>(
         &mut self,
         py: Python<'py>,
-        actions: HashMap<u8, AnyAction>,
+        actions: HashMap<u8, Action>,
     ) -> PyResult<Py<PyAny>> {
-        let actions: HashMap<u8, Action> = actions.into_iter().map(|(k, v)| (k, v.0)).collect();
-        with_variant_mut!(self, |s| s.step(&actions));
-        let has_error = with_variant!(self, |s| s.last_error.is_some());
-        if has_error {
+        self.state.step(&actions);
+        if self.state.last_error.is_some() {
             let dict = pyo3::types::PyDict::new(py);
             return Ok(dict.unbind().into());
         }
-        let active = with_variant!(self, |s| s.active_players.clone());
+        let active = self.state.active_players.clone();
         self.get_obs_py(py, Some(active))
     }
 
@@ -1060,9 +920,7 @@ impl RiichiEnv {
     pub fn apply_event(&mut self, py: Python, event: Py<PyAny>) -> PyResult<()> {
         let (ev, json_val) = Self::parse_mjai_event(py, event)?;
         let is_start_game = matches!(ev, MjaiEvent::StartGame { .. });
-        with_variant_mut!(self, |s| {
-            apply_and_log!(s, ev, json_val, is_start_game);
-        });
+        apply_and_log!(self.state, ev, json_val, is_start_game);
         Ok(())
     }
 
@@ -1097,32 +955,18 @@ impl RiichiEnv {
         );
 
         let is_start_game = matches!(ev, MjaiEvent::StartGame { .. });
-        with_variant_mut!(self, |s| {
-            apply_and_log!(s, ev, json_val, is_start_game);
-        });
+        apply_and_log!(self.state, ev, json_val, is_start_game);
 
         if skip_check {
             return Ok(None);
         }
 
         // Check if this player has legal actions
-        let has_actions = match &mut self.variant {
-            GameStateVariant::FourPlayer(s) => {
-                let obs = s.get_observation(player_id);
-                if obs.legal_actions_method().is_empty() {
-                    None
-                } else {
-                    Some(obs.into_pyobject(py).map(|o| o.unbind().into())?)
-                }
-            }
-            GameStateVariant::ThreePlayer(s) => {
-                let obs = s.get_observation(player_id);
-                if obs.legal_actions_method().is_empty() {
-                    None
-                } else {
-                    Some(obs.into_pyobject(py).map(|o| o.unbind().into())?)
-                }
-            }
+        let obs = self.state.get_observation(player_id);
+        let has_actions = if obs.legal_actions_method().is_empty() {
+            None
+        } else {
+            Some(obs.into_pyobject(py).map(|o| o.unbind().into())?)
         };
         Ok(has_actions)
     }

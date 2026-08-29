@@ -1,7 +1,6 @@
 //! Shared helpers for mapping Mjai messages to a legal `Action`.
 //!
-//! Used by both `Observation::select_action_from_mjai` (4P) and
-//! `Observation3P::select_action_from_mjai` (3P).
+//! Used by `Observation::select_action_from_mjai` (4P).
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyDictMethods};
@@ -109,14 +108,10 @@ fn hand_only_consumed_matches(action: &Action, tile_str: &str, expected: &[Strin
 
 /// Select a matching `Action` from a slice of legal actions for a parsed Mjai
 /// message.
-///
-/// `three_player` controls whether 3P-only types (`kita`) are recognized; chi
-/// is rejected when set.
 pub(crate) fn select_action<'a>(
     legal_actions: &'a [Action],
     parsed: &ParsedMjai,
     drawn_tile: Option<u8>,
-    three_player: bool,
 ) -> Option<&'a Action> {
     let atype = parsed.type_str.as_str();
 
@@ -134,12 +129,11 @@ pub(crate) fn select_action<'a>(
 
     let target_type = match atype {
         "dahai" => Some(ActionType::Discard),
-        "chi" if !three_player => Some(ActionType::Chi),
+        "chi" => Some(ActionType::Chi),
         "pon" => Some(ActionType::Pon),
         "kakan" => Some(ActionType::Kakan),
         "daiminkan" => Some(ActionType::Daiminkan),
         "ankan" => Some(ActionType::Ankan),
-        "kita" if three_player => Some(ActionType::Kita),
         "reach" => Some(ActionType::Riichi),
         "ryukyoku" => Some(ActionType::KyushuKyuhai),
         _ => None,
@@ -251,7 +245,7 @@ mod tests {
         // 回放构造：consume_tiles 含被鸣牌（3 张 E），MJAI 消息只带手牌侧 2 张。
         let actions = [Action::new(ActionType::Pon, Some(108), vec![108, 108, 108], None)];
         let parsed = parsed_pon(&["E", "E"], "E");
-        let selected = select_action(&actions, &parsed, None, false);
+        let selected = select_action(&actions, &parsed, None);
         assert!(selected.is_some());
         assert_eq!(selected.unwrap().consume_tiles, vec![108, 108, 108]);
     }
@@ -261,7 +255,7 @@ mod tests {
         // 原始 3 张形式仍走精确匹配（向后兼容）。
         let actions = [Action::new(ActionType::Pon, Some(108), vec![108, 108, 108], None)];
         let parsed = parsed_pon(&["E", "E", "E"], "E");
-        let selected = select_action(&actions, &parsed, None, false);
+        let selected = select_action(&actions, &parsed, None);
         assert!(selected.is_some());
     }
 
@@ -270,7 +264,7 @@ mod tests {
         // env 表示：consume_tiles 只含手牌侧 2 张，匹配不变。
         let actions = [Action::new(ActionType::Pon, Some(108), vec![108, 109], None)];
         let parsed = parsed_pon(&["E", "E"], "E");
-        let selected = select_action(&actions, &parsed, None, false);
+        let selected = select_action(&actions, &parsed, None);
         assert!(selected.is_some());
     }
 
@@ -278,7 +272,7 @@ mod tests {
     fn full_consume_pon_wrong_pai_rejected() {
         let actions = [Action::new(ActionType::Pon, Some(108), vec![108, 108, 108], None)];
         let parsed = parsed_pon(&["E", "E"], "S");
-        let selected = select_action(&actions, &parsed, None, false);
+        let selected = select_action(&actions, &parsed, None);
         assert!(selected.is_none());
     }
 
@@ -287,7 +281,7 @@ mod tests {
         // 红五被鸣：consume_tiles=[5sr,6s,7s]，canonical consumed=["6s","7s"]，pai="5sr"。
         let actions = [Action::new(ActionType::Chi, Some(88), vec![88, 92, 96], None)];
         let parsed = parsed_chi(&["6s", "7s"], "5sr");
-        let selected = select_action(&actions, &parsed, None, false);
+        let selected = select_action(&actions, &parsed, None);
         assert!(selected.is_some());
         assert_eq!(selected.unwrap().consume_tiles, vec![88, 92, 96]);
     }
@@ -296,7 +290,7 @@ mod tests {
     fn full_consume_chi_keeps_full_form_exact_match() {
         let actions = [Action::new(ActionType::Chi, Some(88), vec![88, 92, 96], None)];
         let parsed = parsed_chi(&["5sr", "6s", "7s"], "5sr");
-        let selected = select_action(&actions, &parsed, None, false);
+        let selected = select_action(&actions, &parsed, None);
         assert!(selected.is_some());
     }
 
@@ -308,7 +302,7 @@ mod tests {
             Action::new(ActionType::Pon, Some(19), vec![17, 18, 19], None),
         ];
         let parsed = parsed_pon(&["5m", "5m"], "5m");
-        let selected = select_action(&actions, &parsed, None, false);
+        let selected = select_action(&actions, &parsed, None);
         assert!(selected.is_some());
         assert!(!selected.unwrap().consume_tiles.contains(&16));
     }

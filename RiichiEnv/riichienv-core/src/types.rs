@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 pub const TILE_MAX: usize = 34;
 pub const TILE_COPIES: usize = 4;
 pub const TILES_4P: usize = 136;
-pub const TILES_3P: usize = 108;
 pub const INITIAL_HAND_SIZE: usize = 13;
 
 /// A hand representation using a histogram of tile types (0-33).
@@ -240,8 +239,6 @@ pub struct Conditions {
     pub tsumo_first_turn: bool,
     pub riichi_sticks: u32,
     pub honba: u32,
-    pub kita_count: u8,
-    pub is_sanma: bool,
     pub num_players: u8,
 }
 
@@ -261,8 +258,6 @@ impl Default for Conditions {
             tsumo_first_turn: false,
             riichi_sticks: 0,
             honba: 0,
-            kita_count: 0,
-            is_sanma: false,
             num_players: 4,
         }
     }
@@ -273,7 +268,7 @@ impl Default for Conditions {
 impl Conditions {
     #[allow(clippy::too_many_arguments)]
     #[new]
-    #[pyo3(signature = (tsumo=false, riichi=false, double_riichi=false, ippatsu=false, haitei=false, houtei=false, rinshan=false, chankan=false, tsumo_first_turn=false, player_wind=Wind::East, round_wind=Wind::East, riichi_sticks=0, honba=0, kita_count=0, is_sanma=false, num_players=4))]
+    #[pyo3(signature = (tsumo=false, riichi=false, double_riichi=false, ippatsu=false, haitei=false, houtei=false, rinshan=false, chankan=false, tsumo_first_turn=false, player_wind=Wind::East, round_wind=Wind::East, riichi_sticks=0, honba=0, num_players=4))]
     pub fn py_new(
         tsumo: bool,
         riichi: bool,
@@ -288,8 +283,6 @@ impl Conditions {
         round_wind: Wind,
         riichi_sticks: u32,
         honba: u32,
-        kita_count: u8,
-        is_sanma: bool,
         num_players: u8,
     ) -> Self {
         Self {
@@ -306,8 +299,6 @@ impl Conditions {
             round_wind,
             riichi_sticks,
             honba,
-            kita_count,
-            is_sanma,
             num_players,
         }
     }
@@ -404,19 +395,6 @@ pub fn is_terminal_tile(t: u8) -> bool {
     suit == 3 || rank == 0 || rank == 8
 }
 
-/// Check if a tile ID (0-135) is excluded in sanma (2m through 8m).
-/// Manzu tiles: type 0-8 (IDs 0-35)
-/// 1m = type 0 (IDs 0-3) - KEPT
-/// 2m = type 1 (IDs 4-7) - EXCLUDED
-/// ...
-/// 8m = type 7 (IDs 28-31) - EXCLUDED
-/// 9m = type 8 (IDs 32-35) - KEPT
-pub fn is_sanma_excluded_tile(tile_id: u8) -> bool {
-    let tile_type = tile_id / 4;
-    // Manzu 2-8 (types 1-7)
-    (1..=7).contains(&tile_type)
-}
-
 /// Standard dora wrapping for 4-player mahjong.
 /// Input/output are tile types (0-33), not tile IDs.
 pub fn standard_next_dora_tile(tile: u8) -> u8 {
@@ -432,16 +410,5 @@ pub fn standard_next_dora_tile(tile: u8) -> u8 {
         // Dragons (31-33): Haku->Hatsu->Chun->Haku
         31..=33 => 31 + (tile - 31 + 1) % 3,
         _ => tile,
-    }
-}
-
-/// 三麻宝牌回绕(34 类空间单源):万子仅剩 1m/9m,故 1m↔9m 直接回绕;
-/// 2m-8m 不存在于三麻,原样回退;其余花色/字牌与 4P 标准回绕一致。
-pub fn sanma_next_dora_tile(tile: u8) -> u8 {
-    match tile {
-        0 => 8,
-        8 => 0,
-        1..=7 => tile,
-        _ => standard_next_dora_tile(tile),
     }
 }

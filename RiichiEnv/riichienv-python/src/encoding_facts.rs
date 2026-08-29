@@ -338,7 +338,6 @@ fn action_type_code(action_type: ActionType) -> u8 {
         ActionType::Tsumo => 9,
         ActionType::Ron => 10,
         ActionType::KyushuKyuhai => 11,
-        ActionType::Kita => 0,
     }
 }
 
@@ -723,7 +722,6 @@ mod tests {
             ActionType::Tsumo,
             ActionType::Pass,
             ActionType::KyushuKyuhai,
-            ActionType::Kita,
         ] {
             assert!(!action_requires_supplier(action_type));
         }

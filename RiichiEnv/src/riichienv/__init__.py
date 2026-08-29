@@ -7,8 +7,6 @@ from ._riichienv import (
     MjaiReplay,
     MjSoulReplay,
     Observation,
-    Observation3P,
-    YakuAnalysis,
     CurrentStateBatch,
     CompactEncodingFacts,
     EncodingYakuValues,
@@ -23,8 +21,6 @@ from ._riichienv import (
     Yaku,
     calculate_score,
     calculate_shanten,
-    calculate_shanten_3p,
-    analyze_offense_v16,
     analyze_encoding_yaku_batch,
     assemble_current_state_batch,
     prepare_encoding_facts,
@@ -35,9 +31,9 @@ from ._riichienv import (
     parse_hand,
     parse_tile,
 )
-from .action import Action, Action3P, ActionType
+from .action import Action, ActionType
 from .game_mode import GameType
-from .hand import Conditions, HandEvaluator, HandEvaluator3P
+from .hand import Conditions, HandEvaluator
 
 EAST = Wind.East
 SOUTH = Wind.South
@@ -52,28 +48,23 @@ __all__ = [
     "Meld",
     "MeldType",
     "Observation",
-    "Observation3P",
     "MjSoulReplay",
     "MjaiReplay",
     "Score",
     "Wind",
-    "YakuAnalysis",
     "CurrentStateBatch",
     "CompactEncodingFacts",
     "EncodingYakuValues",
-    "analyze_offense_v16",
     "analyze_encoding_yaku_batch",
     "assemble_current_state_batch",
     "prepare_encoding_facts",
     "prepare_current_state_batch",
     "calculate_score",
     "calculate_shanten",
-    "calculate_shanten_3p",
     "check_riichi_candidates",
     "parse_hand",
     "parse_tile",
     "Action",
-    "Action3P",
     "ActionType",
     "RiichiEnv",
     "BatchedRiichiEnv",
@@ -83,7 +74,6 @@ __all__ = [
     "GameType",
     "WinResult",
     "HandEvaluator",
-    "HandEvaluator3P",
     "Conditions",
     "EAST",
     "SOUTH",

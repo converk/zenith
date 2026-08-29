@@ -7,7 +7,6 @@
 
 use riichienv_core::agari;
 use riichienv_core::hand_evaluator::HandEvaluator;
-use riichienv_core::hand_evaluator_3p::HandEvaluator3P;
 use riichienv_core::score;
 use riichienv_core::types::{Conditions, Meld, MeldType, Wind};
 use serde::Deserialize;
@@ -58,10 +57,6 @@ struct BenchConditions {
     player_wind: u8,
     round_wind: u8,
     honba: u32,
-    #[serde(default)]
-    kita_count: u8,
-    #[serde(default)]
-    is_sanma: bool,
     #[serde(default = "default_num_players")]
     num_players: u8,
 }
@@ -124,8 +119,6 @@ fn to_conditions(bc: &BenchConditions) -> Conditions {
         round_wind: Wind::from(bc.round_wind),
         riichi_sticks: 0,
         honba: bc.honba,
-        kita_count: bc.kita_count,
-        is_sanma: bc.is_sanma,
         num_players: bc.num_players,
     }
 }
@@ -191,68 +184,6 @@ fn test_4p_calc_correctness() {
         assert_eq!(
             result_yaku, expected_yaku,
             "4P case {}: yaku mismatch (tiles={:?}, win={})",
-            i, case.tiles_136, case.win_tile_136,
-        );
-    }
-}
-
-/// Verify every 3P case: is_agari, han, fu, and yaku all match expected values.
-#[test]
-fn test_3p_calc_correctness() {
-    let data: BenchData = {
-        let s =
-            fs::read_to_string("benches/data/agari_3p.json").expect("Failed to read agari_3p.json");
-        serde_json::from_str(&s).expect("Failed to parse agari_3p.json")
-    };
-    assert!(!data.cases.is_empty(), "3P data should not be empty");
-
-    for (i, case) in data.cases.iter().enumerate() {
-        let melds: Vec<Meld> = case.melds.iter().map(to_meld).collect();
-        let he = HandEvaluator3P::new(case.tiles_136.clone(), melds);
-
-        let mut hand = he.hand.clone();
-        let win_tile_34 = case.win_tile_136 / 4;
-        let total: u8 = hand.counts.iter().sum::<u8>() + (he.melds.len() as u8 * 3);
-        if total == 13 {
-            hand.add(win_tile_34);
-        }
-        assert!(
-            agari::is_agari(&mut hand),
-            "3P case {}: is_agari should be true",
-            i,
-        );
-
-        let conds = to_conditions(&case.conditions);
-        let result = he.calc(
-            case.win_tile_136,
-            case.dora_indicators.clone(),
-            case.ura_indicators.clone(),
-            Some(conds),
-        );
-
-        assert!(
-            result.is_win,
-            "3P case {}: calc should return is_win=true",
-            i,
-        );
-        assert_eq!(
-            result.han, case.expected.han,
-            "3P case {}: han mismatch (tiles={:?}, win={}, got_yaku={:?} expected_yaku={:?})",
-            i, case.tiles_136, case.win_tile_136, result.yaku, case.expected.yaku,
-        );
-        assert_eq!(
-            result.fu, case.expected.fu,
-            "3P case {}: fu mismatch (tiles={:?}, win={})",
-            i, case.tiles_136, case.win_tile_136,
-        );
-
-        let mut result_yaku = result.yaku.clone();
-        let mut expected_yaku = case.expected.yaku.clone();
-        result_yaku.sort();
-        expected_yaku.sort();
-        assert_eq!(
-            result_yaku, expected_yaku,
-            "3P case {}: yaku mismatch (tiles={:?}, win={})",
             i, case.tiles_136, case.win_tile_136,
         );
     }

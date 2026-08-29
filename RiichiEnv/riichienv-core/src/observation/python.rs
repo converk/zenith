@@ -2,7 +2,7 @@ use ndarray::prelude::*;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyDictMethods};
 
-use crate::action::{Action, ActionEncoder, ActionType};
+use crate::action::{Action, ACTION_SPACE_4P, ActionType};
 use crate::shanten;
 use crate::types::{Meld, MeldType, TILE_MAX, TILES_4P};
 use crate::yaku_checker;
@@ -121,11 +121,9 @@ impl Observation {
 
     #[pyo3(name = "mask")]
     pub fn mask_method<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
-        let encoder = ActionEncoder::FourPlayer;
-        let size = encoder.action_space_size();
-        let mut mask = vec![0u8; size];
+        let mut mask = vec![0u8; ACTION_SPACE_4P];
         for action in &self._legal_actions {
-            if let Ok(idx) = encoder.encode(action)
+            if let Ok(idx) = action.encode()
                 && (idx as usize) < mask.len()
             {
                 mask[idx as usize] = 1;
@@ -136,7 +134,7 @@ impl Observation {
 
     #[getter]
     pub fn action_space_size(&self) -> usize {
-        ActionEncoder::FourPlayer.action_space_size()
+        ACTION_SPACE_4P
     }
 
     #[pyo3(name = "find_action", signature = (action_id))]
@@ -148,7 +146,7 @@ impl Observation {
     pub fn select_action_from_mjai(&self, mjai_data: &Bound<'_, PyAny>) -> Option<Action> {
         use super::mjai_select::{parse_mjai_message, select_action};
         let parsed = parse_mjai_message(mjai_data)?;
-        select_action(&self._legal_actions, &parsed, self.drawn_tile, false).cloned()
+        select_action(&self._legal_actions, &parsed, self.drawn_tile).cloned()
     }
 
     #[pyo3(name = "new_events")]

@@ -326,9 +326,6 @@ impl GameStateEventHandler for GameState {
                 let tile = parse_mjai_tile(&dora_marker);
                 self.wall.dora_indicators.push(tile);
             }
-            MjaiEvent::Kita { .. } => {
-                // Kita is 3P only; ignored in 4P event handler
-            }
             MjaiEvent::Hora { .. } | MjaiEvent::Ryukyoku { .. } | MjaiEvent::EndKyoku => {
                 self.is_done = true;
             }
@@ -855,15 +852,6 @@ impl GameStateEventHandler for GameState {
                         }
                     }
                 }
-                self.is_done = true;
-            }
-            LogAction::LiuJu { .. } => {
-                // Finalize pending riichi deposit
-                if let Some(rp) = self.riichi_pending_acceptance.take() {
-                    self.players[rp as usize].score -= 1000;
-                    self.riichi_sticks += 1;
-                }
-                // Abortive draw - no score changes
                 self.is_done = true;
             }
             _ => {}

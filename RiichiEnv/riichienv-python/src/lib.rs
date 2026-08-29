@@ -41,12 +41,6 @@ fn calculate_shanten_py(hand_tiles: Vec<u32>) -> i32 {
     riichienv_core::shanten::calculate_shanten(&hand_tiles)
 }
 
-#[pyfunction]
-#[pyo3(name = "calculate_shanten_3p")]
-fn calculate_shanten_3p_py(hand_tiles: Vec<u32>) -> i32 {
-    riichienv_core::shanten::calculate_shanten_3p(&hand_tiles)
-}
-
 #[pymodule]
 fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
@@ -60,7 +54,6 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<riichienv_core::types::WinResult>()?;
     m.add_class::<riichienv_core::score::Score>()?;
     m.add_class::<riichienv_core::hand_evaluator::HandEvaluator>()?;
-    m.add_class::<riichienv_core::hand_evaluator_3p::HandEvaluator3P>()?;
     m.add_class::<riichienv_core::replay::MjSoulReplay>()?;
     m.add_class::<riichienv_core::replay::MjaiReplay>()?;
     m.add_class::<riichienv_core::replay::LogKyoku>()?;
@@ -69,15 +62,12 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<riichienv_core::replay::WinResultContextIterator>()?;
     m.add_class::<riichienv_core::rule::GameRule>()?;
     m.add_class::<riichienv_core::yaku::Yaku>()?;
-    m.add_class::<riichienv_core::offense_analysis::YakuAnalysis>()?;
 
     // Env classes
     m.add_class::<riichienv_core::action::ActionType>()?;
     m.add_class::<riichienv_core::action::Phase>()?;
     m.add_class::<riichienv_core::action::Action>()?;
-    m.add_class::<riichienv_core::action::Action3P>()?;
     m.add_class::<riichienv_core::observation::Observation>()?;
-    m.add_class::<riichienv_core::observation_3p::Observation3P>()?;
     m.add_class::<env::RiichiEnv>()?;
     m.add_class::<env::BatchedRiichiEnv>()?;
     m.add_class::<encoding_facts::CompactEncodingFacts>()?;
@@ -90,7 +80,6 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_tile_py, m)?)?;
     m.add_function(wrap_pyfunction!(check_riichi_candidates_py, m)?)?;
     m.add_function(wrap_pyfunction!(calculate_shanten_py, m)?)?;
-    m.add_function(wrap_pyfunction!(calculate_shanten_3p_py, m)?)?;
     m.add_function(wrap_pyfunction!(encoding_facts::prepare_encoding_facts, m)?)?;
     m.add_function(wrap_pyfunction!(
         encoding_facts::analyze_encoding_yaku_batch,
@@ -109,9 +98,5 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(riichienv_core::yaku::get_all_yaku_py, m)?)?;
-    m.add_function(wrap_pyfunction!(
-        riichienv_core::offense_analysis::analyze_offense_v16,
-        m
-    )?)?;
     Ok(())
 }

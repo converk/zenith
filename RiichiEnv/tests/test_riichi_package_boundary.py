@@ -11,7 +11,6 @@ import riichienv
 
 def test_riichi_module_remains_public() -> None:
     assert hasattr(riichi, "MjaiKyokuStateMachineManager")
-    assert hasattr(riichi, "analyze_features")
     assert riichi.ANALYSIS_VERSION == 4
 
 

@@ -59,7 +59,6 @@ class ActionType:
     ANKAN: ActionType
     KAKAN: ActionType
     KYUSHU_KYUHAI: ActionType
-    KITA: ActionType
     # PascalCase aliases (deprecated)
     Discard: ActionType
     Chi: ActionType
@@ -72,7 +71,6 @@ class ActionType:
     Ankan: ActionType
     Kakan: ActionType
     KyushuKyuhai: ActionType
-    Kita: ActionType
     def __int__(self) -> int: ...
 
 class Action:
@@ -84,22 +82,6 @@ class Action:
     def to_dict(self) -> dict[str, Any]: ...
     def to_mjai(self) -> str: ...
 
-class Action3P:
-    action_type: ActionType
-    tile: int | None
-    consume_tiles: list[int]
-    actor: int | None
-
-    def __init__(
-        self,
-        type: ActionType = ActionType.PASS,  # noqa: A002
-        tile: int | None = None,
-        consume_tiles: list[int] = [],
-        actor: int | None = None,
-    ): ...
-    def to_dict(self) -> dict[str, Any]: ...
-    def to_mjai(self) -> str: ...
-    def encode(self) -> int: ...
 
 class Meld:
     meld_type: MeldType
@@ -122,8 +104,6 @@ class Conditions:
     round_wind: Wind
     riichi_sticks: int
     honba: int
-    kita_count: int
-    is_sanma: bool
     num_players: int
     def __init__(
         self,
@@ -140,8 +120,6 @@ class Conditions:
         round_wind: Wind | int = 0,
         riichi_sticks: int = 0,
         honba: int = 0,
-        kita_count: int = 0,
-        is_sanma: bool = False,
         num_players: int = 4,
     ): ...
 
@@ -195,20 +173,6 @@ class HandEvaluator:
     @staticmethod
     def hand_from_text(text: str) -> HandEvaluator: ...
 
-class HandEvaluator3P:
-    def __init__(self, tiles: list[int], melds: list[Meld] = []): ...
-    def calc(
-        self,
-        win_tile: int,
-        dora_indicators: list[int] = [],
-        ura_indicators: list[int] = [],
-        conditions: Conditions | None = None,
-    ) -> WinResult: ...
-    def is_tenpai(self) -> bool: ...
-    def get_waits(self) -> list[int]: ...
-    def get_waits_u8(self) -> list[int]: ...
-    @staticmethod
-    def hand_from_text(text: str) -> HandEvaluator3P: ...
 
 class Observation:
     privileged_hands: list[list[int]] | None
@@ -454,272 +418,6 @@ class Observation:
         ...
     def __init__(self, *args: Any, **kwargs: Any): ...
 
-class Observation3P:
-    """A 3-player (sanma) game observation for a single player.
-
-    Similar to :class:`Observation` but tailored for 3-player mahjong.
-    Arrays indexed by player use length-3 lists ordered as
-    ``[self, shimocha, kamicha]`` (relative seat order).
-
-    Attributes:
-        player_id: Seat index of the observing player (0-2).
-        hands: Tile ids for each player's hand (own hand is fully visible;
-            others are empty unless revealed).
-        melds: Open / closed melds for each player.
-        discards: Discarded tile ids for each player.
-        dora_indicators: Currently visible dora indicator tiles.
-        scores: Point totals for each player.
-        riichi_declared: Whether each player has declared riichi.
-        honba: Current honba (repeat) counter.
-        riichi_sticks: Number of riichi sticks on the table.
-        round_wind: Round wind (0=East, 1=South, 2=West).
-        oya: Seat index of the dealer.
-        kyoku_index: Current kyoku (hand) number within the round.
-        waits: Winning tile ids if the player is tenpai.
-        is_tenpai: Whether the player is currently tenpai.
-        tsumogiri_flags: Per-player flags indicating tsumogiri for each discard.
-        riichi_sutehais: The tile discarded for riichi declaration per player,
-            or ``None`` if not yet declared.
-        last_tedashis: The last tedashi (hand-picked discard) per player,
-            or ``None``.
-        last_discard: The most recently discarded tile id, or ``None``.
-    """
-
-    player_id: int
-    hands: list[list[int]]
-    melds: list[list[Meld]]
-    discards: list[list[int]]
-    dora_indicators: list[int]
-    scores: list[int]
-    riichi_declared: list[bool]
-    honba: int
-    riichi_sticks: int
-    round_wind: int
-    oya: int
-    kyoku_index: int
-    waits: list[int]
-    is_tenpai: bool
-    tsumogiri_flags: list[list[bool]]
-    riichi_sutehais: list[int | None]
-    last_tedashis: list[int | None]
-    last_discard: int | None
-    @property
-    def hand(self) -> list[int]:
-        """Shorthand for ``hands[player_id]``."""
-        ...
-    def events(self) -> list[Any]:
-        """Return accumulated MJAI JSON events visible to this player."""
-        ...
-    def legal_actions(self) -> list[Action3P]:
-        """Return the list of legal actions available to the player.
-
-        The returned actions represent every valid move the player can make
-        at the current decision point (e.g. discard a tile, declare riichi,
-        call pon/kan, tsumo, ron, kita, or pass).
-
-        Returns:
-            A list of :class:`Action3P` objects.  An empty list means the
-            player has no decision to make at this point.
-
-        Example::
-
-            obs = observations[player_id]
-            actions = obs.legal_actions()
-            # Pick a random legal action
-            import random
-            chosen = random.choice(actions)
-            observations = env.step({player_id: chosen})
-        """
-        ...
-    def mask(self) -> bytes:
-        """Return a boolean action mask as raw bytes."""
-        ...
-    def action_space_size(self) -> int:
-        """Return the total action space size for 3-player mahjong."""
-        ...
-    def find_action(self, action_id: int) -> Action3P | None:
-        """Find the legal action whose encoded id equals *action_id*, or ``None``."""
-        ...
-    def select_action_from_mjai(self, mjai_data: str | dict[str, Any]) -> Action3P | None:
-        """Find the legal action matching an MJAI event, or ``None`` if no match."""
-        ...
-    def new_events(self) -> list[str]:
-        """Return MJAI JSON events unseen by this player since their previous observation.
-
-        Each call returns only the events accumulated since the last observation
-        for this player.  On the first observation of a hand this may include
-        ``start_game``, ``start_kyoku``, and earlier events from the hand.
-
-        Returns:
-            A list of MJAI JSON strings, one per event.
-
-        Example::
-
-            obs = observations[player_id]
-            for ev_json in obs.new_events():
-                ev = json.loads(ev_json)
-                print(ev["type"])   # e.g. "tsumo", "dahai", "pon", ...
-        """
-        ...
-    def to_dict(self) -> dict[str, Any]:
-        """Convert this observation to a plain dictionary."""
-        ...
-    def serialize_to_base64(self) -> str:
-        """Serialize to a base64-encoded JSON string."""
-        ...
-    @staticmethod
-    def deserialize_from_base64(s: str) -> Observation3P:
-        """Deserialize from a base64-encoded JSON string."""
-        ...
-    def encode_discard_history_decay(self, decay_rate: float | None = None) -> bytes:
-        """Encode discard history with exponential decay.
-
-        Shape: ``(3, 27)`` / dtype: ``float32``.
-
-        Each of the 3 players has a 27-tile plane where earlier discards
-        are exponentially decayed toward zero.
-        """
-        ...
-    def encode_furiten_ron_possibility(self) -> bytes:
-        """Encode furiten / ron possibility features.
-
-        Shape: ``(3, 21)`` / dtype: ``float32``.
-
-        For each of the 3 players, ron-possibility flags based on
-        tsumogiri patterns across 21 yaku types.
-        """
-        ...
-    def encode_yaku_possibility(self) -> bytes:
-        """Encode yaku possibility features for each player.
-
-        Shape: ``(3, 21, 2)`` / dtype: ``float32``.
-
-        For each of the 3 players, 21 yaku types × 2 (tsumo / ron).
-        """
-        ...
-    def encode(self) -> bytes:
-        """Encode the observation into a compact binary feature representation.
-
-        Shape: ``(74, 27)`` / dtype: ``float32``.
-
-        Produces a ``(74, 27)`` float32 feature tensor serialized as raw
-        bytes.  The 74 channels include hand tile counts, melds, dora
-        indicators, discard history, riichi status, wind, scores, waits,
-        and more.  The tile dimension uses the 27-tile compact encoding
-        for 3-player mahjong.
-
-        Returns:
-            Raw bytes of length ``74 * 27 * 4`` (float32).
-
-        Example::
-
-            import numpy as np
-
-            obs = observations[player_id]
-            buf = obs.encode()
-            features = np.frombuffer(buf, dtype=np.float32).reshape(74, 27)
-        """
-        ...
-    def encode_shanten_efficiency(self) -> bytes:
-        """Encode shanten and tile efficiency features.
-
-        Shape: ``(3, 4)`` / dtype: ``float32``.
-
-        For each of the 3 players: ``[shanten, effective_tiles,
-        best_ukeire, turn_count]``.  ``effective_tiles`` is normalized
-        by 27 (compact tile count).
-        """
-        ...
-    def encode_kawa_overview(self) -> bytes:
-        """Encode river (kawa) overview features for all players.
-
-        Shape: ``(3, 7, 27)`` / dtype: ``float32``.
-
-        For each of the 3 players, 7 channels
-        (count1–count4, aka5m, aka5p, aka5s) × 27 compact tile types.
-        """
-        ...
-    def encode_fuuro_overview(self) -> bytes:
-        """Encode open-meld (fuuro) overview features for all players.
-
-        Shape: ``(3, 4, 5, 27)`` / dtype: ``float32``.
-
-        For each of the 3 players, up to 4 melds × 5 channels
-        (tile1–tile4, aka) × 27 compact tile types.
-        """
-        ...
-    def encode_ankan_overview(self) -> bytes:
-        """Encode closed-kan (ankan) overview features for all players.
-
-        Shape: ``(3, 27)`` / dtype: ``float32``.
-
-        Binary flags indicating which tile types each player has
-        declared as closed kan.
-        """
-        ...
-    def encode_action_availability(self) -> bytes:
-        """Encode which action types are currently available.
-
-        Shape: ``(11,)`` / dtype: ``float32``.
-
-        Flags for: ``[riichi, chi_low, chi_mid, chi_high, pon,
-        daiminkan, ankan, kakan, agari, kyuushukyuuhai, pass]``.
-        """
-        ...
-    def encode_riichi_sutehais(self) -> bytes:
-        """Encode the riichi declaration discard tiles for all players.
-
-        Shape: ``(2, 3)`` / dtype: ``float32``.
-
-        For each of the 2 opponents: ``[tile_type, is_aka, is_dora]``.
-        """
-        ...
-    def encode_last_tedashis(self) -> bytes:
-        """Encode the last hand-picked discard for all players.
-
-        Shape: ``(2, 3)`` / dtype: ``float32``.
-
-        For each of the 2 opponents: ``[tile_type, is_aka, is_dora]``.
-        """
-        ...
-    def encode_pass_context(self) -> bytes:
-        """Encode contextual features relevant to the pass action.
-
-        Shape: ``(3,)`` / dtype: ``float32``.
-
-        Context about the currently offered tile:
-        ``[tile_type, is_aka, is_dora]``.
-        """
-        ...
-    def encode_discard_candidates(self) -> bytes:
-        """Encode candidate tiles for discard selection.
-
-        Shape: ``(5,)`` / dtype: ``float32``.
-
-        ``[hand_size, keep_shanten_ratio, increase_shanten_ratio,
-        is_tenpai, riichi_declared]``.
-        """
-        ...
-    def encode_extended(self) -> bytes:
-        """Encode extended features (combination of multiple feature planes).
-
-        Shape: ``(215, 27)`` / dtype: ``float32``.
-
-        Concatenation of base (74) + discard_decay (4) + shanten (16) +
-        ankan (4) + fuuro (80) + action_avail (11) + discard_cand (5) +
-        pass_ctx (3) + last_tedashis (9) + riichi_sutehais (9) = 215
-        channels, each with 27 compact tile-type columns.  Channels that
-        correspond to the absent 4th player are zero-padded.
-
-        Example::
-
-            import numpy as np
-
-            buf = obs.encode_extended()
-            features = np.frombuffer(buf, dtype=np.float32).reshape(215, 27)
-        """
-        ...
-    def __init__(self, *args: Any, **kwargs: Any): ...
 
 class Kyoku:
     events: list[dict]
@@ -829,7 +527,7 @@ class RiichiEnv:
     def reset(
         self, oya: int | None = None, honba: int | None = None, *args: Any, **kwargs: Any
     ) -> dict[int, Observation]: ...
-    def step(self, actions: dict[int, Action | Action3P]) -> dict[int, Observation]: ...
+    def step(self, actions: dict[int, Action]) -> dict[int, Observation]: ...
     def done(self) -> bool: ...
     def get_observations(self, players: list[int] | None = None) -> dict[int, Observation]: ...
     def get_obs_py(self, player_id: int) -> Observation: ...
@@ -868,7 +566,6 @@ class Score:
 
 def calculate_score(han: int, fu: int, is_oya: bool, is_tsumo: bool, honba: int, num_players: int = 4) -> Score: ...
 def calculate_shanten(hand_tiles: list[int]) -> int: ...
-def calculate_shanten_3p(hand_tiles: list[int]) -> int: ...
 def check_riichi_candidates(tiles: list[int]) -> list[int]: ...
 def parse_hand(hand_str: str) -> tuple[list[int], list[Meld]]: ...
 def parse_tile(tile_str: str) -> int: ...
@@ -877,12 +574,10 @@ def get_all_yaku() -> list[Yaku]: ...
 
 __all__ = [
     "Action",
-    "Action3P",
     "ActionType",
     "GameRule",
     "WinResult",
     "HandEvaluator",
-    "HandEvaluator3P",
     "WinResultContext",
     "WinResultContextIterator",
     "Conditions",
@@ -891,7 +586,6 @@ __all__ = [
     "Meld",
     "MeldType",
     "Observation",
-    "Observation3P",
     "Phase",
     "MjSoulReplay",
     "MjaiReplay",
@@ -900,7 +594,6 @@ __all__ = [
     "Wind",
     "calculate_score",
     "calculate_shanten",
-    "calculate_shanten_3p",
     "check_riichi_candidates",
     "parse_hand",
     "parse_tile",

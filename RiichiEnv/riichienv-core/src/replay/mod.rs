@@ -12,8 +12,6 @@ use std::sync::Arc;
 #[cfg(feature = "python")]
 use crate::action::Action as EnvAction;
 #[cfg(feature = "python")]
-use crate::action::Action3P;
-#[cfg(feature = "python")]
 use crate::action::ActionType;
 #[cfg(feature = "python")]
 use crate::hand_evaluator::HandEvaluator;
@@ -67,15 +65,6 @@ pub enum Action {
         hules: Vec<HuleData>,
     },
     NoTile,
-    BaBei {
-        seat: usize,
-        moqie: bool,
-    },
-    LiuJu {
-        lj_type: u8,
-        seat: usize,
-        tiles: Vec<u8>,
-    },
     Other(String),
 }
 
@@ -108,19 +97,6 @@ pub struct KyokuStepIterator {
     pending_pass_obs: Vec<(u8, crate::observation::Observation)>,
 }
 
-#[cfg(feature = "python")]
-#[pyclass(module = "riichienv._riichienv")]
-pub struct KyokuStepIterator3P {
-    state: crate::state_3p::GameState3P,
-    actions: Arc<[Action]>,
-    idx: usize,
-    pending_action: Option<(u8, EnvAction)>,
-    filter_seat: Option<u8>,
-    skip_single_action: bool,
-    /// Queued (pid, observation) pairs for players who implicitly passed
-    /// on a claim opportunity (pon/ron) that existed in the log.
-    pending_pass_obs: Vec<(u8, crate::observation_3p::Observation3P)>,
-}
 
 #[cfg(feature = "python")]
 impl KyokuStepIterator {
@@ -293,10 +269,7 @@ impl KyokuStepIterator {
 
             let action = &actions[slf.idx];
             match action {
-                Action::DealTile { .. }
-                | Action::Dora { .. }
-                | Action::BaBei { .. }
-                | Action::LiuJu { .. } => {
+                Action::DealTile { .. } | Action::Dora { .. } => {
                     slf.state.apply_log_action(action);
                     slf.idx += 1;
                 }
@@ -524,9 +497,8 @@ impl KyokuStepIterator {
                     let first = &hules[0];
                     let pid = first.seat as u8;
 
-                    // Detect chankan on Kita: mjsoul marks this as zimo=true,
-                    // but the winner is not the current player (they're ronning
-                    // the Kita declaration).
+                    // 抢杠(chankan)时 mjsoul 把 zimo 标为 true,但和牌者并非
+                    // 当前做牌的玩家(而是荣和开杠者王牌)。
                     let is_actual_tsumo = first.zimo && pid == slf.state.current_player;
 
                     let atype = if is_actual_tsumo {
@@ -570,505 +542,6 @@ impl KyokuStepIterator {
     }
 }
 
-#[cfg(feature = "python")]
-impl KyokuStepIterator3P {
-    /// After a discard is applied, check which other players could have
-    /// claimed (pon/ron) but didn't. For each such player, generate a
-    /// pass observation so that "none" actions appear in the training data.
-    ///
-    /// `discarder`: the player who discarded
-    /// `tile`: the discarded tile (136-encoding)
-    /// `claimers`: seats of players who actually claimed (from peek).
-    ///             Others with claim options implicitly passed.
-    fn _collect_pass_observations(&mut self, discarder: u8, tile: u8, claimers: &[u8]) {
-        use crate::state_3p::legal_actions::GameState3PLegalActions;
-        let np = self.state.players.len() as u8;
-
-        for i in 0..np {
-            if i == discarder {
-                continue;
-            }
-            if claimers.contains(&i) {
-                continue;
-            }
-
-            let (claim_actions, _missed) =
-                self.state._get_claim_actions_for_player(i, discarder, tile);
-            if claim_actions.is_empty() {
-                continue;
-            }
-
-            let had_ron = claim_actions
-                .iter()
-                .any(|a| a.action_type == ActionType::Ron);
-
-            // This player could have claimed but passed.
-            // Temporarily set up WaitResponse state to get a proper observation.
-            let orig_phase = self.state.phase;
-            let orig_active = self.state.active_players.clone();
-            let orig_claims = self.state.current_claims.clone();
-
-            self.state.phase = crate::action::Phase::WaitResponse;
-            self.state.active_players = vec![i];
-            self.state.current_claims.clear();
-            self.state.current_claims.insert(i, claim_actions);
-
-            let obs = self.state.get_observation(i);
-
-            // Restore state
-            self.state.phase = orig_phase;
-            self.state.active_players = orig_active;
-            self.state.current_claims = orig_claims;
-
-            self.pending_pass_obs.push((i, obs));
-
-            // Apply furiten: passing on a ron opportunity triggers same-turn furiten.
-            if had_ron {
-                let iu = i as usize;
-                self.state.players[iu].missed_agari_doujun = true;
-                if self.state.players[iu].riichi_declared {
-                    self.state.players[iu].missed_agari_riichi = true;
-                }
-            }
-        }
-    }
-
-    /// Peek at the next log action to determine if someone claimed.
-    /// Returns all claimer seats (handles double ron).
-    fn _peek_next_claimers(&self) -> Vec<u8> {
-        if self.idx >= self.actions.len() {
-            return Vec::new();
-        }
-        match &self.actions[self.idx] {
-            Action::ChiPengGang { seat, .. } => vec![*seat as u8],
-            Action::Hule { hules } => hules
-                .iter()
-                .filter(|h| !h.zimo)
-                .map(|h| h.seat as u8)
-                .collect(),
-            _ => Vec::new(),
-        }
-    }
-}
-
-#[cfg(feature = "python")]
-#[pymethods]
-impl KyokuStepIterator3P {
-    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
-    }
-
-    fn __next__(mut slf: PyRefMut<'_, Self>) -> PyResult<Option<Py<PyAny>>> {
-        let actions = slf.actions.clone();
-
-        loop {
-            // Drain queued pass observations first
-            if let Some((pid, obs)) = slf.pending_pass_obs.pop() {
-                let pass_action = EnvAction::new(ActionType::Pass, None, vec![], Some(pid));
-                let pass_action_3p = Action3P::from_action(pass_action);
-
-                if let Some(target) = slf.filter_seat {
-                    if pid == target {
-                        if slf.skip_single_action && obs._legal_actions.len() <= 1 {
-                            continue;
-                        }
-                        let py = slf.py();
-                        return Ok(Some(
-                            (obs, pass_action_3p).into_pyobject(py)?.unbind().into(),
-                        ));
-                    }
-                    continue;
-                } else {
-                    let py = slf.py();
-                    return Ok(Some(
-                        (pid, obs, pass_action_3p)
-                            .into_pyobject(py)?
-                            .unbind()
-                            .into(),
-                    ));
-                }
-            }
-
-            if let Some((pid, action)) = slf.pending_action.take() {
-                let mut staged_riichi = false;
-                if action.action_type == crate::action::ActionType::Discard {
-                    let p = &mut slf.state.players[pid as usize];
-                    if !p.riichi_declared && !p.riichi_stage {
-                        // Replay reach+dahai as two decisions. For the second
-                        // (discard) decision, legal actions must reflect that
-                        // reach has already been declared.
-                        p.riichi_stage = true;
-                        staged_riichi = true;
-                    }
-                }
-                let obs_result =
-                    slf.state
-                        .get_observation_for_replay(pid, &action, &format!("{:?}", action));
-                if staged_riichi {
-                    slf.state.players[pid as usize].riichi_stage = false;
-                }
-                let obs = obs_result?;
-
-                let discard_tile_for_pass = action.tile;
-                let discarder_for_pass = pid;
-
-                let current_log_action = &actions[slf.idx];
-                slf.state.apply_log_action(current_log_action);
-                slf.idx += 1;
-
-                // Collect pass observations for discards (including riichi discards)
-                if action.action_type == ActionType::Discard
-                    && let Some(dtile) = discard_tile_for_pass
-                {
-                    let claimers = slf._peek_next_claimers();
-                    slf._collect_pass_observations(discarder_for_pass, dtile, &claimers);
-                }
-
-                let action_3p = Action3P::from_action(action);
-
-                if let Some(target) = slf.filter_seat {
-                    if pid == target {
-                        if slf.skip_single_action && obs._legal_actions.len() <= 1 {
-                            continue;
-                        }
-
-                        let py = slf.py();
-                        return Ok(Some((obs, action_3p).into_pyobject(py)?.unbind().into()));
-                    }
-                    continue;
-                } else {
-                    let py = slf.py();
-                    return Ok(Some(
-                        (pid, obs, action_3p).into_pyobject(py)?.unbind().into(),
-                    ));
-                }
-            }
-
-            if slf.idx >= actions.len() {
-                return Ok(None);
-            }
-
-            let action = &actions[slf.idx];
-            match action {
-                Action::DealTile { .. } | Action::Dora { .. } | Action::LiuJu { .. } => {
-                    slf.state.apply_log_action(action);
-                    slf.idx += 1;
-                }
-                Action::NoTile => {
-                    let pid = slf.state.current_player;
-                    let env_action = EnvAction::new(
-                        crate::action::ActionType::KyushuKyuhai,
-                        None,
-                        Vec::new(),
-                        None,
-                    );
-                    let observation = slf.state.get_observation_for_replay(
-                        pid,
-                        &env_action,
-                        &format!("{:?}", action),
-                    );
-                    slf.state.apply_log_action(action);
-                    slf.idx += 1;
-                    let Ok(obs) = observation else { continue };
-                    let action_3p = Action3P::from_action(env_action);
-                    if let Some(target) = slf.filter_seat {
-                        if pid != target
-                            || (slf.skip_single_action && obs._legal_actions.len() <= 1)
-                        {
-                            continue;
-                        }
-                        let py = slf.py();
-                        return Ok(Some((obs, action_3p).into_pyobject(py)?.unbind().into()));
-                    }
-                    let py = slf.py();
-                    return Ok(Some(
-                        (pid, obs, action_3p).into_pyobject(py)?.unbind().into(),
-                    ));
-                }
-                Action::Other(_) => {
-                    slf.idx += 1;
-                }
-                Action::BaBei { seat, .. } => {
-                    let pid = *seat as u8;
-                    let env_action =
-                        EnvAction::new(crate::action::ActionType::Kita, None, Vec::new(), None);
-
-                    let obs = slf.state.get_observation_for_replay(
-                        pid,
-                        &env_action,
-                        &format!("{:?}", action),
-                    )?;
-
-                    slf.state.apply_log_action(action);
-                    slf.idx += 1;
-
-                    let env_action_3p = Action3P::from_action(env_action);
-                    if let Some(target) = slf.filter_seat {
-                        if pid == target {
-                            if slf.skip_single_action && obs._legal_actions.len() <= 1 {
-                                continue;
-                            }
-                            let py = slf.py();
-                            return Ok(Some(
-                                (obs, env_action_3p).into_pyobject(py)?.unbind().into(),
-                            ));
-                        }
-                    } else {
-                        let py = slf.py();
-                        return Ok(Some(
-                            (pid, obs, env_action_3p).into_pyobject(py)?.unbind().into(),
-                        ));
-                    }
-                }
-                Action::DiscardTile {
-                    seat,
-                    tile,
-                    is_liqi,
-                    ..
-                } => {
-                    let pid = *seat as u8;
-                    let env_action = EnvAction::new(
-                        crate::action::ActionType::Discard,
-                        Some(*tile),
-                        Vec::new(),
-                        None,
-                    );
-
-                    if *is_liqi {
-                        let riichi_action = EnvAction::new(
-                            crate::action::ActionType::Riichi,
-                            None,
-                            Vec::new(),
-                            None,
-                        );
-
-                        let obs = slf.state.get_observation_for_replay(
-                            pid,
-                            &riichi_action,
-                            &format!("{:?}", action),
-                        )?;
-
-                        slf.pending_action = Some((pid, env_action));
-
-                        let riichi_action_3p = Action3P::from_action(riichi_action);
-                        if let Some(target) = slf.filter_seat {
-                            if pid == target {
-                                let py = slf.py();
-                                return Ok(Some(
-                                    (obs, riichi_action_3p).into_pyobject(py)?.unbind().into(),
-                                ));
-                            }
-                        } else {
-                            let py = slf.py();
-                            return Ok(Some(
-                                (pid, obs, riichi_action_3p)
-                                    .into_pyobject(py)?
-                                    .unbind()
-                                    .into(),
-                            ));
-                        }
-                    } else {
-                        let discard_tile = *tile;
-                        let obs = slf.state.get_observation_for_replay(
-                            pid,
-                            &env_action,
-                            &format!("{:?}", action),
-                        )?;
-
-                        slf.state.apply_log_action(action);
-                        slf.idx += 1;
-
-                        // Collect pass observations for players who could
-                        // have claimed this discard but didn't.
-                        let claimers = slf._peek_next_claimers();
-                        slf._collect_pass_observations(pid, discard_tile, &claimers);
-
-                        let env_action_3p = Action3P::from_action(env_action);
-                        if let Some(target) = slf.filter_seat {
-                            if pid == target {
-                                if slf.skip_single_action && obs._legal_actions.len() <= 1 {
-                                    continue;
-                                }
-
-                                let py = slf.py();
-                                return Ok(Some(
-                                    (obs, env_action_3p).into_pyobject(py)?.unbind().into(),
-                                ));
-                            }
-                        } else {
-                            let py = slf.py();
-                            return Ok(Some(
-                                (pid, obs, env_action_3p).into_pyobject(py)?.unbind().into(),
-                            ));
-                        }
-                    }
-                }
-                Action::ChiPengGang {
-                    seat,
-                    meld_type,
-                    tiles,
-                    ..
-                } => {
-                    let pid = *seat as u8;
-
-                    let env_action_type = match meld_type {
-                        MeldType::Chi => crate::action::ActionType::Chi,
-                        MeldType::Pon => crate::action::ActionType::Pon,
-                        MeldType::Daiminkan => crate::action::ActionType::Daiminkan,
-                        _ => crate::action::ActionType::Chi,
-                    };
-
-                    let t = tiles.first().copied();
-                    let env_action = EnvAction::new(env_action_type, t, tiles.to_vec(), None);
-
-                    // Pass observations for non-claimers are already collected
-                    // in the DiscardTile handler (via _peek_next_claimers).
-                    // No need to collect again here.
-
-                    let obs = slf.state.get_observation_for_replay(
-                        pid,
-                        &env_action,
-                        &format!("{:?}", action),
-                    )?;
-
-                    slf.state.apply_log_action(action);
-                    slf.idx += 1;
-
-                    let env_action_3p = Action3P::from_action(env_action);
-                    if let Some(target) = slf.filter_seat {
-                        if pid == target {
-                            if slf.skip_single_action && obs._legal_actions.len() <= 1 {
-                                continue;
-                            }
-                            let py = slf.py();
-                            return Ok(Some(
-                                (obs, env_action_3p).into_pyobject(py)?.unbind().into(),
-                            ));
-                        }
-                    } else {
-                        let py = slf.py();
-                        return Ok(Some(
-                            (pid, obs, env_action_3p).into_pyobject(py)?.unbind().into(),
-                        ));
-                    }
-                }
-                Action::AnGangAddGang {
-                    seat,
-                    meld_type,
-                    tiles,
-                    ..
-                } => {
-                    let pid = *seat as u8;
-                    let atype = match meld_type {
-                        MeldType::Ankan => crate::action::ActionType::Ankan,
-                        MeldType::Kakan => crate::action::ActionType::Kakan,
-                        _ => crate::action::ActionType::Ankan,
-                    };
-
-                    let env_action = match atype {
-                        crate::action::ActionType::Ankan => {
-                            let t34 = tiles[0] / 4;
-                            let lowest = t34 * 4;
-                            let consume = vec![lowest, lowest + 1, lowest + 2, lowest + 3];
-                            EnvAction::new(atype, Some(lowest), consume, None)
-                        }
-                        crate::action::ActionType::Kakan => {
-                            let t34 = tiles[0] / 4;
-                            let tile = tiles[0];
-                            let mut consume = Vec::new();
-                            for m in &slf.state.players[pid as usize].melds {
-                                if m.meld_type == MeldType::Pon && m.tiles[0] / 4 == t34 {
-                                    consume = m.tiles.clone();
-                                    break;
-                                }
-                            }
-                            EnvAction::new(atype, Some(tile), consume, None)
-                        }
-                        _ => {
-                            let tile = tiles.first().copied();
-                            EnvAction::new(atype, tile, tiles.to_vec(), None)
-                        }
-                    };
-
-                    let obs = slf.state.get_observation_for_replay(
-                        pid,
-                        &env_action,
-                        &format!("{:?}", action),
-                    )?;
-
-                    slf.state.apply_log_action(action);
-                    slf.idx += 1;
-
-                    let env_action_3p = Action3P::from_action(env_action);
-                    if let Some(target) = slf.filter_seat {
-                        if pid == target {
-                            if slf.skip_single_action && obs._legal_actions.len() <= 1 {
-                                continue;
-                            }
-                            let py = slf.py();
-                            return Ok(Some(
-                                (obs, env_action_3p).into_pyobject(py)?.unbind().into(),
-                            ));
-                        }
-                    } else {
-                        let py = slf.py();
-                        return Ok(Some(
-                            (pid, obs, env_action_3p).into_pyobject(py)?.unbind().into(),
-                        ));
-                    }
-                }
-                Action::Hule { hules } => {
-                    let first = &hules[0];
-                    let pid = first.seat as u8;
-
-                    // Detect chankan on Kita: mjsoul marks this as zimo=true,
-                    // but the winner is not the current player (they're ronning
-                    // the Kita declaration).
-                    let is_actual_tsumo = first.zimo && pid == slf.state.current_player;
-
-                    let atype = if is_actual_tsumo {
-                        crate::action::ActionType::Tsumo
-                    } else {
-                        crate::action::ActionType::Ron
-                    };
-                    let tile = if is_actual_tsumo {
-                        slf.state.drawn_tile
-                    } else {
-                        slf.state.last_discard.map(|(_, t)| t)
-                    };
-                    let env_action = EnvAction::new(atype, tile, Vec::new(), None);
-
-                    let obs = slf.state.get_observation_for_replay(
-                        pid,
-                        &env_action,
-                        &format!("{:?}", action),
-                    )?;
-
-                    slf.state.apply_log_action(action);
-                    slf.idx += 1;
-
-                    let env_action_3p = Action3P::from_action(env_action);
-                    if let Some(target) = slf.filter_seat {
-                        if pid == target {
-                            if slf.skip_single_action && obs._legal_actions.len() <= 1 {
-                                continue;
-                            }
-                            let py = slf.py();
-                            return Ok(Some(
-                                (obs, env_action_3p).into_pyobject(py)?.unbind().into(),
-                            ));
-                        }
-                    } else {
-                        let py = slf.py();
-                        return Ok(Some(
-                            (pid, obs, env_action_3p).into_pyobject(py)?.unbind().into(),
-                        ));
-                    }
-                }
-            }
-        }
-    }
-}
 
 #[cfg_attr(
     feature = "python",
@@ -1168,7 +641,14 @@ impl LogKyoku {
     ) -> PyResult<Py<PyAny>> {
         let rule = rule.unwrap_or(self.rule);
         let skip_single_action = skip_single_action.unwrap_or(true);
-        let is_3p = self.scores.len() == 3;
+
+        // 本仓库仅支持四麻:三人日志(得分列表长度为 3)直接拒绝。
+        if self.scores.len() != 4 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Only 4-player kyokus are supported, got {} players",
+                self.scores.len()
+            )));
+        }
 
         let bakaze = match self.chang {
             0 => crate::types::Wind::East,
@@ -1186,7 +666,7 @@ impl LogKyoku {
         }
 
         let doras = self.doras.clone();
-        let np = if is_3p { 3usize } else { 4usize };
+        let np = 4usize;
 
         let mut oya_idx = (self.ju % np as u8) as usize;
         for (i, h) in self.hands.iter().enumerate() {
@@ -1197,166 +677,93 @@ impl LogKyoku {
         }
         let oya = oya_idx as u8;
 
-        if is_3p {
-            let mut state = crate::state_3p::GameState3P::new(0, false, None, 0, rule);
-            let initial_scores: [i32; 3] = self.scores.clone().try_into().unwrap_or([35000; 3]);
+        let mut state = crate::state::GameState::new(0, false, None, 0, rule);
+        let initial_scores: [i32; 4] = self.scores.clone().try_into().unwrap_or([25000; 4]);
 
-            state._initialize_round(
-                oya,
-                bakaze,
-                self.ben,
-                self.liqibang as u32,
-                wall,
-                Some(initial_scores.to_vec()),
-            );
+        state._initialize_round(
+            oya,
+            bakaze,
+            self.ben,
+            self.liqibang as u32,
+            wall,
+            Some(initial_scores.to_vec()),
+        );
 
-            for (i, h) in self.hands.iter().enumerate() {
-                if i < 3 {
-                    state.players[i].hand = h.clone();
-                }
-            }
-
-            if state.players[oya_idx].hand.len() == 14 {
-                let mut dt = state.players[oya_idx].hand.last().copied();
-                if let Some(first_action) = self.actions.first() {
-                    match first_action {
-                        Action::Hule { hules } => {
-                            if let Some(h) = hules.iter().find(|h| h.seat == oya_idx && h.zimo) {
-                                dt = Some(h.hu_tile);
-                            }
-                        }
-                        Action::DiscardTile { seat, tile, .. } => {
-                            if *seat == oya_idx {
-                                dt = Some(*tile);
-                            }
-                        }
-                        Action::AnGangAddGang { seat, tiles, .. } => {
-                            if *seat == oya_idx {
-                                dt = tiles.first().copied();
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                state.drawn_tile = dt;
-                state.needs_tsumo = false;
-            } else {
-                // 13-tile oya (MJAI from convert.py: separate tsumo event for 14th tile)
-                // _initialize_round already popped oya's 14th tile from wall;
-                // push it back since the log will provide it as a DealTile event.
-                if let Some(dt) = state.drawn_tile {
-                    state.wall.tiles.push(dt);
-                    state.wall.drawable_count += 1;
-                }
-                state.drawn_tile = None;
-                state.needs_tsumo = true;
-            }
-
-            for p in state.players.iter_mut() {
-                p.hand.sort();
-            }
-            state.wall.dora_indicators = doras;
-
-            // Note: 3P GameState3P does not support seq caching yet
-            let iter = KyokuStepIterator3P {
-                state,
-                actions: self.actions.clone(),
-                idx: 0,
-                pending_action: None,
-                filter_seat: seat,
-                skip_single_action,
-                pending_pass_obs: Vec::new(),
-            };
-            Ok(Py::new(py, iter)?.into_any())
-        } else {
-            let mut state = crate::state::GameState::new(0, false, None, 0, rule);
-            let initial_scores: [i32; 4] = self.scores.clone().try_into().unwrap_or([25000; 4]);
-
-            state._initialize_round(
-                oya,
-                bakaze,
-                self.ben,
-                self.liqibang as u32,
-                wall,
-                Some(initial_scores.to_vec()),
-            );
-
-            for (i, h) in self.hands.iter().enumerate() {
-                state.players[i].hand = h.clone();
-            }
-
-            if state.players[oya_idx].hand.len() == 14 {
-                let mut dt = state.players[oya_idx].hand.last().copied();
-                if let Some(first_action) = self.actions.first() {
-                    match first_action {
-                        Action::Hule { hules } => {
-                            if let Some(h) = hules.iter().find(|h| h.seat == oya_idx && h.zimo) {
-                                dt = Some(h.hu_tile);
-                            }
-                        }
-                        Action::DiscardTile { seat, tile, .. } => {
-                            if *seat == oya_idx {
-                                dt = Some(*tile);
-                            }
-                        }
-                        Action::AnGangAddGang { seat, tiles, .. } => {
-                            if *seat == oya_idx {
-                                dt = tiles.first().copied();
-                            }
-                        }
-                        Action::ChiPengGang {
-                            seat,
-                            tiles,
-                            meld_type,
-                            ..
-                        } => {
-                            if *seat == oya_idx && *meld_type == MeldType::Ankan {
-                                dt = tiles.first().copied();
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                state.drawn_tile = dt;
-                state.needs_tsumo = false;
-            } else {
-                // 13-tile oya (MJAI from convert.py: separate tsumo event for 14th tile)
-                // _initialize_round already popped oya's 14th tile from wall;
-                // push it back since the log will provide it as a DealTile event.
-                if let Some(dt) = state.drawn_tile {
-                    state.wall.tiles.push(dt);
-                    state.wall.drawable_count += 1;
-                }
-                state.drawn_tile = None;
-                state.needs_tsumo = true;
-            }
-
-            for p in state.players.iter_mut() {
-                p.hand.sort();
-            }
-            state.wall.dora_indicators = doras;
-
-            if state.wall.tiles.len() == 136 {
-                let total_hand_tiles: usize = state.players.iter().map(|p| p.hand.len()).sum();
-                for _ in 0..total_hand_tiles {
-                    if !state.wall.tiles.is_empty() {
-                        state.wall.tiles.pop();
-                    }
-                }
-            }
-
-            state.enable_seq_caching = true;
-            let iter = KyokuStepIterator {
-                state,
-                actions: self.actions.clone(),
-                idx: 0,
-                pending_action: None,
-                filter_seat: seat,
-                pending_pass_obs: Vec::new(),
-                skip_single_action,
-            };
-            Ok(Py::new(py, iter)?.into_any())
+        for (i, h) in self.hands.iter().enumerate() {
+            state.players[i].hand = h.clone();
         }
+
+        if state.players[oya_idx].hand.len() == 14 {
+            let mut dt = state.players[oya_idx].hand.last().copied();
+            if let Some(first_action) = self.actions.first() {
+                match first_action {
+                    Action::Hule { hules } => {
+                        if let Some(h) = hules.iter().find(|h| h.seat == oya_idx && h.zimo) {
+                            dt = Some(h.hu_tile);
+                        }
+                    }
+                    Action::DiscardTile { seat, tile, .. } => {
+                        if *seat == oya_idx {
+                            dt = Some(*tile);
+                        }
+                    }
+                    Action::AnGangAddGang { seat, tiles, .. } => {
+                        if *seat == oya_idx {
+                            dt = tiles.first().copied();
+                        }
+                    }
+                    Action::ChiPengGang {
+                        seat,
+                        tiles,
+                        meld_type,
+                        ..
+                    } => {
+                        if *seat == oya_idx && *meld_type == MeldType::Ankan {
+                            dt = tiles.first().copied();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            state.drawn_tile = dt;
+            state.needs_tsumo = false;
+        } else {
+            // 13-tile oya (MJAI from convert.py: separate tsumo event for 14th tile)
+            // _initialize_round already popped oya's 14th tile from wall;
+            // push it back since the log will provide it as a DealTile event.
+            if let Some(dt) = state.drawn_tile {
+                state.wall.tiles.push(dt);
+                state.wall.drawable_count += 1;
+            }
+            state.drawn_tile = None;
+            state.needs_tsumo = true;
+        }
+
+        for p in state.players.iter_mut() {
+            p.hand.sort();
+        }
+        state.wall.dora_indicators = doras;
+
+        if state.wall.tiles.len() == 136 {
+            let total_hand_tiles: usize = state.players.iter().map(|p| p.hand.len()).sum();
+            for _ in 0..total_hand_tiles {
+                if !state.wall.tiles.is_empty() {
+                    state.wall.tiles.pop();
+                }
+            }
+        }
+
+        state.enable_seq_caching = true;
+        let iter = KyokuStepIterator {
+            state,
+            actions: self.actions.clone(),
+            idx: 0,
+            pending_action: None,
+            filter_seat: seat,
+            pending_pass_obs: Vec::new(),
+            skip_single_action,
+        };
+        Ok(Py::new(py, iter)?.into_any())
     }
 
     fn events(&self, py: Python) -> PyResult<Py<PyAny>> {
@@ -1536,25 +943,8 @@ impl LogKyoku {
                     a_event.set_item("name", "Dora")?;
                     a_data.set_item("dora_marker", TileConverter::to_string(*dora_marker))?;
                 }
-                Action::BaBei { seat, moqie } => {
-                    a_event.set_item("name", "BaBei")?;
-                    a_data.set_item("seat", seat)?;
-                    a_data.set_item("moqie", moqie)?;
-                }
                 Action::NoTile => {
                     a_event.set_item("name", "NoTile")?;
-                }
-                Action::LiuJu {
-                    lj_type,
-                    seat,
-                    tiles,
-                } => {
-                    a_event.set_item("name", "LiuJu")?;
-                    a_data.set_item("type", lj_type)?;
-                    a_data.set_item("seat", seat)?;
-                    let t_strs: Vec<String> =
-                        tiles.iter().map(|t| TileConverter::to_string(*t)).collect();
-                    a_data.set_item("tiles", t_strs)?;
                 }
                 Action::Other(_) => {
                     continue;
@@ -1672,15 +1062,12 @@ pub struct WinResultContextIterator {
     is_first_turn: Vec<bool>,
     last_action_was_kakan: bool,
     kakan_tile: Option<u8>,
-    last_action_was_babei: bool,
-    ippatsu_before_babei: Vec<bool>,
     current_doras: Vec<u8>,
     _current_liqibang: u8,
     current_left_tile_count: u8,
     wall: Vec<u8>,
     dora_count: u8,
     pending_minkan_doras: u8,
-    kita_counts: Vec<u8>,
 }
 
 #[cfg(feature = "python")]
@@ -1730,15 +1117,12 @@ impl WinResultContextIterator {
             is_first_turn: vec![true; 4],
             last_action_was_kakan: false,
             kakan_tile: None,
-            last_action_was_babei: false,
-            ippatsu_before_babei: vec![false; 4],
             current_doras: kyoku.doras.clone(),
             _current_liqibang: kyoku.liqibang,
             current_left_tile_count: kyoku.left_tile_count,
             wall,
             dora_count: 1, // Initial Dora is always 1
             pending_minkan_doras: 0,
-            kita_counts: vec![0; 4],
         }
     }
 
@@ -1802,10 +1186,6 @@ impl WinResultContextIterator {
 
             if !matches!(action, Action::Hule { .. }) {
                 self.rinshan = vec![false; 4];
-                // Reset BaBei flag for non-Hule actions; ron-on-kita needs it in Hule handler
-                if !matches!(action, Action::BaBei { .. }) {
-                    self.last_action_was_babei = false;
-                }
             }
 
             match action {
@@ -1820,7 +1200,6 @@ impl WinResultContextIterator {
                         self.ippatsu = vec![false; 4];
                         self.is_first_turn = vec![false; 4];
                         self.last_action_was_kakan = false;
-                        self.last_action_was_babei = false;
                         self.kakan_tile = None;
                     }
 
@@ -1861,7 +1240,6 @@ impl WinResultContextIterator {
                         self.ippatsu = vec![false; 4];
                         self.is_first_turn = vec![false; 4];
                         self.last_action_was_kakan = false;
-                        self.last_action_was_babei = false;
                         self.kakan_tile = None;
                     }
                     self.current_hands[*seat].push(*tile);
@@ -1887,7 +1265,6 @@ impl WinResultContextIterator {
                     self.ippatsu = vec![false; 4];
                     self.is_first_turn = vec![false; 4];
                     self.last_action_was_kakan = false;
-                    self.last_action_was_babei = false;
                     self.kakan_tile = None;
 
                     for (i, t) in tiles.iter().enumerate() {
@@ -1967,7 +1344,6 @@ impl WinResultContextIterator {
                         self.ippatsu = vec![false; 4];
                         self.is_first_turn = vec![false; 4];
                         self.last_action_was_kakan = false;
-                        self.last_action_was_babei = false;
                         self.kakan_tile = None;
 
                         let target_34 = *tile_raw_id;
@@ -2041,24 +1417,6 @@ impl WinResultContextIterator {
                     }
                     self._sync_doras_with_wall();
                 }
-                Action::BaBei { seat, .. } => {
-                    // Save ippatsu state before clearing — ron on kita (chankan-like)
-                    // needs the pre-BaBei ippatsu state.
-                    self.ippatsu_before_babei = self.ippatsu.clone();
-                    self.ippatsu = vec![false; 4];
-                    self.is_first_turn = vec![false; 4];
-                    self.last_action_was_babei = true;
-                    // Remove a North tile (z4 = tile_34=30) from hand
-                    let north_34: u8 = 30;
-                    if let Some(pos) = self.current_hands[*seat]
-                        .iter()
-                        .position(|x| *x / 4 == north_34)
-                    {
-                        self.current_hands[*seat].remove(pos);
-                    }
-                    self.kita_counts[*seat] += 1;
-                    self.rinshan[*seat] = true;
-                }
                 Action::Hule { hules } => {
                     for hule_data in hules {
                         let seat = hule_data.seat;
@@ -2075,12 +1433,7 @@ impl WinResultContextIterator {
                             is_chankan = true;
                         }
 
-                        // For ron on BaBei (kita), use ippatsu state from before BaBei cleared it
-                        let ippatsu = if !is_zimo && self.last_action_was_babei {
-                            self.ippatsu_before_babei[seat]
-                        } else {
-                            self.ippatsu[seat]
-                        };
+                        let ippatsu = self.ippatsu[seat];
 
                         let mut hand_136 = self.current_hands[seat].clone();
                         let melds_136 = self.melds[seat].clone();
@@ -2106,7 +1459,6 @@ impl WinResultContextIterator {
                             round_wind: self.kyoku.chang.into(),
                             riichi_sticks: 0, // Not tracked in basic loop?
                             honba: 0,         // Not tracked
-                            kita_count: self.kita_counts[seat],
                             ..Default::default()
                         };
 

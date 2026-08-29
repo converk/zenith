@@ -145,8 +145,6 @@ pub enum MjaiEvent {
         delta: Option<Vec<i32>>,
         scores: Option<Vec<i32>>,
     },
-    #[serde(rename = "kita")]
-    Kita { actor: usize },
     #[serde(rename = "end_game")]
     EndGame,
     #[serde(rename = "end_kyoku")]
@@ -212,10 +210,8 @@ impl KyokuBuilder {
         let first_dora = parse_mjai_tile(&dora_marker);
         let end_scores = scores.clone();
 
-        // Standard tile counts: 4p = 136, 3p = 108 (excludes 2m-8m)
-        // left_tile_count = total - non_drawable_reserve(14) - dealt(13*np)
-        let left_tile_count = if np == 3 { 55u8 } else { 70u8 };
-
+        // 4P 标准牌墙:136 - 14(王牌) - 13*4(起手) = 70
+        let left_tile_count = 70u8;
         KyokuBuilder {
             actions: Vec::new(),
             scores,
@@ -673,12 +669,6 @@ impl MjaiReplay {
 
                 // Buffer the hora for batching (double/triple ron)
                 builder.pending_hule.push(hule_data);
-            }
-            MjaiEvent::Kita { actor } => {
-                builder.actions.push(Action::BaBei {
-                    seat: actor,
-                    moqie: false,
-                });
             }
             MjaiEvent::Ryukyoku { delta, scores, .. } => {
                 if let Some(s) = scores {

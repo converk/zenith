@@ -238,13 +238,6 @@ pub fn calc_shanten_from_counts(tehai: &[u8; TILE_MAX], tehai_len_div3: u8) -> i
     }
 }
 
-/// Valid tile types for 3-player mahjong (sanma): 1m, 9m, 1-9p, 1-9s, 7 honor tiles.
-/// Excludes 2m-8m (tile types 1-7) which don't exist in sanma.
-#[cfg(feature = "python")]
-const SANMA_VALID_TILE_TYPES: [u32; 27] = [
-    0, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
-    31, 32, 33,
-];
 
 /// Calculate shanten from 136-tile ID hand.
 pub fn calculate_shanten(hand_tiles: &[u32]) -> i32 {
@@ -392,227 +385,6 @@ pub fn calculate_best_ukeire(hand_tiles: &[u32], visible_tiles: &[u32]) -> u32 {
     max_ukeire
 }
 
-/// Normal-form shanten for 3-player mahjong using the nyanten lookup tables.
-///
-/// In 3P mahjong, manzu tiles (1m, 9m) cannot form sequences — they behave
-/// like honor tiles (koutsu/pair only). The shupai hash gives tiles sequence
-/// adjacency potential, which is incorrect for 3P manzu. We fix this by
-/// relocating 1m/9m counts into empty honor (zipai) slots, then using the
-/// standard 4P lookup chain. Zipai keys are position-independent, so the
-/// relocation produces the correct key regardless of which slot is used.
-///
-/// When all 7 honor slots are occupied and both 1m and 9m are present (rare),
-/// we relocate as many as possible and leave the rest in manzu. The residual
-/// adjacency error (at most 1) is masked by kokushi in such scattered hands.
-fn calc_normal_3p(tiles: &[u8; TILE_MAX], len_div3: u8) -> i8 {
-    let mut t = *tiles;
-
-    // Relocate manzu tiles to empty honor slots
-    let manzu_counts = [t[0], t[8]];
-    let manzu_positions = [0usize, 8];
-    t[0] = 0;
-    t[8] = 0;
-
-    let mut next_slot = 27;
-    for i in 0..2 {
-        if manzu_counts[i] == 0 {
-            continue;
-        }
-        // Find the next empty honor slot
-        while next_slot < 34 && t[next_slot] != 0 {
-            next_slot += 1;
-        }
-        if next_slot < 34 {
-            t[next_slot] = manzu_counts[i];
-            next_slot += 1;
-        } else {
-            // No empty slot: put back in manzu (fallback for overflow)
-            t[manzu_positions[i]] = manzu_counts[i];
-        }
-    }
-
-    calc_normal(&t, len_div3)
-}
-
-fn calc_chitoi_3p(tiles: &[u8; TILE_MAX]) -> i8 {
-    let mut pairs = 0u8;
-    let mut kinds = 0u8;
-    for (i, &c) in tiles.iter().enumerate() {
-        // Skip 2m-8m (indices 1-7) which don't exist in 3P
-        if (1..=7).contains(&i) {
-            continue;
-        }
-        if c > 0 {
-            kinds += 1;
-            if c >= 2 {
-                pairs += 1;
-            }
-        }
-    }
-    let redunct = 7u8.saturating_sub(kinds) as i8;
-    7 - pairs as i8 + redunct - 1
-}
-
-pub fn calc_shanten_from_counts_3p(tehai: &[u8; TILE_MAX], tehai_len_div3: u8) -> i8 {
-    let mut shanten = calc_normal_3p(tehai, tehai_len_div3);
-    if shanten <= 0 || tehai_len_div3 < 4 {
-        return shanten;
-    }
-    shanten = shanten.min(calc_chitoi_3p(tehai));
-    if shanten > 0 {
-        // Kokushi terminals are same for 3P: 1m,9m,1p,9p,1s,9s,1-7z = 13
-        shanten.min(calc_kokushi(tehai))
-    } else {
-        shanten
-    }
-}
-
-/// Calculate shanten for 3-player mahjong.
-/// Manzu tiles (1m, 9m) cannot form sequences — only koutsu/pair.
-#[cfg(feature = "python")]
-pub fn calculate_shanten_3p(hand_tiles: &[u32]) -> i32 {
-    let mut tile_counts = [0u8; TILE_MAX];
-    for &tile in hand_tiles {
-        let tile_type = (tile / 4) as usize;
-        if tile_type < TILE_MAX {
-            tile_counts[tile_type] += 1;
-        }
-    }
-    let num_tiles: u8 = tile_counts.iter().sum();
-    let len_div3 = num_tiles / 3;
-    calc_shanten_from_counts_3p(&tile_counts, len_div3) as i32
-}
-
-/// Calculate effective tiles for 3-player mahjong (only valid sanma tile types).
-#[cfg(feature = "python")]
-pub fn calculate_effective_tiles_3p(hand_tiles: &[u32]) -> u32 {
-    assert!(
-        hand_tiles.len() % 3 == 1,
-        "calculate_effective_tiles_3p requires a 3n+1 hand (e.g. 13 tiles), got {}",
-        hand_tiles.len()
-    );
-    let current_shanten = calculate_shanten_3p(hand_tiles);
-    let mut effective_count = 0;
-
-    let mut hand_counts = [0u8; TILE_MAX];
-    for &tile in hand_tiles {
-        let tile_type = (tile / 4) as usize;
-        if tile_type < TILE_MAX {
-            hand_counts[tile_type] += 1;
-        }
-    }
-
-    for &tile_type in &SANMA_VALID_TILE_TYPES {
-        // skip: already holding all 4 copies
-        if hand_counts[tile_type as usize] >= 4 {
-            continue;
-        }
-
-        let mut new_hand = hand_tiles.to_vec();
-        new_hand.push(tile_type * 4);
-        let new_shanten = calculate_shanten_3p(&new_hand);
-
-        if new_shanten < current_shanten {
-            effective_count += 1;
-        }
-    }
-
-    effective_count
-}
-
-/// Calculate effective tiles for 3-player mahjong, handling both 3n+1 and 3n+2 hands.
-#[cfg(feature = "python")]
-pub fn calculate_effective_tiles_3p_with_discard(hand_tiles: &[u32]) -> u32 {
-    if hand_tiles.len() % 3 == 1 {
-        return calculate_effective_tiles_3p(hand_tiles);
-    }
-    assert!(
-        hand_tiles.len() % 3 == 2,
-        "calculate_effective_tiles_3p_with_discard requires a 3n+1 or 3n+2 hand, got {}",
-        hand_tiles.len()
-    );
-    let shanten = calculate_shanten_3p(hand_tiles);
-    let mut max_eff = 0u32;
-    for idx in 0..hand_tiles.len() {
-        let sub: Vec<u32> = hand_tiles
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != idx)
-            .map(|(_, &t)| t)
-            .collect();
-        if calculate_shanten_3p(&sub) <= shanten {
-            max_eff = max_eff.max(calculate_effective_tiles_3p(&sub));
-        }
-    }
-    max_eff
-}
-
-/// Calculate best ukeire for 3-player mahjong (only valid sanma tile types).
-#[cfg(feature = "python")]
-pub fn calculate_best_ukeire_3p(hand_tiles: &[u32], visible_tiles: &[u32]) -> u32 {
-    let mut max_ukeire = 0;
-    let mut visible_counts = [0u32; 34];
-
-    for &tile in visible_tiles {
-        let tile_type = (tile / 4) as usize;
-        if tile_type < 34 {
-            visible_counts[tile_type] += 1;
-        }
-    }
-
-    let current_shanten = calculate_shanten_3p(hand_tiles);
-
-    let mut base_counts = [0u8; TILE_MAX];
-    for &tile in hand_tiles {
-        let tile_type = (tile / 4) as usize;
-        if tile_type < TILE_MAX {
-            base_counts[tile_type] += 1;
-        }
-    }
-
-    for (idx, _) in hand_tiles.iter().enumerate() {
-        let new_hand: Vec<u32> = hand_tiles
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != idx)
-            .map(|(_, &t)| t)
-            .collect();
-        let removed_type = (hand_tiles[idx] / 4) as usize;
-        let mut new_hand_counts = base_counts;
-        if removed_type < TILE_MAX {
-            new_hand_counts[removed_type] -= 1;
-        }
-
-        let new_shanten = calculate_shanten_3p(&new_hand);
-        if new_shanten > current_shanten {
-            continue;
-        }
-
-        let mut ukeire = 0;
-        for &tile_type in &SANMA_VALID_TILE_TYPES {
-            // skip: already holding all 4 copies
-            if new_hand_counts[tile_type as usize] >= 4 {
-                continue;
-            }
-
-            let mut test_hand = new_hand.clone();
-            test_hand.push(tile_type * 4);
-            let test_shanten = calculate_shanten_3p(&test_hand);
-
-            if test_shanten < new_shanten {
-                let remaining = 4u32
-                    .saturating_sub(visible_counts[tile_type as usize])
-                    .saturating_sub(new_hand_counts[tile_type as usize] as u32);
-                ukeire += remaining;
-            }
-        }
-
-        max_ukeire = max_ukeire.max(ukeire);
-    }
-
-    max_ukeire
-}
-
 #[cfg(all(test, feature = "python"))]
 mod tests {
     use super::*;
@@ -655,26 +427,6 @@ mod tests {
     }
 
     #[test]
-    fn test_effective_tiles_3p_auto_14_tile() {
-        // 123p 456p 789p 12s 112z (14 tiles)
-        let hand = tiles_from_types(&[9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 27, 27, 28]);
-        assert_eq!(hand.len() % 3, 2);
-        let eff = calculate_effective_tiles_3p_with_discard(&hand);
-        assert!(
-            eff >= 1,
-            "14-tile 3p hand should have at least 1 effective tile"
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "requires a 3n+1 or 3n+2 hand")]
-    fn test_effective_tiles_3p_auto_rejects_3n_hand() {
-        let hand = tiles_from_types(&[9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 27]);
-        assert_eq!(hand.len() % 3, 0);
-        calculate_effective_tiles_3p_with_discard(&hand);
-    }
-
-    #[test]
     fn test_best_ukeire_subtracts_hand_counts() {
         // 123m 456m 789m 12p 112z (14 tiles, shanten=0).
         // Best discard: 2z → 123m 456m 789m 12p 11z (tenpai, waiting 3p).
@@ -691,24 +443,6 @@ mod tests {
 
         let ukeire = calculate_best_ukeire(&hand, &visible);
         assert_eq!(ukeire, 4, "tenpai waiting on 3p should have ukeire=4");
-    }
-
-    #[test]
-    fn test_best_ukeire_3p_subtracts_hand_counts() {
-        // 123p 456p 789p 12s 112z (14 tiles, shanten=0).
-        // Best discard: 2z → 123p 456p 789p 12s 11z (tenpai, waiting 3s).
-        // Draw 3s: remaining = 4 - 0(visible) - 0(hand) = 4.
-        let hand = tiles_from_types(&[
-            9, 10, 11, // 123p
-            12, 13, 14, // 456p
-            15, 16, 17, // 789p
-            18, 19, // 12s
-            27, 27, 28, // 112z
-        ]);
-        let visible: Vec<u32> = vec![];
-
-        let ukeire = calculate_best_ukeire_3p(&hand, &visible);
-        assert_eq!(ukeire, 4, "tenpai waiting on 3s should have ukeire=4");
     }
 
     #[test]
@@ -769,21 +503,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_best_ukeire_3p_saturates_when_visible_exceeds_remaining() {
-        let hand = tiles_from_types(&[
-            9, 10, 11, // 123p
-            12, 13, 14, // 456p
-            15, 16, 17, // 789p
-            20, 20, // 33s
-            29, 29, 28, // 332z
-        ]);
-        let visible = vec![20 * 4, 20 * 4 + 1, 20 * 4 + 2];
-
-        let ukeire = calculate_best_ukeire_3p(&hand, &visible);
-        assert_eq!(
-            ukeire, 2,
-            "over-visible waits should clamp at zero remaining"
-        );
-    }
 }

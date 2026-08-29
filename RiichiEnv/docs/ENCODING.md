@@ -19,21 +19,6 @@ This document describes the mapping between `Action` objects and integer IDs use
 | **80** | **Ryukyoku** | **Kyushukyuhai / Ryukyoku.** |
 | **81** | **Pass** | **Pass / No Action.** |
 
-### 3-Player Mode (60 actions, IDs 0-59)
-
-In 3-player (sanma) mode, the action space is compacted to 60 actions. Manzu 2-8 tiles are excluded (only 1m and 9m remain), Chi is not allowed, and Kita (BaBei) is added.
-
-| Action ID | Action Type | Description |
-| :--- | :--- | :--- |
-| **0 - 26** | **Discard** | **Discard a tile.** <br> 27 valid tile types in sanma (1m, 9m, 1-9p, 1-9s, E/S/W/N, P/F/C). |
-| **27** | **Riichi** | **Declare Riichi.** |
-| **28** | **Pon** | **Pon.** |
-| **29 - 55** | **Kan** | **Kan a specific tile.** <br> `ID = 29 + compact_tile_idx`. |
-| **56** | **Agari** | **Agari (Win).** <br> Covers both Ron and Tsumo. |
-| **57** | **Ryukyoku** | **Kyushukyuhai / Ryukyoku.** |
-| **58** | **Pass** | **Pass / No Action.** |
-| **59** | **Kita** | **Kita (BaBei / 北抜き) declaration.** |
-
 ## Limitations
 
 ### Red 5 Ambiguity in Calls (Chi/Pon)

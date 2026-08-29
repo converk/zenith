@@ -415,7 +415,6 @@ impl GameState {
                                 | ActionType::Ron
                                 | ActionType::Riichi
                                 | ActionType::KyushuKyuhai
-                                | ActionType::Kita
                         );
                     }
                     false
@@ -920,9 +919,6 @@ impl GameState {
                             self.current_player = (self.current_player + 1) % np as u8;
                             self._deal_next();
                         }
-                    }
-                    ActionType::Kita => {
-                        // Kita is only valid in 3P; handled by GameState3P
                     }
                     _ => {}
                 }
@@ -1656,8 +1652,8 @@ impl GameState {
                 || (dealer_score == player.score && self.oya as usize <= seat)
         });
         let is_last_regular_round = match self.game_mode {
-            1 | 4 => self.round_wind == 0 && self.oya == np - 1,
-            2 | 5 => self.round_wind == 1 && self.oya == np - 1,
+            1 => self.round_wind == 0 && self.oya == np - 1,
+            2 => self.round_wind == 1 && self.oya == np - 1,
             _ => false,
         };
         if oya_won && is_last_regular_round && dealer_is_top && dealer_score >= 30000 {
@@ -1686,22 +1682,21 @@ impl GameState {
         }
 
         match self.game_mode {
-            1 | 4 => {
-                // TODO: Delete 4, 5, 3
+            1 => {
                 let max_score = self.players.iter().map(|p| p.score).max().unwrap_or(0);
                 if next_round_wind >= 1 && (max_score >= 30000 || next_round_wind > 1) {
                     self._process_end_game();
                     return;
                 }
             }
-            2 | 5 => {
+            2 => {
                 let max_score = self.players.iter().map(|p| p.score).max().unwrap_or(0);
                 if next_round_wind >= 2 && (max_score >= 30000 || next_round_wind > 2) {
                     self._process_end_game();
                     return;
                 }
             }
-            0 | 3 => {
+            0 => {
                 self._process_end_game();
                 return;
             }

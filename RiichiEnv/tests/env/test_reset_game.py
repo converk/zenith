@@ -15,14 +15,6 @@ class TestResetGame:
         env.reset()
         assert env.scores() == [25000, 25000, 25000, 25000]
 
-    def test_scores_reset_to_defaults_3p(self):
-        env = RiichiEnv(seed=42, game_mode="3p-red-east")
-        env.reset(scores=[40000, 30000, 35000])
-        assert env.scores() == [40000, 30000, 35000]
-
-        env.reset()
-        assert env.scores() == [35000, 35000, 35000]
-
     def test_round_state_reset_to_defaults(self):
         env = RiichiEnv(seed=42)
         env.reset(round_wind=1, oya=2, honba=3, kyotaku=5)
@@ -41,11 +33,6 @@ class TestResetGame:
         env = RiichiEnv(seed=42)
         with pytest.raises(ValueError, match="does not match"):
             env.reset(scores=[25000, 25000, 25000])
-
-    def test_scores_length_validation_3p(self):
-        env = RiichiEnv(seed=42, game_mode="3p-red-east")
-        with pytest.raises(ValueError, match="does not match"):
-            env.reset(scores=[35000, 35000, 35000, 35000])
 
     def test_scores_empty_list_rejected(self):
         env = RiichiEnv(seed=42)

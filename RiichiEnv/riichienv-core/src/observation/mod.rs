@@ -12,7 +12,7 @@ pub mod sequence_features;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 
-use crate::action::{Action, ActionEncoder, ActionType};
+use crate::action::{Action, ActionType};
 use crate::errors::{RiichiError, RiichiResult};
 use crate::types::Meld;
 
@@ -161,12 +161,11 @@ impl Observation {
     }
 
     pub fn find_action(&self, action_id: usize) -> Option<Action> {
-        let encoder = ActionEncoder::FourPlayer;
         // Prefer non-red-five candidates so that 5m/5p/5s discards do not
         // accidentally drop the akadora when a normal 5 is also legal.
         let mut fallback: Option<&Action> = None;
         for action in &self._legal_actions {
-            let Ok(idx) = encoder.encode(action) else {
+            let Ok(idx) = action.encode() else {
                 continue;
             };
             if (idx as usize) != action_id {

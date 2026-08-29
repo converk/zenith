@@ -19,13 +19,6 @@ _4P_TEHAIS = [
     ["4s", "5s", "6s", "7s", "8s", "9s", "4m", "5m", "6m", "7m", "8m", "9m", "1z"],
 ]
 
-_3P_TEHAIS = [
-    ["1m", "9m", "1p", "2p", "3p", "4p", "5p", "6p", "7s", "8s", "9s", "1z", "2z"],
-    ["1p", "1p", "7p", "8p", "9p", "1s", "2s", "3s", "4s", "5s", "6s", "3z", "4z"],
-    ["5z", "6z", "7z", "7s", "8s", "9s", "7p", "8p", "9p", "1m", "9m", "1z", "2z"],
-]
-
-
 def _start_kyoku_4p(oya=0):
     return {
         "type": "start_kyoku",
@@ -37,20 +30,6 @@ def _start_kyoku_4p(oya=0):
         "oya": oya,
         "scores": [25000, 25000, 25000, 25000],
         "tehais": _4P_TEHAIS,
-    }
-
-
-def _start_kyoku_3p(oya=0):
-    return {
-        "type": "start_kyoku",
-        "bakaze": "E",
-        "dora_marker": "2p",
-        "kyoku": 1,
-        "honba": 0,
-        "kyoutaku": 0,
-        "oya": oya,
-        "scores": [35000, 35000, 35000],
-        "tehais": _3P_TEHAIS,
     }
 
 
@@ -190,56 +169,6 @@ class TestApplyEventMjaiLog4P:
 
 
 # ===========================================================================
-# apply_event: mjai_log recording (3P)
-# ===========================================================================
-
-
-class TestApplyEventMjaiLog3P:
-    """Verify apply_event() records events in mjai_log for 3-player mode."""
-
-    def test_start_game_clears_constructor_log(self):
-        env = RiichiEnv(game_mode="3p-red-half")
-        assert len(env.mjai_log) > 0
-
-        env.apply_event({"type": "start_game"})
-        assert len(env.mjai_log) == 1
-        assert env.mjai_log[0]["type"] == "start_game"
-
-    def test_events_accumulate_in_order(self):
-        env = RiichiEnv(game_mode="3p-red-half")
-        events = [
-            {"type": "start_game"},
-            _start_kyoku_3p(),
-            {"type": "tsumo", "actor": 0, "pai": "3z"},
-            {"type": "dahai", "actor": 0, "pai": "3z", "tsumogiri": True},
-        ]
-        for ev in events:
-            env.apply_event(ev)
-
-        log_types = [e["type"] for e in env.mjai_log]
-        assert log_types == ["start_game", "start_kyoku", "tsumo", "dahai"]
-
-    def test_pon_event_logged(self):
-        env = RiichiEnv(game_mode="3p-red-half")
-        env.apply_event({"type": "start_game"})
-        env.apply_event(_start_kyoku_3p())
-        env.apply_event({"type": "tsumo", "actor": 0, "pai": "3z"})
-        env.apply_event({"type": "dahai", "actor": 0, "pai": "1p", "tsumogiri": False})
-        env.apply_event(
-            {
-                "type": "pon",
-                "actor": 1,
-                "target": 0,
-                "pai": "1p",
-                "consumed": ["1p", "1p"],
-            }
-        )
-
-        log_types = [e["type"] for e in env.mjai_log]
-        assert "pon" in log_types
-
-
-# ===========================================================================
 # observe_event: mjai_log recording
 # ===========================================================================
 
@@ -271,28 +200,6 @@ class TestObserveEventMjaiLog:
         log_types = [e["type"] for e in env.mjai_log]
         assert log_types == ["start_game", "start_kyoku", "tsumo", "dahai"]
 
-    def test_observe_event_logs_events_3p(self):
-        env = RiichiEnv(game_mode="3p-red-half")
-        env.observe_event({"type": "start_game"}, 0)
-        env.observe_event(
-            {
-                **_start_kyoku_3p(),
-                "tehais": [
-                    _3P_TEHAIS[0],
-                    ["?"] * 13,
-                    ["?"] * 13,
-                ],
-            },
-            0,
-        )
-        env.observe_event({"type": "tsumo", "actor": 0, "pai": "3z"}, 0)
-        env.observe_event(
-            {"type": "dahai", "actor": 0, "pai": "3z", "tsumogiri": True},
-            0,
-        )
-
-        log_types = [e["type"] for e in env.mjai_log]
-        assert log_types == ["start_game", "start_kyoku", "tsumo", "dahai"]
 
     def test_observe_event_clears_on_start_game(self):
         """observe_event should also clear stale log on start_game."""

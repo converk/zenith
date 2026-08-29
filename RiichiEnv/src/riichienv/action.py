@@ -1,3 +1,3 @@
-from ._riichienv import Action, Action3P, ActionType
+from ._riichienv import Action, ActionType
 
-__all__ = ["Action", "Action3P", "ActionType"]
+__all__ = ["Action", "ActionType"]

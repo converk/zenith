@@ -795,7 +795,6 @@ impl Observation {
                 let rel = relative_from(pid, target);
                 Some([278, 2, 2, rel as u16])
             }
-            ActionType::Kita => None, // 3P only, not supported
         }
     }
 
