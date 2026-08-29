@@ -14,27 +14,13 @@ use crate::types::TILES_4P;
 use super::Observation;
 
 // ── Constants ────────────────────────────────────────────────────────────────
-// These constants are `pub` for Python-side consumption.
-#[allow(dead_code)]
-pub const SPARSE_VOCAB_SIZE: usize = 442;
-#[allow(dead_code)]
-pub const SPARSE_PAD: u16 = 441;
+// 仅保留运行时使用的长度上限/维度;编码契约维度(sparse 词表、progression/
+// candidate 元组宽度)由本文件尾部测试断言守护,不再作为假的"Python 侧导出"。
 pub const MAX_SPARSE_LEN: usize = 25;
 
-/// Progression tuple dimensions: (actor, type, moqie, liqi, from)
-#[allow(dead_code)]
-pub const PROG_DIMS: [u16; 5] = [5, 277, 3, 3, 5];
 pub const MAX_PROG_LEN: usize = 512;
-#[allow(dead_code)]
-pub const PROG_PAD: [u16; 5] = [4, 276, 2, 2, 4];
 
-/// Candidate tuple dimensions: (type, moqie, liqi, from)
-#[allow(dead_code)]
-pub const CAND_DIMS: [u16; 4] = [280, 3, 3, 4];
-#[allow(dead_code)]
 pub const MAX_CAND_LEN: usize = 64;
-#[allow(dead_code)]
-pub const CAND_PAD: [u16; 4] = [279, 2, 2, 3];
 
 pub const NUM_NUMERIC: usize = 12;
 
@@ -696,7 +682,7 @@ impl Observation {
     /// - liqi: 0=no, 1=yes, 2=N/A
     /// - from: 0-2 (relative seat), 3=self
     pub fn encode_seq_candidates(&self) -> Vec<[u16; 4]> {
-        let mut cands: Vec<[u16; 4]> = Vec::with_capacity(64);
+        let mut cands: Vec<[u16; 4]> = Vec::with_capacity(MAX_CAND_LEN);
         let pid = self.player_id;
 
         // Check if there's a pending reach (riichi action in legal_actions)
@@ -834,6 +820,14 @@ impl Observation {
 mod tests {
     use super::*;
 
+    // 编码契约维度(仅由下列测试守护,不对外导出)。
+    /// 稀疏特征词表大小。
+    const SPARSE_VOCAB_SIZE: usize = 442;
+    /// Progression tuple dimensions: (actor, type, moqie, liqi, from)
+    const PROG_DIMS: [u16; 5] = [5, 277, 3, 3, 5];
+    /// Candidate tuple dimensions: (type, moqie, liqi, from)
+    const CAND_DIMS: [u16; 4] = [280, 3, 3, 4];
+
     #[test]
     fn test_tile_id_to_kan37() {
         // Red fives
@@ -939,7 +933,7 @@ mod tests {
     #[test]
     fn test_progression_type_bounds() {
         // Verify type indices stay within PROG_DIMS[1] = 277
-        let prog_type_max: u16 = 277;
+        let prog_type_max: u16 = PROG_DIMS[1];
         assert!(37 <= prog_type_max); // dahai max: 1 + 36 = 37
         assert!(38 + 89 <= prog_type_max); // chi max: 38 + 89 = 127
         assert!(128 + 39 <= prog_type_max); // pon max: 128 + 39 = 167
@@ -951,7 +945,7 @@ mod tests {
     #[test]
     fn test_candidate_type_bounds() {
         // Verify type indices stay within CAND_DIMS[0] = 280
-        let cand_type_max: u16 = 280;
+        let cand_type_max: u16 = CAND_DIMS[0];
         assert!(36 < cand_type_max); // discard max: 36
         assert!(37 + 33 < cand_type_max); // ankan max: 70
         assert!(71 + 36 < cand_type_max); // kakan max: 107
