@@ -61,15 +61,13 @@ class EventContext:
 
 @dataclass(frozen=True)
 class PreparedDecision:
+    """单次决策的 V18 Actor 输入(只保留有效行,不含 padding)。"""
+
     observation: Any
     seat: int
-    history_factors: np.ndarray
-    history_numeric: np.ndarray
-    history_length: int
-    snapshot_factors: np.ndarray
-    snapshot_numeric: np.ndarray
-    snapshot_length: int
-    query_rows: np.ndarray
+    actor_factors: np.ndarray
+    actor_numeric: np.ndarray
+    actor_length: int
     query_action_ids: np.ndarray
     query_pair_count: int
     legal_mask: np.ndarray
@@ -166,17 +164,15 @@ class OnlineStateBridge:
         batch = self.training_bridge.prepare(
             [Decision(0, self.seat, observation)]
         )
-        history_length = int(batch.history_lengths[0])
-        snapshot_length = int(batch.snapshot_lengths[0])
+        actor_length = int(batch.actor_lengths[0])
         query_pair_count = int(batch.query_pair_counts[0])
+        # 与 PPO rollout 同约定:V18 当前局面路径不产生 query_rows,传 None
+        # 跳过逐 query 行一致性校验,其余结构/域/action 集合校验照常生效。
         assert_actor_input_semantics(
-            batch.history_factors,
-            batch.history_numeric,
-            batch.history_lengths,
-            batch.snapshot_factors,
-            batch.snapshot_numeric,
-            batch.snapshot_lengths,
-            batch.query_rows,
+            batch.actor_factors,
+            batch.actor_numeric,
+            batch.actor_lengths,
+            None,
             batch.query_action_ids,
             batch.query_pair_counts,
             batch.legal_mask,
@@ -184,13 +180,9 @@ class OnlineStateBridge:
         return PreparedDecision(
             observation=observation,
             seat=self.seat,
-            history_factors=batch.history_factors[0, :history_length].copy(),
-            history_numeric=batch.history_numeric[0, :history_length].copy(),
-            history_length=history_length,
-            snapshot_factors=batch.snapshot_factors[0, :snapshot_length].copy(),
-            snapshot_numeric=batch.snapshot_numeric[0, :snapshot_length].copy(),
-            snapshot_length=snapshot_length,
-            query_rows=batch.query_rows[0, : 2 * query_pair_count].copy(),
+            actor_factors=batch.actor_factors[0, :actor_length].copy(),
+            actor_numeric=batch.actor_numeric[0, :actor_length].copy(),
+            actor_length=actor_length,
             query_action_ids=batch.query_action_ids[
                 0, :query_pair_count
             ].copy(),

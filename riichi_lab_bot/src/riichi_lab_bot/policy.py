@@ -15,23 +15,38 @@ from riichi_ppo_v1.model.architecture import (
     ModelConfig,
 )
 from riichi_ppo_v1.model.encoding_protocol import (
-    QUERY_DEFENSE,
-    QUERY_OFFENSE,
-    QUERY_ROW_ACTION_ID,
-    QUERY_ROW_ACTION_TYPE,
-    QUERY_ROW_QUERY_TYPE,
-    QUERY_ROW_WIDTH,
+    CATEGORY_SCHEMAS,
+    KIND_ACTION_DEFENSE_QUERY,
+    KIND_ACTION_OFFENSE_QUERY,
+    KIND_BOS,
+    KIND_OPPONENT_ANALYSIS,
+    KIND_PLAYER,
+    KIND_RIVER_SUMMARY,
+    KIND_SELF_HAND,
+    KIND_SELF_STATE_ANALYSIS,
+    KIND_SEP_ACTIONS,
+    KIND_SEP_KAMICHA_RIVER,
+    KIND_SEP_MELDS,
+    KIND_SEP_OPPONENT_ANALYSIS,
+    KIND_SEP_PLAYERS,
+    KIND_SEP_RIVERS,
+    KIND_SEP_SELF_HAND,
+    KIND_SEP_SHIMOCHA_RIVER,
+    KIND_SEP_TILE_STATE,
+    KIND_SEP_TOIMEN_RIVER,
+    KIND_TABLE,
+    KIND_TILE_STATE,
+    SEPARATOR_SEGMENTS,
+    SEPARATOR_KINDS,
     TOKEN_NUMERIC_WIDTH,
     TOKEN_ROW_WIDTH,
 )
-from riichi_ppo_v1.model.schema import NUM_ACTIONS
+from riichi_ppo_v1.model.schema import NUM_ACTIONS, TILE_KINDS
 from riichi_ppo_v1.model.semantic_validation import (
     assert_actor_input_semantics,
 )
 
 from .bridge import PreparedDecision
-
-# V18 待迁移：bot 的 PreparedDecision 仍使用旧 history/snapshot 布局，本阶段不兼容。
 
 
 def resolve_device(value: str) -> torch.device:
@@ -74,6 +89,20 @@ def _checkpoint_format(payload: dict[str, Any]) -> str:
     return "v18_weights"
 
 
+def _warmup_row(kind: int, fields: dict[int, int]) -> np.ndarray:
+    """构造一行 warmup token:segment/kind 单源取自协议 schema,离散列按位覆盖。"""
+    segment = (
+        SEPARATOR_SEGMENTS[kind]
+        if kind in SEPARATOR_KINDS.values()
+        else CATEGORY_SCHEMAS[kind].segment
+    )
+    row = np.zeros(TOKEN_ROW_WIDTH, dtype=np.int32)
+    row[0], row[1] = segment, kind
+    for column, value in fields.items():
+        row[column] = value
+    return row
+
+
 def _warmup_inputs() -> tuple[
     np.ndarray,
     np.ndarray,
@@ -81,59 +110,74 @@ def _warmup_inputs() -> tuple[
     np.ndarray,
     np.ndarray,
     np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
 ]:
-    """构造一条最小但合法的 V18 policy-only 前向样本。"""
-    history_factors = np.zeros((1, 1, TOKEN_ROW_WIDTH), dtype=np.uint8)
-    history_factors[0, 0, 0] = 1
-    history_factors[0, 0, 1] = 1
-    history_numeric = np.zeros((1, 1, TOKEN_NUMERIC_WIDTH), dtype=np.float32)
-    history_lengths = np.asarray([1], dtype=np.int64)
+    """构造一条最小但语义合法的 V18 policy-only 前向样本。
 
-    snapshot_factors = np.zeros(
-        (1, SNAPSHOT_FIELD_COUNT, SNAPSHOT_FACTOR_WIDTH), dtype=np.uint8,
+    行序列严格遵循 ``assert_actor_input_semantics`` 的规范顺序
+    (BOS→TABLE→手牌→玩家→牌河→副露→牌况→分析→Action Query)。未显式覆盖的
+    离散字段取 0(在各类别基数域内);空牌河/无副露均为合法形态。
+    """
+    rows = [
+        _warmup_row(KIND_BOS, {}),
+        # decision_mode=0(自摸后决策)要求 drawn_is_current=1。
+        _warmup_row(KIND_TABLE, {8: 0, 11: 1}),
+        _warmup_row(KIND_SEP_SELF_HAND, {}),
+        # 手牌至少一行非零牌种且升序;drawn_type=0 时 is_drawn 必须为 0。
+        _warmup_row(KIND_SELF_HAND, {2: 1, 3: 1}),
+        _warmup_row(KIND_SELF_HAND, {2: 2, 3: 1}),
+        _warmup_row(KIND_SELF_STATE_ANALYSIS, {}),
+        _warmup_row(KIND_SEP_PLAYERS, {}),
+        *(_warmup_row(KIND_PLAYER, {}) for _ in range(4)),
+        _warmup_row(KIND_SEP_RIVERS, {}),
+        *(
+            row
+            for river_sep in (
+                KIND_SEP_SHIMOCHA_RIVER,
+                KIND_SEP_TOIMEN_RIVER,
+                KIND_SEP_KAMICHA_RIVER,
+            )
+            for row in (
+                _warmup_row(river_sep, {}),
+                # 空牌河:valid_length=0,槽位全零为合法 padding。
+                _warmup_row(KIND_RIVER_SUMMARY, {}),
+                _warmup_row(KIND_RIVER_SUMMARY, {}),
+            )
+        ),
+        _warmup_row(KIND_SEP_MELDS, {}),
+        _warmup_row(KIND_SEP_TILE_STATE, {}),
+        # 34 类牌况:tile_type 升序 1..34;全零可见性时 unknown=4、known=0。
+        *(
+            _warmup_row(KIND_TILE_STATE, {2: tile_type, 8: 4})
+            for tile_type in range(1, TILE_KINDS + 1)
+        ),
+        _warmup_row(KIND_SEP_OPPONENT_ANALYSIS, {}),
+        *(_warmup_row(KIND_OPPONENT_ANALYSIS, {}) for _ in range(3)),
+        _warmup_row(KIND_SEP_ACTIONS, {}),
+        _warmup_row(KIND_ACTION_OFFENSE_QUERY, {}),
+        _warmup_row(KIND_ACTION_DEFENSE_QUERY, {}),
+    ]
+    actor_factors = np.stack(rows).astype(np.int32, copy=False)[None]
+    actor_numeric = np.zeros(
+        (1, len(rows), TOKEN_NUMERIC_WIDTH), dtype=np.float32
     )
-    for index, field in enumerate(SNAPSHOT_FIELDS):
-        snapshot_factors[0, index, 0] = field.field_id
-        snapshot_factors[0, index, 1] = field.relative_seat
-    snapshot_numeric = np.zeros(
-        (1, SNAPSHOT_FIELD_COUNT, SNAPSHOT_NUMERIC_WIDTH), dtype=np.float32,
-    )
-    snapshot_lengths = np.asarray([SNAPSHOT_FIELD_COUNT], dtype=np.int64)
-
-    query_rows = np.zeros((1, 2, QUERY_ROW_WIDTH), dtype=np.int32)
-    query_rows[0, 0, QUERY_ROW_QUERY_TYPE] = QUERY_OFFENSE
-    query_rows[0, 1, QUERY_ROW_QUERY_TYPE] = QUERY_DEFENSE
-    query_rows[:, :, QUERY_ROW_ACTION_ID] = 0
-    query_rows[:, :, QUERY_ROW_ACTION_TYPE] = 1
+    actor_lengths = np.asarray([len(rows)], dtype=np.int64)
     query_action_ids = np.asarray([[0]], dtype=np.int32)
     query_pair_counts = np.asarray([1], dtype=np.int64)
     legal_mask = np.zeros((1, NUM_ACTIONS), dtype=np.bool_)
     legal_mask[0, 0] = True
     assert_actor_input_semantics(
-        history_factors,
-        history_numeric,
-        history_lengths,
-        snapshot_factors,
-        snapshot_numeric,
-        snapshot_lengths,
-        query_rows,
+        actor_factors,
+        actor_numeric,
+        actor_lengths,
+        None,
         query_action_ids,
         query_pair_counts,
         legal_mask,
     )
     return (
-        history_factors,
-        history_numeric,
-        history_lengths,
-        snapshot_factors,
-        snapshot_numeric,
-        snapshot_lengths,
-        query_rows,
+        actor_factors,
+        actor_numeric,
+        actor_lengths,
         query_action_ids,
         query_pair_counts,
         legal_mask,
@@ -157,13 +201,13 @@ class PolicyEngine:
             self.checkpoint, map_location="cpu", weights_only=False
         )
         if not isinstance(payload, dict):
-            raise ValueError("checkpoint payload must be a dictionary")
+            raise ValueError("checkpoint payload must be a dictionary")  # noqa: TRY004
         raw_config = payload.get("model_config")
         if not isinstance(raw_config, dict):
-            raise ValueError("checkpoint is missing model_config")
-        if raw_config.get("policy_head_type") != "isolated_action_query":
+            raise ValueError("checkpoint is missing model_config")  # noqa: TRY004
+        if raw_config.get("policy_head_type") != "current_state_snapshot":
             raise RuntimeError(
-                "V18 bot requires policy_head_type=isolated_action_query"
+                "V18 bot requires policy_head_type=current_state_snapshot"
             )
         try:
             config = ModelConfig.from_mapping(dict(raw_config))
@@ -171,7 +215,7 @@ class PolicyEngine:
             raise RuntimeError("checkpoint has an invalid model_config") from exc
         state = payload.get("model")
         if not isinstance(state, dict):
-            raise RuntimeError("checkpoint is missing model weights")
+            raise ValueError("checkpoint is missing model weights")  # noqa: TRY004
         model = KyokuTransformerActorCritic(config)
         try:
             model.load_state_dict(state, strict=True)
@@ -215,27 +259,22 @@ class PolicyEngine:
         return (time.perf_counter() - started) * 1000.0
 
     def infer(self, prepared: PreparedDecision) -> InferenceResult:
+        # 每次决策的二次语义校验是安全契约:桥接装配结果在此按 checkpoint
+        # 的 context_tokens 复核,任一侧漂移都 fail closed。
         assert_actor_input_semantics(
-            prepared.history_factors[None],
-            prepared.history_numeric[None],
-            np.asarray([prepared.history_length], dtype=np.int64),
-            prepared.snapshot_factors[None],
-            prepared.snapshot_numeric[None],
-            np.asarray([prepared.snapshot_length], dtype=np.int64),
-            prepared.query_rows[None],
+            prepared.actor_factors[None],
+            prepared.actor_numeric[None],
+            np.asarray([prepared.actor_length], dtype=np.int64),
+            None,
             prepared.query_action_ids[None],
             np.asarray([prepared.query_pair_count], dtype=np.int64),
             prepared.legal_mask[None],
             context_tokens=int(self.config.context_tokens),
         )
         inputs = (
-            self._tensor(prepared.history_factors[None]),
-            self._tensor(prepared.history_numeric[None]),
-            self._tensor(np.asarray([prepared.history_length], dtype=np.int64)),
-            self._tensor(prepared.snapshot_factors[None]),
-            self._tensor(prepared.snapshot_numeric[None]),
-            self._tensor(np.asarray([prepared.snapshot_length], dtype=np.int64)),
-            self._tensor(prepared.query_rows[None]),
+            self._tensor(prepared.actor_factors[None]),
+            self._tensor(prepared.actor_numeric[None]),
+            self._tensor(np.asarray([prepared.actor_length], dtype=np.int64)),
             self._tensor(prepared.query_action_ids[None]),
             self._tensor(np.asarray([prepared.query_pair_count], dtype=np.int64)),
             self._tensor(prepared.legal_mask[None]),

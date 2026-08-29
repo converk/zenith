@@ -23,5 +23,5 @@ python -m pytest riichi_ppo_v1/tests RiichiEnv/tests riichi_lab_bot/tests
 V18 使用**决策时刻状态快照**（Shared 公共前缀 + 三家 Opponent Analysis + 每个合法动作
 一对 Offense/Defense Query，全 token RoPE、公共双向 GQA、结构化 Actor mask）。模型为
 `d_model=256`、16Q/4KV GQA、约 5.80M 参数的 Actor-Critic，Actor 与 Critic 信息边界
-严格隔离；PPO/rollout 与 `riichi_lab_bot` 对旧输入契约的引用已盘点为 V18 后续待迁移项，
+严格隔离；PPO/rollout 与 `riichi_lab_bot` 均已运行在 V18 当前局面输入上，
 PPO 仍只采用宪法规定的固定 1v3 评测机制。

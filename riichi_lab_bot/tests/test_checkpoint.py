@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import random
 
@@ -39,7 +40,7 @@ def test_non_isolated_policy_head_is_rejected(
             "model": {},
         },
     )
-    with pytest.raises(RuntimeError, match="isolated_action_query"):
+    with pytest.raises(RuntimeError, match="current_state_snapshot"):
         PolicyEngine(path, device="cpu", dtype="fp32")
 
 
@@ -60,7 +61,8 @@ def _first_legal_prepared(seed: int = 20260730):
             server_observation = observation_with_events(
                 observation, pending[int(seat)]
             )
-            return OnlineStateBridge(int(seat)).prepare(server_observation)
+            bridge = OnlineStateBridge(int(seat))
+            return bridge, bridge.prepare(server_observation)
         actions = {
             seat: rng.choice(observation.legal_actions())
             for seat, observation in observations.items()
@@ -72,6 +74,22 @@ def _first_legal_prepared(seed: int = 20260730):
     raise RuntimeError("no legal decision found in 4000 steps")
 
 
+def test_v18_checkpoint_end_to_end_decision() -> None:
+    """加载→warmup→编码→forward→解码→安全校验的完整 V18 链路冒烟。"""
+    from riichi_lab_bot.safety import choose_safe_response
+
+    policy = PolicyEngine(default_checkpoint(), device="cpu", dtype="fp32")
+    assert policy.metadata["policy_head_type"] == "current_state_snapshot"
+    assert policy.warmup() >= 0.0
+    bridge, prepared = _first_legal_prepared()
+    result = policy.infer(prepared)
+    action = bridge.decode(prepared, result.action_id)
+    possible = [json.loads(value) for value in prepared.legal_jsons]
+    safe = choose_safe_response(prepared, action, possible, 1)
+    assert safe.source == "model"
+    assert safe.payload is not None
+
+
 def test_fp32_and_bf16_inference_agree_on_l20() -> None:
     visible = os.environ.get("CUDA_DEVICE", "")
     if (
@@ -80,7 +98,7 @@ def test_fp32_and_bf16_inference_agree_on_l20() -> None:
         or not any(device in visible.split(",") for device in ("2", "3"))
     ):
         pytest.skip("requires CUDA_DEVICE=2,3 on an L20")
-    prepared = _first_legal_prepared()
+    _bridge, prepared = _first_legal_prepared()
     fp32 = PolicyEngine(default_checkpoint(), device="cpu", dtype="fp32")
     bf16 = PolicyEngine(default_checkpoint(), device="cuda:0", dtype="bf16")
     fp_result = fp32.infer(prepared)

@@ -64,19 +64,13 @@ class InputAuditRecorder:
                 "reason": selected_reason,
                 "inference_ms": inference_ms,
             },
-            "history": {
-                "length": int(prepared.history_length),
-                "factors": prepared.history_factors.tolist(),
-                "numeric": _round_float_rows(prepared.history_numeric),
-            },
-            "snapshot": {
-                "length": int(prepared.snapshot_length),
-                "factors": prepared.snapshot_factors.tolist(),
-                "numeric": _round_float_rows(prepared.snapshot_numeric),
+            "actor": {
+                "length": int(prepared.actor_length),
+                "factors": prepared.actor_factors.tolist(),
+                "numeric": _round_float_rows(prepared.actor_numeric),
             },
             "query": {
                 "pair_count": int(prepared.query_pair_count),
-                "rows": prepared.query_rows.tolist(),
                 "action_ids": prepared.query_action_ids.tolist(),
             },
             "legal_mask": [
