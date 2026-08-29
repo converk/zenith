@@ -38,10 +38,6 @@ impl Hand {
             self.counts[t as usize] -= 1;
         }
     }
-
-    fn __str__(&self) -> String {
-        format!("Hand(counts={:?})", &self.counts[..])
-    }
 }
 
 impl Default for Hand {
@@ -436,5 +432,16 @@ pub fn standard_next_dora_tile(tile: u8) -> u8 {
         // Dragons (31-33): Haku->Hatsu->Chun->Haku
         31..=33 => 31 + (tile - 31 + 1) % 3,
         _ => tile,
+    }
+}
+
+/// 三麻宝牌回绕(34 类空间单源):万子仅剩 1m/9m,故 1m↔9m 直接回绕;
+/// 2m-8m 不存在于三麻,原样回退;其余花色/字牌与 4P 标准回绕一致。
+pub fn sanma_next_dora_tile(tile: u8) -> u8 {
+    match tile {
+        0 => 8,
+        8 => 0,
+        1..=7 => tile,
+        _ => standard_next_dora_tile(tile),
     }
 }

@@ -107,7 +107,7 @@ impl HandEvaluator3P {
         // but they still count as dora/ura-dora when the dora tile is North.
         let mut dora_count = 0;
         for &indicator_136 in &dora_indicators {
-            let next_tile_34 = get_next_tile_sanma(indicator_136 / 4);
+            let next_tile_34 = crate::types::sanma_next_dora_tile(indicator_136 / 4);
             dora_count += full_hand_14.counts[next_tile_34 as usize];
             if next_tile_34 == 30 {
                 dora_count += conditions.kita_count;
@@ -116,7 +116,7 @@ impl HandEvaluator3P {
 
         let mut ura_dora_count = 0;
         for &indicator_136 in &ura_indicators {
-            let next_tile_34 = get_next_tile_sanma(indicator_136 / 4);
+            let next_tile_34 = crate::types::sanma_next_dora_tile(indicator_136 / 4);
             ura_dora_count += full_hand_14.counts[next_tile_34 as usize];
             if next_tile_34 == 30 {
                 ura_dora_count += conditions.kita_count;
@@ -272,42 +272,5 @@ impl HandEvaluator3P {
     #[pyo3(name = "get_waits")]
     pub fn get_waits_py(&self) -> Vec<u32> {
         self.get_waits()
-    }
-}
-
-pub fn check_riichi_candidates_3p(tiles_136: Vec<u8>) -> Vec<u32> {
-    let mut candidates = Vec::new();
-    let mut tiles_34 = Vec::with_capacity(tiles_136.len());
-    for t in &tiles_136 {
-        tiles_34.push(t / 4);
-    }
-
-    for (i, &t_discard) in tiles_136.iter().enumerate() {
-        let mut hand = crate::types::Hand::default();
-        for (j, &t) in tiles_34.iter().enumerate() {
-            if i != j {
-                hand.add(t);
-            }
-        }
-
-        if agari::is_tenpai(&mut hand) {
-            candidates.push(t_discard as u32);
-        }
-    }
-    candidates
-}
-
-/// Sanma dora indicator -> dora tile mapping.
-/// In sanma, manzu wraps 1m(0)->9m(8) and 9m(8)->1m(0) directly (skipping 2m-8m).
-fn get_next_tile_sanma(tile: u8) -> u8 {
-    match tile {
-        0 => 8,        // 1m -> 9m
-        8 => 0,        // 9m -> 1m
-        1..=7 => tile, // shouldn't appear in sanma, but safe fallback
-        9..=17 => 9 + (tile - 9 + 1) % 9,
-        18..=26 => 18 + (tile - 18 + 1) % 9,
-        27..=30 => 27 + (tile - 27 + 1) % 4,
-        31..=33 => 31 + (tile - 31 + 1) % 3,
-        _ => tile,
     }
 }
