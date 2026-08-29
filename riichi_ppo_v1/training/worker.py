@@ -36,7 +36,7 @@ from .grp.prepare import (
     rank_among,
     result_increment,
 )
-from .grp.reward import rank_utility
+from .grp.reward import RANK_UTILITY, rank_utility
 from .metrics import SemanticMetrics
 from .profiling import StageProfiler
 from .rollout_buffer import RolloutBuffer
@@ -249,8 +249,8 @@ class GrpRollout:
             )
         self.calls += 1
         matrix = self.model.calc_matrix(logits[0:1])[0]  # (4,4) 玩家→排名概率
-        utility = logits.new_tensor([1.0, 1.0 / 3.0, -1.0 / 3.0, -1.0])
-        return matrix @ utility
+        # 排名 utility 收敛为 grp/reward.RANK_UTILITY 单一来源(与离线一致)。
+        return matrix @ logits.new_tensor(RANK_UTILITY)
 
     def start_match(self, env_index: int, boundary: Boundary) -> None:
         """登记首局边界并计算 V_0(1 次 GRP 调用/环境),累计计数归零。"""
@@ -545,7 +545,6 @@ if ray is not None:
                 actor_factors=batch.actor_factors,
                 actor_numeric=batch.actor_numeric,
                 actor_lengths=batch.actor_lengths,
-                query_rows=batch.query_rows,
                 query_action_ids=batch.query_action_ids,
                 query_pair_counts=batch.query_pair_counts,
                 legal_mask=batch.legal_mask,
@@ -557,7 +556,6 @@ if ray is not None:
                 "actor_factors": batch.actor_factors,
                 "actor_numeric": batch.actor_numeric,
                 "actor_lengths": batch.actor_lengths,
-                "query_rows": batch.query_rows,
                 "query_action_ids": batch.query_action_ids,
                 "query_pair_counts": batch.query_pair_counts,
                 "legal_mask": batch.legal_mask,
@@ -589,7 +587,6 @@ if ray is not None:
                             prepared["actor_factors"][row, :actor_length].copy(),
                             prepared["actor_numeric"][row, :actor_length].copy(),
                             actor_length,
-                            prepared["query_rows"][row, : 2 * pair_count].copy(),
                             prepared["query_action_ids"][row, :pair_count].copy(),
                             pair_count,
                             prepared["legal_mask"][row].copy(),
@@ -789,18 +786,12 @@ if ray is not None:
         ) -> tuple[RolloutBuffer, dict[str, float]]:
             if update is not None:
                 self.set_rollout_context(int(update))
-            # 现行 rollout 停止条件为「完整半庄数」,不再使用按局计数。
-            # ``games_per_update`` 是全局每 update 完整半庄目标,按 worker 数
-            # 分摊;原生环境并行推进各桌,可因一波在途结算而小幅超额,这一有界
-            # 超额优于丢弃半局。若配置只提供旧的 kyokus_per_worker(历史版本
-            # 兼容路径),则退化为按小局数停止。
-            if "games_per_update" in self.config:
-                games_per_update = max(1, int(self.config["games_per_update"]))
-                num_workers = max(1, int(self.config.get("num_workers", 1)))
-                target = -(-games_per_update // num_workers)
-            else:
-                target = int(self.config.get("kyokus_per_worker", 1))
-            games_target = "games_per_update" in self.config
+            # rollout 停止条件为「完整半庄数」:``games_per_update`` 是全局每
+            # update 完整半庄目标,按 worker 数分摊;原生环境并行推进各桌,可因
+            # 一波在途结算而小幅超额,这一有界超额优于丢弃半局。
+            games_per_update = max(1, int(self.config["games_per_update"]))
+            num_workers = max(1, int(self.config.get("num_workers", 1)))
+            target = -(-games_per_update // num_workers)
             transitions: list[Transition] = []
             rewards: list[float] = []
             kyokus = 0
@@ -812,10 +803,7 @@ if ray is not None:
             self.profiler.reset()
             self.semantic = SemanticMetrics()
             for lineup in self.lineups:
-                current_seats = [
-                    seat for seat, policy in enumerate(lineup) if policy == "current"
-                ]
-                self.semantic.record_lineup(lineup, current_seats)
+                self.semantic.record_lineup(lineup)
             self.model_decisions = 0
             self.recorded_decisions = 0
             grp_calls_start = self.grp.calls
@@ -835,9 +823,7 @@ if ray is not None:
                 rewards.extend(new_rewards)
                 kyokus += new_kyokus
                 games += len(done_indices)
-                if not draining and games_target and games >= target:
-                    draining = True
-                elif not draining and not games_target and kyokus >= target:
+                if not draining and games >= target:
                     draining = True
                 if draining:
                     # 小局收口或整局结束的桌子立即冻结,不再多收一个小局。

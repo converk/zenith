@@ -42,9 +42,6 @@ class EncodedSample:
     def query_pair_count(self) -> int:
         return int(self.action_ids.shape[0])
 
-    def to_rows(self) -> np.ndarray:
-        return self.actor_factors
-
 
 def _member_metadata(name: str) -> tuple[int, str, int]:
     stem = Path(name).stem
@@ -195,16 +192,13 @@ def iter_split_samples(
     dataset: Path,
     split: str,
     *,
-    gamma: float = 0.99,
     seed: int = 1,
     shuffle: bool = True,
-    shuffle_buffer_kyokus: int = 8192,
     rank: int = 0,
     world_size: int = 1,
     include_critic: bool = True,
 ) -> Iterator[EncodedSample]:
     """读取 V18 预计算数据集 split。"""
-    del gamma, shuffle_buffer_kyokus
     manifest_path = dataset / "manifest.json"
     if not manifest_path.is_file():
         raise RuntimeError("SFT training requires a V18 encoded dataset manifest")

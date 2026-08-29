@@ -162,19 +162,12 @@ def actor_inputs(*, batch: int = 2, action_ids: tuple[int, ...] = (1, 7, 12)) ->
     sequence = np.vstack([shared, actions])
     numeric = np.zeros((sequence.shape[0], TOKEN_NUMERIC_WIDTH), dtype=np.float32)
     ids = torch.tensor(action_ids, dtype=torch.long)[None].expand(batch, -1).clone()
-    query_rows = torch.zeros(batch, 2 * count, 15, dtype=torch.long)
-    query_rows[:, 0::2, 0] = 1
-    query_rows[:, 1::2, 0] = 2
-    query_rows[:, 0::2, 1] = ids
-    query_rows[:, 1::2, 1] = ids
-    query_rows[:, :, 2] = 1
     legal_mask = torch.zeros(batch, NUM_ACTIONS, dtype=torch.bool)
     legal_mask.scatter_(1, ids, True)
     return {
         "actor_factors": torch.from_numpy(np.tile(sequence[None], (batch, 1, 1))).to(torch.long),
         "actor_numeric": torch.from_numpy(np.tile(numeric[None], (batch, 1, 1))),
         "actor_lengths": torch.full((batch,), sequence.shape[0], dtype=torch.long),
-        "query_rows": query_rows,
         "action_ids": ids,
         "query_pair_counts": torch.full((batch,), count, dtype=torch.long),
         "legal_mask": legal_mask,

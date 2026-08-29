@@ -44,7 +44,6 @@ class PreparedBatch:
     actor_factors: np.ndarray
     actor_numeric: np.ndarray
     actor_lengths: np.ndarray
-    query_rows: np.ndarray
     query_action_ids: np.ndarray
     query_pair_counts: np.ndarray
     legal_mask: np.ndarray
@@ -245,7 +244,6 @@ class BatchedStateBridge:
             actor_factors=np.asarray(state_batch.actor_factors, dtype=np.int32),
             actor_numeric=np.asarray(state_batch.actor_numeric, dtype=np.float32),
             actor_lengths=np.asarray(state_batch.actor_lengths, dtype=np.int64),
-            query_rows=np.asarray(state_batch.query_rows, dtype=np.int32),
             query_action_ids=np.asarray(state_batch.action_ids, dtype=np.int32),
             query_pair_counts=np.asarray(state_batch.query_pair_counts, dtype=np.int64),
             legal_mask=np.asarray(state_batch.legal_mask, dtype=np.bool_),

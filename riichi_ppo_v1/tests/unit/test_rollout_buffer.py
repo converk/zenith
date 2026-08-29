@@ -37,7 +37,6 @@ def _random_transition(rng: np.random.Generator) -> Transition:
         actor_factors=actor["actor_factors"][0, :actor_length].numpy().astype(np.int32),
         actor_numeric=actor["actor_numeric"][0, :actor_length].numpy().astype(np.float32),
         actor_length=actor_length,
-        query_rows=actor["query_rows"][0, : 2 * pair_count].numpy().astype(np.int32),
         query_action_ids=actor["action_ids"][0, :pair_count].numpy().astype(np.int32),
         query_pair_counts=pair_count,
         legal_mask=actor["legal_mask"][0].numpy().astype(np.bool_),
@@ -133,7 +132,6 @@ def test_collate_preserves_all_segments_and_padding() -> None:
         item = transitions[int(index)]
         _assert_row_prefix_and_zero_padding(batch["actor_factors"], row, item.actor_factors)
         _assert_row_prefix_and_zero_padding(batch["actor_numeric"], row, item.actor_numeric)
-        _assert_row_prefix_and_zero_padding(batch["query_rows"], row, item.query_rows)
         _assert_row_prefix_and_zero_padding(
             batch["query_action_ids"], row, item.query_action_ids,
         )
@@ -150,28 +148,6 @@ def test_collate_preserves_all_segments_and_padding() -> None:
         assert batch["actions"][row] == item.action
         assert batch["old_logprobs"][row] == np.float32(item.logprob)
         assert batch["advantages"][row] == np.float32(item.advantage)
-
-
-def test_collate_include_query_rows_false_skips_only_query_rows() -> None:
-    """include_query_rows=False:除 query_rows 外逐键一致,键序不变。"""
-    transitions = _transitions(np.random.default_rng(5), 24)
-    buffer = RolloutBuffer(transitions)
-    indices = np.random.default_rng(6).permutation(len(transitions))[:12]
-    default_batch = buffer.collate(indices)
-    lean_batch = buffer.collate(indices, include_query_rows=False)
-
-    assert "query_rows" not in lean_batch
-    assert "query_rows" in default_batch
-    # 默认路径的键序保持历史行为(query_rows 排在 actor_lengths 之后)。
-    lean_keys = list(lean_batch.keys())
-    assert list(default_batch.keys()) == [
-        *lean_keys[:3], "query_rows", *lean_keys[3:],
-    ]
-    assert set(lean_batch.keys()) == set(default_batch.keys()) - {"query_rows"}
-    for name, value in default_batch.items():
-        if name == "query_rows":
-            continue
-        torch.testing.assert_close(lean_batch[name], value)
 
 
 def test_bucketed_minibatches_are_deterministic_and_cover_all_rows() -> None:
@@ -210,7 +186,7 @@ def test_concatenate_and_select_are_elementwise_exact() -> None:
 def test_rollout_target_math_matches_frozen_formula() -> None:
     transitions = _transitions(np.random.default_rng(23), 31)
     buffer = RolloutBuffer(transitions)
-    advantages, returns, return_mean, return_std = rollout_update_targets(buffer, gamma=0.97)
+    advantages, returns, return_mean, return_std = rollout_update_targets(buffer)
 
     raw_advantages = np.asarray([item.advantage for item in transitions], dtype=np.float32)
     expected_advantages = (
@@ -467,13 +443,11 @@ def test_factor_flatten_compacts_to_uint8_and_fail_closed() -> None:
     transitions = _transitions(np.random.default_rng(31), 12)
     buffer = RolloutBuffer(transitions)
     assert buffer.actor_factors_flat.dtype == np.uint8
-    assert buffer.query_rows_flat.dtype == np.uint8
     assert buffer.query_ids_flat.dtype == np.uint8
     batch = buffer.collate(np.arange(5))
     assert batch["actor_factors"].dtype == torch.int64
     assert batch["query_action_ids"].dtype == torch.int64
     assert batch["critic_factors"].dtype == torch.int64
-    assert batch["query_rows"].dtype == torch.int32
 
     # 超 255 的因子必须显式报错(绝不能静默回绕)。
     bad = _transitions(np.random.default_rng(33), 3)

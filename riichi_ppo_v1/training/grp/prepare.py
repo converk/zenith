@@ -510,11 +510,6 @@ def prepare_grp_dataset(
     return dataset
 
 
-def _sha256(path: Path) -> str:
-    import hashlib
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def _write_chunk(path: Path, samples: list[dict]) -> None:
     offsets = np.zeros(len(samples) + 1, dtype=np.int64)
     offsets[1:] = np.cumsum([len(sample["features"]) for sample in samples], dtype=np.int64)

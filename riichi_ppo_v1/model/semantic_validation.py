@@ -157,18 +157,24 @@ def assert_actor_input_semantics(
     actor_factors: np.ndarray,
     actor_numeric: np.ndarray,
     actor_lengths: np.ndarray,
-    query_rows: np.ndarray,
+    query_rows: np.ndarray | None,
     query_action_ids: np.ndarray,
     query_pair_counts: np.ndarray,
     legal_mask: np.ndarray,
     *,
     context_tokens: int = 256,
 ) -> None:
-    """校验 V18 Actor 完整序列的结构、域、排序与 action 集合。"""
+    """校验 V18 Actor 完整序列的结构、域、排序与 action 集合。
+
+    ``query_rows`` 是 SFT 侧逐 token 一致性校验的原始 Query 元数据;PPO
+    rollout 路径自 query 行退出模型输入后不再产生该数组,传 ``None`` 时
+    跳过 query 行相关校验,其余校验不受影响。
+    """
     actor_factors = np.asarray(actor_factors)
     actor_numeric = np.asarray(actor_numeric)
     actor_lengths = np.asarray(actor_lengths).astype(np.int64, copy=False)
-    query_rows = np.asarray(query_rows)
+    if query_rows is not None:
+        query_rows = np.asarray(query_rows)
     query_action_ids = np.asarray(query_action_ids).astype(np.int64, copy=False)
     query_pair_counts = np.asarray(query_pair_counts).astype(np.int64, copy=False)
     legal_mask = np.asarray(legal_mask)
@@ -180,7 +186,7 @@ def assert_actor_input_semantics(
         raise AssertionError("actor_numeric shape is malformed")
     if actor_lengths.shape != (batch,) or np.any(actor_lengths <= 0) or np.any(actor_lengths > capacity):
         raise AssertionError("actor_lengths are malformed")
-    if query_rows.shape[0] != batch or query_rows.shape[-1] != QUERY_ROW_WIDTH:
+    if query_rows is not None and (query_rows.shape[0] != batch or query_rows.shape[-1] != QUERY_ROW_WIDTH):
         raise AssertionError("query_rows shape is malformed")
     if query_action_ids.shape[0] != batch:
         raise AssertionError("query_action_ids shape is malformed")
@@ -292,17 +298,20 @@ def assert_actor_input_semantics(
             raise AssertionError("query action ids do not equal legal-mask set")
         if np.any(np.diff(ids) <= 0):
             raise AssertionError("query action ids must be strictly ascending")
-        query_chunk = query_rows[row, : 2 * pair_count].astype(np.int64, copy=False)
-        if np.any(query_chunk[0::2, QUERY_ROW_QUERY_TYPE] != 1) or np.any(query_chunk[1::2, QUERY_ROW_QUERY_TYPE] != 2):
-            raise AssertionError("query rows must alternate Offense/Defense")
-        if not np.array_equal(query_chunk[0::2, QUERY_ROW_ACTION_ID], ids) or not np.array_equal(
-            query_chunk[1::2, QUERY_ROW_ACTION_ID], ids
-        ):
-            raise AssertionError("query action ids disagree with metadata")
+        if query_rows is not None:
+            query_chunk = query_rows[row, : 2 * pair_count].astype(np.int64, copy=False)
+            if np.any(query_chunk[0::2, QUERY_ROW_QUERY_TYPE] != 1) or np.any(query_chunk[1::2, QUERY_ROW_QUERY_TYPE] != 2):
+                raise AssertionError("query rows must alternate Offense/Defense")
+            if not np.array_equal(query_chunk[0::2, QUERY_ROW_ACTION_ID], ids) or not np.array_equal(
+                query_chunk[1::2, QUERY_ROW_ACTION_ID], ids
+            ):
+                raise AssertionError("query action ids disagree with metadata")
         # actor 行中的 action 特征与 query 行一致。
         action_positions = np.flatnonzero(np.isin(kinds, (KIND_ACTION_OFFENSE_QUERY, KIND_ACTION_DEFENSE_QUERY)))
         if len(action_positions) != 2 * pair_count:
             raise AssertionError("actor action rows count disagrees with pair count")
+        if query_rows is None:
+            continue
         for index, position in enumerate(action_positions):
             query_value = query_chunk[index]
             expected = (

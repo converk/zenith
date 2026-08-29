@@ -348,16 +348,13 @@ if ray is not None:
             stats["inference/padding_fraction_of_padded_tokens"] = padding_tokens / max(padded_tokens, 1.0)
             if self._rollout_forward_max_tokens:
                 input_lengths = np.asarray(self._rollout_forward_max_tokens, dtype=np.int64)
-                for prefix, values in (
-                    ("inference/full_forward_max_input_tokens", input_lengths),
-                    ("inference/full_forward_max_tokens", input_lengths),
-                ):
-                    stats[f"{prefix}/min"] = float(values.min())
-                    stats[f"{prefix}/mean"] = float(values.mean())
-                    stats[f"{prefix}/p50"] = float(np.percentile(values, 50))
-                    stats[f"{prefix}/p90"] = float(np.percentile(values, 90))
-                    stats[f"{prefix}/p99"] = float(np.percentile(values, 99))
-                    stats[f"{prefix}/max"] = float(values.max())
+                prefix = "inference/full_forward_max_input_tokens"
+                stats[f"{prefix}/min"] = float(input_lengths.min())
+                stats[f"{prefix}/mean"] = float(input_lengths.mean())
+                stats[f"{prefix}/p50"] = float(np.percentile(input_lengths, 50))
+                stats[f"{prefix}/p90"] = float(np.percentile(input_lengths, 90))
+                stats[f"{prefix}/p99"] = float(np.percentile(input_lengths, 99))
+                stats[f"{prefix}/max"] = float(input_lengths.max())
             return stats
 
         async def infer(

@@ -19,7 +19,6 @@ class Transition:
     actor_factors: np.ndarray
     actor_numeric: np.ndarray
     actor_length: int
-    query_rows: np.ndarray
     query_action_ids: np.ndarray
     query_pair_counts: int
     legal_mask: np.ndarray

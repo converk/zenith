@@ -20,7 +20,6 @@ import torch
 
 from ..model.dense_embedding import compute_kind_row_plan
 from ..model.encoding_protocol import (
-    QUERY_ROW_WIDTH,
     TOKEN_NUMERIC_WIDTH,
     TOKEN_ROW_WIDTH,
     SEGMENT_SHARED,
@@ -31,7 +30,6 @@ from .trajectory import Transition, transition_sequence_length
 # V18 当前局面行宽与 critic 私有行宽共享 token schema。
 _ACTOR_W = TOKEN_ROW_WIDTH
 _NUMERIC_W = TOKEN_NUMERIC_WIDTH
-_QUERY_W = QUERY_ROW_WIDTH
 _CRITIC_W = TOKEN_ROW_WIDTH
 
 
@@ -146,14 +144,6 @@ class RolloutBuffer:
             transitions, lambda item: item.actor_numeric.astype(np.float32, copy=False)
         )
         (
-            self.query_rows_offsets,
-            query_rows_flat,
-            _,
-        ) = self._concat_var(
-            transitions, lambda item: item.query_rows.astype(np.int32, copy=False)
-        )
-        self.query_rows_flat = _compact_factor_flat(query_rows_flat, "query_rows")
-        (
             self.query_ids_offsets,
             query_ids_flat,
             _,
@@ -219,7 +209,6 @@ class RolloutBuffer:
         variable_fields = (
             ("actor_offsets", "actor_factors_flat", result.actor_lengths),
             ("actor_numeric_offsets", "actor_numeric_flat", result.actor_lengths),
-            ("query_rows_offsets", "query_rows_flat", 2 * result.query_pair_counts),
             ("query_ids_offsets", "query_ids_flat", result.query_pair_counts),
             ("critic_offsets", "critic_factors_flat", result.critic_lengths),
         )
@@ -268,7 +257,6 @@ class RolloutBuffer:
         variable_fields = (
             ("actor_offsets", "actor_factors_flat"),
             ("actor_numeric_offsets", "actor_numeric_flat"),
-            ("query_rows_offsets", "query_rows_flat"),
             ("query_ids_offsets", "query_ids_flat"),
             ("critic_offsets", "critic_factors_flat"),
         )
@@ -304,16 +292,13 @@ class RolloutBuffer:
     def collate(
         self,
         indices: Sequence[int],
-        *,
-        include_query_rows: bool = True,
     ) -> dict[str, torch.Tensor]:
         """把一个 minibatch 的下标数组 gather 成 V18 padded host 张量(CPU)。
 
-        ``include_query_rows=False`` 时跳过 ``query_rows`` 的 gather 与输出:
-        该字段仅作离线一致性校验,模型 forward 不消费,learner 侧传 False
-        省去每 minibatch 一次无用的拼装/拷贝;默认 True 保持其余调用方
-        (worker/inference/测试)的历史行为不变。
-
+        模型 forward 只消费 ``query_action_ids``/``query_pair_counts``
+        (V18 action query 由 241 维专用表索引),不再搬运原始 query 行;
+        query 行的逐 token 一致性校验在 SFT 侧经
+        ``assert_actor_input_semantics`` 完成。
         额外输出 host 侧标量 ``shared_capacity``/``critic_total_capacity``
         (numpy 预计算,与 forward 内 GPU 推导逐位同义):learner 侧透传给
         forward 以消除 ``max().item()`` 同步;调用方不消费时忽略即可。
@@ -348,17 +333,6 @@ class RolloutBuffer:
             0.0,
             width=_NUMERIC_W,
         )
-        query_rows = None
-        if include_query_rows:
-            query_rows = _gather_padded(
-                self.query_rows_flat,
-                self.query_rows_offsets[idx],
-                2 * pair_counts,
-                2 * max_pairs,
-                0,
-                width=_QUERY_W,
-                dtype=np.int32,
-            )
         query_action_ids = _gather_padded(
             self.query_ids_flat,
             self.query_ids_offsets[idx],
@@ -398,16 +372,11 @@ class RolloutBuffer:
             (shared_per_row + critic_lens + 1).max(initial=0)
         )
 
-        # 键顺序与历史实现保持一致(query_rows 缺省时原位跳过)。
         batch_tensors = {
             "actor_factors": torch.from_numpy(np.ascontiguousarray(actor_factors)),
             "actor_numeric": torch.from_numpy(np.ascontiguousarray(actor_numeric)),
             "actor_lengths": actor_lengths,
         }
-        if include_query_rows:
-            batch_tensors["query_rows"] = torch.from_numpy(
-                np.ascontiguousarray(query_rows)
-            )
         batch_tensors.update({
             "query_action_ids": torch.from_numpy(np.ascontiguousarray(query_action_ids)),
             "query_pair_counts": query_pair_counts,

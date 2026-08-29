@@ -69,7 +69,6 @@ _SAMPLE_WEIGHTED_KEYS = {
     "entropy", "entropy_normalized",
     "sft_reference_kl", "approx_kl", "clipfrac", "ratio",
     "update/executed_transition_tokens_mean",
-    "update/executed_transition_input_tokens_mean",
 }
 # 按 executed minibatches 加权平均的指标。
 _STEP_WEIGHTED_KEYS = {
@@ -199,7 +198,7 @@ def aggregate_learner_metrics(
     # buffer/Q 统计基于完整 rollout 在 host 侧精确重算,覆盖各 rank 分片统计。
     result.update(rollout_target_metrics(transitions))
     advantages, lambda_returns, _lambda_mean, _lambda_std = rollout_update_targets(
-        transitions, gamma=gamma,
+        transitions,
     )
     mc_returns = discounted_empirical_returns(transitions, gamma=gamma).astype(np.float64)
     raw_advantages = np.asarray(transitions.advantages, dtype=np.float64)
@@ -449,7 +448,7 @@ class LearnerDDP:
         )
         shards = [transitions.select(shard) for shard in index_shards]
         advantages, returns, _return_mean, _return_std = rollout_update_targets(
-            transitions, self._gamma,
+            transitions,
         )
         for rank in range(self.world_size):
             self._command_queues[rank].put({

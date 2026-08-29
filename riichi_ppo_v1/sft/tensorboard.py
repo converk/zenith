@@ -32,23 +32,15 @@ ACTION_GROUP_LABELS = {
 SCALAR_TAGS = {
     "train/loss": "SFT/训练/总损失 (loss)",
     "train/policy_ce": "SFT/训练/策略交叉熵 (policy_ce)",
-    "train/value_huber": "SFT/训练/价值 Huber (value_huber)",
     "train/top1": "SFT/训练/Top-1 准确率 (top1)",
     "train/top3": "SFT/训练/Top-3 准确率 (top3)",
-    "optimizer/learning_rate": "SFT/优化器/学习率 (learning_rate)",
-    "optimizer/grad_norm_pre_clip": "SFT/优化器/裁剪前梯度范数 (grad_norm_pre_clip)",
-    "optimizer/grad_norm_post_clip": "SFT/优化器/裁剪后梯度范数 (grad_norm_post_clip)",
     "data/legal_actions_mean": "SFT/数据/平均合法动作数 (legal_actions_mean)",
     "data/token_length_mean": "SFT/数据/平均序列长度 (token_length_mean)",
     "data/token_length_max": "SFT/数据/最大序列长度 (token_length_max)",
     "data/padding_fraction": "SFT/数据/Padding 比例 (padding_fraction)",
     "performance/window_samples_per_s": "SFT/性能/窗口样本每秒 (window_samples_per_s)",
-    "performance/cumulative_samples_per_s": "SFT/性能/累计样本每秒 (cumulative_samples_per_s)",
     "performance/effective_tokens_per_s": "SFT/性能/有效 Token 每秒 (effective_tokens_per_s)",
     "performance/step_time_s": "SFT/性能/平均 Step 耗时·秒 (step_time_s)",
-    "system/gpu_memory_allocated_mb": "SFT/系统/Rank0 已分配显存·MB (allocated)",
-    "system/gpu_memory_reserved_mb": "SFT/系统/Rank0 已保留显存·MB (reserved)",
-    "system/gpu_memory_peak_mb": "SFT/系统/Rank0 峰值显存·MB (peak)",
 }
 
 
@@ -91,7 +83,6 @@ class SftMetricWindow:
         token_lengths: Tensor,
         loss: Tensor,
         policy_ce: Tensor,
-        value_huber: Tensor | None,
         effective_tokens: int,
         padded_tokens: int,
         step_seconds: float,
@@ -103,8 +94,6 @@ class SftMetricWindow:
         self._add("samples", actions.new_tensor(batch, dtype=torch.float32))
         self._add("loss_sum", loss.detach().float() * batch)
         self._add("policy_ce_sum", policy_ce.detach().float() * batch)
-        if value_huber is not None:
-            self._add("value_huber_sum", value_huber.detach().float() * batch)
         self._add("top1", top1.float().sum())
         self._add("top3", top3.float().sum())
         self._add("legal_actions", legal_mask.detach().sum().float())
@@ -144,8 +133,6 @@ class SftMetricWindow:
             "performance/effective_tokens_per_s": self.effective_tokens / seconds,
             "performance/step_time_s": seconds / max(self.steps, 1),
         }
-        if "value_huber_sum" in values:
-            result["train/value_huber"] = values["value_huber_sum"] / samples
         for group in ACTION_GROUPS:
             count = values[f"{group}/count"]
             result[f"train/action/{group}/count"] = count
@@ -154,19 +141,10 @@ class SftMetricWindow:
                 result[f"train/action/{group}/top3"] = values[f"{group}/top3"] / count
         return result
 
-    def reset(self) -> None:
-        self.sums.clear()
-        self.steps = 0
-        self.step_seconds = 0.0
-        self.padded_tokens = 0
-        self.effective_tokens = 0
-
 
 def _display_tag(name: str) -> str | None:
     if name in SCALAR_TAGS:
         return SCALAR_TAGS[name]
-    if name.startswith("optimizer/grad_norm_branch/"):
-        return f"SFT/优化器/分支梯度范数/{name.rsplit('/', 1)[-1]}"
     parts = name.split("/")
     if len(parts) == 4 and parts[:2] == ["train", "action"]:
         group, metric = parts[2], parts[3]
@@ -175,15 +153,8 @@ def _display_tag(name: str) -> str | None:
             return f"SFT/训练动作/{ACTION_GROUP_LABELS[group]}/{labels[metric]} ({group}_{metric})"
     if name.startswith("validation/"):
         suffix = name.removeprefix("validation/")
-        if suffix in {"loss", "policy_ce", "value_huber", "value_mae", "value_rmse", "top1", "top3", "samples"}:
+        if suffix in {"loss", "policy_ce", "top1", "top3", "samples"}:
             return f"SFT/验证/{suffix}"
-        for group in ACTION_GROUPS:
-            if suffix in {f"top1_{group}", f"top3_{group}"}:
-                metric = suffix.split("_", 1)[0]
-                return f"SFT/验证动作/{ACTION_GROUP_LABELS[group]}/{metric.upper()} ({suffix})"
-    if name.startswith("heuristic_eval/"):
-        suffix = name.removeprefix("heuristic_eval/")
-        return f"SFT/启发式对局评测/{suffix}"
     return None
 
 

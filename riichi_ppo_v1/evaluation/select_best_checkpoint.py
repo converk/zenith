@@ -36,13 +36,12 @@ def select_best_checkpoint(
     *,
     metric: str = "point_diff_vs_mean_opponent_mean",
     fallback_metric: str = "mean_rank",
-    require_rate: float = 1.0,
 ) -> dict:
     """选择 1V3 vs SFT 表现最佳的 checkpoint。
 
     - 主指标 ``metric``(默认 point_diff)取最大;缺失或打平用
       ``fallback_metric``(默认 mean_rank)取最小。
-    - ``require_rate``:只考虑已完成该比例半庄的评测(默认 1.0 = 全部完成)。
+    - 只考虑已完成全部机制半庄数的评测,未跑满的汇总一律跳过。
     """
     best: dict | None = None
     best_key: tuple[float, float, int] | None = None
@@ -50,7 +49,7 @@ def select_best_checkpoint(
     for update, summary in iter_eval_summaries(eval_dir):
         hanchan_count = int(summary.get("hanchan_count", TOTAL_1V3_HANCHANS))
         summaries.append({"update": update, **summary})
-        if hanchan_count < int(require_rate * TOTAL_1V3_HANCHANS):
+        if hanchan_count < TOTAL_1V3_HANCHANS:
             continue
         model_a = summary.get("model_a") or {}
         primary = model_a.get(metric)

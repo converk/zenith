@@ -272,7 +272,6 @@ def discounted_empirical_returns(
 
 def rollout_update_targets(
     transitions: RolloutBuffer,
-    gamma: float,
 ) -> tuple[np.ndarray, np.ndarray, float, float]:
     """完整 rollout 的 advantage 归一化与 λ-return(供 DDP 分片复用)。"""
     source_advantages = _rollout_values(
@@ -282,7 +281,6 @@ def rollout_update_targets(
         (source_advantages - source_advantages.mean(dtype=np.float64))
         / (source_advantages.std(dtype=np.float64) + 1e-8)
     ).astype(np.float32)
-    del gamma
     returns = (
         _rollout_values(transitions, "values", np.dtype(np.float32))
         + source_advantages
@@ -351,7 +349,6 @@ def transition_length_metrics(
     effective_input_tokens = int(lengths.sum())
     return {
         f"{prefix}_transition_tokens_mean": float(lengths.mean()),
-        f"{prefix}_transition_input_tokens_mean": float(lengths.mean()),
         f"{prefix}_transition_input_tokens_max": float(lengths.max()),
         f"{prefix}_effective_input_tokens": float(effective_input_tokens),
         f"{prefix}_global_padded_input_tokens": float(global_padded_input_tokens),
@@ -813,7 +810,7 @@ class PPOLearner:
                 raise ValueError("advantages and returns must be provided together")
             with self.profiler.stage("update/advantage_normalize"):
                 advantages, returns, return_mean, return_std = rollout_update_targets(
-                    transitions, float(self.hp.get("gamma", 1.0)),
+                    transitions,
                 )
         else:
             advantages = np.asarray(advantages, dtype=np.float32)
@@ -1323,7 +1320,6 @@ class PPOLearner:
             "update/early_stop": float(stop_early),
             "update/executed_transition_samples": float(executed_samples),
             "update/executed_transition_tokens_mean": float(executed_tokens / executed_samples),
-            "update/executed_transition_input_tokens_mean": float(executed_tokens / executed_samples),
             "update/executed_padded_input_tokens": float(executed_padded_input_tokens),
             "update/executed_padding_input_tokens": float(
                 executed_padded_input_tokens - executed_tokens

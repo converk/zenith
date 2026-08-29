@@ -112,11 +112,7 @@ class SemanticMetrics:
     kyoku_group_tsumo_losses: Counter[str] = field(default_factory=Counter)
     kyoku_group_draws: Counter[str] = field(default_factory=Counter)
     rewards: list[float] = field(default_factory=list)
-    reward_efficiency: list[float] = field(default_factory=list)
     reward_kyoku: list[float] = field(default_factory=list)
-    reward_hanchan_rank: list[float] = field(default_factory=list)
-    reward_weighted_efficiency: list[float] = field(default_factory=list)
-    reward_weighted_kyoku: list[float] = field(default_factory=list)
     completed_matches: int = 0
     match_ranks: list[int] = field(default_factory=list)
     match_final_scores: list[float] = field(default_factory=list)
@@ -191,19 +187,12 @@ class SemanticMetrics:
         self.bad_kans += int(is_kan and bad_kan)
 
     def record_transition_reward(self, transition: object) -> None:
-        efficiency = float(getattr(transition, "discard_regret", 0.0))
-        efficiency_weight = float(getattr(transition, "discard_weight", 0.0))
-        kyoku = float(getattr(transition, "kyoku_reward"))
-        hanchan_rank = float(getattr(transition, "hanchan_rank_reward", 0.0))
+        """记录一条 V18 决策的奖励流(总奖励与 GRP 小局奖励两路)。"""
         self.rewards.append(float(getattr(transition, "reward")))
-        self.reward_efficiency.append(efficiency); self.reward_kyoku.append(kyoku)
-        self.reward_hanchan_rank.append(hanchan_rank)
-        self.reward_weighted_efficiency.append(efficiency_weight * efficiency)
-        self.reward_weighted_kyoku.append(kyoku)
+        self.reward_kyoku.append(float(getattr(transition, "kyoku_reward")))
 
-    def record_lineup(self, policies: Iterable[str], learner_seats: Iterable[int]) -> None:
-        del learner_seats
-        for _seat, policy in enumerate(policies):
+    def record_lineup(self, policies: Iterable[str]) -> None:
+        for policy in policies:
             self.policy_seats[str(policy)] += 1
             # Approximate per-seat decision share by lineup occupancy so mixed
             # opponent lineups (E2) report a meaningful current fraction.
@@ -508,9 +497,7 @@ class SemanticMetrics:
             result[f"{prefix}/breakdown/{group}/draw_rate"] = _rate(
                 self.kyoku_group_draws[group], count,
             )
-        for name, values in (("total", self.rewards), ("efficiency", self.reward_efficiency), ("kyoku", self.reward_kyoku),
-                             ("hanchan_rank", self.reward_hanchan_rank),
-                             ("weighted_efficiency", self.reward_weighted_efficiency), ("weighted_kyoku", self.reward_weighted_kyoku)):
+        for name, values in (("total", self.rewards), ("kyoku", self.reward_kyoku)):
             result[f"{prefix}/reward/{name}_mean"] = _mean(values)
             result[f"{prefix}/reward/{name}_std"] = _std(values)
         total_seats = sum(self.policy_seats.values())

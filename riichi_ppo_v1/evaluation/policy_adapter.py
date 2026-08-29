@@ -15,15 +15,14 @@ from ..model.bridge import BatchedStateBridge, Decision
 
 @dataclass(frozen=True)
 class PreparedPolicyBatch:
+    """评测 policy-only 前向所需的张量;critic 字段不进入评测路径。"""
+
     actor_factors: np.ndarray
     actor_numeric: np.ndarray
     actor_lengths: np.ndarray
-    query_rows: np.ndarray
     query_action_ids: np.ndarray
     query_pair_counts: np.ndarray
     legal: np.ndarray
-    critic_factors: np.ndarray
-    critic_lengths: np.ndarray
 
 
 class PolicyAdapter(Protocol):
@@ -60,12 +59,9 @@ class V18PolicyAdapter:
             batch.actor_factors,
             batch.actor_numeric,
             batch.actor_lengths,
-            batch.query_rows,
             batch.query_action_ids,
             batch.query_pair_counts,
             batch.legal_mask,
-            batch.critic_factors,
-            batch.critic_lengths,
         )
 
     @torch.inference_mode()

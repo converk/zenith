@@ -67,9 +67,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "adam_beta2": 0.999,
     "adam_epsilon": 1e-8,
     "max_grad_norm": 1.0,
-    "gamma": 0.99,
     "inference_dtype": "bf16",
-    "shuffle_buffer_kyokus": 8192,
     "length_bucket_window_batches": 32,
     "log_interval_steps": 100,
     "validation_max_samples": 0,
@@ -257,7 +255,7 @@ def evaluate(
     model.eval()
     local_batch = max(1, int(config["batch_size"]) // max(1, int(config["learner_gpus"])))
     samples = iter_split_samples(
-        dataset, "validation", gamma=float(config["gamma"]),
+        dataset, "validation",
         seed=int(config["seed"]), shuffle=False, include_critic=False,
     )
     maximum = int(config.get("validation_max_samples", 0)) if max_samples is None else int(max_samples)
@@ -439,9 +437,8 @@ def _train_worker_impl(
         for epoch in range(start_epoch, int(config["epochs"])):
             steps_in_epoch = skip_steps if epoch == start_epoch else 0
             sample_stream = iter_split_samples(
-                dataset, "train", gamma=float(config["gamma"]),
+                dataset, "train",
                 seed=int(config["seed"]) + epoch, shuffle=True,
-                shuffle_buffer_kyokus=int(config["shuffle_buffer_kyokus"]),
                 rank=rank, world_size=world_size, include_critic=False,
             )
             batches = length_bucketed_batches(
@@ -488,7 +485,6 @@ def _train_worker_impl(
                         token_lengths=total_lengths,
                         loss=loss.detach(),
                         policy_ce=policy_ce,
-                        value_huber=None,
                         effective_tokens=effective_tokens,
                         padded_tokens=padded_tokens,
                         step_seconds=time.perf_counter() - step_started,
@@ -503,7 +499,6 @@ def _train_worker_impl(
                         max_samples=int(config["validation_samples_per_run"]),
                     )
                     metrics.update(validation)
-                    metrics["validation/loss"] = validation["validation/policy_ce"]
                     progress = [steps_in_epoch] * world_size
                     if validation["validation/policy_ce"] < best_validation_loss:
                         best_validation_loss = float(validation["validation/policy_ce"])
@@ -540,7 +535,6 @@ def _train_worker_impl(
                 max_samples=int(config["validation_samples_per_run"]),
             )
             metrics.update(final_metrics)
-            metrics["validation/loss"] = final_metrics["validation/policy_ce"]
             _save_checkpoint(
                 output / "latest.pt", model, optimizer, scheduler,
                 config=config, manifest_hash=manifest_hash, epoch=start_epoch,

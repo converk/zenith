@@ -95,7 +95,7 @@ def validate_1v3_shard_plan(
     seed_base: int,
     hanchans_per_process: int,
 ) -> None:
-    """Enforce the project-wide 12-process, disjoint-seed 1v3 protocol."""
+    """Enforce the project-wide 10-process, disjoint-seed 1v3 protocol."""
     if len(shards) != REQUIRED_1V3_PROCESSES:
         raise RuntimeError(
             f"1v3 evaluation requires exactly {REQUIRED_1V3_PROCESSES} shards; "
@@ -209,50 +209,16 @@ def merge_1v3_shards(
     first_places = sum(int(shard["model_a"]["first_place_count"]) for shard in shards)
     top2 = sum(int(shard["model_a"]["top2_count"]) for shard in shards)
     fourths = sum(int(shard["model_a"]["fourth_place_count"]) for shard in shards)
-    second_places = sum(
-        int(shard["model_a"].get(
-            "second_place_count",
-            int(shard["model_a"]["top2_count"]) - int(shard["model_a"]["first_place_count"]),
-        ))
-        for shard in shards
-    )
-    third_places = sum(
-        int(shard["model_a"].get(
-            "third_place_count",
-            int(shard["hanchan_count"])
-            - int(shard["model_a"]["first_place_count"])
-            - int(shard["model_a"].get(
-                "second_place_count",
-                int(shard["model_a"]["top2_count"]) - int(shard["model_a"]["first_place_count"]),
-            ))
-            - int(shard["model_a"]["fourth_place_count"]),
-        ))
-        for shard in shards
-    )
+    second_places = sum(int(shard["model_a"]["second_place_count"]) for shard in shards)
+    third_places = sum(int(shard["model_a"]["third_place_count"]) for shard in shards)
     rank_sum = sum(
         float(shard["model_a"]["mean_rank"]) * int(shard["hanchan_count"])
         for shard in shards
     )
     semantic_metrics = _weighted_semantic_metrics(shards)
     final_score_mean = semantic_metrics.get("model_a/match/final_score_mean")
-    if final_score_mean is None:
-        final_values = [
-            (
-                float(shard["model_a"]["final_score_mean"]),
-                float(shard["hanchan_count"]),
-            )
-            for shard in shards
-            if "final_score_mean" in shard["model_a"]
-        ]
-        if final_values:
-            final_score_mean = sum(value * weight for value, weight in final_values) / sum(
-                weight for _value, weight in final_values
-            )
     flying_count = sum(
-        float(shard["model_a"].get(
-            "flying_count",
-            float(shard["model_a"].get("flying_rate", 0.0)) * int(shard["hanchan_count"]),
-        ))
+        float(shard["model_a"]["flying_rate"]) * int(shard["hanchan_count"])
         for shard in shards
     )
     elapsed = max(float(shard["elapsed_s"]) for shard in shards)
