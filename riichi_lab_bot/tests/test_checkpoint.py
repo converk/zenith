@@ -6,7 +6,6 @@ import random
 
 import pytest
 import torch
-
 from conftest import default_checkpoint, v16_sft_checkpoint, v17_ppo_checkpoint
 from riichi_lab_bot.bridge import OnlineStateBridge
 from riichi_lab_bot.policy import PolicyEngine
@@ -45,8 +44,8 @@ def test_non_isolated_policy_head_is_rejected(
 
 
 def _first_legal_prepared(seed: int = 20260730):
-    from riichienv import RiichiEnv
     from riichi_lab_bot.local_play import observation_with_events
+    from riichienv import RiichiEnv
 
     env = RiichiEnv(game_mode="4p-red-half", seed=seed)
     observations = env.reset()

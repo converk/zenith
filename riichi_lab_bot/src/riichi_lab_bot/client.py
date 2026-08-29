@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 import json
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from .audit import InputAuditRecorder
@@ -174,7 +174,7 @@ async def play_connection(
                     primary_action = bridge.decode(
                         prepared, inference.action_id
                     )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 -- fail-closed 设计:任何管线错误都只降级为扣发响应,绝不发送未验证动作
                     primary_error = f"{type(exc).__name__}: {exc}"
 
                 if prepared is None:
@@ -350,7 +350,7 @@ async def run_ranked(
                 raise RuntimeError("ranked connection ended before end_game")
         except AuthenticationError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- 掉线重连循环必须吞掉任意瞬态网络/协议错误后按退避重试;认证错误已在上方放行
             recorder.emit(
                 "ranked_reconnect_wait",
                 delay_seconds=backoff,

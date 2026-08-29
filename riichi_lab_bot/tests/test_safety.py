@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 
 import numpy as np
-
 from riichi_lab_bot.bridge import EventContext, PreparedDecision
 from riichi_lab_bot.safety import (
     action_to_response,

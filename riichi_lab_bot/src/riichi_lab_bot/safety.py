@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 from typing import Any
 
 from .bridge import EventContext, PreparedDecision
@@ -33,12 +33,12 @@ def possible_action_matches(
     if response.get("type") != possible.get("type"):
         return False
     action_type = response.get("type")
-    if action_type not in {"hora", "reach", "none", "ryukyoku"}:
-        if (
-            "pai" in possible
-            and response.get("pai") != possible.get("pai")
-        ):
-            return False
+    if (
+        action_type not in {"hora", "reach", "none", "ryukyoku"}
+        and "pai" in possible
+        and response.get("pai") != possible.get("pai")
+    ):
+        return False
     response_consumed = _consumed(response)
     possible_consumed = _consumed(possible)
     if (
@@ -46,14 +46,11 @@ def possible_action_matches(
         and response_consumed != possible_consumed
     ):
         return False
-    if (
+    return not (
         action_type == "dahai"
         and "tsumogiri" in possible
-        and bool(response.get("tsumogiri", False))
-        != bool(possible.get("tsumogiri"))
-    ):
-        return False
-    return True
+        and bool(response.get("tsumogiri", False)) != bool(possible.get("tsumogiri"))
+    )
 
 
 def action_to_response(
@@ -73,9 +70,10 @@ def action_to_response(
             and tile is not None
             and int(drawn) == int(tile)
         )
-    if action_type in {"chi", "pon", "daiminkan"}:
-        if context.last_type == "dahai" and context.actor is not None:
-            value["target"] = context.actor
+    if action_type in {"chi", "pon", "daiminkan"} and (
+        context.last_type == "dahai" and context.actor is not None
+    ):
+        value["target"] = context.actor
     if action_type == "hora":
         seat = int(observation.player_id)
         if context.last_type in {"dahai", "kakan", "ankan"} and (

@@ -255,7 +255,7 @@ def _has_win_shape_without_legal_ron(
             [int(tile) for tile in getattr(observation, "dora_indicators", ())],
             conditions,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 -- 复刻内核同巡见逃判定的辅助探针:牌理器任何失败都回退为"不算见逃",不得让评估中断或误罚
         return False
     return bool(getattr(result, "has_win_shape", False)) and not bool(
         getattr(result, "is_win", False)
@@ -281,7 +281,9 @@ def normalize_observation_base64(encoded: str) -> str:
     """返回本地反序列化器可以读取的 base64 Observation。"""
     value = json.loads(base64.b64decode(encoded))
     if not isinstance(value, dict):
-        raise ValueError("observation payload must be a JSON object")
+        # payload 形态错误按值错误契约抛出(与 json 解码错误同类),调用方按
+        # ValueError 家族统一归类;改 TypeError 会改变 fail-closed 路径的类型契约。
+        raise ValueError("observation payload must be a JSON object")  # noqa: TRY004
     for field, default in _REQUIRED_DEFAULTS.items():
         if field not in value:
             value[field] = default
@@ -294,7 +296,7 @@ def missing_observation_fields(encoded: str) -> frozenset[str]:
     """返回线上 payload 缺失的本地 Observation 字段。"""
     value = json.loads(base64.b64decode(encoded))
     if not isinstance(value, dict):
-        raise ValueError("observation payload must be a JSON object")
+        raise ValueError("observation payload must be a JSON object")  # noqa: TRY004
     return frozenset(
         field for field in _REQUIRED_DEFAULTS if field not in value
     )

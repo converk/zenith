@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
 import json
 import logging
-from pathlib import Path
 import statistics
 import time
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 

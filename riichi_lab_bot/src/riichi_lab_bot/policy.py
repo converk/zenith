@@ -36,8 +36,8 @@ from riichi_ppo_v1.model.encoding_protocol import (
     KIND_SEP_TOIMEN_RIVER,
     KIND_TABLE,
     KIND_TILE_STATE,
-    SEPARATOR_SEGMENTS,
     SEPARATOR_KINDS,
+    SEPARATOR_SEGMENTS,
     TOKEN_NUMERIC_WIDTH,
     TOKEN_ROW_WIDTH,
 )
