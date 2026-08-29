@@ -19,7 +19,6 @@ pub mod legal_actions;
 pub mod player;
 pub mod wall;
 use event_handler::GameStateEventHandler;
-use game_mode::GameModeConfig;
 use legal_actions::GameStateLegalActions;
 use player::PlayerState;
 use wall::WallState;
@@ -81,7 +80,6 @@ pub struct GameState {
     #[cfg(feature = "python")]
     pub enable_seq_caching: bool,
 
-    pub mode: GameModeConfig,
     pub game_mode: u8,
     pub skip_mjai_logging: bool,
     pub seed: Option<u64>,
@@ -105,8 +103,7 @@ impl GameState {
         round_wind: u8,
         rule: GameRule,
     ) -> Self {
-        let mode = GameModeConfig::from_game_mode(game_mode, rule);
-        let players = [(); 4].map(|_| PlayerState::new(mode.starting_score()));
+        let players = [(); 4].map(|_| PlayerState::new(game_mode::starting_score()));
 
         let wall = WallState::new(seed);
 
@@ -148,7 +145,6 @@ impl GameState {
             round_seq_prog_pending_reach: None,
             #[cfg(feature = "python")]
             enable_seq_caching: false,
-            mode,
             game_mode,
             skip_mjai_logging,
             seed,
@@ -1947,7 +1943,7 @@ impl GameState {
                     }
                 }
             } else {
-                let tenpai_pool = 3000;
+                let tenpai_pool = game_mode::tenpai_pool();
                 let num_tp = tenpai.iter().filter(|&&t| t).count();
                 if num_tp > 0 && num_tp < np {
                     let pk = tenpai_pool / num_tp as i32;

@@ -17,7 +17,6 @@ pub mod player;
 pub mod sanma;
 pub mod wall;
 use event_handler::GameState3PEventHandler;
-use game_mode::GameSubMode3P;
 use legal_actions::GameState3PLegalActions;
 use player::PlayerState3P;
 use wall::WallState3P;
@@ -62,7 +61,6 @@ pub struct GameState3P {
     pub player_event_counts: [usize; NP],
     pub mjai_log_per_player: [Vec<String>; NP],
 
-    pub sub_mode: GameSubMode3P,
     pub game_mode: u8,
     pub skip_mjai_logging: bool,
     pub seed: Option<u64>,
@@ -86,7 +84,6 @@ impl GameState3P {
         round_wind: u8,
         rule: GameRule,
     ) -> Self {
-        let sub_mode = GameSubMode3P::from_game_mode(game_mode);
         let players = [(); NP].map(|_| PlayerState3P::new(game_mode::starting_score()));
 
         let wall = WallState3P::new(seed);
@@ -121,7 +118,6 @@ impl GameState3P {
             mjai_log: Vec::new(),
             player_event_counts: [0; NP],
             mjai_log_per_player: Default::default(),
-            sub_mode,
             game_mode,
             skip_mjai_logging,
             seed,

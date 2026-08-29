@@ -1,4 +1,5 @@
 use crate::rule::GameRule;
+use crate::state::game_mode;
 use crate::state::GameState;
 use crate::state_3p::GameState3P;
 
@@ -37,12 +38,8 @@ impl GameStateVariant {
 
     pub fn num_players(&self) -> u8 {
         match self {
-            GameStateVariant::FourPlayer(s) => s.mode.num_players(),
+            GameStateVariant::FourPlayer(_) => game_mode::num_players(),
             GameStateVariant::ThreePlayer(_) => 3,
         }
-    }
-
-    pub fn is_three_player(&self) -> bool {
-        matches!(self, GameStateVariant::ThreePlayer(_))
     }
 }

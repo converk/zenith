@@ -1003,7 +1003,9 @@ impl RiichiEnv {
         // For a new game, default starting scores based on the variant
         // (25000 for 4-player, 35000 for 3-player).
         let default_scores = match &self.variant {
-            GameStateVariant::FourPlayer(s) => vec![s.mode.starting_score(); 4],
+            GameStateVariant::FourPlayer(_) => {
+                vec![riichienv_core::state::game_mode::starting_score(); 4]
+            }
             GameStateVariant::ThreePlayer(_) => {
                 vec![riichienv_core::state_3p::game_mode::starting_score(); 3]
             }

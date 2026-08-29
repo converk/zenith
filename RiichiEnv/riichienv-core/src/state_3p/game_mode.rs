@@ -1,58 +1,14 @@
-use crate::types::{is_sanma_excluded_tile, standard_next_dora_tile};
-use serde::{Deserialize, Serialize};
+//! 3 人麻将(三麻)游戏模式的数值约定(单源;4 人侧对应 `state::game_mode`)。
+//!
+//! 玩家数由 `state_3p` 的 `NP` 常量单源定义,牌集合与宝牌指示由
+//! `state_3p::wall` 直接基于真实牌山布局处理,本模块只保留配置数值。
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum GameSubMode3P {
-    Single = 0,
-    East = 1,
-    Half = 2,
-}
-
-impl GameSubMode3P {
-    pub fn from_game_mode(mode: u8) -> Self {
-        match mode {
-            3 => GameSubMode3P::Single,
-            4 => GameSubMode3P::East,
-            5 => GameSubMode3P::Half,
-            _ => GameSubMode3P::East,
-        }
-    }
-
-    pub fn game_mode_id(&self) -> u8 {
-        3 + *self as u8
-    }
-}
-
-/// 3P fixed configuration (no enum dispatch needed).
-pub fn num_players() -> u8 {
-    3
-}
-
+/// 3P 配点(35000 返し)。
 pub fn starting_score() -> i32 {
     35000
 }
 
-pub fn tile_set() -> Vec<u8> {
-    (0..136u8).filter(|&t| !is_sanma_excluded_tile(t)).collect()
-}
-
+/// 流局听牌罚符总池。
 pub fn tenpai_pool() -> i32 {
     2000
-}
-
-/// Get the next dora tile for a given indicator tile (tile type 0-33).
-/// In sanma, manzu wraps 1m(0)->9m(8) and 9m(8)->1m(0) directly.
-pub fn get_next_dora_tile(tile: u8) -> u8 {
-    if tile < 9 {
-        // Manzu suit in sanma: only 0 (1m) and 8 (9m) exist
-        if tile == 0 {
-            8
-        } else if tile == 8 {
-            0
-        } else {
-            tile
-        }
-    } else {
-        standard_next_dora_tile(tile)
-    }
 }

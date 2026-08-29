@@ -1082,7 +1082,6 @@ mod unit_tests {
     fn test_sanma_game_mode_config() {
         use crate::state_3p::game_mode;
 
-        assert_eq!(game_mode::num_players(), 3);
         assert_eq!(game_mode::starting_score(), 35000);
         assert_eq!(game_mode::tenpai_pool(), 2000);
     }
@@ -1268,21 +1267,6 @@ mod unit_tests {
             has_kita,
             "Kita should be available when holding North tile in sanma"
         );
-    }
-
-    #[test]
-    fn test_sanma_dora_wrapping() {
-        use crate::state_3p::game_mode;
-
-        // 1m (type 0) → 9m (type 8)
-        assert_eq!(game_mode::get_next_dora_tile(0), 8);
-        // 9m (type 8) → 1m (type 0)
-        assert_eq!(game_mode::get_next_dora_tile(8), 0);
-        // Pin/sou/honor wrapping should be standard
-        assert_eq!(game_mode::get_next_dora_tile(9), 10); // 1p → 2p
-        assert_eq!(game_mode::get_next_dora_tile(17), 9); // 9p → 1p
-        assert_eq!(game_mode::get_next_dora_tile(27), 28); // East → South
-        assert_eq!(game_mode::get_next_dora_tile(30), 27); // North → East
     }
 
     #[test]
