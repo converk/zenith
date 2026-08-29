@@ -979,11 +979,16 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
   run_sharded_1v3 与 train.py 双层携带,summary 写入 eval_params 字段。
   否则参数变更后同 checkpoint 的重评会静默复用旧参数的缓存结果(A1 同类
   污染)。旧格式 summary 一律视为未命中,行为向后兼容。
-- **待办**:按 AGENTS.md 走 $speckit-constitution 修订(机制 4000→6000),
-  同步 mechanism.py 文档与 KyokuEventTupleProtocol.md 无涉。
+- **已完成**:机制 4000→6000 修订已登记(见下条 2026-08-29 记录)。
 - 宪法已修订至 **v1.9.0**(Sync Impact Report 追加 2026-08-29 条目):
   Principle IV 机制常量 10 进程 × 400 = 4000 → 10 进程 × 600 = 6000;
   种子基与分片并行度明确为版本配置细节。同步落点:AGENTS.md 机制段、
   mechanism.py(DEFAULT=600/TOTAL=6000 + 修订史)、train.py 与
   head_to_head_1v3_shards.py 文档字符串、test_artifact_conventions
   锚定断言与 CLI 默认值测试。套件 220 passed 全绿。
+
+## 2026-08-29 update=10
+
+- reward_mean=1.57e-11 value_loss=0.31644 entropy=0.44476 actor_grad_norm=0.048794 critic_grad_norm=2.8478 shared_grad_norm=0.056539
+- rollout_wall_s=235.71 update_wall_s=523.73 sps=1793.5 grp_calls=22096 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.2900 top2_rate=0.5405 mean_rank=2.390 point_diff_mean=+2163.9 ci95=[1642.6202777777778, 2658.593611111111]
