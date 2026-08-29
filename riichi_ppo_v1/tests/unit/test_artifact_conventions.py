@@ -18,6 +18,7 @@ def _git_check_ignored(path: str) -> bool:
     result = subprocess.run(
         ["git", "check-ignore", "-q", "--", path],
         cwd=ROOT,
+        check=False,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -181,6 +182,7 @@ def test_no_historical_locks_in_active_sources() -> None:
             "AGENTS.md",
         ],
         cwd=ROOT,
+        check=False,
         capture_output=True,
         text=True,
     )

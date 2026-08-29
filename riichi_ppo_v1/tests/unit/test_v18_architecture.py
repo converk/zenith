@@ -118,7 +118,7 @@ def test_encode_batch_canonical_sort(monkeypatch) -> None:
 
     def fake_queries(rows):
         from riichi_ppo_v1.model.native_encoding import NativeQueryBatch
-        for obs, action, action_id in rows:
+        for _obs, action, action_id in rows:
             called.append((action, action_id))
         return NativeQueryBatch(
             np.zeros((2 * len(rows), 2, 15), dtype=np.int32), 0, 0,
@@ -138,7 +138,6 @@ def test_encode_batch_canonical_sort(monkeypatch) -> None:
             self.tag = tag
 
     obs = _Obs("o")
-    fake_env = type("FakeEnv", (), {})
     fake_batch = _Batch()
     fake_batch.rows = np.zeros((1, 32), dtype=np.int32)
     fake_batch.numeric = np.zeros((1, 8), dtype=np.float32)

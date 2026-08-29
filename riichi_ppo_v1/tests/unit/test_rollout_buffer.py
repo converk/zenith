@@ -106,8 +106,8 @@ def _assert_buffers_equal(left: RolloutBuffer, right: RolloutBuffer) -> None:
         if isinstance(value, np.ndarray)
     }
     assert set(left_arrays) == set(right_arrays)
-    for name in left_arrays:
-        np.testing.assert_array_equal(left_arrays[name], right_arrays[name], err_msg=name)
+    for name, left_value in left_arrays.items():
+        np.testing.assert_array_equal(left_value, right_arrays[name], err_msg=name)
 
 
 def _assert_row_prefix_and_zero_padding(

@@ -109,7 +109,7 @@ def test_gradients_reach_all_slot_tables() -> None:
 def test_activation_scale_bounded() -> None:
     embedding = StateTokenEmbedding(256)
     rows = []
-    for i in range(16):
+    for _i in range(16):
         rows.append(_row(KIND_RIVER_SUMMARY, (6,) + (1, 0, 0, 0) * 6))
     factors = torch.cat(rows, dim=0)
     output = embedding(factors, torch.zeros(16, 1, 8))

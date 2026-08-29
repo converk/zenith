@@ -31,7 +31,8 @@ DENSE_FUSION_DIM = 512
 # 统一 concat 宽度：取各类别槽位向量数最大值（TABLE=29，RIVER_SUMMARY=31）。
 # 每个 summary 槽按 4 字段 concat + slot_id 共 5 个槽位向量（B6 修复）。
 _MAX_DENSE_SLOTS = max(
-    len(schema.discrete) - 4 * schema.slot_count + (5 if schema.slot_count else 0) * schema.slot_count + len(schema.numeric)
+    len(schema.discrete) - 4 * schema.slot_count
+    + (5 if schema.slot_count else 0) * schema.slot_count + len(schema.numeric)
     for schema in CATEGORY_SCHEMAS.values() if schema.cls == "DENSE"
 )
 _MAX_SIMPLE_SLOTS = max(
@@ -136,7 +137,7 @@ class StateTokenEmbedding(nn.Module):
         self.dense_tables = nn.ModuleDict({})
         self.numeric_proj = nn.ModuleDict({})
         self.slot_ids = nn.ModuleDict({})
-        for kind, schema in sorted(CATEGORY_SCHEMAS.items()):
+        for _kind, schema in sorted(CATEGORY_SCHEMAS.items()):
             self._register_category(schema)
         # C2:静态类别元数据表(键序固定)。配合 host 侧 kind_row_plan,
         # forward 免去 argsort/边界计算/3 次 tolist 同步与按动态 kind 值的
@@ -149,7 +150,11 @@ class StateTokenEmbedding(nn.Module):
     def _register_category(self, schema: CategorySchema) -> None:
         key = str(schema.kind)
         tables = nn.ModuleList(
-            nn.Embedding(field.cardinality, self.dense_slot_dim if schema.cls == "DENSE" else SIMPLE_SLOT_DIM, padding_idx=0)
+            nn.Embedding(
+                field.cardinality,
+                self.dense_slot_dim if schema.cls == "DENSE" else SIMPLE_SLOT_DIM,
+                padding_idx=0,
+            )
             for field in schema.discrete
         )
         for table in tables:

@@ -579,7 +579,7 @@ if ray is not None:
             transitions: list[Transition | None] = [None] * len(decisions)
             if record:
                 with self.profiler.stage("rollout/transition_materialize"):
-                    for row, decision in enumerate(decisions):
+                    for row, _decision in enumerate(decisions):
                         actor_length = int(prepared["actor_lengths"][row])
                         pair_count = int(prepared["query_pair_counts"][row])
                         critic_length = int(prepared["critic_lengths"][row])

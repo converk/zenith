@@ -33,10 +33,13 @@ def canonical(value: str | dict[str, Any]) -> str:
 
 def _chi_pairs() -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
-    locals_ = ((1, 2), (2, 3), (3, 4), (4, 5), (4, "5r"), (5, 6), ("5r", 6), (6, 7), (7, 8), (8, 9), (1, 3), (2, 4), (3, 5), (3, "5r"), (4, 6), (5, 7), ("5r", 7), (6, 8), (7, 9))
+    locals_ = (
+        (1, 2), (2, 3), (3, 4), (4, 5), (4, "5r"), (5, 6), ("5r", 6), (6, 7), (7, 8), (8, 9),
+        (1, 3), (2, 4), (3, 5), (3, "5r"), (4, 6), (5, 7), ("5r", 7), (6, 8), (7, 9),
+    )
     for suit in "mps":
         for left, right in locals_:
-            def name(value: int | str) -> str:
+            def name(value: int | str, suit: str = suit) -> str:
                 return f"{value}{suit}" if isinstance(value, int) else f"5{suit}r"
             pairs.append((name(left), name(right)))
     return pairs
@@ -124,7 +127,9 @@ def _action_signature(observation: Any, action: Any) -> tuple[int, str, str | No
     )
 
 
-def assert_observation_roundtrip(bridge: BatchedStateBridge, env_index: int, seat_id: int, observation: Any) -> set[int]:
+def assert_observation_roundtrip(
+    bridge: BatchedStateBridge, env_index: int, seat_id: int, observation: Any,
+) -> set[int]:
     """Prove that the current legal window is lossless through the 241-space.
 
     Besides exact MJAI-template equality, this validates the selected

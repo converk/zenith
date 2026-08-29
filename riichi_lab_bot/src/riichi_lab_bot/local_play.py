@@ -60,7 +60,7 @@ def play_local_game(
     request_id = 0
     global_step = 0
     started = time.perf_counter()
-    for step in range(max_steps):
+    for _step in range(max_steps):
         for seat, observation in observations.items():
             pending_events[int(seat)].extend(observation.new_events())
         actions: dict[int, Any] = {}
@@ -144,7 +144,7 @@ def play_local_game(
         game=game,
         seed=seed,
         elapsed_seconds=elapsed,
-        steps=step + 1,
+        steps=_step + 1,
         scores=tuple(int(value) for value in env.scores()),
         ranks=tuple(int(value) for value in env.ranks()),
         metrics=metrics.summary(),

@@ -132,9 +132,9 @@ def encode_kyoku(
             legal_actions = list(observation.legal_actions())
             mappings = index_rows[row]
             actions_by_id: list[tuple[object, int]] = []
-            for action_id_value, source_index in mappings:
-                action_id_value = int(action_id_value)
-                source_index = int(source_index)
+            for raw_action_id, raw_source_index in mappings:
+                action_id_value = int(raw_action_id)
+                source_index = int(raw_source_index)
                 if not 0 <= source_index < len(legal_actions):
                     raise RuntimeError(
                         f"state machine returned invalid legal action index {source_index}: "

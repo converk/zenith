@@ -58,8 +58,8 @@ def encode_batch(
         # 规范排序：按 action_id 升序，环境返回顺序不影响编码结果。
         ordered = sorted(actions, key=lambda item: int(item[1]))
         previous = -1
-        for action, action_id in ordered:
-            action_id = int(action_id)
+        for action, raw_action_id in ordered:
+            action_id = int(raw_action_id)
             if action_id <= previous:
                 raise ValueError("legal actions must be unique action_ids")
             previous = action_id

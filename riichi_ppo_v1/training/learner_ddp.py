@@ -55,7 +55,7 @@ def _enable_parent_death_signal() -> None:
         return
     try:
         libc = ctypes.CDLL(None, use_errno=True)
-        PR_SET_PDEATHSIG = 1
+        PR_SET_PDEATHSIG = 1  # noqa: N806 -- Linux prctl 平台常量,保留大写惯例
         if libc.prctl(PR_SET_PDEATHSIG, signal.SIGKILL) != 0:
             raise OSError(ctypes.get_errno(), "prctl(PR_SET_PDEATHSIG) failed")
     except Exception:
@@ -122,11 +122,11 @@ def learner_shard_indices(
         (count + minibatch_size - 1) // minibatch_size for count in counts
     )
     padded: list[list[int]] = []
-    for shard, count in zip(index_shards, counts, strict=True):
+    for shard, shard_count in zip(index_shards, counts, strict=True):
         minimum = (target_batches - 1) * minibatch_size + 1
-        needed = max(0, minimum - count)
+        needed = max(0, minimum - shard_count)
         if needed:
-            filler = [shard[index % count] for index in range(needed)]
+            filler = [shard[index % shard_count] for index in range(needed)]
             padded.append(shard + filler)
         else:
             padded.append(shard)
@@ -221,7 +221,9 @@ def aggregate_learner_metrics(
         "value_explained_variance_mc": mc_ev,
         "raw_advantage_mean": float(raw_advantages.mean()) if len(raw_advantages) else 0.0,
         "raw_advantage_std": float(raw_advantages.std()) if len(raw_advantages) else 0.0,
-        "normalized_advantage_mean": float(np.asarray(advantages, dtype=np.float64).mean()) if len(transitions) else 0.0,
+        "normalized_advantage_mean": (
+            float(np.asarray(advantages, dtype=np.float64).mean()) if len(transitions) else 0.0
+        ),
         "normalized_advantage_std": float(np.asarray(advantages, dtype=np.float64).std()) if len(transitions) else 0.0,
         "lambda_return_mean": float(lambda_targets.mean()) if len(lambda_targets) else 0.0,
         "lambda_return_std": float(lambda_targets.std()) if len(lambda_targets) else 0.0,

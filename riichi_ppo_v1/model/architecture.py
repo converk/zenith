@@ -96,7 +96,8 @@ class GQA(nn.Module):
 
     def forward(self, x: Tensor, rope: tuple[Tensor, Tensor], attention_mask: Tensor) -> Tensor:
         batch, tokens, _ = x.shape
-        shape = lambda value, heads: value.view(batch, tokens, heads, self.head_dim).transpose(1, 2)
+        def shape(value: Tensor, heads: int) -> Tensor:
+            return value.view(batch, tokens, heads, self.head_dim).transpose(1, 2)
         q_raw, k_raw, v_raw = self.qkv(x).split(
             (self.qh * self.head_dim, self.kvh * self.head_dim, self.kvh * self.head_dim), dim=-1
         )
@@ -415,7 +416,9 @@ class KyokuTransformerActorCritic(nn.Module):
 
         # —— Shared 公共前缀（segment 1）双向 backbone ——
         shared_mask = actor_factors[..., 0].eq(SEGMENT_SHARED)
-        shared_lengths = (shared_mask & (torch.arange(actor_capacity, device=device)[None] < actor_lengths[:, None])).sum(dim=1)
+        shared_lengths = (
+            shared_mask & (torch.arange(actor_capacity, device=device)[None] < actor_lengths[:, None])
+        ).sum(dim=1)
         if shared_capacity is None:
             shared_capacity = max(int(shared_lengths.max().item()), 1)
         else:
@@ -562,7 +565,9 @@ class KyokuTransformerActorCritic(nn.Module):
         private_positions = shared_lengths[:, None] + torch.arange(critic_capacity, device=device)[None, :]
         private_valid_mask = torch.arange(critic_capacity, device=device)[None, :] < critic_lengths[:, None]
         private_source_rows = rows[:, None].expand_as(private_positions)[private_valid_mask]
-        critic_sequence[private_source_rows, private_positions[private_valid_mask]] = critic_embeddings[private_valid_mask]
+        critic_sequence[private_source_rows, private_positions[private_valid_mask]] = critic_embeddings[
+            private_valid_mask
+        ]
         value_indices = shared_lengths + critic_lengths
         critic_sequence[rows, value_indices] = self.value_query
         critic_mask_bool, critic_valid = _critic_layout(critic_total_lengths, critic_total)

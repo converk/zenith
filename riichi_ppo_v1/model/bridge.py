@@ -164,7 +164,10 @@ class BatchedStateBridge:
             for decision, action_id, mjai in zip(decisions, action_ids, mjai_actions):
                 action = decision.observation.select_action_from_mjai(mjai)
                 if action is None:
-                    raise RuntimeError(f"MJAI action was rejected: env={decision.env_index} seat={decision.seat_id} action_id={action_id} mjai={mjai}")
+                    raise RuntimeError(
+                        f"MJAI action was rejected: env={decision.env_index} seat={decision.seat_id} "
+                        f"action_id={action_id} mjai={mjai}"
+                    )
                 result.append(action)
         return result
 
@@ -198,9 +201,9 @@ class BatchedStateBridge:
             per_row_actions: list[list[tuple[Any, int]]] = []
             for row, mappings in enumerate(index_rows):
                 actions_by_id: list[tuple[Any, int]] = []
-                for action_id, source_index in mappings:
-                    action_id = int(action_id)
-                    source_index = int(source_index)
+                for raw_action_id, raw_source_index in mappings:
+                    action_id = int(raw_action_id)
+                    source_index = int(raw_source_index)
                     if not 0 <= source_index < len(legal_objects[row]):
                         raise RuntimeError(
                             f"state machine returned invalid legal action index {source_index}"

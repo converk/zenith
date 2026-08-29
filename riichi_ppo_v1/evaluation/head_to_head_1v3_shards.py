@@ -365,7 +365,7 @@ def run_sharded_1v3(
         ))
 
     failures: list[tuple[int, int, str]] = []
-    for (shard, shard_output, _command, _environment), process in zip(
+    for (shard, _shard_output, _command, _environment), process in zip(
         commands, processes_started, strict=True,
     ):
         stdout, stderr = process.communicate()
@@ -385,7 +385,7 @@ def run_sharded_1v3(
         )
 
     shards = []
-    for shard, shard_output, _command, _environment in commands:
+    for _shard, shard_output, _command, _environment in commands:
         with open(shard_output, encoding="utf-8") as file:
             shards.append(json.load(file))
     validate_1v3_shard_plan(

@@ -81,7 +81,7 @@ def _count_selected_kyokus(
     game_ids: dict[str, set[str]] = {"train": set(), "validation": set()}
     record_ids: dict[str, set[str]] = {"train": set(), "validation": set()}
     selection_digest = hashlib.sha256()
-    for split in totals:
+    for split in ("train", "validation"):
         shards = sorted((source / split).glob(f"{split}-*.tar"))
         for index, shard in enumerate(shards, start=1):
             with tarfile.open(shard, "r") as archive:
@@ -573,12 +573,12 @@ def iter_precomputed_samples(
                 )
             )
             # fail-closed：三个 offsets 数组必须自身严格单调且与数组长度一致。
-            for offsets, array, label in (
+            for raw_offsets, array, label in (
                 (actor_offsets, actor_factors, "actor"),
                 (query_offsets, query_rows, "query"),
                 (action_offsets, action_ids, "action"),
             ):
-                offsets = np.asarray(offsets)
+                offsets = np.asarray(raw_offsets)
                 if offsets.ndim != 1 or offsets.size < 1 or int(offsets[0]) != 0:
                     raise RuntimeError(f"{label} offsets malformed in {path}: first offset must be 0")
                 if np.any(np.diff(offsets.astype(np.int64)) <= 0):

@@ -396,7 +396,7 @@ def transfer_batch_to_device(
         }
 
 
-class _PrefetchAborted(Exception):
+class _PrefetchAborted(Exception):  # noqa: N818 -- 故意的控制流信号而非错误,docstring 已注明,不加 Error 后缀
     """collate 预取被正常停止信号中断(early-stop 路径,非错误)。"""
 
 
@@ -766,10 +766,10 @@ class PPOLearner:
             except _queue.Empty:
                 if state.finished_event.is_set():
                     if state.errors:
-                        raise state.errors[0]
+                        raise state.errors[0] from None
                     raise RuntimeError(
                         "collate prefetch producer ended before all minibatches"
-                    )
+                    ) from None
                 continue
 
     def _stop_collate_prefetch(self, state: _PrefetchState) -> None:
@@ -1003,10 +1003,11 @@ class PPOLearner:
                 else:
                     assert epoch_plans is not None
                     minibatches = epoch_plans[epoch_index]
-                for indices in minibatches:
+                for planned_indices in minibatches:
                     if prefetch_state is not None:
                         indices, host_batch = self._prefetch_get(prefetch_state)
                     else:
+                        indices = planned_indices
                         with self.profiler.stage("update/collate_soa_gather"):
                             host_batch = transitions.collate(indices)
                     # host 侧容量标量与类别行表为非张量,不能进 H2D;取出后

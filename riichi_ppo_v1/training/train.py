@@ -384,7 +384,7 @@ def run(config: dict[str, Any]) -> None:
             learner.load_model_weights(config["init_model"])
 
     inference_actors = []
-    for rank, worker_ids in enumerate(partitions):
+    for _rank, worker_ids in enumerate(partitions):
         actor_config = dict(config)
         actor_config["inference_actor_num_workers"] = len(worker_ids)
         inference_actors.append(

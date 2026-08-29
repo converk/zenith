@@ -56,7 +56,6 @@ def test_walls_head_advances_after_a_step() -> None:
 def test_walls_refresh_after_reset_indices() -> None:
     env = BatchedRiichiEnv(2, seed=42)
     observations = list(env.reset())
-    before = env.walls()
     action = _discard_action(observations[0][0])
     list(env.step_batch([
         {0: action},

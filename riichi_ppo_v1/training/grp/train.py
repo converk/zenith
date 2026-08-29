@@ -165,7 +165,7 @@ def train_grp(dataset: Path, config: dict) -> None:
                     best_validation_loss = float(val_loss)
         del buffer[:usable]
 
-    for epoch in range(int(config["epochs"])):
+    for _epoch in range(int(config["epochs"])):
         for features_seq, ranks in iter_grp_samples(dataset, "train"):
             buffer.append((features_seq, ranks))
             if len(buffer) < buffer_capacity:

@@ -1,7 +1,7 @@
 from riichienv import Meld, Phase, RiichiEnv
 
 
-def helper_setup_env(
+def helper_setup_env(  # noqa: PLR0917 -- 测试场景构建器,位置参数即场景字段,刻意保持平铺
     seed: int = 42,
     game_mode: int = 0,
     hands: list[list[int]] | None = None,

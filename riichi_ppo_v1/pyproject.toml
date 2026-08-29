@@ -72,3 +72,10 @@ ignore = [
     "PLR0917", # Too many positional arguments:同 PLR0913,数据管线批量签名
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# grp/prepare 与 learner 主循环内、按 split/minibatch 迭代定义的闭包只在本轮
+# 迭代内消费(最后一次 flush 在循环体末尾),且部分变量在 def 之后才赋值,
+# 依赖调用时绑定——B023 的晚期绑定在此是承重语义,不做默认参数改写。
+"training/grp/prepare.py" = ["B023"]
+"training/learner.py" = ["B023"]
+
