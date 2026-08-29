@@ -943,3 +943,25 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
   mean_rank=2.483、point_diff_mean=+441.02 ci95=[-190.19, 1043.09]
   (u5 距 SFT init 仅 4 update,与 r3 0.2685/run2 0.2695 交叉一致)。
   训练在 tmux ppo 继续向 150 updates 运行,转入免值守。
+
+## 2026-08-29 update=10
+
+- reward_mean=1.9246e-11 value_loss=0.31089 entropy=0.45279 actor_grad_norm=0.045794 critic_grad_norm=1.7672 shared_grad_norm=0.051631
+- rollout_wall_s=233.57 update_wall_s=524.97 sps=1792 grp_calls=21897 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.2840 top2_rate=0.5340 mean_rank=2.415 point_diff_mean=+1618.7 ci95=[1004.5466666666666, 2204.750833333332]
+
+## 2026-08-29 update=20
+
+- reward_mean=-1.2196e-12 value_loss=0.30732 entropy=0.44359 actor_grad_norm=0.053134 critic_grad_norm=1.192 shared_grad_norm=0.058757
+- rollout_wall_s=235.26 update_wall_s=517.45 sps=1789.1 grp_calls=22584 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3155 top2_rate=0.5647 mean_rank=2.331 point_diff_mean=+3300.8 ci95=[2677.8725, 3951.506666666665]
+
+## 2026-08-29 r4 停止归档(21 updates,4 次评测全部通过)
+
+- 运行窗:05:55-10:33,完成 u1-u21(止于 u21 中途,手动停止,无错误)。
+- **release_cache 修复经 4 次连续在环评测验证**(u5/u10/u15/u20 全部 10/10
+  分片、零 OOM):u5=0.2557、u10=0.2910、u15=0.3003、u20=0.3155(first_place,
+  稳定上升);u20 top2=0.5647、mean_rank=2.331、point_diff=+3300.80。
+- 归档:checkpoints(u5/u10/u15/u20)、eval 产物、run.log 移至
+  `logs/v18/v18_ppo_r4_20260829/`;删除 `v18_ppo_resume_mb1024.yaml`
+  (mb1024 为 OOM 应急方案,根因修复后回归标准配置,从头重训)。
