@@ -5,7 +5,7 @@ device: cuda
 learner_gpus: 2
 iterations: 5000
 model_size: v18
-context_tokens: 4096
+context_tokens: 256
 policy_head_type: current_state_snapshot
 critic_layers: 2
 inference_dtype: bf16

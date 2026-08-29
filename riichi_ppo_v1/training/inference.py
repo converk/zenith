@@ -21,7 +21,7 @@ except ImportError:
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
 from ..model.dense_embedding import compute_kind_row_plan
-from ..model.encoding_protocol import TOKEN_NUMERIC_WIDTH, TOKEN_ROW_WIDTH
+from ..model.encoding_protocol import CONTEXT_TOKENS, TOKEN_NUMERIC_WIDTH, TOKEN_ROW_WIDTH
 from ..model.schema import NUM_ACTIONS
 from .profiling import StageProfiler
 
@@ -176,7 +176,8 @@ if ray is not None:
 
         def _model_config(self) -> ModelConfig:
             values = vars(ModelConfig.preset("v18"))
-            values["context_tokens"] = int(self.config.get("context_tokens", 4096))
+            # fallback 单源对齐 V18 契约上界;配置缺省时不得放大窗口。
+            values["context_tokens"] = int(self.config.get("context_tokens", CONTEXT_TOKENS))
             return ModelConfig(**values)
 
         def _sync_cuda(self) -> None:
@@ -188,7 +189,7 @@ if ray is not None:
         ) -> tuple[int, ...]:
             """按配置上限返回该字段的 pinned 缓冲容量(每名 actor 只分配一次)。"""
             batch_cap = max(1, int(self.config.get("inference_max_batch_size", 512)))
-            token_cap = max(1, int(self.config.get("context_tokens", 256)))
+            token_cap = max(1, int(self.config.get("context_tokens", CONTEXT_TOKENS)))
             if name in {"actor_factors", "critic_factors"}:
                 return (batch_cap, token_cap, int(value.shape[2]))
             if name == "actor_numeric":
