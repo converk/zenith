@@ -1,8 +1,8 @@
 """同步 Ray PPO 训练的命令行入口(V18)。
 
 Ray 闭环:worker.collect → learner.update → inference.update_weights;每 5
-updates 按 ``evaluation/mechanism.py`` 的固定 1v3 机制(10 进程 × 400 =
-4000 半庄)评测一次。``learner_gpus=1`` 时 learner 在 driver 进程单卡更新;
+updates 按 ``evaluation/mechanism.py`` 的固定 1v3 机制(10 进程 × 600 =
+6000 半庄)评测一次。``learner_gpus=1`` 时 learner 在 driver 进程单卡更新;
 ``learner_gpus=2`` 时由两个常驻 worker 进程做双卡 DDP 更新(各持一份模型,
 NCCL 平均梯度),driver 只负责分片、汇总与 checkpoint 落盘。推理 actor 只在
 每个 update 后接收最新权重。
@@ -444,7 +444,7 @@ def run(config: dict[str, Any]) -> None:
         ])
 
     def run_1v3_evaluation(update: int) -> dict[str, Any] | None:
-        """阻塞执行固定 4000 半庄(10 进程 × 400,双卡各 5 进程)的 1v3 对抗评测。"""
+        """阻塞执行固定 6000 半庄(10 进程 × 600,双卡各 5 进程)的 1v3 对抗评测。"""
         if not bool(config.get("eval1v3_enabled", False)):
             return None
         interval = max(

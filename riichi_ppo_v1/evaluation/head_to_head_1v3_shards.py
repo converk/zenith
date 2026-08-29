@@ -193,7 +193,7 @@ def merge_1v3_shards(
     seed_base: int,
     update: int | None = None,
 ) -> dict[str, Any]:
-    """Merge 10x160 synthetic or real shards into one 1600-hanchan summary."""
+    """把各分片(默认 10 × 600 = 6000 hanchan)合并为单一汇总 summary。"""
     if not shards:
         raise ValueError("cannot merge an empty shard list")
     validate_non_overlapping_seed_ranges(shards)

@@ -9,6 +9,9 @@
 2026-08-20 宪法修订(1.7.0):PPO 1v3 机制调整为 4000 hanchan / 每 5 updates
 (10 进程 × 400,双卡各 5 进程);分片内部并行度(每批半庄数)由版本配置提供,
 不属于机制常量。
+2026-08-29 宪法修订(1.9.0):PPO 1v3 机制调整为 6000 hanchan / 每 5 updates
+(10 进程 × 600,双卡各 5 进程);分片内部并行度(每批半庄数)与种子基由版本
+配置提供,不属于机制常量。
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from pathlib import Path
 
 
 REQUIRED_1V3_PROCESSES = 10
-DEFAULT_1V3_HANCHANS_PER_PROCESS = 400
+DEFAULT_1V3_HANCHANS_PER_PROCESS = 600
 TOTAL_1V3_HANCHANS = REQUIRED_1V3_PROCESSES * DEFAULT_1V3_HANCHANS_PER_PROCESS
 DEFAULT_1V3_INTERVAL_UPDATES = 5
 

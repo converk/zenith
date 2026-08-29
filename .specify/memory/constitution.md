@@ -38,6 +38,12 @@ Sync Impact Report
   no active compatibility requirement); updated Principle III (registered
   the archived V16/V17 datasets and the fixed future V18 SFT dataset path).
 - Modified principles: II. 单一现行版本契约; III. 产物存储规范
+- Amendment 2026-08-29: 1.8.0 -> 1.9.0 (MINOR). Redefined Principle IV
+  (PPO 1v3 mechanism: 4000 hanchan -> 6000 hanchan, per-process 400 ->
+  600, keep 10 processes and the 5-update interval; seed base and
+  per-shard parallelism remain version-config details, not mechanism
+  constants).
+- Modified principles: IV. 固定训练评测机制
 - Added sections: none
 - Removed sections: none
 - Deferred TODOs: none
@@ -94,12 +100,12 @@ Sync Impact Report
 
 ### IV. 固定训练评测机制(Fixed Evaluation Mechanisms)
 
-- PPO 唯一评测机制为 1v3 对抗:固定 10 进程 × 400 = 4000 hanchan(每进程
-  400,双卡各 5 进程),每 5 updates 一次;对手模型由配置或命令行
+- PPO 唯一评测机制为 1v3 对抗:固定 10 进程 × 600 = 6000 hanchan(每进程
+  600,双卡各 5 进程),每 5 updates 一次;对手模型由配置或命令行
   参数指定,不得硬编码任何具体版本;输出到 `audit/reports/<run>/eval`。进程数
-  (10)与单进程半庄数(400)是机制常量,间隔(5 updates)按宪法登记;分片内部
-  并行度(每批半庄数)属实施细节,由版本配置提供,不属于机制常量。修改须走本
-  原则修订。
+  (10)与单进程半庄数(600)是机制常量,间隔(5 updates)按宪法登记;分片内部
+  并行度(每批半庄数)与种子基属实施细节,由版本配置提供,不属于机制常量。
+  修改须走本原则修订。
 - 旧 `evaluation_*` 机制与相关配置、代码移除,消除双轨。
 - SFT 的验证、启发式评测与 checkpoint 保存统一固定为每 3000 steps 一次;最终评估
   保持 96 hanchan;参数只在一处定义,禁止在实验配置中复制。
@@ -158,4 +164,4 @@ Sync Impact Report
 - 每次清理提交必须对照本宪法做合规检查。
 - AGENTS.md 保留为运行时指导文件,不得与本宪法矛盾。
 
-**Version**: 1.8.0 | **Ratified**: 2026-08-15 | **Last Amended**: 2026-08-25
+**Version**: 1.9.0 | **Ratified**: 2026-08-15 | **Last Amended**: 2026-08-29

@@ -981,3 +981,9 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
   污染)。旧格式 summary 一律视为未命中,行为向后兼容。
 - **待办**:按 AGENTS.md 走 $speckit-constitution 修订(机制 4000→6000),
   同步 mechanism.py 文档与 KyokuEventTupleProtocol.md 无涉。
+- 宪法已修订至 **v1.9.0**(Sync Impact Report 追加 2026-08-29 条目):
+  Principle IV 机制常量 10 进程 × 400 = 4000 → 10 进程 × 600 = 6000;
+  种子基与分片并行度明确为版本配置细节。同步落点:AGENTS.md 机制段、
+  mechanism.py(DEFAULT=600/TOTAL=6000 + 修订史)、train.py 与
+  head_to_head_1v3_shards.py 文档字符串、test_artifact_conventions
+  锚定断言与 CLI 默认值测试。套件 220 passed 全绿。
