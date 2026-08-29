@@ -14,10 +14,7 @@ classifiers = [
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 
-dependencies = [
-    "pyyaml>=6.0.3",
-    "ipython",
-]
+dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/smly/RiichiEnv"
