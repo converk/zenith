@@ -6,9 +6,6 @@
 
 from __future__ import annotations
 
-from collections import Counter
-from typing import Any
-
 import numpy as np
 
 from .encoding_protocol import (
@@ -56,7 +53,7 @@ from .encoding_protocol import (
     TOKEN_ROW_WIDTH,
     is_separator_kind,
 )
-from .schema import NUM_ACTIONS
+from .schema import NUM_ACTIONS, TILE_KINDS
 
 
 def _assert_range(value: int, maximum: int) -> int:
@@ -129,10 +126,10 @@ def _assert_actor_canonical_order(kinds: np.ndarray, rows: np.ndarray) -> None:
     if cursor >= len(values) or values[cursor] != KIND_SEP_TILE_STATE:
         raise AssertionError("meld block must be followed by SEP_TILE_STATE")
     cursor += 1
-    if cursor + 34 > len(values) or values[cursor:cursor + 34] != [KIND_TILE_STATE] * 34:
+    if cursor + TILE_KINDS > len(values) or values[cursor:cursor + TILE_KINDS] != [KIND_TILE_STATE] * TILE_KINDS:
         raise AssertionError("TILE_STATE block must contain exactly 34 rows")
-    tile_types = [int(rows[cursor + index, 2]) for index in range(34)]
-    if tile_types != list(range(1, 35)):
+    tile_types = [int(rows[cursor + index, 2]) for index in range(TILE_KINDS)]
+    if tile_types != list(range(1, TILE_KINDS + 1)):
         raise AssertionError("TILE_STATE kinds must be 1..34 in ascending order")
     cursor += 34
     if cursor >= len(values) or values[cursor] != KIND_SEP_OPPONENT_ANALYSIS:
@@ -361,13 +358,13 @@ def assert_critic_token_semantics(factors: np.ndarray, lengths: np.ndarray) -> N
             raise AssertionError("future rows must be in critic-future segment")
         if np.any(hand_rows[:, 2].astype(int) < 1) or np.any(hand_rows[:, 2].astype(int) > 3):
             raise AssertionError("critic hand relative_seat must be 1..3")
-        if np.any(hand_rows[:, 3].astype(int) < 1) or np.any(hand_rows[:, 3].astype(int) > 34):
+        if np.any(hand_rows[:, 3].astype(int) < 1) or np.any(hand_rows[:, 3].astype(int) > TILE_KINDS):
             raise AssertionError("critic hand tile_type must be 1..34")
         if np.any(~np.isin(hand_rows[:, 4].astype(int), (0, 1))):
             raise AssertionError("critic hand red must be 0/1")
         if np.any(hand_rows[:, 5].astype(int) < 1) or np.any(hand_rows[:, 5].astype(int) > 4):
             raise AssertionError("critic hand count must be 1..4")
-        if np.any(future_rows[:, 3].astype(int) < 1) or np.any(future_rows[:, 3].astype(int) > 34):
+        if np.any(future_rows[:, 3].astype(int) < 1) or np.any(future_rows[:, 3].astype(int) > TILE_KINDS):
             raise AssertionError("critic future tile_type must be 1..34")
         if np.any(~np.isin(future_rows[:, 4].astype(int), (0, 1))):
             raise AssertionError("critic future red must be 0/1")
@@ -378,15 +375,3 @@ def assert_critic_token_semantics(factors: np.ndarray, lengths: np.ndarray) -> N
             raise AssertionError("critic contains an analysis/action/unknown kind")
         if np.any(np.isin(segments, (SEGMENT_SHARED, SEGMENT_ANALYSIS, SEGMENT_ACTIONS))):
             raise AssertionError("critic contains shared/analysis/action segments")
-
-
-def summarize_tokens(factors: np.ndarray, length: int) -> dict[str, Any]:
-    """返回稳定的语义摘要（CLI 诊断用）。"""
-    rows = np.asarray(factors)[: int(length)]
-    kinds = rows[:, 1].astype(int)
-    counts = Counter(int(kind) for kind in kinds)
-    return {
-        "length": int(length),
-        "by_kind": {kind: count for kind, count in sorted(counts.items())},
-        "separators": sum(1 for kind in kinds if is_separator_kind(int(kind))),
-    }

@@ -400,20 +400,6 @@ def is_separator_kind(kind: int) -> bool:
     return kind in SEPARATOR_KINDS.values()
 
 
-def separator_id_of_kind(kind: int) -> int:
-    for name, value in SEPARATOR_KINDS.items():
-        if value == kind:
-            return SEPARATOR_IDS[name]
-    raise ValueError(f"kind {kind} is not a separator")
-
-
-def separator_kind_of_id(separator_id: int) -> int:
-    for name, value in SEPARATOR_IDS.items():
-        if value == separator_id:
-            return SEPARATOR_KINDS[name]
-    raise ValueError(f"separator id {separator_id} is unknown")
-
-
 def bucket_o1(kinds: int) -> int:
     """O1 有效牌种类数 → 编码：0..9 精确,10+ 截断到 10。"""
     return max(0, min(int(kinds), 10))

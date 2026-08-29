@@ -37,7 +37,7 @@ def _chi_pairs() -> list[tuple[str, str]]:
     for suit in "mps":
         for left, right in locals_:
             def name(value: int | str) -> str:
-                return f"{value}{suit}" if isinstance(value, int) else f"5{suffix(suit)}r"
+                return f"{value}{suit}" if isinstance(value, int) else f"5{suit}r"
             pairs.append((name(left), name(right)))
     return pairs
 
@@ -58,11 +58,6 @@ def _chi_pai(pair: tuple[str, str]) -> str:
             missing = next(rank for rank in sequence if rank not in ranks)
             return f"{missing}{suit}"
     raise AssertionError(f"invalid chi pair {pair}")
-
-
-def suffix(suit: str) -> str:
-    """Map m/p/s to the red-five spelling's suit character."""
-    return suit
 
 
 def _pon_pairs() -> list[tuple[str, str]]:

@@ -20,35 +20,20 @@ from .encoding_protocol import (
     SEGMENT_CRITIC_PRIVATE,
     TOKEN_ROW_WIDTH,
 )
+from .schema import NUM_PLAYERS, TID_COUNT
 
-NUM_PLAYERS = 4
 FUTURE_WALL_TILE_COUNT = 5
 
 
 @dataclass(frozen=True)
 class TableState:
     hands: tuple[tuple[int, ...], ...]
-    discards: tuple[tuple[int, ...], ...] = ((), (), (), ())
-    melds: tuple[tuple["MeldState", ...], ...] = ((), (), (), ())
-
-
-@dataclass(frozen=True)
-class MeldState:
-    """One validated public portion of a RiichiEnv meld."""
-
-    field: int
-    tiles: tuple[int, ...]
-    called_tile: int | None
-    source: int | None
 
 
 @dataclass(frozen=True)
 class CriticFeatures:
     factors: np.ndarray  # [T, 32]
     length: int
-
-
-from .schema import TID_COUNT
 
 
 def tile_id_to_type(tile: Any) -> int | None:
@@ -78,32 +63,8 @@ def _seat_tiles(values: Any, seat: int) -> tuple[int, ...]:
     return tuple(int(tile) for tile in row if tile_id_to_type(tile) is not None)
 
 
-def _meld_state(value: Any) -> MeldState | None:
-    """把 RiichiEnv 的 Meld（或测试替身）映射为稳定结构。"""
-    name = str(getattr(value, "meld_type", getattr(value, "type", ""))).lower()
-    field = {"chi": 1, "pon": 2, "daiminkan": 3, "ankan": 4, "kakan": 5}.get(name)
-    if field is None:
-        return None
-    tiles = tuple(tile for tile in getattr(value, "tiles", ()) if tile_id_to_type(tile) is not None)
-    if not tiles:
-        return None
-    called = getattr(value, "called_tile", None)
-    called_tile = int(called) if tile_id_to_type(called) is not None else None
-    source = getattr(value, "from_who", None)
-    source_seat = int(source) if isinstance(source, (int, np.integer)) and 0 <= int(source) < NUM_PLAYERS else None
-    return MeldState(field, tiles, called_tile, source_seat)
-
-
-def _public_meld_rows(values: Any, seat: int) -> tuple[MeldState, ...]:
-    try:
-        row = values[seat]
-    except (IndexError, KeyError, TypeError):
-        return ()
-    return tuple(meld for value in row if (meld := _meld_state(value)) is not None)
-
-
-def collect_visible_table_state(observations: dict[int, Any], *, include_public_state: bool = True) -> TableState:
-    """收集四家闭手与可选公开牌河/副露投影（仅用于 Critic 测试与装配）。"""
+def collect_visible_table_state(observations: dict[int, Any]) -> TableState:
+    """收集四家闭手实体牌(Critic 私有行的唯一事实来源)。"""
     if set(observations) != set(range(NUM_PLAYERS)):
         raise RuntimeError("critic features require all four player observations")
     hands: list[tuple[int, ...]] = []
@@ -112,16 +73,7 @@ def collect_visible_table_state(observations: dict[int, Any], *, include_public_
         if hand_rows is None:
             raise RuntimeError("Observation must expose hands for critic features")
         hands.append(_seat_tiles(hand_rows, seat))
-    if not include_public_state:
-        return TableState(tuple(hands))
-    public_observation = observations[0]
-    discards = getattr(public_observation, "discards", ())
-    melds = getattr(public_observation, "melds", ())
-    return TableState(
-        tuple(hands),
-        tuple(_seat_tiles(discards, seat) for seat in range(NUM_PLAYERS)),
-        tuple(_public_meld_rows(melds, seat) for seat in range(NUM_PLAYERS)),
-    )
+    return TableState(tuple(hands))
 
 
 def _is_red(tile: int) -> bool:
@@ -182,7 +134,6 @@ def encode_critic_features(
     table_state: TableState,
     observer: int,
     *,
-    include_public_state: bool = False,
     future_wall_tiles: Iterable[int] = (),
 ) -> CriticFeatures:
     rows: list[np.ndarray] = [_critic_sep_row()]

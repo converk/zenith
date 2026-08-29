@@ -28,6 +28,8 @@ from .encoding_protocol import (
     KIND_SEP_CRITIC,
     SEGMENT_ACTIONS,
     SEGMENT_ANALYSIS,
+    SEGMENT_CRITIC_FUTURE,
+    SEGMENT_CRITIC_PRIVATE,
     SEGMENT_SHARED,
     TOKEN_NUMERIC_WIDTH,
     TOKEN_ROW_WIDTH,
@@ -239,14 +241,6 @@ def _segment_map(kind: Tensor) -> Tensor:
 
     等价于逐 token 的类别→segment 映射，纯向量化、无 per-row Python 循环。
     """
-    from .encoding_protocol import (
-        SEGMENT_ACTIONS,
-        SEGMENT_ANALYSIS,
-        SEGMENT_CRITIC_FUTURE,
-        SEGMENT_CRITIC_PRIVATE,
-        SEGMENT_SHARED,
-    )
-
     is_sep = (kind >= 101) & (kind <= 111)
     shared = ((kind >= 1) & (kind <= 9)) | ((kind >= 101) & (kind <= 108))
     analysis = (kind == 10) | (kind == 109)
@@ -277,14 +271,6 @@ def _assert_structure(factors: Tensor, lengths: Tensor, *, critic: bool) -> None
 
     整批向量化实现（旧实现逐行 tolist + Python 循环，实测一次 forward 占 ~32ms）。
     """
-    from .encoding_protocol import (
-        KIND_BOS,
-        KIND_CRITIC_FUTURE,
-        KIND_CRITIC_HAND,
-        KIND_SEP_CRITIC,
-        SEGMENT_ACTIONS,
-    )
-
     batch, tokens, _width = factors.shape
     if batch == 0:
         return

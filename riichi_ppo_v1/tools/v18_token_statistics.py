@@ -10,13 +10,11 @@ from typing import Any
 import numpy as np
 
 from ..model.encoding_protocol import (
-    CATEGORY_SCHEMAS,
     SEGMENT_ACTIONS,
     SEGMENT_ANALYSIS,
     SEGMENT_CRITIC_FUTURE,
     SEGMENT_CRITIC_PRIVATE,
     SEGMENT_SHARED,
-    is_separator_kind,
 )
 
 _SEGMENT_NAMES = {

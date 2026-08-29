@@ -1,4 +1,4 @@
-"""Step-scoped event identity and detailed 2v2 metric primitives."""
+"""按 step 作用域的 MJAI 事件身份与去重原语(供指标统计复用)。"""
 
 from __future__ import annotations
 

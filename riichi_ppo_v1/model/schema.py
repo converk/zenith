@@ -13,3 +13,8 @@ TOKEN_SCHEMA_VERSION = ENCODING_PROTOCOL_VERSION
 TILE_KINDS = 34
 # 136 张实体牌 TID(34 类牌 × 4 张)。
 TID_COUNT = 136
+# 四人麻将的玩家数(环境观察者/座位数,领域不变常量)。
+NUM_PLAYERS = 4
+
+# 包内领域常量的公开面(NUM_ACTIONS 为 encoding_protocol 的显式再导出)。
+__all__ = ["ENCODING_PROTOCOL_VERSION", "NUM_ACTIONS", "NUM_PLAYERS", "TID_COUNT", "TILE_KINDS", "TOKEN_SCHEMA_VERSION"]

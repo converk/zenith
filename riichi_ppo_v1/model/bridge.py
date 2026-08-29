@@ -1,7 +1,7 @@
 """RiichiEnv、MJAI 与 Rust 状态机之间的严格转换边界。
 
-V18 当前局面输入直接由 ``current_state.encode_batch`` 从原生 Observation 构造；
-本模块保留动作解码/合法掩码/生命周期职责，不再装配事件历史或 Atomic Snapshot。
+V18 当前局面输入由 ``current_state.encode_batch`` 从原生 Observation 构造；
+本模块保留动作解码/合法掩码/生命周期职责与 Critic 私有行装配。
 """
 
 from __future__ import annotations
@@ -21,9 +21,8 @@ from .critic_features import (
     pad_critic_feature_rows,
 )
 from .current_state import EncodedStateBatch, encode_batch
-from .schema import TID_COUNT
+from .schema import NUM_PLAYERS, TID_COUNT
 
-NUM_PLAYERS = 4
 _DECISION_ACTION_TYPES = frozenset({"dahai", "reach", "ankan", "kakan", "ryukyoku"})
 
 
@@ -112,7 +111,7 @@ def _action_objects_jsons_and_decision_flag(
 
 
 def action_jsons_and_decision_flag(observation: Any) -> tuple[list[str], int]:
-    """返回规范动作模板与 snapshot 决策窗口标志。"""
+    """返回规范动作模板与是否包含决策动作的标志。"""
     _objects, result, flag = _action_objects_jsons_and_decision_flag(observation)
     return result, flag
 
@@ -130,13 +129,10 @@ class BatchedStateBridge:
         state_machine: Any,
         num_envs: int,
         profiler: StageProfiler | None = None,
-        *,
-        critic_include_public_state: bool = False,
     ) -> None:
         self.state_machine = state_machine
         self.num_envs = int(num_envs)
         self.profiler = profiler or StageProfiler(enabled=False)
-        self.critic_include_public_state = bool(critic_include_public_state)
         self.last_rust_stats: dict[str, int] = {}
         self.last_events: list[list[list[str]]] = [[[] for _ in range(NUM_PLAYERS)] for _ in range(num_envs)]
         self.observations_by_env: list[dict[int, Any]] | None = None
@@ -180,8 +176,7 @@ class BatchedStateBridge:
     ) -> PreparedBatch:
         """装配 V18 当前局面输入：Shared+Analysis+Query 序列；Critic 私有行单独返回。
 
-        动作解码与合法掩码仍由状态机负责（生命周期/动作执行），不再生成事件历史
-        或 Atomic Snapshot 输入行。
+        动作解码与合法掩码由状态机负责（生命周期/动作执行）。
         """
         if not decisions:
             raise ValueError("cannot prepare an empty decision batch")
@@ -230,7 +225,6 @@ class BatchedStateBridge:
                 table_cache = {
                     env_index: collect_visible_table_state(
                         self.observations_by_env[env_index],
-                        include_public_state=False,
                     )
                     for env_index in {decision.env_index for decision in decisions}
                 }
