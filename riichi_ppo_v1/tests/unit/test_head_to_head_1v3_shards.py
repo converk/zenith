@@ -212,3 +212,17 @@ def test_summary_cache_validation(tmp_path) -> None:
         {"checkpoint_sha256": hashlib.sha256(b"other-content").hexdigest()},
         checkpoint,
     )
+    # 评测参数指纹:参数一致才命中;缺失记录/参数变更一律未命中。
+    params = {"seed_base": 20260829, "hanchans_per_process": 600,
+              "parallel_hanchans": 300}
+    with_params = {"checkpoint_sha256": digest, "eval_params": params}
+    assert summary_matches_checkpoint(with_params, checkpoint, eval_params=params)
+    # 旧调用(不传参数)保持仅指纹校验的历史语义。
+    assert summary_matches_checkpoint(with_params, checkpoint)
+    assert not summary_matches_checkpoint(
+        with_params, checkpoint,
+        eval_params={**params, "seed_base": 20260827},
+    )
+    assert not summary_matches_checkpoint(
+        {"checkpoint_sha256": digest}, checkpoint, eval_params=params,
+    )

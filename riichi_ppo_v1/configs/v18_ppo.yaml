@@ -115,9 +115,13 @@ opponent_mix:
 
 eval1v3_enabled: true
 eval1v3_model_b: checkpoints/train_riichi_v18/sft/best.pt
-eval1v3_seed_base: 20260827
+# 2026-08-29 维护者决定:评测规模 10 进程 × 600 = 6000 半庄,新种子序列
+# (20260829 起,与历史 20260827 序列零重叠),并行 300。机制常量
+# DEFAULT_1V3_HANCHANS_PER_PROCESS=400 保持不变,由本配置键覆盖。
+eval1v3_hanchans_per_process: 600
+eval1v3_seed_base: 20260829
 eval1v3_devices: ["0", "1"]
-eval1v3_parallel_hanchans: 200
+eval1v3_parallel_hanchans: 300
 eval1v3_output_dir: audit/reports/v18/eval
 
 progress_update_interval_updates: 10

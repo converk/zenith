@@ -965,3 +965,19 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
 - 归档:checkpoints(u5/u10/u15/u20)、eval 产物、run.log 移至
   `logs/v18/v18_ppo_r4_20260829/`;删除 `v18_ppo_resume_mb1024.yaml`
   (mb1024 为 OOM 应急方案,根因修复后回归标准配置,从头重训)。
+
+## 2026-08-29 评测机制调整(维护者决定,待宪法修订同步)
+
+- 评测规模 4000 → **6000 半庄**(10 进程 × 600),种子基 20260827 →
+  **20260829**,并行 200 → **300**(v18_ppo.yaml eval 块;机制常量
+  DEFAULT_1V3_HANCHANS_PER_PROCESS=400 不变,由配置键覆盖)。实证:
+  新批种子下 300 并行 env 牌墙全部唯一,与新旧序列间零重叠。
+- 预计单次评测时长约 5 分钟(600 局/分片 = 2 波 × 300 并行,分片显存
+  ~1-1.5GiB,release_cache 后余量充足)。
+- **配套修复(1c86401 之后)**:评测参数(种子基/每进程半庄/并行数)纳入
+  缓存校验——summary_matches_checkpoint 新增 eval_params 指纹比对,
+  run_sharded_1v3 与 train.py 双层携带,summary 写入 eval_params 字段。
+  否则参数变更后同 checkpoint 的重评会静默复用旧参数的缓存结果(A1 同类
+  污染)。旧格式 summary 一律视为未命中,行为向后兼容。
+- **待办**:按 AGENTS.md 走 $speckit-constitution 修订(机制 4000→6000),
+  同步 mechanism.py 文档与 KyokuEventTupleProtocol.md 无涉。

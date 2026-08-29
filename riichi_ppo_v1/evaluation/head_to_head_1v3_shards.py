@@ -48,19 +48,28 @@ def checkpoint_sha256(checkpoint: str | Path) -> str:
 def summary_matches_checkpoint(
     summary: dict[str, Any],
     checkpoint: str | Path,
+    *,
+    eval_params: dict[str, Any] | None = None,
 ) -> bool:
-    """缓存 summary 与 checkpoint 内容指纹是否一致。
+    """缓存 summary 与 checkpoint 内容指纹(及评测参数)是否一致。
 
     缓存命中必须以 checkpoint 内容为准:summary 无 ``checkpoint_sha256``
     记录(旧格式)或指纹不一致一律视为不匹配,防止跨 run 复用同名旧结果
     (如 run1/run2 复用同一 vs_sft_uNNN.json 导致评测记录污染的事故)。
+    给定 ``eval_params``(种子基/每进程半庄/并行数)时还要求 summary 记录
+    的评测参数完全一致——评测参数变更后同一 checkpoint 必须重跑,防止新
+    参数静默复用旧参数的结果;旧格式(无参数记录)一律不匹配。
     """
     if not isinstance(summary, dict):
         return False
     recorded = summary.get("checkpoint_sha256")
     if not isinstance(recorded, str) or not recorded:
         return False
-    return recorded == checkpoint_sha256(checkpoint)
+    if recorded != checkpoint_sha256(checkpoint):
+        return False
+    if eval_params is None:
+        return True
+    return summary.get("eval_params") == eval_params
 
 
 def validate_non_overlapping_seed_ranges(shards: list[dict[str, Any]]) -> None:
@@ -337,12 +346,19 @@ def run_sharded_1v3(
     output = Path(output_dir)
     shards_dir = output / "shards"
     shards_dir.mkdir(parents=True, exist_ok=True)
+    # 评测参数指纹:种子基/每进程半庄/并行数任一变更后,同 checkpoint 的
+    # 缓存一律视为未命中(参数与指纹共同构成缓存键)。
+    eval_params = {
+        "seed_base": int(seed_base),
+        "hanchans_per_process": int(hanchans_per_process),
+        "parallel_hanchans": int(parallel_hanchans),
+    }
     summary_path = shard_summary_path(output, update)
     if summary_path.is_file():
         cached = json.loads(summary_path.read_text(encoding="utf-8"))
-        # 缓存命中必须校验 checkpoint 内容指纹;旧格式(无记录)或内容不一致
-        # 一律视为未命中,继续走重跑路径并以 .tmp 原子覆盖旧汇总。
-        if summary_matches_checkpoint(cached, checkpoint):
+        # 缓存命中必须校验 checkpoint 内容指纹与评测参数;旧格式(无记录)
+        # 或任一不一致一律视为未命中,继续走重跑路径并以 .tmp 原子覆盖旧汇总。
+        if summary_matches_checkpoint(cached, checkpoint, eval_params=eval_params):
             return cached
     if int(processes) != REQUIRED_1V3_PROCESSES:
         raise ValueError(
@@ -414,8 +430,10 @@ def run_sharded_1v3(
         hanchans_per_process=int(hanchans_per_process),
     )
     summary = merge_1v3_shards(shards, seed_base=seed_base, update=update)
-    # 记录 checkpoint 内容指纹,供后续缓存命中校验(防跨 run 复用旧结果)。
+    # 记录 checkpoint 内容指纹与评测参数,供后续缓存命中校验(防跨 run 复用
+    # 旧结果、防参数变更后复用旧参数结果)。
     summary["checkpoint_sha256"] = checkpoint_sha256(checkpoint)
+    summary["eval_params"] = eval_params
     temporary = summary_path.with_suffix(summary_path.suffix + ".tmp")
     temporary.write_text(
         json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",

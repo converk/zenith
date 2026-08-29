@@ -485,15 +485,21 @@ def run(config: dict[str, Any]) -> None:
         # (u5/u15 两次实测)。模型/优化器等活跃张量不受影响。
         learner.release_cache()
         ray.get([actor.release_cache.remote() for actor in inference_actors])
+        eval_params = {
+            "seed_base": int(seed_base),
+            "hanchans_per_process": int(hanchans_per_process),
+            "parallel_hanchans": int(parallel_hanchans),
+        }
         summary_path = output_dir / f"vs_sft_u{int(update):03d}.json"
         summary: dict[str, Any] | None = None
         if summary_path.is_file():
             with open(summary_path, encoding="utf-8") as file:
                 cached = json.load(file)
-            # 缓存命中以 checkpoint 内容指纹为准:sha256 一致才复用;旧格式
-            # (无记录)或内容不一致一律视为未命中,由 run_sharded_1v3 重跑并
-            # 原子覆盖,防止跨 run 复用同名旧 JSON 污染评测记录。
-            if summary_matches_checkpoint(cached, checkpoint_path):
+            # 缓存命中以 checkpoint 内容指纹 + 评测参数为准:两者一致才复用;
+            # 旧格式(无记录)或任一不一致一律视为未命中,由 run_sharded_1v3
+            # 重跑并原子覆盖,防止跨 run 复用同名旧 JSON 或参数变更后复用
+            # 旧参数结果污染评测记录。
+            if summary_matches_checkpoint(cached, checkpoint_path, eval_params=eval_params):
                 validate_1v3_shard_plan(
                     list(cached.get("shards", [])),
                     seed_base=seed_base,
