@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 
 from riichi_lab_bot import (
     cli,  # noqa: F401
-    client,  # bot 仅 import 兼容；运行路径列入 V18 待迁移项
+    client,  # 仅作可导入冒烟:bot 已运行在 V18 当前局面输入上
 )
 
 from riichi_ppo_v1.sft.train import load_config as load_sft_config
