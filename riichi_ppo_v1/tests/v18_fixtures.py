@@ -135,7 +135,10 @@ def shared_prefix_rows() -> list[np.ndarray]:
     rows.append(_row(SEGMENT_SHARED, KIND_MELD, (0, 1, 1, 0, 2, 0, 3, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0)))
     rows.append(_row(SEGMENT_SHARED, KIND_SEP_TILE_STATE))
     for kind in range(1, 35):
-        rows.append(_row(SEGMENT_SHARED, KIND_TILE_STATE, (kind, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)))
+        rows.append(_row(
+            SEGMENT_SHARED, KIND_TILE_STATE,
+            (kind, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+        ))
     rows.append(_row(SEGMENT_ANALYSIS, KIND_SEP_OPPONENT_ANALYSIS))
     rows.append(_row(SEGMENT_ANALYSIS, KIND_OPPONENT_ANALYSIS, (1,) * 18))
     rows.append(_row(SEGMENT_ANALYSIS, KIND_OPPONENT_ANALYSIS, (2,) * 18))

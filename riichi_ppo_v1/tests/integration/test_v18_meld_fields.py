@@ -79,7 +79,10 @@ def test_meld_type_codes_and_kan_decisions() -> None:
 
     # ankan 后（无摸牌事件）静置：自身暗牌数 13 - 4×1 = 9。
     obs = make_observation(
-        melds=[[_meld("Ankan", [16, 17, 18, 19], from_who=-1, called=None, called_index=None, opened=False)], [], [], []],
+        melds=[
+            [_meld("Ankan", [16, 17, 18, 19], from_who=-1, called=None, called_index=None, opened=False)],
+            [], [], [],
+        ],
     )
     rows = _rows(obs)
     player_self = rows[rows[:, 1] == 5][0]

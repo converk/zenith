@@ -16,7 +16,9 @@ from riichi_ppo_v1.model.bridge import BatchedStateBridge, Decision, action_json
 from riichi_ppo_v1.model.validation import assert_observation_roundtrip, run_random_coverage
 
 
-@unittest.skipUnless(riichi is not None and BatchedRiichiEnv is not None, "local RiichiEnv extensions are not installed")
+@unittest.skipUnless(
+    riichi is not None and BatchedRiichiEnv is not None, "local RiichiEnv extensions are not installed",
+)
 class BridgeIntegrationTest(unittest.TestCase):
     def test_random_game_masks_and_mjai_roundtrip(self) -> None:
         env = BatchedRiichiEnv(2, seed=7, step_threads=2)

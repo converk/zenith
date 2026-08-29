@@ -339,8 +339,12 @@ if ray is not None:
             forwards = counters.get("inference/full_forwards", 0.0)
             stats.update(counters)
             stats["inference/dispatch_rows_mean"] = counters.get("inference/dispatch_rows", 0.0) / max(dispatches, 1.0)
-            stats["inference/dispatch_workers_mean"] = counters.get("inference/dispatch_workers", 0.0) / max(dispatches, 1.0)
-            stats["inference/full_forward_rows_mean"] = counters.get("inference/full_forward_rows", 0.0) / max(forwards, 1.0)
+            stats["inference/dispatch_workers_mean"] = counters.get(
+                "inference/dispatch_workers", 0.0,
+            ) / max(dispatches, 1.0)
+            stats["inference/full_forward_rows_mean"] = counters.get(
+                "inference/full_forward_rows", 0.0,
+            ) / max(forwards, 1.0)
             effective_tokens = counters.get("inference/effective_input_tokens", 0.0)
             padded_tokens = counters.get("inference/padded_input_tokens", 0.0)
             padding_tokens = counters.get("inference/padding_input_tokens", 0.0)
@@ -428,7 +432,9 @@ if ray is not None:
                         flush_reason = dispatch_reason(
                             [request["worker_id"] for request, _future, _queued_at in self._pending],
                             target_workers, deadline, time.perf_counter(),
-                            row_count=sum(len(request["batch_indices"]) for request, _future, _queued_at in self._pending),
+                            row_count=sum(
+                                len(request["batch_indices"]) for request, _future, _queued_at in self._pending
+                            ),
                             target_rows=target_rows,
                         )
                         if flush_reason is not None:

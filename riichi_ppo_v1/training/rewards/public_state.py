@@ -136,10 +136,15 @@ class PublicStateTracker:
 
     def is_genbutsu_to_all_riichi(self, env_index: int, tile: int) -> bool:
         threats = np.flatnonzero(self.riichi[int(env_index)])
-        return bool(len(threats)) and all(int(self.discard_masks[int(env_index), seat]) & (1 << int(tile)) for seat in threats)
+        return bool(len(threats)) and all(
+            int(self.discard_masks[int(env_index), seat]) & (1 << int(tile)) for seat in threats
+        )
 
     def genbutsu_coverage(self, env_index: int, tile: int) -> int:
-        return sum(bool(int(self.discard_masks[int(env_index), seat]) & (1 << int(tile))) for seat in np.flatnonzero(self.riichi[int(env_index)]))
+        return sum(
+            bool(int(self.discard_masks[int(env_index), seat]) & (1 << int(tile)))
+            for seat in np.flatnonzero(self.riichi[int(env_index)])
+        )
 
     def has_riichi_threat(self, env_index: int, seat: int) -> bool:
         return bool(np.any(np.delete(self.riichi[int(env_index)], int(seat))))

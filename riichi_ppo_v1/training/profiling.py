@@ -99,7 +99,10 @@ class GpuSampler:
     并行计算竞争导致死锁。
     """
 
-    FIELDS = ("utilization.gpu", "utilization.memory", "memory.used", "memory.total", "power.draw", "temperature.gpu", "clocks.sm")
+    FIELDS = (
+        "utilization.gpu", "utilization.memory", "memory.used", "memory.total",
+        "power.draw", "temperature.gpu", "clocks.sm",
+    )
 
     def __init__(self, enabled: bool, interval_s: float = 0.25) -> None:
         self.enabled = bool(enabled)

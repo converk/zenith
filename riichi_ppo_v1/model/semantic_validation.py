@@ -300,7 +300,9 @@ def assert_actor_input_semantics(
             raise AssertionError("query action ids must be strictly ascending")
         if query_rows is not None:
             query_chunk = query_rows[row, : 2 * pair_count].astype(np.int64, copy=False)
-            if np.any(query_chunk[0::2, QUERY_ROW_QUERY_TYPE] != 1) or np.any(query_chunk[1::2, QUERY_ROW_QUERY_TYPE] != 2):
+            if np.any(query_chunk[0::2, QUERY_ROW_QUERY_TYPE] != 1) or np.any(
+                query_chunk[1::2, QUERY_ROW_QUERY_TYPE] != 2
+            ):
                 raise AssertionError("query rows must alternate Offense/Defense")
             if not np.array_equal(query_chunk[0::2, QUERY_ROW_ACTION_ID], ids) or not np.array_equal(
                 query_chunk[1::2, QUERY_ROW_ACTION_ID], ids
@@ -318,7 +320,9 @@ def assert_actor_input_semantics(
                 int(query_value[QUERY_ROW_ACTION_TYPE]),
                 int(query_value[QUERY_ROW_PRIMARY_TILE]),
                 int(query_value[QUERY_ROW_SOURCE_SEAT]),
-                (int(query_value[QUERY_ROW_ACTION_ID]) - 1) % 2 if 1 <= int(query_value[QUERY_ROW_ACTION_ID]) < 75 else 0,
+                (int(query_value[QUERY_ROW_ACTION_ID]) - 1) % 2
+                if 1 <= int(query_value[QUERY_ROW_ACTION_ID]) < 75
+                else 0,
                 int(query_value[QUERY_ROW_ACTION_ID]),
                 *[int(value) for value in query_value[QUERY_ROW_ANSWER_START:QUERY_ROW_WIDTH]],
             )

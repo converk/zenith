@@ -473,7 +473,9 @@ class SemanticMetrics:
                 sum(length > 8.0 for length in self.match_kyoku_lengths), matches,
             ),
         }
-        for kind in ("pass", "discard", "tsumogiri", "riichi", "chi", "pon", "daiminkan", "ankan", "kakan", "hora", "kyushu"):
+        for kind in (
+            "pass", "discard", "tsumogiri", "riichi", "chi", "pon", "daiminkan", "ankan", "kakan", "hora", "kyushu",
+        ):
             result[f"{prefix}/action/{kind}_rate"] = _rate(self.actions[kind], self.decisions)
         for group, count in sorted(self.decision_groups.items()):
             result[f"{prefix}/breakdown/{group}/decision_count"] = float(count)
@@ -503,7 +505,9 @@ class SemanticMetrics:
         total_seats = sum(self.policy_seats.values())
         total_decisions = sum(self.policy_decisions.values())
         result[f"{prefix}/opponents/current_seat_fraction"] = _rate(self.policy_seats["current"], total_seats)
-        result[f"{prefix}/opponents/current_decision_fraction"] = _rate(self.policy_decisions["current"], total_decisions)
+        result[f"{prefix}/opponents/current_decision_fraction"] = _rate(
+            self.policy_decisions["current"], total_decisions,
+        )
         if prefix == "train":
             for name in (
                 "first_place_rate", "second_place_rate", "third_place_rate",
@@ -522,14 +526,30 @@ class RollingKyokuMetrics:
 
     def update(self, values: Iterable[float]) -> dict[str, float]:
         self.points.extend(float(value) for value in values)
-        return {"train_rolling/kyoku/window_count": float(len(self.points)), "train_rolling/kyoku/point_delta_mean": _mean(list(self.points))}
+        return {
+            "train_rolling/kyoku/window_count": float(len(self.points)),
+            "train_rolling/kyoku/point_delta_mean": _mean(list(self.points)),
+        }
 
 
-def append_metric_jsonl(path: str | Path, *, update: int, global_decisions: int, global_kyokus: int,
-                        source: str, metrics: Mapping[str, float], metadata: Mapping[str, object] | None = None) -> None:
-    destination = Path(path); destination.parent.mkdir(parents=True, exist_ok=True)
-    row = {"schema_version": METRIC_SCHEMA_VERSION, "update": int(update), "global_decisions": int(global_decisions),
-           "global_kyokus": int(global_kyokus), "source": str(source), "metrics": {key: float(value) for key, value in metrics.items() if math.isfinite(float(value))}}
+def append_metric_jsonl(
+    path: str | Path, *, update: int, global_decisions: int, global_kyokus: int,
+    source: str, metrics: Mapping[str, float], metadata: Mapping[str, object] | None = None,
+) -> None:
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "schema_version": METRIC_SCHEMA_VERSION,
+        "update": int(update),
+        "global_decisions": int(global_decisions),
+        "global_kyokus": int(global_kyokus),
+        "source": str(source),
+        "metrics": {
+            key: float(value)
+            for key, value in metrics.items()
+            if math.isfinite(float(value))
+        },
+    }
     if metadata:
         row["metadata"] = dict(metadata)
     with destination.open("a", encoding="utf-8") as file:

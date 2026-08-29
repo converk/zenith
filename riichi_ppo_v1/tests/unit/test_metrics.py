@@ -37,7 +37,10 @@ def test_riichi_metric_reports_opportunity_acceptance() -> None:
 def test_hora_multi_ron_and_draw_metrics_are_deduplicated() -> None:
     metrics = SemanticMetrics()
     # The same public events are received by each observation cursor.
-    events = [[json.dumps({"type": "reach", "actor": 0}), _hora(0, 2), _hora(1, 2), json.dumps({"type": "end_kyoku"})], [_hora(0, 2), _hora(1, 2)], [], []]
+    events = [
+        [json.dumps({"type": "reach", "actor": 0}), _hora(0, 2), _hora(1, 2), json.dumps({"type": "end_kyoku"})],
+        [_hora(0, 2), _hora(1, 2)], [], [],
+    ]
     metrics.record_kyoku([0, 2], [8000, 3000, -11000, 0], events, discard_count=12, open_meld_count=3)
     summary = metrics.summary()
     assert summary["train/kyoku/count"] == 2
@@ -51,7 +54,11 @@ def test_hora_multi_ron_and_draw_metrics_are_deduplicated() -> None:
     assert summary["train/kyoku/post_riichi_win_rate"] == 1.0
 
     draw = SemanticMetrics()
-    draw.record_kyoku([0], [1500, -500, -500, -500], [[json.dumps({"type": "ryukyoku", "deltas": [1500, -500, -500, -500]})], [], [], []], discard_count=18)
+    draw.record_kyoku(
+        [0], [1500, -500, -500, -500],
+        [[json.dumps({"type": "ryukyoku", "deltas": [1500, -500, -500, -500]})], [], [], []],
+        discard_count=18,
+    )
     assert draw.summary()["train/kyoku/draw_rate"] == 1.0
     assert draw.summary()["train/kyoku/discard_count_mean"] == 18.0
 

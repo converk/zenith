@@ -284,9 +284,11 @@ def test_freeze_grp_weights_do_not_change() -> None:
 
 def test_parse_hanchan_produces_boundaries() -> None:
     content = "\n".join([
-        '{"type": "start_kyoku", "bakaze": "E", "kyoku": 1, "oya": 0, "honba": 0, "kyotaku": 0, "scores": [25000, 25000, 25000, 25000]}',
+        '{"type": "start_kyoku", "bakaze": "E", "kyoku": 1, "oya": 0, "honba": 0, "kyotaku": 0, '
+        '"scores": [25000, 25000, 25000, 25000]}',
         '{"type": "hora", "actor": 0, "target": 2, "deltas": [6000, -2000, -2000, -2000]}',
-        '{"type": "start_kyoku", "bakaze": "E", "kyoku": 2, "oya": 1, "honba": 1, "kyotaku": 0, "scores": [31000, 23000, 23000, 23000]}',
+        '{"type": "start_kyoku", "bakaze": "E", "kyoku": 2, "oya": 1, "honba": 1, "kyotaku": 0, '
+        '"scores": [31000, 23000, 23000, 23000]}',
     ])
     boundaries = parse_hanchan(content)
     assert len(boundaries) == 2
@@ -308,7 +310,8 @@ def test_prepare_grp_dataset_max_shards_limits_input_tars() -> None:
     from riichi_ppo_v1.training.grp.prepare import prepare_grp_dataset
 
     hanchan = "\n".join([
-        '{"type": "start_kyoku", "bakaze": "E", "kyoku": 1, "oya": 0, "honba": 0, "kyotaku": 0, "scores": [25000, 25000, 25000, 25000]}',
+        '{"type": "start_kyoku", "bakaze": "E", "kyoku": 1, "oya": 0, "honba": 0, "kyotaku": 0, '
+        '"scores": [25000, 25000, 25000, 25000]}',
         '{"type": "hora", "actor": 0, "target": 1, "deltas": [6000, -2000, -2000, -2000]}',
         '{"type": "end_game", "scores": [31000, 23000, 23000, 23000]}',
     ])

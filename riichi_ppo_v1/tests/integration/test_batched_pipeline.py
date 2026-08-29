@@ -29,7 +29,10 @@ from riichi_ppo_v1.model.semantic_validation import (
 class BatchedPipelineTest(unittest.TestCase):
     def test_legacy_split_state_machine_api_is_not_exported(self) -> None:
         manager = riichi.MjaiKyokuStateMachineManager(1)
-        for name in ("apply_player_events", "apply_env_player_events", "set_legal_actions", "set_legal_actions_batch", "model_inputs", "model_inputs_with_snapshots", "action_mask", "model_action_to_mjai"):
+        for name in (
+            "apply_player_events", "apply_env_player_events", "set_legal_actions", "set_legal_actions_batch",
+            "model_inputs", "model_inputs_with_snapshots", "action_mask", "model_action_to_mjai",
+        ):
             self.assertFalse(hasattr(manager, name), name)
 
     def test_two_tables_progress_and_decision_rows_are_isolated(self) -> None:
@@ -72,7 +75,9 @@ class BatchedPipelineTest(unittest.TestCase):
         rng = random.Random(91)
         actions_by_env = []
         for row in observations:
-            actions_by_env.append({seat: rng.choice(obs.legal_actions()) for seat, obs in row.items() if obs.legal_actions()})
+            actions_by_env.append(
+                {seat: rng.choice(obs.legal_actions()) for seat, obs in row.items() if obs.legal_actions()}
+            )
         observations = list(envs.step_batch(actions_by_env))
         end_kyoku, end_game = bridge.sync(observations)
         self.assertEqual(end_kyoku.shape, (2,))
