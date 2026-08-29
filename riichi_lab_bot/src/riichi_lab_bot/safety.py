@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-from typing import Any, Iterable
+from typing import Any
 
 from .bridge import EventContext, PreparedDecision
 
@@ -56,17 +56,6 @@ def possible_action_matches(
     return True
 
 
-def matches_possible_actions(
-    response: dict[str, Any],
-    possible_actions: Iterable[dict[str, Any]],
-) -> bool:
-    return any(
-        possible_action_matches(response, possible)
-        for possible in possible_actions
-        if isinstance(possible, dict)
-    )
-
-
 def action_to_response(
     action: Any,
     observation: Any,
@@ -105,7 +94,11 @@ def validate_response(
 ) -> bool:
     if observation.select_action_from_mjai(response) is None:
         return False
-    return matches_possible_actions(response, possible_actions)
+    return any(
+        possible_action_matches(response, possible)
+        for possible in possible_actions
+        if isinstance(possible, dict)
+    )
 
 
 def _fallback_priority(action: Any, observation: Any) -> tuple[int, int]:

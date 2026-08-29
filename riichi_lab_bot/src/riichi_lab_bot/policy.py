@@ -10,26 +10,27 @@ from typing import Any
 import numpy as np
 import torch
 
+from riichi_ppo_v1.model.architecture import (
+    KyokuTransformerActorCritic,
+    ModelConfig,
+)
 from riichi_ppo_v1.model.encoding_protocol import (
     QUERY_DEFENSE,
     QUERY_OFFENSE,
     QUERY_ROW_ACTION_ID,
     QUERY_ROW_ACTION_TYPE,
     QUERY_ROW_QUERY_TYPE,
+    QUERY_ROW_WIDTH,
+    TOKEN_NUMERIC_WIDTH,
+    TOKEN_ROW_WIDTH,
 )
+from riichi_ppo_v1.model.schema import NUM_ACTIONS
 from riichi_ppo_v1.model.semantic_validation import (
     assert_actor_input_semantics,
 )
 
 from .bridge import PreparedDecision
-from .model import (
-    NUM_ACTIONS,
-    NUMERIC_WIDTH,
-    QUERY_ROW_WIDTH,
-    TOKEN_WIDTH,
-    KyokuTransformerActorCritic,
-    ModelConfig,
-)
+
 # V18 待迁移：bot 的 PreparedDecision 仍使用旧 history/snapshot 布局，本阶段不兼容。
 
 
@@ -87,10 +88,10 @@ def _warmup_inputs() -> tuple[
     np.ndarray,
 ]:
     """构造一条最小但合法的 V18 policy-only 前向样本。"""
-    history_factors = np.zeros((1, 1, TOKEN_WIDTH), dtype=np.uint8)
+    history_factors = np.zeros((1, 1, TOKEN_ROW_WIDTH), dtype=np.uint8)
     history_factors[0, 0, 0] = 1
     history_factors[0, 0, 1] = 1
-    history_numeric = np.zeros((1, 1, NUMERIC_WIDTH), dtype=np.float32)
+    history_numeric = np.zeros((1, 1, TOKEN_NUMERIC_WIDTH), dtype=np.float32)
     history_lengths = np.asarray([1], dtype=np.int64)
 
     snapshot_factors = np.zeros(

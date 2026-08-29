@@ -16,7 +16,7 @@ from .observation import (
     normalize_observation_base64,
 )
 from .policy import PolicyEngine
-from .safety import choose_safe_response
+from .safety import SafeResponse, choose_safe_response
 from .telemetry import EventRecorder, SessionMetrics
 
 VALIDATION_URL = "wss://game.riichi.dev/ws/validate"
@@ -203,7 +203,7 @@ async def play_connection(
                     isinstance(deadline_ms, (int, float))
                     and elapsed_ms + deadline_margin_ms >= float(deadline_ms)
                 ):
-                    safe = type(safe)(
+                    safe = SafeResponse(
                         None,
                         "withheld",
                         "local elapsed time reached deadline margin",
@@ -349,8 +349,6 @@ async def run_ranked(
             else:
                 raise RuntimeError("ranked connection ended before end_game")
         except AuthenticationError:
-            raise
-        except (KeyboardInterrupt, asyncio.CancelledError):
             raise
         except Exception as exc:
             recorder.emit(

@@ -35,8 +35,8 @@ def mjai_to_physical_id(pai: str | None) -> int | None:
 class ThreatSnapshotTracker:
     """累积线上 payload 可能缺失的本局公开/自家状态事实。"""
 
-    def __init__(self, seat: int | None = None) -> None:
-        self.seat = int(seat) if seat is not None else None
+    def __init__(self, seat: int) -> None:
+        self.seat = int(seat)
         self.reset_kyoku()
 
     def reset_kyoku(self) -> None:
@@ -110,7 +110,7 @@ class ThreatSnapshotTracker:
 
     def refine_drawn_tile(self, observation: Any) -> None:
         """用当前自家手牌把 MJAI 摸牌补成精确物理牌。"""
-        if self.seat is None or self.drawn_tile is None:
+        if self.drawn_tile is None:
             return
         hand = getattr(observation, "hands", None)
         if hand is None:
@@ -132,7 +132,7 @@ class ThreatSnapshotTracker:
         pai: str | None,
     ) -> None:
         """按当前可见窗口补齐内核在发起响应前设置的见逃标记。"""
-        if self.seat is None or actor is None or actor == self.seat:
+        if actor is None or actor == self.seat:
             return
         if last_type not in {"dahai", "kakan", "ankan"}:
             return
@@ -161,8 +161,7 @@ class ThreatSnapshotTracker:
         """记录本 bot 已发送的动作,补齐线上不会回传的 pass 语义。"""
         response_type = response.get("type") if isinstance(response, dict) else None
         if (
-            self.seat is not None
-            and actor is not None
+            actor is not None
             and actor != self.seat
             and last_type in {"dahai", "kakan", "ankan"}
             and response_type != "hora"
