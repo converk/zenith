@@ -66,5 +66,6 @@ Action Query。
 重复/缺失 Query、supplier 错误、Critic private 段错序和超长上下文均立即报错。
 RiichiEnv 若拒绝由 action ID 回转的动作，也必须报错，不能静默换成 fallback。
 
-V16/V17 状态和输入文档仅作历史归档；活跃代码不提供加载、迁移或协议适配。
-PPO/rollout 与 `riichi_lab_bot` 对旧输入契约的引用已盘点为 V18 后续待迁移项。
+V16/V17 输入协议文档已随全仓清理移除（仅存于 git 历史与冷存储产物）；活跃代码
+不提供加载、迁移或协议适配。PPO/rollout 与 `riichi_lab_bot` 对旧输入契约的引用
+已盘点为 V18 后续待迁移项。
