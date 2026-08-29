@@ -717,10 +717,8 @@ impl LogKyoku {
                         tiles,
                         meld_type,
                         ..
-                    } => {
-                        if *seat == oya_idx && *meld_type == MeldType::Ankan {
-                            dt = tiles.first().copied();
-                        }
+                    } if *seat == oya_idx && *meld_type == MeldType::Ankan => {
+                        dt = tiles.first().copied();
                     }
                     _ => {}
                 }

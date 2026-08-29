@@ -150,8 +150,8 @@ pub(crate) fn defense_row(
     for opponent in 0..3 {
         let river = rivers[opponent];
         let mut count = 0_u8;
-        for kind in 0..TILE_KINDS {
-            if hand[kind] > 0 && river & (1_u64 << kind) != 0 {
+        for (kind, concealed) in hand.iter().enumerate() {
+            if *concealed > 0 && river & (1_u64 << kind) != 0 {
                 count += 1;
             }
         }

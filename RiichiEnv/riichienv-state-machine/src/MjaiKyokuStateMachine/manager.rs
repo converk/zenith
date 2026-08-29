@@ -92,7 +92,7 @@ impl MjaiKyokuStateMachineManager {
             })
         }).map_err(PyValueError::new_err)?;
 
-        Ok((end_kyoku.into_pyarray(py), end_game.into_pyarray(py)).into_pyobject(py)?)
+        (end_kyoku.into_pyarray(py), end_game.into_pyarray(py)).into_pyobject(py)
     }
 
     /// Atomically records legal actions and returns the fixed 241-action legal mask。
@@ -132,9 +132,9 @@ impl MjaiKyokuStateMachineManager {
             masks[row * NUM_ACTIONS..(row + 1) * NUM_ACTIONS]
                 .copy_from_slice(&table.action_mask(player_index));
         }
-        Ok(masks
+        masks
             .into_pyarray(py)
-            .reshape((batch_size, NUM_ACTIONS))?)
+            .reshape((batch_size, NUM_ACTIONS))
     }
 
     /// Decode selected fixed action ids into the exact corresponding RiichiEnv

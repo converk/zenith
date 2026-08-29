@@ -230,7 +230,7 @@ fn relative_code(observer: usize, source: usize) -> i32 {
     if source == observer {
         0
     } else {
-        ((source as i32 - observer as i32 + 3) % 4) as i32
+        (source as i32 - observer as i32 + 3) % 4
     }
 }
 
@@ -334,14 +334,14 @@ fn claimed_river_indices(melds: &[Vec<Meld>], river_lengths: &[usize]) -> Vec<Ve
     let mut claimed: Vec<Vec<bool>> = river_lengths.iter().map(|&len| vec![false; len]).collect();
     for meld_rows in melds {
         for meld in meld_rows {
-            if meld.from_who >= 0 {
-                if let Some(index) = meld.called_tile_index {
-                    let from = meld.from_who as usize;
-                    if from < claimed.len() {
-                        if let Some(slot) = claimed[from].get_mut(index as usize) {
-                            *slot = true;
-                        }
-                    }
+            if meld.from_who >= 0
+                && let Some(index) = meld.called_tile_index
+            {
+                let from = meld.from_who as usize;
+                if from < claimed.len()
+                    && let Some(slot) = claimed[from].get_mut(index as usize)
+                {
+                    *slot = true;
                 }
             }
         }
@@ -565,8 +565,7 @@ fn encode_one(observation: &Observation) -> Result<(Vec<i32>, Vec<f32>), String>
     // 3) SEP_SELF_HAND + 4) SELF_HAND
     push_row(&mut rows, SEGMENT_SHARED, KIND_SEP_SELF_HAND, &[]);
     push_numeric(&mut numerics, &[]);
-    for kind in 0..TILE_KINDS {
-        let count = own_counts[kind];
+    for (kind, &count) in own_counts.iter().enumerate() {
         if count == 0 {
             continue;
         }
@@ -799,11 +798,12 @@ fn encode_one(observation: &Observation) -> Result<(Vec<i32>, Vec<f32>), String>
             fields.push(i32::from(meld.opened));
             fields.push((meld_index + 1) as i32);
             let meld_yakuhai = open_meld_yakuhai_han(
-                &[meld.clone()],
+                std::slice::from_ref(meld),
                 seat_wind(player, observation.oya),
                 observation.round_wind,
             )?;
-            let meld_dora_aka = visible_meld_dora_aka_han(&[meld.clone()], &dora_multiplicity)?;
+            let meld_dora_aka =
+                visible_meld_dora_aka_han(std::slice::from_ref(meld), &dora_multiplicity)?;
             fields.push(bucket_yakuhai(meld_yakuhai));
             fields.push(bucket_dora_aka(meld_dora_aka));
             push_row(&mut rows, SEGMENT_SHARED, KIND_MELD, &fields);
@@ -904,10 +904,10 @@ fn encode_one(observation: &Observation) -> Result<(Vec<i32>, Vec<f32>), String>
         let river_mask_value = river_mask(observation, player);
         let mut own_genbutsu_kinds = 0usize;
         let mut own_genbutsu_entities = 0usize;
-        for kind in 0..TILE_KINDS {
-            if river_mask_value & (1_u64 << kind) != 0 && own_counts[kind] > 0 {
+        for (kind, &count) in own_counts.iter().enumerate() {
+            if river_mask_value & (1_u64 << kind) != 0 && count > 0 {
                 own_genbutsu_kinds += 1;
-                own_genbutsu_entities += usize::from(own_counts[kind]);
+                own_genbutsu_entities += usize::from(count);
             }
         }
         let decl_tile = declaration
@@ -1093,10 +1093,10 @@ pub fn assemble_current_state_batch<'py>(
             "offsets must have batch+1 entries",
         ));
     }
-    if let Some(legal) = &legal_mask {
-        if legal.shape() != [batch, NUM_ACTIONS] {
-            return Err(PyValueError::new_err("legal_mask must be [batch, 241]"));
-        }
+    if let Some(legal) = &legal_mask
+        && legal.shape() != [batch, NUM_ACTIONS]
+    {
+        return Err(PyValueError::new_err("legal_mask must be [batch, 241]"));
     }
     let rows_slice = rows
         .as_slice()

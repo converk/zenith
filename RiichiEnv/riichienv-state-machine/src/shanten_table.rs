@@ -54,13 +54,13 @@ impl ShantenTable {
             self.honors[codes[3]],
         ];
         let mut unchanged = [0_u64; 4];
-        for changed in 0..4 {
+        for (changed, slot) in unchanged.iter_mut().enumerate() {
             let others = groups
                 .iter()
                 .enumerate()
                 .filter_map(|(index, &value)| (index != changed).then_some(value))
                 .collect::<Vec<_>>();
-            unchanged[changed] = combine_groups(&others);
+            *slot = combine_groups(&others);
         }
 
         let mut out = [crate::SHANTEN_UNAVAILABLE; 34];
