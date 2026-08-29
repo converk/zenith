@@ -26,3 +26,38 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+fixable = ["ALL"]
+unfixable = []
+# 规则选择与 RiichiEnv/pyproject.toml 对齐,三包共用同一 lint 基线。
+select = [
+    "A",  # flake8-builtin
+    "B",  # flake8-bugbear
+    "E",  # pycodestyle error
+    "F",  # Pyflakes
+    "I",  # isort
+    "N",  # pep8-naming
+    "W",  # pycodestyle warning
+    "PL", # Pylint
+    "UP", # pyupgrade
+]
+ignore = [
+    "B905",    # Zip-without-explicit-strict
+    "F403",    # Unable to detect undefined names
+    "N812",    # Lowercase imported as non-lowercase
+    "N999",    # Invalid module name
+    "PLR0912", # Too many branches
+    "PLR0913", # Too many arguments in function definition
+    "PLR2004", # Magic value used in comparison
+    # 以下为本仓有意的架构选择,显式豁免而非默认关闭:
+    "PLC0415", # 函数内延迟导入:torch/riichienv 等重依赖按需加载,测试内隔离导入
+    "PLR0911", # Too many return statements:状态分派函数按分支显式返回
+    "PLR0915", # Too many statements:训练主循环等长函数,训练期内禁止重构拆分
+    "PLR0917", # Too many positional arguments:同 PLR0913,数据管线批量签名
+]
+
