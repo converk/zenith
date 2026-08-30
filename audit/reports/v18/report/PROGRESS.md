@@ -992,3 +992,87 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
 - reward_mean=1.57e-11 value_loss=0.31644 entropy=0.44476 actor_grad_norm=0.048794 critic_grad_norm=2.8478 shared_grad_norm=0.056539
 - rollout_wall_s=235.71 update_wall_s=523.73 sps=1793.5 grp_calls=22096 history_pool_size=0
 - 1v3 vs SFT: first_place_rate=0.2900 top2_rate=0.5405 mean_rank=2.390 point_diff_mean=+2163.9 ci95=[1642.6202777777778, 2658.593611111111]
+
+## 2026-08-29 update=20
+
+- reward_mean=-5.9264e-12 value_loss=0.30711 entropy=0.42817 actor_grad_norm=0.056443 critic_grad_norm=1.6372 shared_grad_norm=0.063014
+- rollout_wall_s=233.19 update_wall_s=511.11 sps=1784.4 grp_calls=22189 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.2998 top2_rate=0.5547 mean_rank=2.360 point_diff_mean=+2938.0 ci95=[2436.5208333333335, 3453.5747222222226]
+
+## 2026-08-29 update=30
+
+- reward_mean=1.9458e-11 value_loss=0.30458 entropy=0.40182 actor_grad_norm=0.060171 critic_grad_norm=1.2354 shared_grad_norm=0.066494
+- rollout_wall_s=230.35 update_wall_s=521.09 sps=1800.4 grp_calls=22215 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3127 top2_rate=0.5700 mean_rank=2.321 point_diff_mean=+3703.4 ci95=[3194.909722222222, 4196.622777777778]
+
+## 2026-08-29 update=40
+
+- reward_mean=-2.5145e-11 value_loss=0.29918 entropy=0.39023 actor_grad_norm=0.06601 critic_grad_norm=0.80107 shared_grad_norm=0.071911
+- rollout_wall_s=231.1 update_wall_s=510.1 sps=1788.3 grp_calls=21903 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3242 top2_rate=0.5785 mean_rank=2.298 point_diff_mean=+3938.4 ci95=[3425.3747222222223, 4427.775833333333]
+
+## 2026-08-30 update=50
+
+- reward_mean=-1.9841e-11 value_loss=0.30174 entropy=0.35037 actor_grad_norm=0.072128 critic_grad_norm=1.6256 shared_grad_norm=0.078786
+- rollout_wall_s=227.34 update_wall_s=514.38 sps=1804.8 grp_calls=22212 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3207 top2_rate=0.5877 mean_rank=2.284 point_diff_mean=+3968.0 ci95=[3457.528333333333, 4498.846388888888]
+
+## 2026-08-30 update=60
+
+- reward_mean=-7.8044e-13 value_loss=0.30081 entropy=0.31741 actor_grad_norm=0.079035 critic_grad_norm=0.7643 shared_grad_norm=0.085876
+- rollout_wall_s=223.71 update_wall_s=512.4 sps=1809.6 grp_calls=22274 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3213 top2_rate=0.5863 mean_rank=2.287 point_diff_mean=+4119.0 ci95=[3635.1969444444444, 4635.519444444444]
+
+## 2026-08-30 update=70
+
+- reward_mean=-2.7183e-11 value_loss=0.29609 entropy=0.29922 actor_grad_norm=0.083089 critic_grad_norm=0.68196 shared_grad_norm=0.089928
+- rollout_wall_s=223.21 update_wall_s=505.75 sps=1805.9 grp_calls=22052 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3268 top2_rate=0.5880 mean_rank=2.275 point_diff_mean=+4057.4 ci95=[3553.7124999999996, 4578.589444444444]
+
+## 2026-08-30 update=80
+
+- reward_mean=4.3993e-12 value_loss=0.29493 entropy=0.27851 actor_grad_norm=0.08847 critic_grad_norm=0.74802 shared_grad_norm=0.095393
+- rollout_wall_s=222.97 update_wall_s=494.29 sps=1791.8 grp_calls=21629 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3355 top2_rate=0.5975 mean_rank=2.250 point_diff_mean=+4481.3 ci95=[3989.2130555555555, 4992.133611111111]
+
+## 2026-08-30 update=90
+
+- reward_mean=4.7105e-13 value_loss=0.29114 entropy=0.26475 actor_grad_norm=0.097335 critic_grad_norm=0.55679 shared_grad_norm=0.10357
+- rollout_wall_s=228.52 update_wall_s=514.15 sps=1800.4 grp_calls=22223 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3323 top2_rate=0.5992 mean_rank=2.253 point_diff_mean=+4664.0 ci95=[4169.261944444444, 5187.041944444445]
+
+## 2026-08-30 update=100
+
+- reward_mean=-3.0855e-12 value_loss=0.29324 entropy=0.24651 actor_grad_norm=0.099585 critic_grad_norm=0.86389 shared_grad_norm=0.10725
+- rollout_wall_s=230.5 update_wall_s=513.47 sps=1794.8 grp_calls=22108 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3413 top2_rate=0.6020 mean_rank=2.235 point_diff_mean=+4845.9 ci95=[4351.071944444445, 5378.021111111111]
+
+## 2026-08-30 update=110
+
+- reward_mean=-1.2744e-11 value_loss=0.28675 entropy=0.22813 actor_grad_norm=0.10669 critic_grad_norm=0.35302 shared_grad_norm=0.1143
+- rollout_wall_s=229.8 update_wall_s=507.95 sps=1793.3 grp_calls=22048 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3288 top2_rate=0.5968 mean_rank=2.257 point_diff_mean=+4698.7 ci95=[4183.948611111111, 5178.522777777777]
+
+## 2026-08-30 update=120
+
+- reward_mean=-1.972e-12 value_loss=0.28253 entropy=0.21137 actor_grad_norm=0.11253 critic_grad_norm=0.46104 shared_grad_norm=0.12066
+- rollout_wall_s=232.76 update_wall_s=508.39 sps=1791.6 grp_calls=22207 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3412 top2_rate=0.6035 mean_rank=2.240 point_diff_mean=+4785.2 ci95=[4277.188611111111, 5269.259722222222]
+
+## 2026-08-30 update=130
+
+- reward_mean=2.482e-12 value_loss=0.2835 entropy=0.199 actor_grad_norm=0.11502 critic_grad_norm=0.44603 shared_grad_norm=0.1244
+- rollout_wall_s=228.9 update_wall_s=504.89 sps=1789.3 grp_calls=22008 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3252 top2_rate=0.5965 mean_rank=2.265 point_diff_mean=+4388.5 ci95=[3905.5869444444443, 4894.014722222222]
+
+## 2026-08-30 update=140
+
+- reward_mean=1.87e-11 value_loss=0.2798 entropy=0.18697 actor_grad_norm=0.11825 critic_grad_norm=0.30201 shared_grad_norm=0.12726
+- rollout_wall_s=235.43 update_wall_s=503.66 sps=1779 grp_calls=21833 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3332 top2_rate=0.5987 mean_rank=2.251 point_diff_mean=+4642.2 ci95=[4163.511666666666, 5125.171666666667]
+
+## 2026-08-30 update=150
+
+- reward_mean=2.6164e-11 value_loss=0.28075 entropy=0.17454 actor_grad_norm=0.12893 critic_grad_norm=0.30215 shared_grad_norm=0.13925
+- rollout_wall_s=240.96 update_wall_s=512.29 sps=1774.5 grp_calls=22429 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3363 top2_rate=0.5962 mean_rank=2.251 point_diff_mean=+4667.5 ci95=[4180.411944444445, 5158.449166666666]
