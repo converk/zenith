@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import gc
 import time
 from contextlib import contextmanager
@@ -191,6 +192,11 @@ if ray is not None:
             self._rollout_target_workers = int(
                 config.get("inference_actor_num_workers", config.get("num_workers", 1))
             )
+            # 事件循环解耦计算执行器:单线程即可(同一时间只有一个 dispatch
+            # 计算在飞,与旧串行时序等价),避免多线程并发触碰 CUDA 上下文。
+            self._compute_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="riichi-inference-compute",
+            )
 
         def _model_config(self) -> ModelConfig:
             values = vars(ModelConfig.preset("v18"))
@@ -346,6 +352,7 @@ if ray is not None:
         def shutdown(self) -> None:
             self.history_models.clear()
             self.sft_model = None
+            self._compute_executor.shutdown(wait=False)
 
         def profile_summary(self) -> dict[str, float]:
             """Return one iteration's actor totals without RPC fan-out double counting."""
@@ -436,6 +443,7 @@ if ray is not None:
 
         async def _drain_requests(self) -> None:
             try:
+                loop = asyncio.get_running_loop()
                 while self._pending:
                     target_workers = self._target_workers()
                     target_rows = max(
@@ -488,8 +496,14 @@ if ray is not None:
                     for _request, _future, queued_at in pending:
                         self.profiler.add("inference/queue_wait", now - queued_at)
                     try:
-                        results = self._infer_many(
-                            [request for request, _future, _queued_at in pending]
+                        # 事件循环解耦:_infer_many 移到线程池执行(默认线程池,
+                        # 与主循环并发),RPC 接收与凑批等待不再被 host collate/
+                        # H2D/GPU 前向阻塞;主循环 await 结果后回填 future。
+                        # 同一时间只有一个计算任务在飞(与旧串行时序等价,
+                        # 数值与顺序不变),仅消除事件循环的「计算期不响应」。
+                        results = await loop.run_in_executor(
+                            self._compute_executor, self._infer_many,
+                            [request for request, _future, _queued_at in pending],
                         )
                         for (_request, future, _queued_at), result in zip(pending, results):
                             if not future.done():
