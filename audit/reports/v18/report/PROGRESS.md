@@ -1096,3 +1096,13 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
   交设计提案)。
 - 详细 before/after 分段计时与消融对照见
   audit/reports/v18/report/V18_PPO训练提速优化报告.md。
+
+## 2026-09-02 提速任务交付后修正(788dd01 / e19863a)
+
+- 发现并修正 2.14 初版重叠编排的首迭代数据簿记缺陷(同一份 rollout 被
+  update 1 与 update 2 各消费一次,超出获批「滞后一拍」语义);重构为
+  「update 前发出下一轮 rollout、update 后收割」规范形态,每份数据恰好
+  消费一次;
+- 已报计时数字有效性不受影响(两次运行 rollout 工作量相同);数值
+  代表性受限说明与证据留存情况见优化报告第八节;
+- 修正后 riichi_ppo_v1/tests 224 passed;v18_ppo.yaml 未再改动。
