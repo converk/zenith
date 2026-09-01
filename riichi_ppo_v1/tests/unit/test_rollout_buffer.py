@@ -320,6 +320,9 @@ def test_checkpoint_resume_restores_adam_moments_and_schedule(tmp_path) -> None:
         return RolloutBuffer(_transitions(np.random.default_rng(5), 24))
 
     kwargs = _learner_kwargs(update_epochs=2, minibatch_size=8, target_kl=100.0)
+    # torch.compile(△ 级,默认开启)会改变浮点归约顺序;本测试在 CPU 设备
+    # 上断言「恢复与连续运行一致」,显式关闭 compile 保持逐位口径。
+    kwargs["torch_compile"] = False
     torch.manual_seed(0)
     plain = PPOLearner("v18", "cpu", **kwargs)
     plain.update(make_buffer(), shuffle_seed=7)

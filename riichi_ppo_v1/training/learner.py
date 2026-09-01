@@ -559,6 +559,13 @@ class PPOLearner:
             fused=self.use_bf16,
         )
         self.branch_parameters = optimizer_branch_parameters(self.optimizer)
+        # torch.compile 快速路径(△ 级:浮点归约顺序改变,训练轨迹漂移;
+        # 维护者 2026-09-01 批准,配置键 torch_compile 默认开启,置 false
+        # 回退 eager)。必须在 DDP 包装**之前**编译原始模块(SFT trainer
+        # 同做法);后续 DDP/权重读取经 state_dict 代理到 _orig_mod 正常工作。
+        self.torch_compile = bool(hyperparameters.get("torch_compile", True))
+        if self.torch_compile:
+            self.model = torch.compile(self.model)
         self.model_ddp: DistributedDataParallel | None = (
             DistributedDataParallel(
                 self.model,
@@ -673,8 +680,17 @@ class PPOLearner:
             finally:
                 self._sync_cuda()
 
+    def _state_dict_source(self) -> nn.Module:
+        """权重读写目标:compile 包装时返回底层 ``_orig_mod``(同一组参数,
+        state_dict 键不带包装前缀,checkpoint 契约与 eager 完全一致)。"""
+        module = self.model
+        return getattr(module, "_orig_mod", module)
+
     def weights(self) -> dict[str, torch.Tensor]:
-        return {key: value.detach().cpu() for key, value in self.model.state_dict().items()}
+        return {
+            key: value.detach().cpu()
+            for key, value in self._state_dict_source().state_dict().items()
+        }
 
     def rng_state(self) -> dict[str, Any]:
         """当前 rank 的 Python/numpy/torch/CUDA RNG 状态(供 checkpoint 保存)。"""
@@ -1514,7 +1530,7 @@ class PPOLearner:
             raise RuntimeError(
                 "PPO exact resume model_config differs from the active V18 topology"
             )
-        self.model.load_state_dict(payload["model"], strict=True)
+        self._state_dict_source().load_state_dict(payload["model"], strict=True)
         self.optimizer.load_state_dict(payload["optimizer"])
         self.iteration = int(payload["iteration"])
         reference_state = payload.get("sft_reference_model")
@@ -1561,7 +1577,7 @@ class PPOLearner:
             raise RuntimeError(
                 "V18 SFT checkpoint model_config differs from the active PPO topology"
             )
-        self.model.load_state_dict(payload["model"], strict=True)
+        self._state_dict_source().load_state_dict(payload["model"], strict=True)
         self.reference_model = KyokuTransformerActorCritic(self.config).to(self.device)
         self.reference_model.load_state_dict(self.model.state_dict(), strict=True)
         self.reference_model.requires_grad_(False)
