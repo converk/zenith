@@ -963,15 +963,22 @@ pub fn prepare_current_state_batch(
     let mut all_rows: Vec<i32> = Vec::new();
     let mut all_numeric: Vec<f32> = Vec::new();
     let mut offsets: Vec<i64> = vec![0];
-    for observation in &observations {
-        let (rows, numerics) = encode_one(observation).map_err(PyValueError::new_err)?;
-        if rows.len() % ROW_WIDTH != 0 || numerics.len() % NUMERIC_WIDTH != 0 {
-            return Err(PyValueError::new_err("编码器输出了错位的行"));
+    // 计算段释放 GIL(observations 已在参数绑定时深拷贝为 Vec,encode_one
+    // 纯 Rust 计算):供多线程 worker 并行调用本函数时真正并发。
+    let encode_result: Result<(), PyErr> = py.detach(|| {
+        for observation in &observations {
+            let (rows, numerics) =
+                encode_one(observation).map_err(|error| PyValueError::new_err(error.to_string()))?;
+            if rows.len() % ROW_WIDTH != 0 || numerics.len() % NUMERIC_WIDTH != 0 {
+                return Err(PyValueError::new_err("编码器输出了错位的行"));
+            }
+            all_rows.extend(rows);
+            all_numeric.extend(numerics);
+            offsets.push((all_rows.len() / ROW_WIDTH) as i64);
         }
-        all_rows.extend(rows);
-        all_numeric.extend(numerics);
-        offsets.push((all_rows.len() / ROW_WIDTH) as i64);
-    }
+        Ok(())
+    });
+    encode_result?;
     let total = all_rows.len() / ROW_WIDTH;
     let rows_array = Array2::from_shape_vec((total, ROW_WIDTH), all_rows)
         .map_err(|error| PyValueError::new_err(error.to_string()))?

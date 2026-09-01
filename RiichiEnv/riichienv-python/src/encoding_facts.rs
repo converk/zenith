@@ -414,13 +414,19 @@ pub fn prepare_encoding_facts(
             "drawn_tile_overrides values must be -1 or physical tile ids in 0..136",
         ));
     }
-    let facts = observations
-        .iter()
-        .enumerate()
-        .map(|(index, observation)| {
-            observation_facts(observation, riichi_declared_overrides[index])
+    // 计算段释放 GIL(输入已脱离 Python 对象:Vec<Observation>/Vec<Action>
+    // 与只读切片;PyO3 的 Vec 转换在参数绑定时完成深拷贝),供多线程
+    // worker 并行调用本函数时真正并发。
+    let facts = py
+        .detach(|| {
+            observations
+                .iter()
+                .enumerate()
+                .map(|(index, observation)| {
+                    observation_facts(observation, riichi_declared_overrides[index])
+                })
+                .collect::<Result<Vec<_>, _>>()
         })
-        .collect::<Result<Vec<_>, _>>()
         .map_err(PyValueError::new_err)?;
 
     let mut action_types = vec![0_u8; rows];
@@ -443,6 +449,9 @@ pub fn prepare_encoding_facts(
     let mut o8_values = vec![2_u8; rows];
     let mut o9_values = vec![0_u8; rows];
 
+    // 主 action 计算循环释放 GIL(输入为已拷贝的 Vec 与只读切片,输出
+    // Vec 在闭包外预分配;闭包返回 Result<(), PyErr> 统一传播错误)。
+    py.detach(|| -> Result<(), PyErr> {
     for (row, action) in actions.iter().enumerate() {
         let observation_index = usize::try_from(observation_indices[row])
             .map_err(|_| PyValueError::new_err("observation index conversion failed"))?;
@@ -644,6 +653,8 @@ pub fn prepare_encoding_facts(
             open_melds[row] = meld_count;
         }
     }
+        Ok(())
+    })?;
 
     let make_u8_2d = |values, width| {
         Array2::from_shape_vec((rows, width), values)
