@@ -16,6 +16,7 @@ from riichi_ppo_v1.training.learner import (
     policy_entropy_values,
     rollout_update_targets,
     scheduled_entropy_coefficient,
+    transfer_batch_to_device,
 )
 from riichi_ppo_v1.training.rollout_buffer import RolloutBuffer
 from riichi_ppo_v1.training.trajectory import Transition
@@ -438,16 +439,26 @@ def test_accumulation_clips_and_steps_only_at_group_boundaries(monkeypatch) -> N
 
 
 def test_factor_flatten_compacts_to_uint8_and_fail_closed() -> None:
-    """V18 token 因子行压成 uint8 存储,collate 仍输出 int64 且逐位一致;
-    超出 255 的因子列 fail-closed,防止静默回绕。"""
+    """V18 token 因子行压成 uint8 存储,collate 以 uint8 输出紧凑索引
+    (值域 < 256,传输体积缩 8 倍,由 transfer_batch_to_device 在 GPU 侧
+    恢复 long,数值逐位一致);超出 255 的因子列 fail-closed,防止静默回绕。"""
     transitions = _transitions(np.random.default_rng(31), 12)
     buffer = RolloutBuffer(transitions)
     assert buffer.actor_factors_flat.dtype == np.uint8
     assert buffer.query_ids_flat.dtype == np.uint8
     batch = buffer.collate(np.arange(5))
-    assert batch["actor_factors"].dtype == torch.int64
-    assert batch["query_action_ids"].dtype == torch.int64
-    assert batch["critic_factors"].dtype == torch.int64
+    assert batch["actor_factors"].dtype == torch.uint8
+    assert batch["query_action_ids"].dtype == torch.uint8
+    assert batch["critic_factors"].dtype == torch.uint8
+    # GPU 侧恢复 long:transfer_batch_to_device 按 dtype 分派(数值逐位一致)。
+    device_batch = transfer_batch_to_device(batch, torch.device("cpu"))
+    assert device_batch["actor_factors"].dtype == torch.int64
+    assert device_batch["query_action_ids"].dtype == torch.int64
+    assert device_batch["critic_factors"].dtype == torch.int64
+    np.testing.assert_array_equal(
+        device_batch["actor_factors"].numpy(),
+        batch["actor_factors"].numpy().astype(np.int64),
+    )
 
     # 超 255 的因子必须显式报错(绝不能静默回绕)。
     bad = _transitions(np.random.default_rng(33), 3)

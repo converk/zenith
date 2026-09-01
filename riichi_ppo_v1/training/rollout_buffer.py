@@ -31,6 +31,11 @@ _ACTOR_W = TOKEN_ROW_WIDTH
 _NUMERIC_W = TOKEN_NUMERIC_WIDTH
 _CRITIC_W = TOKEN_ROW_WIDTH
 
+# host→device 传输用紧凑索引 dtype:所有类别因子/动作 id 值域 < 256
+# (uint8 fail-closed 由 _compact_factor_flat 保证),int64 只是模型 embedding
+# 的消费需求。GPU 侧 .long() 与原 int64 直传数值逐位一致。
+_H2D_FACTOR_DTYPE = np.uint8
+
 
 def _gather_padded(
     flat: np.ndarray,
@@ -301,6 +306,9 @@ class RolloutBuffer:
         额外输出 host 侧标量 ``shared_capacity``/``critic_total_capacity``
         (numpy 预计算,与 forward 内 GPU 推导逐位同义):learner 侧透传给
         forward 以消除 ``max().item()`` 同步;调用方不消费时忽略即可。
+        类别因子/动作 id 以 uint8 输出(值域 < 256,存储层已 fail-closed),
+        由 ``transfer_batch_to_device`` 在 GPU 侧转 long,数值逐位一致;
+        标量长度/动作/logprob 等 int64/float32 字段不受影响。
         """
         idx = np.asarray([int(index) for index in indices], dtype=np.int64)
         if len(idx) == 0:
@@ -322,7 +330,7 @@ class RolloutBuffer:
             max_actor,
             0,
             width=_ACTOR_W,
-            dtype=np.int64,
+            dtype=_H2D_FACTOR_DTYPE,
         )
         actor_numeric = _gather_padded(
             self.actor_numeric_flat,
@@ -338,7 +346,7 @@ class RolloutBuffer:
             pair_counts,
             max_pairs,
             0,
-            dtype=np.int64,
+            dtype=_H2D_FACTOR_DTYPE,
         )
         if max_critic > 0:
             critic_factors = _gather_padded(
@@ -348,10 +356,10 @@ class RolloutBuffer:
                 max_critic,
                 0,
                 width=_CRITIC_W,
-                dtype=np.int64,
+                dtype=_H2D_FACTOR_DTYPE,
             )
         else:
-            critic_factors = np.zeros((batch, 0, _CRITIC_W), dtype=np.int64)
+            critic_factors = np.zeros((batch, 0, _CRITIC_W), dtype=_H2D_FACTOR_DTYPE)
 
         # 标量长度/动作使用 long,legal mask 使用 bool。
         actor_lengths = torch.from_numpy(actor_lens)

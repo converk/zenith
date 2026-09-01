@@ -383,17 +383,58 @@ def rollout_target_metrics(
 
 
 def transfer_batch_to_device(
-    host_batch: dict[str, torch.Tensor],
+    host_batch: dict[str, Any],
     device: torch.device,
     profiler: StageProfiler | None = None,
-) -> dict[str, torch.Tensor]:
-    """把 CPU minibatch 传输到 learner 设备。"""
-    profile = profiler or StageProfiler(enabled=False)
+) -> dict[str, Any]:
+    """把 CPU minibatch 传输到 learner 设备。
+
+    索引类张量(host 侧为 uint8/紧凑 dtype)在 GPU 侧统一转 ``long``,与旧
+    int64 直传数值逐位一致;浮点/bool/长度字段原样传输。CUDA 上对整批
+    做一次 ``pin_memory`` 后以 ``non_blocking`` 异步发起 H2D,消除逐字段
+    pageable 传输的隐式同步等待(纯数据通路优化,不改任何数值)。非张量
+    字段(host 侧标量/类别行表)原样返回。
+    """
+    tensors = {
+        name: value for name, value in host_batch.items()
+        if isinstance(value, torch.Tensor)
+    }
+    others = {
+        name: value for name, value in host_batch.items()
+        if not isinstance(value, torch.Tensor)
+    }
+    profile = StageProfiler(enabled=False) if profiler is None else profiler
     with profile.stage("update/collate_h2d"):
-        return {
-            name: value.to(device=device)
-            for name, value in host_batch.items()
+        if device.type != "cuda":
+            transferred = {
+                name: (
+                    value.to(device=device).long()
+                    if _is_compact_index_tensor(value) else value.to(device=device)
+                )
+                for name, value in tensors.items()
+            }
+            return {**transferred, **others}
+        pinned = {
+            name: value.pin_memory() if value.device.type == "cpu" else value
+            for name, value in tensors.items()
         }
+        transferred = {
+            name: value.to(device=device, non_blocking=True)
+            for name, value in pinned.items()
+        }
+        promoted = {
+            name: value.long() if _is_compact_index_tensor(value) else value
+            for name, value in transferred.items()
+        }
+        return {**promoted, **others}
+
+
+def _is_compact_index_tensor(value: torch.Tensor) -> bool:
+    """判断 host minibatch 字段是否为需在 GPU 侧恢复 long 的紧凑索引。"""
+    return (
+        value.dtype in (torch.uint8, torch.int8, torch.int16)
+        and value.ndim >= 1
+    )
 
 
 class _PrefetchAborted(Exception):  # noqa: N818 -- 故意的控制流信号而非错误,docstring 已注明,不加 Error 后缀
