@@ -732,16 +732,51 @@ class PPOLearner:
         行值跨 epoch 不变,故每 update 一次取代每 minibatch 一次(约占 update
         forward 的 40%)。结果 [N, NUM_ACTIONS] fp32 驻留 GPU 至 update 结束,
         由 minibatch 按 indices gather(常量,无梯度)。
+
+        chunk 的 host collate 交给一个后台线程与 GPU 前向重叠(stage 内原本
+        collate+H2D 串行):线程只做纯 CPU numpy 工作,不触碰 CUDA;产出的
+        host 批经有界队列交给主线程(队列容量 2,反压防内存膨胀)。数值与
+        串行版本逐位一致(同一 collate 输入与同一前向顺序)。
         """
         model = self.reference_model
         assert model is not None
         total = len(transitions)
         chunk = self.reference_precompute_batch_size
+        chunk_starts = list(range(0, total, chunk))
+        if not chunk_starts:
+            raise RuntimeError("reference precompute requires a non-empty shard")
+        producer_queue: _queue.Queue[Any] = _queue.Queue(maxsize=2)
+        producer_error: list[BaseException] = []
+
+        def produce() -> None:
+            try:
+                for start in chunk_starts:
+                    host_batch = transitions.collate(np.arange(start, min(start + chunk, total)))
+                    while True:
+                        try:
+                            producer_queue.put(host_batch, timeout=0.2)
+                            break
+                        except _queue.Full:
+                            continue
+            except BaseException as exc:  # noqa: BLE001 - 交由主线程统一抛出
+                producer_error.append(exc)
+            finally:
+                producer_queue.put(None)
+
+        producer = threading.Thread(
+            target=produce, name="riichi-ppo-reference-collate", daemon=True,
+        )
+        producer.start()
         chunks: list[torch.Tensor] = []
         with torch.inference_mode():
-            for start in range(0, total, chunk):
-                stop = min(start + chunk, total)
-                host_batch = transitions.collate(np.arange(start, stop))
+            for _start in chunk_starts:
+                host_batch = producer_queue.get()
+                if host_batch is None:
+                    if producer_error:
+                        raise producer_error[0] from None
+                    raise RuntimeError(
+                        "reference collate producer ended before all chunks"
+                    ) from None
                 shared_capacity = host_batch.pop("shared_capacity", None)
                 host_batch.pop("critic_total_capacity", None)
                 kind_row_plan = host_batch.pop("kind_row_plan", None)
@@ -766,6 +801,12 @@ class PPOLearner:
                         critic_kind_row_plan=critic_kind_row_plan,
                     )["policy_logits"]
                 chunks.append(logits)
+        # 排空生产者可能残留的哨兵/批次(主线程提前异常时避免挂起)。
+        while producer_queue.qsize():
+            producer_queue.get_nowait()
+        producer.join(timeout=5.0)
+        if producer.is_alive():
+            raise RuntimeError("reference collate producer did not stop within 5s")
         # inference_mode 张量不能参与 autograd 记录;在 inference_mode 之外
         # cat 出普通张量,供 minibatch 内的 KL 计算安全使用。
         return torch.cat(chunks, dim=0) if len(chunks) > 1 else chunks[0].clone()

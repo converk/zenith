@@ -543,3 +543,51 @@ def test_prefetch_propagates_collate_exception(monkeypatch) -> None:
     )
     with pytest.raises(RuntimeError, match="boom in collate"):
         learner.update(transitions, shuffle_seed=7)
+
+
+def test_reference_precompute_pipeline_matches_serial() -> None:
+    """SFT reference 预计算的 collate 后台线程化与串行版逐位一致。
+
+    线程只做 host collate(纯 CPU numpy),chunk 输入与 GPU 前向顺序不变;
+    以同一 RolloutBuffer、同一冻结模型分别走两条路径,断言 logits 逐位相等。
+    """
+    if not torch.cuda.is_available():
+        pytest.skip("reference precompute pipeline 对比需要 CUDA")
+    from riichi_ppo_v1.model import KyokuTransformerActorCritic
+
+    transitions = _transitions(np.random.default_rng(77), 24)
+    buffer = RolloutBuffer(transitions)
+    model = KyokuTransformerActorCritic().cuda().eval()
+    model.requires_grad_(False)
+    kwargs = _learner_kwargs()
+    kwargs["update_reference_precompute_batch_size"] = 8
+    kwargs["total_updates"] = 50
+    learner_a = PPOLearner("v18", "cuda:0", **{**kwargs, "profile_enabled": False})
+    learner_a.reference_model = model
+    learner_b = PPOLearner("v18", "cuda:0", **{**kwargs, "profile_enabled": False})
+    learner_b.reference_model = model
+
+    with torch.inference_mode():
+        pipelined = learner_a._precompute_reference_logits(buffer)
+    # 串行基线:直接内联复刻旧循环(collate+前向同序,无后台线程)。
+    chunks = []
+    with torch.inference_mode():
+        for start in range(0, len(buffer), 8):
+            host_batch = buffer.collate(np.arange(start, min(start + 8, len(buffer))))
+            host_batch.pop("critic_total_capacity", None)
+            shared_capacity = host_batch.pop("shared_capacity", None)
+            kind_row_plan = host_batch.pop("kind_row_plan", None)
+            critic_kind_row_plan = host_batch.pop("critic_kind_row_plan", None)
+            batch = transfer_batch_to_device(host_batch, learner_b.device, None)
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                logits = model(
+                    batch["actor_factors"], batch["actor_numeric"], batch["actor_lengths"],
+                    batch["query_action_ids"], batch["query_pair_counts"], batch["legal_mask"],
+                    policy_only=True, validate_structure=learner_b.update_validate_structure,
+                    shared_capacity=shared_capacity,
+                    kind_row_plan=kind_row_plan, critic_kind_row_plan=critic_kind_row_plan,
+                )["policy_logits"]
+            chunks.append(logits)
+    serial = torch.cat(chunks, dim=0)
+    assert pipelined.shape == serial.shape
+    assert torch.equal(pipelined, serial)
