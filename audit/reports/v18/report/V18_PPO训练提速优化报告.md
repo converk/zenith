@@ -129,3 +129,29 @@
 - 收尾 commit:`v18_ppo.yaml` 显式写入 Tier 2 开关键(注明批准日期)。
 
 测试:`riichi_ppo_v1/tests` 224 passed;`RiichiEnv/tests` 190 passed + 2 skipped;`cargo test --workspace` 95 passed。测试产生的临时 checkpoint/日志已清理,正式 checkpoint 目录只读未动。
+
+---
+
+## 八、交付后修正与证据留存说明(2026-09-02,commit `788dd01`)
+
+1. **2.14 首迭代数据簿记缺陷与修正**:初版重叠编排(`40ed96b`)在首个 update 串行
+   收集本份 rollout 并消费后,又在 update 结束时收割**同一组 refs** 留给下一个
+   update——同一份 rollout 被两个 update 各消费一次,超出获批的「滞后一拍」语义。
+   证据:验证/缩放运行的相邻迭代 transitions 计数完全相同(全量验证 151/152 均为
+   1429205;缩放 2.14 运行均为 765240)。
+   修正(`788dd01`)改为规范形态:迭代 k 在 update 前发出「k+1 轮」rollout(与本轮
+   update 并行,逐轮冻结权重),update k 消费上一轮收割的 rollout k;每份数据恰好
+   消费一次,最后一个 update 不发起不会被消费的 rollout。
+2. **对已报数字的影响**:计时口径有效——两次运行的 rollout 工作量相同(同
+   games_per_update×epochs),墙钟对照不受影响;修正还移除了末轮「注定不消费的
+   收割等待」(~3s),454.6s 为保守口径。**数值代表性受限**:5.2 验证与 2.14 缩放
+   测试的 update 152 数值(entropy/approx_kl 等)采自重复消费的数据批(等效对同一
+   批多跑一遍 epoch),量级 sanity 仍成立,但如需干净的「修正后」数值对照,应在
+   `788dd01` 之后重跑(维护者已决定不再重跑)。
+3. **证据留存**:原始成功验证(2026-09-02 00:33–01:03)的
+   `perf_fullscale_verify_20260902.log` 与 `ppo_perf/fullscale_verify/performance.jsonl`
+   在一次被取消的重复确认运行启动时被覆盖/清理;头条数字存档于 commit `11c6421`
+   与 `d423e0d` 的提交信息及本报告第二节/第三节表格。缩放口径各阶段的
+   `logs/v18/perf_scaled_*.log` 均完整留存。
+4. **测试**:修正后 `riichi_ppo_v1/tests` 224 passed(含 CPU 上的 2.14 编排路径
+   集成测试);`v18_ppo.yaml` 未再改动。
