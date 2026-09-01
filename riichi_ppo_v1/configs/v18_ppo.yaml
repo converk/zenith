@@ -47,6 +47,17 @@ bucket_window_multiplier: 8
 # 十余次 GPU→CPU 同步;关闭不影响数值路径。默认 True(不配置时行为不变)。
 update_validate_structure: false
 
+# Tier 2 性能开关(维护者 2026-09-01 批准 △/✗ 级训练期语义变更,默认开启;
+# 模型输入语义与 PPO 超参不变。消融对照与数值分布对比见
+# audit/reports/v18/report/V18_PPO训练提速优化报告.md):
+# - torch_compile(△):learner 前反向编译,浮点归约顺序改变、训练轨迹漂移;
+#   置 false 回退 eager(需重启训练生效)。
+# - rollout_update_overlap(✗):rollout 与 update 流水线重叠,采样数据滞后
+#   一拍(逐轮冻结权重,陈旧度均匀;PPO ratio 逐行自洽);置 false 回退
+#   严格串行旧编排。
+torch_compile: true
+rollout_update_overlap: true
+
 # critic 侧降温:0.5→0.3,直接压低 critic 分支 pre-clip 梯度,并同步降低
 # 回流 shared 公共表示的 value 梯度。
 value_coef: 0.3

@@ -1076,3 +1076,23 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
 - reward_mean=2.6164e-11 value_loss=0.28075 entropy=0.17454 actor_grad_norm=0.12893 critic_grad_norm=0.30215 shared_grad_norm=0.13925
 - rollout_wall_s=240.96 update_wall_s=512.29 sps=1774.5 grp_calls=22429 history_pool_size=0
 - 1v3 vs SFT: first_place_rate=0.3363 top2_rate=0.5962 mean_rank=2.251 point_diff_mean=+4667.5 ci95=[4180.411944444445, 5158.449166666666]
+
+## 2026-09-02 V18 PPO 训练提速任务完成
+
+- 全量正式验证(2048×2,交付态,iteration=152):algorithm_wall_s 746.0→**454.6s(-39.1%)**,
+  sps 1793→3144(+75%);rollout/update 流水线重叠,总墙钟 ≈ max(update 451.3s, rollout);
+  learner 峰值显存 allocated 21.9GB / reserved 38.4GB(与 r5 同级);
+  sanity:entropy=0.17416 approx_kl=0.00115 value_loss=0.2707(与 r5 尾部同量级)。
+- 缩放口径(1024×1)迭代链条:285.7s → 159.4s(-44.2%)。
+- 实施(每项独立 commit):Tier 0.1 H2D(pinned+uint8,★)、0.2 推理凑批 quorum(★,
+  rollout -26%)、0.3 Rust release profile(★)、0.4 critic 算术 scatter(★ 逐位一致)、
+  Tier 1.6 reference 预计算流水线(★)、1.7 推理事件循环解耦(★)、1.9 Rust GIL 释放+
+  全局 mjai_log 停写(★)、1.10 RPC 载荷 uint8(★)、Tier 2.13 torch.compile(△,
+  fwd+bwd -35%)、2.14 rollout/update 重叠(✗,数据滞后一拍+逐轮冻结)。
+- Tier 2 开关(torch_compile / rollout_update_overlap,默认开启,维护者 2026-09-01 批准)
+  已显式写入 v18_ppo.yaml;关/开消融:关重叠 205.7s、关编译 203.8s(缩放口径)。
+- 决策不做并留档:0.5 minibatch 2048(负收益+7GB)、1.8 双缓冲、1.11 driver gap
+  (实测仅 ~17s/746s)、1.12 物化免拷贝、2.15 env 一级公民(关键路径在 update 侧,
+  交设计提案)。
+- 详细 before/after 分段计时与消融对照见
+  audit/reports/v18/report/V18_PPO训练提速优化报告.md。
