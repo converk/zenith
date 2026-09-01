@@ -538,41 +538,111 @@ def run(config: dict[str, Any]) -> None:
     try:
         eval1v3_summary: dict[str, Any] | None = None
         games_per_update = max(1, int(config.get("games_per_update", 512)))
+        # rollout/update 流水线重叠(✗ 级,维护者 2026-09-01 批准;配置键
+        # rollout_update_overlap 默认开启,置 false 回退严格串行旧编排)。
+        # 语义:数据滞后一拍——第 k 个 update 使用「k-1 轮结束时已广播的
+        # 权重」采样的 rollout(逐轮冻结:每轮 rollout 全程固定权重,新权重
+        # 在该轮结束后才广播,无热切换);PPO ratio 逐行自洽(old_logprob
+        # 由推理 actor 在采样时返回,即真实采样策略)。总墙钟收敛为
+        # max(rollout, update) + 收尾一轮。
+        overlap_enabled = bool(config.get("rollout_update_overlap", True))
+        pending_rollout: tuple[
+            int, list[Any], float, float,
+        ] | None = None  # (update_number, refs, begin_s, rollout_started)
+        last_results: list[tuple[Any, dict[str, float]]] | None = None
+        rollout_wall_s = 0.0
+        rollout_result_get_s = 0.0
+        rollout_worker_ready_s = 0.0
         for iteration in range(learner.iteration, int(config["iterations"])):
             update_number = iteration + 1
             gpu_cursor = gpu_sampler.checkpoint()
             algorithm_started = time.perf_counter()
-            begin_rollout_started = time.perf_counter()
-            ray.get([actor.begin_rollout.remote(update_number) for actor in inference_actors])
-            begin_rollout_s = time.perf_counter() - begin_rollout_started
-            rollout_started = time.perf_counter()
-            rollout_refs = [
-                worker.collect.remote(update_number)
-                for worker in workers
-            ]
-            ready_refs, pending_refs = ray.wait(
-                rollout_refs, num_returns=len(rollout_refs), timeout=None,
-            )
-            if pending_refs or len(ready_refs) != len(rollout_refs):
-                raise RuntimeError("not all rollout workers became ready")
-            rollout_worker_ready_s = time.perf_counter() - rollout_started
-            result_get_started = time.perf_counter()
-            # 按原始 worker 顺序取回,保持 transition 拼接与固定 seed 语义不变。
-            results = ray.get(rollout_refs)
-            rollout_result_get_s = time.perf_counter() - result_get_started
-            rollout_wall_s = time.perf_counter() - rollout_started
-            profile_summary_started = time.perf_counter()
-            actor_profiles = ray.get([
-                actor.profile_summary.remote() for actor in inference_actors
-            ])
-            actor_profile = aggregate_actor_profiles(actor_profiles)
-            profile_summary_s = time.perf_counter() - profile_summary_started
-            transition_assembly_started = time.perf_counter()
-            worker_payloads = [payload for payload, _stats in results]
-            if not all(isinstance(payload, RolloutBuffer) for payload in worker_payloads):
-                raise RuntimeError("rollout workers must return RolloutBuffer payloads")
-            transitions = RolloutBuffer.concatenate(worker_payloads)
-            transition_assembly_s = time.perf_counter() - transition_assembly_started
+            if overlap_enabled:
+                # 发出本轮 rollout 后立即回到主线程;数据仍在途时先做
+                # 上一轮的 update(重叠),否则首迭代退化为串行。
+                begin_rollout_started = time.perf_counter()
+                ray.get([actor.begin_rollout.remote(update_number) for actor in inference_actors])
+                begin_rollout_s = time.perf_counter() - begin_rollout_started
+                rollout_started = time.perf_counter()
+                rollout_refs = [
+                    worker.collect.remote(update_number)
+                    for worker in workers
+                ]
+                results = None
+                if last_results is not None:
+                    # 上一轮收割的 rollout 数据:本轮 update 的输入
+                    # (滞后一拍)。profile 汇总延后到收割点已做过,这里
+                    # 只需恢复其结果供指标组装。
+                    results = last_results
+                    last_results = None
+                    profile_summary_started = time.perf_counter()
+                    actor_profiles = ray.get([
+                        actor.profile_summary.remote() for actor in inference_actors
+                    ])
+                    actor_profile = aggregate_actor_profiles(actor_profiles)
+                    profile_summary_s = time.perf_counter() - profile_summary_started
+                    transition_assembly_started = time.perf_counter()
+                    worker_payloads = [payload for payload, _stats in results]
+                    if not all(isinstance(payload, RolloutBuffer) for payload in worker_payloads):
+                        raise RuntimeError("rollout workers must return RolloutBuffer payloads")
+                    transitions = RolloutBuffer.concatenate(worker_payloads)
+                    transition_assembly_s = time.perf_counter() - transition_assembly_started
+            else:
+                begin_rollout_started = time.perf_counter()
+                ray.get([actor.begin_rollout.remote(update_number) for actor in inference_actors])
+                begin_rollout_s = time.perf_counter() - begin_rollout_started
+                rollout_started = time.perf_counter()
+                rollout_refs = [
+                    worker.collect.remote(update_number)
+                    for worker in workers
+                ]
+                ready_refs, pending_refs = ray.wait(
+                    rollout_refs, num_returns=len(rollout_refs), timeout=None,
+                )
+                if pending_refs or len(ready_refs) != len(rollout_refs):
+                    raise RuntimeError("not all rollout workers became ready")
+                rollout_worker_ready_s = time.perf_counter() - rollout_started
+                result_get_started = time.perf_counter()
+                # 按原始 worker 顺序取回,保持 transition 拼接与固定 seed 语义不变。
+                results = ray.get(rollout_refs)
+                rollout_result_get_s = time.perf_counter() - result_get_started
+                rollout_wall_s = time.perf_counter() - rollout_started
+                profile_summary_started = time.perf_counter()
+                actor_profiles = ray.get([
+                    actor.profile_summary.remote() for actor in inference_actors
+                ])
+                actor_profile = aggregate_actor_profiles(actor_profiles)
+                profile_summary_s = time.perf_counter() - profile_summary_started
+                transition_assembly_started = time.perf_counter()
+                worker_payloads = [payload for payload, _stats in results]
+                if not all(isinstance(payload, RolloutBuffer) for payload in worker_payloads):
+                    raise RuntimeError("rollout workers must return RolloutBuffer payloads")
+                transitions = RolloutBuffer.concatenate(worker_payloads)
+                transition_assembly_s = time.perf_counter() - transition_assembly_started
+            if results is None:
+                # overlap 首迭代:无在途数据,等待本轮 rollout 完成(串行退化)。
+                ready_refs, pending_refs = ray.wait(
+                    rollout_refs, num_returns=len(rollout_refs), timeout=None,
+                )
+                if pending_refs or len(ready_refs) != len(rollout_refs):
+                    raise RuntimeError("not all rollout workers became ready")
+                rollout_worker_ready_s = time.perf_counter() - rollout_started
+                result_get_started = time.perf_counter()
+                results = ray.get(rollout_refs)
+                rollout_result_get_s = time.perf_counter() - result_get_started
+                rollout_wall_s = time.perf_counter() - rollout_started
+                profile_summary_started = time.perf_counter()
+                actor_profiles = ray.get([
+                    actor.profile_summary.remote() for actor in inference_actors
+                ])
+                actor_profile = aggregate_actor_profiles(actor_profiles)
+                profile_summary_s = time.perf_counter() - profile_summary_started
+                transition_assembly_started = time.perf_counter()
+                worker_payloads = [payload for payload, _stats in results]
+                if not all(isinstance(payload, RolloutBuffer) for payload in worker_payloads):
+                    raise RuntimeError("rollout workers must return RolloutBuffer payloads")
+                transitions = RolloutBuffer.concatenate(worker_payloads)
+                transition_assembly_s = time.perf_counter() - transition_assembly_started
             update_started = time.perf_counter()
             update_seed = int(config["seed"]) + (iteration + 1) * 1_000_003
             update_result = learner.update(transitions, shuffle_seed=update_seed)
@@ -581,11 +651,37 @@ def run(config: dict[str, Any]) -> None:
             else:
                 metrics = update_result
                 metrics_by_rank = [update_result]
+            # 逐轮冻结:新权重在本轮 update 结束后广播;对已在途的下一轮
+            # rollout 不热切换(其全程使用旧一拍权重),再下一轮自然生效。
             ray.get([
                 actor.update_weights.remote(learner.weights())
                 for actor in inference_actors
             ])
             update_wall_s = time.perf_counter() - update_started
+            if overlap_enabled:
+                # 本轮 update 完成,现在收割本轮发出的 rollout(其与 update
+                # 已重叠执行),并把数据留给下一迭代的 update。
+                ready_refs, pending_refs = ray.wait(
+                    rollout_refs, num_returns=len(rollout_refs), timeout=None,
+                )
+                if pending_refs or len(ready_refs) != len(rollout_refs):
+                    raise RuntimeError("not all rollout workers became ready")
+                rollout_worker_ready_s = time.perf_counter() - rollout_started
+                result_get_started = time.perf_counter()
+                last_results = ray.get(rollout_refs)
+                rollout_result_get_s = time.perf_counter() - result_get_started
+                rollout_wall_s = time.perf_counter() - rollout_started
+                profile_summary_started = time.perf_counter()
+                actor_profiles = ray.get([
+                    actor.profile_summary.remote() for actor in inference_actors
+                ])
+                actor_profile = aggregate_actor_profiles(actor_profiles)
+                profile_summary_s = time.perf_counter() - profile_summary_started
+                transition_assembly_started = time.perf_counter()
+                worker_payloads = [payload for payload, _stats in last_results]
+                if not all(isinstance(payload, RolloutBuffer) for payload in worker_payloads):
+                    raise RuntimeError("rollout workers must return RolloutBuffer payloads")
+                transition_assembly_s = time.perf_counter() - transition_assembly_started
             algorithm_wall_s = time.perf_counter() - algorithm_started
             gpu_metrics = gpu_sampler.summary(gpu_cursor)
             rollout_reward = float(np.nanmean([stats["reward_mean"] for _t, stats in results]))
