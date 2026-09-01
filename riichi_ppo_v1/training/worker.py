@@ -394,11 +394,14 @@ if ray is not None:
             # 环境 worker 刻意不 import CUDA、不持有策略模型;唯一推理 actor
             # 独占 GPU 执行。GRP 是约 13 万参数的 CPU 小模型,仅小局边界执行。
             self.num_envs = int(config["envs_per_worker"])
+            # rollout 只消费 per-player 事件流(new_events);全局 mjai_log
+            # 副本(viewer 调试用)停写,省去每事件一次 String clone。
             self.envs = BatchedRiichiEnv(
                 self.num_envs,
                 seed=int(config["seed"]) + worker_id * 1_000,
                 step_threads=int(config.get("env_step_threads", 4)),
                 game_mode=config["game_mode"],
+                skip_global_mjai_log=True,
             )
             self.state_machine = riichi.MjaiKyokuStateMachineManager(self.num_envs)
             self.profiler = StageProfiler(enabled=bool(config.get("profile_enabled", True)))

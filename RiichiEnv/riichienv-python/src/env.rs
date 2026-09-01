@@ -75,8 +75,14 @@ impl BatchedRiichiEnv {
 #[pymethods]
 impl BatchedRiichiEnv {
     #[new]
-    #[pyo3(signature = (num_envs, seed=0, step_threads=4, game_mode="4p-red-half"))]
-    fn new(num_envs: usize, seed: u64, step_threads: usize, game_mode: &str) -> PyResult<Self> {
+    #[pyo3(signature = (num_envs, seed=0, step_threads=4, game_mode="4p-red-half", skip_global_mjai_log=false))]
+    fn new(
+        num_envs: usize,
+        seed: u64,
+        step_threads: usize,
+        game_mode: &str,
+        skip_global_mjai_log: bool,
+    ) -> PyResult<Self> {
         if num_envs == 0 {
             return Err(pyo3::exceptions::PyValueError::new_err("num_envs must be greater than 0"));
         }
@@ -88,7 +94,15 @@ impl BatchedRiichiEnv {
         Ok(Self {
             envs: (0..num_envs)
                 .map(|index| RiichiEnv {
-                    state: GameState::new(2, false, Some(seed + index as u64), 0, GameRule::default()),
+                    state: {
+                        let mut state = GameState::new(
+                            2, false, Some(seed + index as u64), 0, GameRule::default(),
+                        );
+                        // 训练 rollout 只消费 per-player 事件流(new_events);
+                        // 全局 mjai_log 副本可停写(每事件一次 clone)。
+                        state.skip_global_mjai_log = skip_global_mjai_log;
+                        state
+                    },
                 })
                 .collect(),
             step_threads: step_threads.max(1).min(num_envs),

@@ -82,6 +82,9 @@ pub struct GameState {
 
     pub game_mode: u8,
     pub skip_mjai_logging: bool,
+    /// 停写全局 mjai_log(仅 per-player 事件流的调用方使用;viewer 需要
+    /// 全局日志时保持 false)。
+    pub skip_global_mjai_log: bool,
     pub seed: Option<u64>,
     pub rule: GameRule,
     pub last_error: Option<String>,
@@ -147,6 +150,7 @@ impl GameState {
             enable_seq_caching: false,
             game_mode,
             skip_mjai_logging,
+            skip_global_mjai_log: false,
             seed,
             rule,
             last_error: None,
@@ -2136,7 +2140,13 @@ impl GameState {
             return;
         }
         let json_str = serde_json::to_string(&event).expect("valid JSON");
-        self.mjai_log.push(json_str.clone());
+        // 全局 mjai_log 仅服务于 viewer/env.mjai_log getter(离线调试);
+        // rollout 训练路径只消费 per-player 事件流(new_events)。
+        // skip_global_mjai_log 停写全局副本(每事件一次 String clone 与
+        // 终局全量 join),per-player 日志保持不变。
+        if !self.skip_global_mjai_log {
+            self.mjai_log.push(json_str.clone());
+        }
 
         let type_str = event["type"].as_str().unwrap_or("");
         let actor = event["actor"].as_u64().map(|a| a as usize);
