@@ -1,3 +1,11 @@
 [workspace]
 resolver = "2"
 members = ["riichienv-core", "riichienv-python", "riichienv-state-machine"]
+
+# 全 workspace 共享的 release profile(默认 opt-level=3/lto=off/codegen-units=16):
+# thin LTO + 单 codegen unit 提升 Rust 编码/步进链路的指令级优化;构建机
+# 即运行机,target-cpu=native 由构建方经 RUSTFLAGS 注入,不在 manifest
+# 里硬编码(避免产物在其他机器上不可移植)。
+[profile.release]
+lto = "thin"
+codegen-units = 1
