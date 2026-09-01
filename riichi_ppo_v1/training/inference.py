@@ -44,13 +44,32 @@ def inference_autocast_config(dtype_name: str, *, device_type: str = "cuda") -> 
     raise ValueError("inference_dtype must be one of 'bf16' or 'fp32'")
 
 
+# 到齐即 flush 的默认最低独立 worker 数:凑批窗口内到达的独立 worker 数
+# 达到该值即视为「批已到齐」立即 flush,避免 12 worker 各 ~32 行时全额睡满
+# 窗口(实测 100% dispatch 由超时触发)。单一 worker 的多行请求不触发
+# (由行数阈值/超时兜底),保持大请求不被切碎。
+MIN_QUORUM_WORKERS = 2
+
+
 def dispatch_reason(
     worker_ids: list[int], target_workers: int, deadline: float, now: float,
     *, row_count: int = 0, target_rows: int | None = None,
+    batch_wait_s: float = 0.0, min_quorum_workers: int = MIN_QUORUM_WORKERS,
 ) -> str | None:
-    """Return why a pending inference batch may flush, without clock I/O."""
+    """Return why a pending inference batch may flush, without clock I/O.
+
+    判定顺序:行数阈值 → 到齐即 flush(凑批窗口已打开且独立 worker 数达到
+    ``min_quorum_workers``)→ 目标 worker 数 → 截止超时。``batch_wait_s`` 为
+    凑批窗口已等待时长,非正值时保持旧行为(纯行数/target/超时判定)。
+    """
     if target_rows is not None and row_count >= target_rows:
         return "rows"
+    if (
+        batch_wait_s > 0.0
+        and min_quorum_workers > 0
+        and len(set(worker_ids)) >= min_quorum_workers
+    ):
+        return "quorum"
     if len(set(worker_ids)) >= max(1, target_workers):
         return "target"
     if now >= deadline:
@@ -424,18 +443,28 @@ if ray is not None:
                         int(self.config.get("inference_batch_target_rows", 0))
                         or int(self.config.get("inference_max_batch_size", 512)),
                     )
-                    deadline = time.perf_counter() + max(
+                    window_s = max(
                         0.0, float(self.config.get("inference_batch_wait_ms", 5.0))
                     ) / 1_000.0
+                    batch_opened = time.perf_counter()
+                    deadline = batch_opened + window_s
+                    # 到齐即 flush 的独立 worker 数下限:0/负值显式禁用(保持
+                    # 纯超时凑批);未配置时默认 MIN_QUORUM_WORKERS。
+                    quorum = int(self.config.get("inference_batch_min_workers", MIN_QUORUM_WORKERS))
                     flush_reason: str | None = None
                     while flush_reason is None:
+                        now = time.perf_counter()
                         flush_reason = dispatch_reason(
                             [request["worker_id"] for request, _future, _queued_at in self._pending],
-                            target_workers, deadline, time.perf_counter(),
+                            target_workers, deadline, now,
                             row_count=sum(
                                 len(request["batch_indices"]) for request, _future, _queued_at in self._pending
                             ),
                             target_rows=target_rows,
+                            # 凑批窗口已打开(有等待预算)才允许到齐判定:
+                            # 窗口为 0 时退化为立即 flush,与旧超时语义一致。
+                            batch_wait_s=(deadline - now) if window_s > 0.0 else 0.0,
+                            min_quorum_workers=quorum,
                         )
                         if flush_reason is not None:
                             break
