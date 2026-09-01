@@ -558,17 +558,29 @@ class KyokuTransformerActorCritic(nn.Module):
             detached = shared_hidden.detach()
             shared_for_critic = detached + public_grad_scale * (shared_hidden - detached)
         rows = torch.arange(batch, device=device)
-        public_positions = torch.arange(shared_capacity, device=device)[None, :].expand(batch, -1)
-        public_valid_mask = public_positions < shared_lengths[:, None]
-        public_source_rows = rows[:, None].expand_as(public_positions)[public_valid_mask]
-        critic_sequence[public_source_rows, public_positions[public_valid_mask]] = shared_for_critic[public_valid_mask]
-        private_positions = shared_lengths[:, None] + torch.arange(critic_capacity, device=device)[None, :]
-        private_valid_mask = torch.arange(critic_capacity, device=device)[None, :] < critic_lengths[:, None]
-        private_source_rows = rows[:, None].expand_as(private_positions)[private_valid_mask]
-        critic_sequence[private_source_rows, private_positions[private_valid_mask]] = critic_embeddings[
-            private_valid_mask
-        ]
         value_indices = shared_lengths + critic_lengths
+        public_positions = torch.arange(shared_capacity, device=device)[None, :].expand(batch, -1)
+        # 算术 gather/scatter 取代布尔掩码索引:布尔变长索引内部 nonzero 强制
+        # GPU→CPU 同步,且是 torch.compile 图断裂源(同文件策略头同做法)。
+        # 目标非法槽位 clamp 到该行 value 位置(随后被 value_query 覆盖,与旧
+        # 路径「先写 shared/private 再覆盖 value 行」的最终结果一致);源非法
+        # 槽位 clamp 到该行最后一个有效 shared 列(读值不影响任何有效行)。
+        public_valid = public_positions < shared_lengths[:, None]
+        safe_public_dst = torch.where(public_valid, public_positions, value_indices[:, None])
+        safe_public_src = torch.where(public_valid, public_positions, (shared_lengths - 1).clamp_min(0)[:, None])
+        public_rows = rows[:, None].expand_as(public_positions)
+        critic_sequence[public_rows.reshape(-1), safe_public_dst.reshape(-1)] = shared_for_critic[
+            public_rows.reshape(-1), safe_public_src.reshape(-1)
+        ]
+        private_slots = torch.arange(critic_capacity, device=device)[None, :]
+        private_positions = shared_lengths[:, None] + private_slots
+        private_valid = private_slots < critic_lengths[:, None]
+        safe_private_dst = torch.where(private_valid, private_positions, value_indices[:, None])
+        safe_private_src = torch.where(private_valid, private_slots, (critic_lengths - 1).clamp_min(0)[:, None])
+        private_rows = rows[:, None].expand_as(private_positions)
+        critic_sequence[private_rows.reshape(-1), safe_private_dst.reshape(-1)] = critic_embeddings[
+            private_rows.reshape(-1), safe_private_src.reshape(-1)
+        ]
         critic_sequence[rows, value_indices] = self.value_query
         critic_mask_bool, critic_valid = _critic_layout(critic_total_lengths, critic_total)
         critic_hidden = self.critic_backbone(

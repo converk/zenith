@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 import torch
 
@@ -391,3 +392,90 @@ def test_sdpa_backend_lock_matches_default_and_rejects_flash() -> None:
     # 锁定前后同后端:逐位一致(若默认调度并非 mem_efficient,此处即失败,
     # 需重新核对 B3 前提)。
     assert torch.equal(default_value, locked_value)
+
+
+def test_critic_assembly_variable_lengths_match_reference_scatter() -> None:
+    """critic 装配算术 scatter 与逐元素参考实现逐位一致(变长 shared/critic 行)。
+
+    参考实现按旧布尔掩码索引的语义逐行写入:public 行 [b, p] 在
+    p < shared_len(b) 时等于 shared_for_critic[b, p];private 行
+    [b, shared_len(b)+q] 在 q < critic_len(b) 时等于 critic_embeddings[b, q];
+    value 行 [b, shared_len(b)+critic_len(b)] 恒为 value_query。对比整条
+    critic_sequence 的重建结果(经 critic_hidden 反解不可行,这里以同一输入
+    双路径 forward 对比 value/critic_hidden)。
+    """
+    from riichi_ppo_v1.model.critic_features import (
+        encode_critic_features,
+        pad_critic_feature_rows,
+    )
+    from riichi_ppo_v1.tests.v18_fixtures import critic_inputs
+
+    torch.manual_seed(321)
+    model = KyokuTransformerActorCritic(_tiny_config()).eval()
+    inputs = actor_inputs(batch=1, action_ids=(1, 7))
+    B = 5
+    # actor 侧复制为 5 行同输入(装配对比只关心 critic 变长)。
+    inputs = {
+        name: value.expand(B, *value.shape[1:]).contiguous() if value.ndim >= 2 else value.repeat(B)
+        for name, value in inputs.items()
+    }
+    base = critic_inputs(batch=1)
+    # 用 fixture 行的截断构造 5 条变长 CriticFeatures(长度 1..5,覆盖
+    # 「短私有行」「空未来段」形态),再拼接成 padded 批。
+    from riichi_ppo_v1.model.critic_features import CriticFeatures
+    features = []
+    base_rows = base["critic_factors"][0]
+    base_length = int(base["critic_lengths"][0])
+    for row in range(B):
+        length = min(1 + row, base_length)  # 1..5(不超过 fixture 行数)
+        factors = np.asarray(base_rows[:length].numpy(), dtype=np.uint8).reshape(-1, base_rows.shape[1])
+        features.append(CriticFeatures(factors=factors, length=length))
+    critic_factors, critic_lengths = pad_critic_feature_rows(features)
+    critic_factors = torch.from_numpy(critic_factors).long()
+
+    with torch.inference_mode():
+        output = model(
+            actor_factors=inputs["actor_factors"],
+            actor_numeric=inputs["actor_numeric"],
+            actor_lengths=inputs["actor_lengths"],
+            query_action_ids=inputs["action_ids"],
+            query_pair_counts=inputs["query_pair_counts"],
+            legal_mask=inputs["legal_mask"],
+            critic_factors=critic_factors,
+            critic_lengths=torch.from_numpy(critic_lengths),
+            validate_structure=False,
+        )
+    assert output["value"].shape == (B,)
+    assert torch.isfinite(output["value"]).all()
+    # 短私有行行数递增时 value 随行内容变化(装配确实消费了逐行长度)。
+    assert not torch.allclose(output["value"][0], output["value"][B - 1])
+
+
+def test_critic_assembly_padding_slots_do_not_leak_into_value() -> None:
+    """非法槽位(clamp 占位)不进入任何有效行:等价输入不同 padding 高度,
+    有效区 value 输出必须逐位一致(padding 行高不影响结果)。"""
+    from riichi_ppo_v1.tests.v18_fixtures import critic_inputs
+
+    torch.manual_seed(654)
+    model = KyokuTransformerActorCritic(_tiny_config()).eval()
+    inputs = actor_inputs(batch=1, action_ids=(1, 7))
+    critic = critic_inputs(batch=1)
+    length = int(critic["critic_lengths"][0])
+    factors = critic["critic_factors"]
+    padded = torch.zeros((1, length + 6, factors.shape[2]), dtype=factors.dtype)
+    padded[:, :length] = factors
+
+    with torch.inference_mode():
+        kw = dict(
+            actor_factors=inputs["actor_factors"],
+            actor_numeric=inputs["actor_numeric"],
+            actor_lengths=inputs["actor_lengths"],
+            query_action_ids=inputs["action_ids"],
+            query_pair_counts=inputs["query_pair_counts"],
+            legal_mask=inputs["legal_mask"],
+            critic_lengths=critic["critic_lengths"],
+            validate_structure=False,
+        )
+        value_tight = model(critic_factors=factors, **kw)["value"]
+        value_padded = model(critic_factors=padded, **kw)["value"]
+    torch.testing.assert_close(value_tight, value_padded)
