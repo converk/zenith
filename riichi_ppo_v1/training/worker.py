@@ -539,16 +539,22 @@ if ray is not None:
         ) -> tuple[Any, dict[str, np.ndarray]]:
             with self.profiler.stage("rollout/model_state_prepare"):
                 batch = self.bridge.prepare(decisions, walls=self.walls)
+            # RPC 载荷紧凑化:类别因子/动作 id 以 uint8 传输(值域 < 256,与
+            # RolloutBuffer 的 fail-closed uint8 存储同依据),object store
+            # 流量 int32→uint8 缩 4 倍;推理侧 collate 直接以 int64 装配,
+            # 数值逐位一致。超 255 的因子在转换处 fail-closed。
+            compact_factors = np.asarray(batch.actor_factors, dtype=np.uint8)
+            compact_action_ids = np.asarray(batch.query_action_ids, dtype=np.uint8)
             request = self.inference.infer.remote(
                 worker_id=self.worker_id,
                 namespace=namespace,
                 batch_indices=np.asarray(
                     [decision.batch_index for decision in decisions], dtype=np.int64,
                 ),
-                actor_factors=batch.actor_factors,
+                actor_factors=compact_factors,
                 actor_numeric=batch.actor_numeric,
                 actor_lengths=batch.actor_lengths,
-                query_action_ids=batch.query_action_ids,
+                query_action_ids=compact_action_ids,
                 query_pair_counts=batch.query_pair_counts,
                 legal_mask=batch.legal_mask,
                 critic_factors=batch.critic_factors,
