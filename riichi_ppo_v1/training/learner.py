@@ -451,6 +451,8 @@ class _PrefetchState:
     errors: list[BaseException]
     times: list[float]
     thread: threading.Thread | None = None
+    # 预取线程在队列 put 上被消费端反压阻塞的累计时长(队列满/主线程取慢)。
+    blocked_s: float = 0.0
 
 
 def _prefetch_collate_worker(
@@ -473,12 +475,16 @@ def _prefetch_collate_worker(
                 host_batch = transitions.collate(indices)
                 state.times[counter] = time.perf_counter() - started
                 counter += 1
+                # put 的总耗时(含队满重试)即线程被消费端反压阻塞的时长,
+                # 与 state.times(collate 纯计算时长)互补,构成线程 busy 全景。
+                put_started = time.perf_counter()
                 while not state.stop_event.is_set():
                     try:
                         state.queue.put((indices, host_batch), timeout=0.2)
                         break
                     except _queue.Full:
                         continue
+                state.blocked_s += time.perf_counter() - put_started
     except BaseException as exc:  # noqa: BLE001 - 交由主线程统一抛出
         state.errors.append(exc)
     finally:
@@ -886,6 +892,9 @@ class PPOLearner:
         for duration in state.times:
             if duration > 0.0:
                 self.profiler.add("update/collate_soa_gather", duration)
+        # 预取线程被队列反压阻塞的累计时长(collate 饥饿证据链的一半,
+        # 另一半是主线程侧的 update/collate_wait)。
+        self.profiler.add("update/collate_put_block", state.blocked_s)
 
     def update(
         self,
@@ -900,6 +909,10 @@ class PPOLearner:
         if not transitions:
             raise ValueError("cannot update from an empty rollout")
         self.profiler.reset()
+        # B1 插计:rank 侧整个 update 调用的总墙钟(经 profiler 上报为
+        # timing/update/learner_wall);driver 的 _recv 等待 ≈ shard 传输 +
+        # 本墙钟 + 结果回传,用于把未插计段分解到具体位置。
+        update_wall_started = time.perf_counter()
         length_metrics = rollout_target_metrics(transitions)
         if self.device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(self.device)
@@ -1103,7 +1116,11 @@ class PPOLearner:
                     minibatches = epoch_plans[epoch_index]
                 for planned_indices in minibatches:
                     if prefetch_state is not None:
-                        indices, host_batch = self._prefetch_get(prefetch_state)
+                        # B1 插计:主线程在预取队列上的等待时长(「collate
+                        # 饥饿」假设的直接证据);与线程内 collate_soa_gather
+                        # (计算)和 collate_put_block(反压阻塞)互补。
+                        with self.profiler.stage("update/collate_wait"):
+                            indices, host_batch = self._prefetch_get(prefetch_state)
                     else:
                         indices = planned_indices
                         with self.profiler.stage("update/collate_soa_gather"):
@@ -1460,6 +1477,9 @@ class PPOLearner:
             result["ratio_p95"] = float(
                 torch.quantile(torch.cat(ratio_samples), 0.95).item()
             )
+        self.profiler.add(
+            "update/learner_wall", time.perf_counter() - update_wall_started,
+        )
         result.update(self.profiler.delta({}, prefix="timing"))
         if self.device.type == "cuda":
             result.update({

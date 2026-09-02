@@ -276,6 +276,69 @@ def test_ddp_no_sync_accumulation_matches_per_step_allreduce(tmp_path) -> None:
         assert result["max_diff"] < 1e-6
 
 
+def _instrumented_update_probe_worker(
+    rank: int,
+    world_size: int,
+    model_size: str,
+    config: dict,
+    resume_path,
+    init_model_path,
+    command_queue,
+    result_queue,
+) -> None:
+    """替身 DDP worker:只响应 ready/update/shutdown,验证 driver 侧插计路径。"""
+    result_queue.put({"kind": "ready", "iteration": 0})
+    while True:
+        command = command_queue.get()
+        if command["kind"] == "update":
+            samples = float(len(command["transitions"]))
+            result_queue.put({
+                "kind": "result",
+                "metrics": {
+                    "update/executed_minibatches": 1.0,
+                    "update/executed_transition_samples": samples,
+                    "update/executed_transition_tokens_mean": 10.0,
+                    "update/executed_padded_input_tokens": samples * 10.0,
+                    "update/executed_padding_input_tokens": 0.0,
+                },
+                "iteration": 1,
+            })
+        elif command["kind"] == "shutdown":
+            result_queue.put({"kind": "result", "ok": True})
+            break
+
+
+def test_learner_ddp_update_reports_driver_stage_timings(monkeypatch) -> None:
+    """B1 插计:driver 侧 update 上报 shard_select/put/recv/aggregate 四段
+    纯计时键(替身 worker,不需要 CUDA 与真实模型)。"""
+    import riichi_ppo_v1.training.learner_ddp as learner_ddp_module
+
+    monkeypatch.setattr(
+        learner_ddp_module, "_learner_worker", _instrumented_update_probe_worker,
+    )
+    transitions = RolloutBuffer([transition(0.1) for _ in range(16)])
+    manager = LearnerDDP(
+        "v18", "cuda", 2, config={"minibatch_size": 4, "seed": 1},
+    )
+    try:
+        metrics, per_rank = manager.update(transitions, shuffle_seed=7)
+    finally:
+        manager.shutdown()
+    assert manager.iteration == 1
+    assert len(per_rank) == 2
+    for name in (
+        "update/shard_select_s",
+        "update/shard_put_s",
+        "update/learner_recv_wait_s",
+        "update/aggregate_metrics_s",
+    ):
+        assert name in metrics, name
+        assert metrics[name] >= 0.0, name
+    # 求和键经 aggregate 汇总:两个 rank 各自的 executed_minibatches 相加。
+    assert metrics["update/executed_minibatches"] == 2.0
+    assert metrics["update/executed_transition_samples"] == 16.0
+
+
 def test_release_cache_is_safe_without_cuda() -> None:
     """release_cache 在 CPU(无 CUDA 分支)与未加载模型时不抛错。"""
     learner = PPOLearner("v18", "cpu", **_learner_kwargs())

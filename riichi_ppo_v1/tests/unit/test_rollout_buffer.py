@@ -524,6 +524,30 @@ def test_prefetch_early_stop_does_not_hang() -> None:
         assert np.isfinite(metrics[name]), name
 
 
+def test_update_reports_stage_gap_timings() -> None:
+    """B1 插计:update 上报未插计段计时(learner_wall / collate_wait /
+    collate_put_block),全部为纯计时键,不影响任何训练指标数值。"""
+    transitions = RolloutBuffer(_transitions(np.random.default_rng(29), 40))
+    learner = PPOLearner(
+        "v18", "cpu",
+        **_learner_kwargs(
+            update_epochs=2, minibatch_size=8, target_kl=0.0,
+            update_collate_prefetch=True, profile_enabled=True,
+        ),
+    )
+    metrics = learner.update(transitions, shuffle_seed=7)
+    minibatches = metrics["update/executed_minibatches"]
+    # learner_wall:整个 rank 侧 update 调用恰有一条记录,总时长为正。
+    assert metrics["timing/update/learner_wall/count"] == 1.0
+    assert metrics["timing/update/learner_wall/total_s"] > 0.0
+    # collate_wait:主线程逐 minibatch 等待预取队列,每批一条。
+    assert metrics["timing/update/collate_wait/count"] == minibatches
+    assert metrics["timing/update/collate_wait/total_s"] >= 0.0
+    # collate_put_block:预取线程 put 反压累计,整个 update 汇总一条。
+    assert metrics["timing/update/collate_put_block/count"] == 1.0
+    assert metrics["timing/update/collate_put_block/total_s"] >= 0.0
+
+
 def test_prefetch_propagates_collate_exception(monkeypatch) -> None:
     """预取线程内 collate 抛错:异常经队列安全传播到主线程,不挂起。"""
     transitions = RolloutBuffer(_transitions(np.random.default_rng(17), 30))

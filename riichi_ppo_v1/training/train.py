@@ -675,10 +675,14 @@ def run(config: dict[str, Any]) -> None:
                 metrics_by_rank = [update_result]
             # 逐轮冻结:新权重在本轮 update 结束后广播;对已在途的下一轮
             # rollout 不热切换(其全程使用旧一拍权重),再下一轮自然生效。
+            # B1 插计:广播含 learner.weights() 的 GPU→CPU 权重拷贝与两个
+            # 推理 actor 的权重应用;当前包含在 update_wall 内,单列上报。
+            weights_broadcast_started = time.perf_counter()
             ray.get([
                 actor.update_weights.remote(learner.weights())
                 for actor in inference_actors
             ])
+            weights_broadcast_s = time.perf_counter() - weights_broadcast_started
             update_wall_s = time.perf_counter() - update_started
             if overlap_enabled and rollout_refs:
                 # 收割在途的下一轮 rollout:等待其与本轮 update 并行完成
@@ -754,6 +758,7 @@ def run(config: dict[str, Any]) -> None:
                 "rollout/transition_assembly_s": transition_assembly_s,
                 "rollout/wall_s": rollout_wall_s,
                 "update/wall_s": update_wall_s,
+                "update/weights_broadcast_s": weights_broadcast_s,
                 "rollout/games": float(rollout_games),
                 "rollout/kyokus": float(rollout_kyokus),
                 "iteration/algorithm_wall_s": algorithm_wall_s,

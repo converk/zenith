@@ -20,6 +20,7 @@ import random
 import signal
 import socket
 import sys
+import time
 import traceback
 from typing import Any
 
@@ -444,6 +445,14 @@ class LearnerDDP:
         """分片更新;返回 ``(全局汇总指标, 逐 rank 指标)``。"""
         if not isinstance(transitions, RolloutBuffer):
             raise TypeError("LearnerDDP.update requires a RolloutBuffer")
+        # B1 插计:driver 侧 update 未插计段分解(★ 纯计时)。四段先后串行:
+        # 分片准备(learner_shard_indices + 全量 buffer 的 select gather 拷贝
+        # + advantage/return 全量数学)→ 命令队列 put(shard pickle 传输的
+        # 入队段;feeder 线程的序列化与管道写与 recv 等待重叠)→ 等待两个
+        # rank 的结果(含 shard 传输 + rank 侧 learner_wall + 结果回传)→
+        # 全量指标汇总(在关键路径上)。四段合计 ≈ update_wall 中 learner
+        # 之外的 driver 侧开销。
+        shard_started = time.perf_counter()
         index_shards = learner_shard_indices(
             len(transitions), self.world_size, self._minibatch_size,
         )
@@ -451,6 +460,8 @@ class LearnerDDP:
         advantages, returns, _return_mean, _return_std = rollout_update_targets(
             transitions,
         )
+        shard_select_s = time.perf_counter() - shard_started
+        put_started = time.perf_counter()
         for rank in range(self.world_size):
             self._command_queues[rank].put({
                 "kind": _CMD_UPDATE,
@@ -459,15 +470,27 @@ class LearnerDDP:
                 "advantages": advantages[index_shards[rank]],
                 "returns": returns[index_shards[rank]],
             })
+        shard_put_s = time.perf_counter() - put_started
+        recv_started = time.perf_counter()
         messages = [
             self._recv(rank, timeout=self._update_timeout)
             for rank in range(self.world_size)
         ]
+        learner_recv_wait_s = time.perf_counter() - recv_started
         per_rank = [messages[rank]["metrics"] for rank in range(self.world_size)]
         self.iteration = int(messages[0]["iteration"])
-        return aggregate_learner_metrics(
+        aggregate_started = time.perf_counter()
+        metrics = aggregate_learner_metrics(
             per_rank, transitions, gamma=self._gamma,
-        ), per_rank
+        )
+        aggregate_metrics_s = time.perf_counter() - aggregate_started
+        metrics.update({
+            "update/shard_select_s": shard_select_s,
+            "update/shard_put_s": shard_put_s,
+            "update/learner_recv_wait_s": learner_recv_wait_s,
+            "update/aggregate_metrics_s": aggregate_metrics_s,
+        })
+        return metrics, per_rank
 
     def release_cache(self) -> None:
         """评测前释放全部 rank 的缓存显存(见 ``PPOLearner.release_cache``)。"""
