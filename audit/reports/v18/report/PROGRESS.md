@@ -1106,3 +1106,39 @@ IndexPutBackward0 图断裂）→ 配置 `torch_compile: false` 默认关闭，�
 - 已报计时数字有效性不受影响(两次运行 rollout 工作量相同);数值
   代表性受限说明与证据留存情况见优化报告第八节;
 - 修正后 riichi_ppo_v1/tests 224 passed;v18_ppo.yaml 未再改动。
+
+## 2026-09-02 V18 PPO 训练性能优化第二阶段完成
+
+按 `audit/reports/v18/design/V18_PPO训练性能优化第二阶段执行提示词.md` 执行
+(维护者批准边界与第一阶段相同,2026-09-01 延续;△/✗ 级训练期语义变更获批,全部
+实现为可关闭开关并附消融)。起点 HEAD `cb1bdfc`,对照第一阶段交付态全量 454.6s。
+
+- **全量正式验证(2048×2,交付态,iteration=152):algorithm_wall_s 454.6→325.8s
+  (-28.3%)**,sps 3144→4461(+41.9%);sanity 同量级无系统性偏移
+  (entropy 0.17428 / approx_kl 0.00093 / value_loss 0.2775 / clipfrac 0.0094);
+  learner 峰值 allocated 28.1GB / reserved 31.5GB(GPU0 总量峰值 34.1GB,无 OOM);
+  重编译仅出现在热身 update 151。
+- 实施(每项独立 commit,附测试):A(mb2048 编译态重测,采纳,有效 batch
+  30720→40960 披露,显存 27.9GB≤35GB 验收线)、B1(update 未插计段插计,★ 纯计时,
+  880754c)、C(reference 前向编译 torch_compile_reference,△,2056388/7bb4641/
+  b2d5641)、B2(shard 共享内存 IPC learner_shard_transport,★ 逐位一致,默认 shm,
+  db2a419/f66516f)。
+- B1 插计结论:collate 饥饿被证伪(collate_wait≈0.6ms/批,线程反压 261.6s 证明
+  供给充足)→ 队列加深/双线程/CPU 亲和性不做;aggregate 复用 0.21s 不值得做;
+  driver 侧可治理项 = shard pickle+管道 ≈10s → B2;rank 残余 ≈GPU 排水。
+- C 收益(同窗口配对):reference_precompute 28.5→11.8s(-58%),algorithm_wall
+  -6.4%;chunk 消融 16384 无额外收益维持 8192,32768 在真实拓扑 OOM 不采纳。
+- B2 收益:shard_put 3.54→0.05s、传输尾差 6.81→0.04s,update_wall -15.7s(缩放
+  口径)。
+- **D(CUDA graphs + 桶静态 shape)评估后不投入**:单卡探针 mode="reduce-overhead"
+  即报 "tensor output of CUDAGraphs overwritten"(模型 forward 的 resume 帧结构与
+  cudagraph 静态输出缓冲不兼容,输出 clone workaround 亦无效),需重构 forward 图
+  断点结构;且稳态零重编译使桶静态化无额外收益;update 已近 rollout 生成段
+  (流水线接近平衡),边际收益递减、风险最高。证据留档,后续建议见报告第六节。
+- 关闭方法:torch_compile_reference: false 回退 eager reference;
+  learner_shard_transport: pickle 回退历史传输;minibatch_size 1536 回退旧有效
+  batch。
+- 详细 before/after 分段计时、插计分布表与消融对照见
+  audit/reports/v18/report/V18_PPO训练性能优化第二阶段报告.md;
+  证据文件入库 audit/reports/v18/report/perf_evidence/(9 份 jsonl,先留档后清理
+  ppo_perf/);运行日志 10 份留存 logs/v18/。

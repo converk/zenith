@@ -31,14 +31,17 @@ games_per_update: 2048
 
 # PPO 主超参:Actor 用归一化 advantage,Critic 拟合 old_value + raw GAE。
 # 梯度累积=10:每 10 个 minibatch 的(已 DDP 平均)梯度累加后再 step 一次,
-# 等效每步有效 batch = 1536×10×2 = 30720;保留累积以降噪,LR 不再按步数
-# 补偿。2026-08-28 第二轮起:actor 上调至 9e-5 加快策略前进步长(≈1.5×),
-# critic 上调至 8e-5 跟踪移动目标;shared 维持原值保护公共主干。
+# 等效每步有效 batch = 2048×10×2 = 40960。2026-09-02 第二阶段 A 项:编译态
+# 下 minibatch 1536→2048(有效 batch 30720→40960,维护者批准边界内唯一超参
+# 例外,见第二阶段优化报告第二节;缩放口径 update_wall -20.8%、显存峰值
+# allocated 27.9GB≤35GB 验收线)。2026-08-28 第二轮起:actor 上调至 9e-5
+# 加快策略前进步长(≈1.5×),critic 上调至 8e-5 跟踪移动目标;shared 维持
+# 原值保护公共主干。
 gamma: 1.0
 gae_lambda: 0.95
 ppo_clip: 0.20
 update_epochs: 2
-minibatch_size: 1536
+minibatch_size: 2048
 gradient_accumulation_steps: 10
 update_batch_mode: streaming
 bucket_window_multiplier: 8
@@ -57,6 +60,16 @@ update_validate_structure: false
 #   严格串行旧编排。
 torch_compile: true
 rollout_update_overlap: true
+
+# 第二阶段性能开关(维护者批准边界 2026-09-01 延续,默认开启;消融对照见
+# audit/reports/v18/report/V18_PPO训练性能优化第二阶段报告.md):
+# - torch_compile_reference(△):冻结 SFT reference 的 policy-only 前向编译
+#   (独立 code object,不挤占训练 forward 的 dynamo 缓存);bf16 内核形状级
+#   差异,-inf 位逐位一致。置 false 回退 eager reference。
+# - learner_shard_transport(★):DDP shard 经 /dev/shm 传递(数组逐位一致,
+#   driver 一次写入,learner 零拷贝视图);置 pickle 回退历史 mp.Queue 路径。
+torch_compile_reference: true
+learner_shard_transport: shm
 
 # critic 侧降温:0.5→0.3,直接压低 critic 分支 pre-clip 梯度,并同步降低
 # 回流 shared 公共表示的 value 梯度。

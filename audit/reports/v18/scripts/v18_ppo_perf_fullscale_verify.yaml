@@ -1,9 +1,11 @@
 # V18 PPO 全量正式验证配置(自包含,不与 v18_ppo.yaml 叠加)。
-# 提示词 5.2 节:交付态(Tier 2 开关默认开启)以正式口径
-# (games_per_update=2048、update_epochs=2)跑 2 个 update,以第 2 个
-# update(iteration=152)对照 r5 稳态数字。底本 v18_ppo.yaml,仅改
-# resume/iterations/输出重定向/评测关闭等工作负载与编排键;PPO 全部
-# 超参与 rollout/推理拓扑与正式配置逐项相同。
+# 提示词 5.2 节:交付态(第二阶段含 minibatch 2048 与新性能开关,默认
+# 全开)以正式口径(games_per_update=2048、update_epochs=2)跑 2 个
+# update,以第 2 个 update(iteration=152)对照第一阶段交付态 454.6s。
+# 底本 v18_ppo.yaml,仅改 resume/iterations/输出重定向/评测关闭等工作
+# 负载与编排键;PPO 全部超参与 rollout/推理拓扑与正式配置逐项相同。
+# 2026-09-02 更新:minibatch_size 1536→2048(第二阶段 A 项采纳,有效
+# batch 30720→40960,维护者批准边界内唯一超参例外)。
 
 seed: 20260828
 device: cuda
@@ -39,7 +41,7 @@ gamma: 1.0
 gae_lambda: 0.95
 ppo_clip: 0.20
 update_epochs: 2
-minibatch_size: 1536
+minibatch_size: 2048
 gradient_accumulation_steps: 10
 update_batch_mode: streaming
 bucket_window_multiplier: 8
