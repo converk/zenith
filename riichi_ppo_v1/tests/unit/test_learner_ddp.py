@@ -286,19 +286,34 @@ def _instrumented_update_probe_worker(
     command_queue,
     result_queue,
 ) -> None:
-    """替身 DDP worker:只响应 ready/update/shutdown,验证 driver 侧插计路径。"""
+    """替身 DDP worker:只响应 ready/update/shutdown,验证 driver 侧插计路径。
+
+    支持 pickle 与 shm 两种分片传输:shm 时按元数据零拷贝重建并回报
+    分片行数,验证端到端元数据/视图正确性。
+    """
+    from riichi_ppo_v1.training.shard_transport import ShardShmView
+
     result_queue.put({"kind": "ready", "iteration": 0})
     while True:
         command = command_queue.get()
         if command["kind"] == "update":
-            samples = float(len(command["transitions"]))
+            view = None
+            try:
+                if "shard_shm" in command:
+                    view = ShardShmView(command["shard_shm"])
+                    shard_size = len(view.buffer)
+                else:
+                    shard_size = len(command["transitions"])
+            finally:
+                if view is not None:
+                    view.close()
             result_queue.put({
                 "kind": "result",
                 "metrics": {
                     "update/executed_minibatches": 1.0,
-                    "update/executed_transition_samples": samples,
+                    "update/executed_transition_samples": float(shard_size),
                     "update/executed_transition_tokens_mean": 10.0,
-                    "update/executed_padded_input_tokens": samples * 10.0,
+                    "update/executed_padded_input_tokens": shard_size * 10.0,
                     "update/executed_padding_input_tokens": 0.0,
                 },
                 "iteration": 1,
@@ -308,23 +323,27 @@ def _instrumented_update_probe_worker(
             break
 
 
-def test_learner_ddp_update_reports_driver_stage_timings(monkeypatch) -> None:
-    """B1 插计:driver 侧 update 上报 shard_select/put/recv/aggregate 四段
-    纯计时键(替身 worker,不需要 CUDA 与真实模型)。"""
+def _run_ddp_probe_update(monkeypatch, config: dict):
+    """共用驱动:替身 worker 下跑一次 LearnerDDP.update,返回全局指标。"""
     import riichi_ppo_v1.training.learner_ddp as learner_ddp_module
 
     monkeypatch.setattr(
         learner_ddp_module, "_learner_worker", _instrumented_update_probe_worker,
     )
     transitions = RolloutBuffer([transition(0.1) for _ in range(16)])
-    manager = LearnerDDP(
-        "v18", "cuda", 2, config={"minibatch_size": 4, "seed": 1},
-    )
+    manager = LearnerDDP("v18", "cuda", 2, config={"minibatch_size": 4, "seed": 1, **config})
     try:
         metrics, per_rank = manager.update(transitions, shuffle_seed=7)
     finally:
         manager.shutdown()
     assert manager.iteration == 1
+    return metrics, per_rank
+
+
+def test_learner_ddp_update_reports_driver_stage_timings(monkeypatch) -> None:
+    """B1 插计:driver 侧 update 上报 shard_select/put/recv/aggregate 四段
+    纯计时键(替身 worker,不需要 CUDA 与真实模型)。"""
+    metrics, per_rank = _run_ddp_probe_update(monkeypatch, {})
     assert len(per_rank) == 2
     for name in (
         "update/shard_select_s",
@@ -337,6 +356,55 @@ def test_learner_ddp_update_reports_driver_stage_timings(monkeypatch) -> None:
     # 求和键经 aggregate 汇总:两个 rank 各自的 executed_minibatches 相加。
     assert metrics["update/executed_minibatches"] == 2.0
     assert metrics["update/executed_transition_samples"] == 16.0
+
+
+def test_learner_ddp_shm_shard_transport_matches_pickle(monkeypatch) -> None:
+    """B2:shm 传输与 pickle 传输的分片行数严格一致,且共享内存块被清理。"""
+    metrics, _per_rank = _run_ddp_probe_update(
+        monkeypatch, {"learner_shard_transport": "shm"},
+    )
+    # 16 行轮询切 2 rank → 每 rank 8 行,与 pickle 路径完全一致。
+    assert metrics["update/executed_transition_samples"] == 16.0
+    assert metrics["update/executed_minibatches"] == 2.0
+    import glob
+    import os
+    assert not glob.glob(f"/dev/shm/riichi-ppo-shard-{os.getpid()}*")
+
+
+def test_learner_ddp_rejects_unknown_shard_transport(monkeypatch) -> None:
+    """learner_shard_transport 仅接受 pickle/shm,其余 fail-closed。"""
+    with pytest.raises(ValueError, match="learner_shard_transport"):
+        _run_ddp_probe_update(monkeypatch, {"learner_shard_transport": "rdma"})
+
+
+def test_shard_shm_roundtrip_matches_select_output() -> None:
+    """B2 核心等价性:writer→view 往返与 select 分片逐字段逐位一致。"""
+    from riichi_ppo_v1.training.shard_transport import (
+        ShardShmView,
+        ShardShmWriter,
+        shard_field_arrays,
+    )
+
+    transitions = [transition(float(index % 7)) for index in range(37)]
+    full = RolloutBuffer(transitions)
+    indices = [36, 0, 18, 18, 7, 29]
+    expected = full.select(indices)
+    fields = shard_field_arrays(expected)
+    writer = ShardShmWriter(fields, name="riichi-ppo-shard-test-roundtrip")
+    try:
+        meta = writer.write()
+        view = ShardShmView(meta)
+        try:
+            assert len(view.buffer) == len(expected)
+            left = {k: v for k, v in vars(view.buffer).items() if isinstance(v, np.ndarray)}
+            right = {k: v for k, v in vars(expected).items() if isinstance(v, np.ndarray)}
+            assert set(left) == set(right)
+            for name in right:
+                np.testing.assert_array_equal(left[name], right[name], err_msg=name)
+        finally:
+            view.close()
+    finally:
+        writer.release()
 
 
 def test_release_cache_is_safe_without_cuda() -> None:

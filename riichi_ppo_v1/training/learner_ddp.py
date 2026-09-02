@@ -35,6 +35,7 @@ from .learner import (
     rollout_update_targets,
 )
 from .rollout_buffer import RolloutBuffer
+from .shard_transport import ShardShmView, ShardShmWriter, shard_field_arrays
 
 _CMD_UPDATE = "update"
 _CMD_WEIGHTS = "weights"
@@ -302,12 +303,24 @@ def _learner_worker(
             command = command_queue.get()
             kind = command["kind"]
             if kind == _CMD_UPDATE:
-                metrics = learner.update(
-                    command["transitions"],
-                    shuffle_seed=command["shuffle_seed"],
-                    advantages=command["advantages"],
-                    returns=command["returns"],
-                )
+                # B2:shm 传输时按元数据零拷贝重建分片视图,update 结束
+                # (含异常)即 close 本进程映射;unlink 由 driver 统一负责。
+                view: ShardShmView | None = None
+                try:
+                    if "shard_shm" in command:
+                        view = ShardShmView(command["shard_shm"])
+                        transitions = view.buffer
+                    else:
+                        transitions = command["transitions"]
+                    metrics = learner.update(
+                        transitions,
+                        shuffle_seed=command["shuffle_seed"],
+                        advantages=command["advantages"],
+                        returns=command["returns"],
+                    )
+                finally:
+                    if view is not None:
+                        view.close()
                 result_queue.put({
                     "kind": "result",
                     "metrics": metrics,
@@ -377,6 +390,14 @@ class LearnerDDP:
         self._update_timeout = float(config.get("update_timeout_s", 1800.0))
         if self._update_timeout <= 0:
             raise ValueError("update_timeout_s must be positive")
+        # B2:shard IPC 传输方式。``pickle`` 为历史路径(mp.Queue feeder 线程
+        # pickle → 管道 memcpy → learner unpickle,2.5GB 分片共 4 次拷贝);
+        # ``shm`` 经 /dev/shm 传递 SoA 数组(driver 写入 1 次拷贝,learner
+        # 零拷贝视图),数组逐位一致。默认 pickle,消融后定默认。
+        self._shard_transport = str(config.get("learner_shard_transport", "pickle"))
+        if self._shard_transport not in {"pickle", "shm"}:
+            raise ValueError("learner_shard_transport must be 'pickle' or 'shm'")
+        self._shm_seq = 0
         self._context = multiprocessing.get_context("spawn")
         self._command_queues = [
             self._context.Queue() for _ in range(self.world_size)
@@ -460,30 +481,53 @@ class LearnerDDP:
         advantages, returns, _return_mean, _return_std = rollout_update_targets(
             transitions,
         )
-        shard_select_s = time.perf_counter() - shard_started
-        put_started = time.perf_counter()
-        for rank in range(self.world_size):
-            self._command_queues[rank].put({
-                "kind": _CMD_UPDATE,
-                "transitions": shards[rank],
-                "shuffle_seed": shuffle_seed,
-                "advantages": advantages[index_shards[rank]],
-                "returns": returns[index_shards[rank]],
-            })
-        shard_put_s = time.perf_counter() - put_started
-        recv_started = time.perf_counter()
-        messages = [
-            self._recv(rank, timeout=self._update_timeout)
-            for rank in range(self.world_size)
-        ]
-        learner_recv_wait_s = time.perf_counter() - recv_started
-        per_rank = [messages[rank]["metrics"] for rank in range(self.world_size)]
-        self.iteration = int(messages[0]["iteration"])
-        aggregate_started = time.perf_counter()
-        metrics = aggregate_learner_metrics(
-            per_rank, transitions, gamma=self._gamma,
-        )
-        aggregate_metrics_s = time.perf_counter() - aggregate_started
+        # B2:shm 传输时把分片写入 /dev/shm(每 rank 一块),命令队列只传
+        # 元数据;finally 统一 release(收到结果或任何异常路径都安全),
+        # learner 侧在 update 结束后 close 自身映射。
+        use_shm = self._shard_transport == "shm"
+        writers: list[ShardShmWriter] = []
+        try:
+            if use_shm:
+                shard_metas: list[dict[str, Any]] = []
+                for rank, shard in enumerate(shards):
+                    writer = ShardShmWriter(
+                        shard_field_arrays(shard),
+                        name=f"riichi-ppo-shard-{os.getpid()}-{self._shm_seq}-{rank}",
+                    )
+                    writers.append(writer)
+                    shard_metas.append(writer.write())
+                self._shm_seq += 1
+            shard_select_s = time.perf_counter() - shard_started
+            put_started = time.perf_counter()
+            for rank in range(self.world_size):
+                command: dict[str, Any] = {
+                    "kind": _CMD_UPDATE,
+                    "shuffle_seed": shuffle_seed,
+                    "advantages": advantages[index_shards[rank]],
+                    "returns": returns[index_shards[rank]],
+                }
+                if use_shm:
+                    command["shard_shm"] = shard_metas[rank]
+                else:
+                    command["transitions"] = shards[rank]
+                self._command_queues[rank].put(command)
+            shard_put_s = time.perf_counter() - put_started
+            recv_started = time.perf_counter()
+            messages = [
+                self._recv(rank, timeout=self._update_timeout)
+                for rank in range(self.world_size)
+            ]
+            learner_recv_wait_s = time.perf_counter() - recv_started
+            per_rank = [messages[rank]["metrics"] for rank in range(self.world_size)]
+            self.iteration = int(messages[0]["iteration"])
+            aggregate_started = time.perf_counter()
+            metrics = aggregate_learner_metrics(
+                per_rank, transitions, gamma=self._gamma,
+            )
+            aggregate_metrics_s = time.perf_counter() - aggregate_started
+        finally:
+            for writer in writers:
+                writer.release()
         metrics.update({
             "update/shard_select_s": shard_select_s,
             "update/shard_put_s": shard_put_s,

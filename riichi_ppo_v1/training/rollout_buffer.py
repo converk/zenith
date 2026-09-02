@@ -99,6 +99,28 @@ class RolloutBuffer:
     标量抽取,之后的 ``collate`` 都是纯 numpy gather + 一次 torch 转换。
     """
 
+    # 标量/定形字段的单一来源:concatenate / select / from_field_map 共用,
+    # 新增字段时三处自动一致。
+    _FIXED_FIELDS = (
+        "actor_lengths", "query_pair_counts",
+        "critic_lengths", "sequence_lengths", "actions", "old_logprobs",
+        "values", "rewards", "kyoku_rewards", "done", "advantages",
+        "legal_mask",
+    )
+    # 可变长字段:(offsets 属性名, flat 属性名, 重建 offsets 所用的长度字段)。
+    _VARIABLE_FIELDS = (
+        ("actor_offsets", "actor_factors_flat"),
+        ("actor_numeric_offsets", "actor_numeric_flat"),
+        ("query_ids_offsets", "query_ids_flat"),
+        ("critic_offsets", "critic_factors_flat"),
+    )
+    _VARIABLE_FIELDS_LENGTHS = (
+        ("actor_offsets", "actor_factors_flat", "actor_lengths"),
+        ("actor_numeric_offsets", "actor_numeric_flat", "actor_lengths"),
+        ("query_ids_offsets", "query_ids_flat", "query_pair_counts"),
+        ("critic_offsets", "critic_factors_flat", "critic_lengths"),
+    )
+
     def __init__(self, transitions: Sequence[Transition]) -> None:
         count = len(transitions)
         self.size = count
@@ -200,21 +222,13 @@ class RolloutBuffer:
             raise ValueError("cannot concatenate an empty rollout buffer list")
         result = cls.__new__(cls)
         result.size = sum(len(buffer) for buffer in buffers)
-        fixed_fields = (
-            "actor_lengths", "query_pair_counts",
-            "critic_lengths", "sequence_lengths", "actions", "old_logprobs",
-            "values", "rewards", "kyoku_rewards", "done", "advantages",
-            "legal_mask",
-        )
-        for name in fixed_fields:
+        for name in cls._FIXED_FIELDS:
             setattr(result, name, np.concatenate([
                 np.asarray(getattr(buffer, name)) for buffer in buffers
             ], axis=0))
-        variable_fields = (
-            ("actor_offsets", "actor_factors_flat", result.actor_lengths),
-            ("actor_numeric_offsets", "actor_numeric_flat", result.actor_lengths),
-            ("query_ids_offsets", "query_ids_flat", result.query_pair_counts),
-            ("critic_offsets", "critic_factors_flat", result.critic_lengths),
+        variable_fields = tuple(
+            (offsets_name, flat_name, getattr(result, lengths_name))
+            for offsets_name, flat_name, lengths_name in cls._VARIABLE_FIELDS_LENGTHS
         )
         for offsets_name, flat_name, lengths in variable_fields:
             setattr(result, offsets_name, cls._offsets(lengths))
@@ -250,26 +264,36 @@ class RolloutBuffer:
             raise IndexError("rollout buffer selection index is out of range")
         result = self.__class__.__new__(self.__class__)
         result.size = len(idx)
-        fixed_fields = (
-            "actor_lengths", "query_pair_counts",
-            "critic_lengths", "sequence_lengths", "actions", "old_logprobs",
-            "values", "rewards", "kyoku_rewards", "done", "advantages",
-            "legal_mask",
-        )
-        for name in fixed_fields:
+        for name in self._FIXED_FIELDS:
             setattr(result, name, np.ascontiguousarray(getattr(self, name)[idx]))
-        variable_fields = (
-            ("actor_offsets", "actor_factors_flat"),
-            ("actor_numeric_offsets", "actor_numeric_flat"),
-            ("query_ids_offsets", "query_ids_flat"),
-            ("critic_offsets", "critic_factors_flat"),
-        )
-        for offsets_name, flat_name in variable_fields:
+        for offsets_name, flat_name in self._VARIABLE_FIELDS:
             selected_offsets, selected_flat = self._select_flat(
                 getattr(self, flat_name), getattr(self, offsets_name), idx,
             )
             setattr(result, offsets_name, selected_offsets)
             setattr(result, flat_name, selected_flat)
+        return result
+
+    @classmethod
+    def from_field_map(cls, fields: dict[str, np.ndarray]) -> RolloutBuffer:
+        """从「属性名 → 数组」映射直接装配缓冲(零拷贝视图也允许)。
+
+        与 ``select`` 的产物字段一一对应(B2 共享内存 shard 传输的接收端):
+        所有 ``_FIXED_FIELDS`` 与 ``_VARIABLE_FIELDS`` 必须齐备,``size`` 由
+        ``actor_lengths`` 推导。数组必须是 C 连续(共享内存视图天然满足);
+        不做拷贝,调用方保证底层内存在缓冲使用期间有效。
+        """
+        missing = [
+            name for name, _flat in cls._VARIABLE_FIELDS if name not in fields
+        ] + [
+            flat for _offsets, flat in cls._VARIABLE_FIELDS if flat not in fields
+        ] + [name for name in cls._FIXED_FIELDS if name not in fields]
+        if missing:
+            raise ValueError(f"missing rollout buffer fields: {sorted(missing)}")
+        result = cls.__new__(cls)
+        for name, array in fields.items():
+            setattr(result, name, array)
+        result.size = int(len(result.actor_lengths))
         return result
 
     @staticmethod
