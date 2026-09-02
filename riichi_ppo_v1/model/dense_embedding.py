@@ -63,43 +63,56 @@ def compute_kind_row_plan(actor_factors: np.ndarray) -> dict[int, np.ndarray]:
     return plan
 
 
-@torch._dynamo.disable
 def _merge_kind_row_plan_on_device(
-    kind_row_plan: dict[int, np.ndarray],
+    kind_row_plan: dict[int, np.ndarray | Tensor],
     static_categories: tuple,
     device: torch.device,
 ) -> list[Tensor]:
-    """把 host 行表按静态类别键序合并为单次 pinned 异步 H2D(C2)。
+    """把 host 行表按静态类别键序合并为 GPU 索引张量视图列表。
 
-    禁译区(``torch._dynamo.disable``):本函数只做 numpy 合并 + pinned
-    分配 + host→device 传输,eager 语义与原内联实现完全一致。独立成禁译
-    函数的原因:torch 2.7 inductor 无法 lower ``empty(pin_memory=True)``,
-    参数无梯度(冻结模型/no_grad/inference_mode)时编译必现
-    NotImplementedError——显式把它隔离在所有编译子图之外,产物(GPU 索引
-    张量视图列表)重新进入编译图。graph_break 不足以做到这点(break 后
-    dynamo 会继续追踪后续语句)。
+    两种输入形态,数值完全一致(升序行号、静态类别顺序):
+    - numpy 数组(训练/常规 eager 路径,collate 产物):单次 pinned 异步
+      H2D —— torch 2.7 inductor 无法 lower ``empty(pin_memory=True)``,该
+      分支只能出现在参数带梯度的编译态(训练 forward,实测可编译)或纯
+      eager;冻结模型(no_grad/inference_mode)的编译态不得走此分支。
+    - CUDA 张量(编译态 reference 预计算,调用方已上传):纯 GPU ``cat``,
+      可安全进任何编译图。**禁止**把禁译边界(graph_break/disable)放在
+      本函数:边界切出的 resume 帧与训练编译共享 dynamo 缓存槽,会把训练
+      图挤出缓存回退 eager(fwd/bwd 翻倍,实测)。
+
+    段内切片顺序与升序行表逐位一致,与原 C2 内联实现等价。
     """
     arrays = [
         kind_row_plan[kind_value]
         for kind_value, _key, _cls, _schema in static_categories
         if kind_row_plan.get(kind_value) is not None
-        and kind_row_plan[kind_value].size
+        and _plan_size(kind_row_plan[kind_value])
     ]
     idx_by_kind: list[Tensor] = []
     if arrays:
-        total = int(sum(arr.size for arr in arrays))
-        pinned = torch.empty(
-            total, dtype=torch.long,
-            pin_memory=(device.type == "cuda"),
-        )
-        pinned.copy_(torch.from_numpy(np.concatenate(arrays)))
-        all_idx = pinned.to(device, non_blocking=True)
+        if isinstance(arrays[0], torch.Tensor):
+            all_idx = torch.cat([
+                array.to(device=device, dtype=torch.long) for array in arrays
+            ])
+        else:
+            total = int(sum(int(array.size) for array in arrays))
+            pinned = torch.empty(
+                total, dtype=torch.long,
+                pin_memory=(device.type == "cuda"),
+            )
+            pinned.copy_(torch.from_numpy(np.concatenate(arrays)))
+            all_idx = pinned.to(device, non_blocking=True)
         cursor = 0
-        for arr in arrays:
-            size = int(arr.size)
+        for array in arrays:
+            size = int(array.numel()) if isinstance(array, torch.Tensor) else int(array.size)
             idx_by_kind.append(all_idx[cursor:cursor + size])
             cursor += size
     return idx_by_kind
+
+
+def _plan_size(array: np.ndarray | Tensor) -> int:
+    """行表数组元素数(numpy ``size`` 与 Tensor ``numel`` 的统一入口)。"""
+    return int(array.numel()) if isinstance(array, torch.Tensor) else int(array.size)
 
 
 class SharedSimpleProjection(nn.Module):
@@ -292,7 +305,7 @@ class StateTokenEmbedding(nn.Module):
             cursor = 0
             for kind_value, key, cls, schema in self._static_categories:
                 indices = kind_row_plan.get(kind_value)
-                if indices is None or indices.size == 0:
+                if indices is None or _plan_size(indices) == 0:
                     continue
                 idx = idx_by_kind[cursor]
                 cursor += 1

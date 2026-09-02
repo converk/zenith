@@ -831,6 +831,17 @@ class PPOLearner:
                 host_batch.pop("critic_total_capacity", None)
                 kind_row_plan = host_batch.pop("kind_row_plan", None)
                 host_batch.pop("critic_kind_row_plan", None)
+                # 行表上传为 CUDA 张量再进 forward:让 token_embedding 的合并
+                # 走纯 GPU cat 分支。torch 2.7 inductor 无法 lower pinned 分配,
+                # 冻结模型(无梯度)的编译图里不能出现 numpy→pinned 路径;
+                # 训练路径(参数带梯度)保持 numpy 行表不变。
+                if kind_row_plan is not None:
+                    kind_row_plan = {
+                        key: torch.from_numpy(array).to(
+                            self.device, non_blocking=True,
+                        )
+                        for key, array in kind_row_plan.items()
+                    }
                 batch = transfer_batch_to_device(host_batch, self.device, None)
                 with torch.autocast(
                     device_type=self.device.type,
