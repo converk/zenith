@@ -35,7 +35,13 @@ from .learner import (
     rollout_update_targets,
 )
 from .rollout_buffer import RolloutBuffer
-from .shard_transport import ShardShmView, ShardShmWriter, shard_field_arrays
+from .shard_transport import (
+    SHARD_SHM_PREFIX,
+    ShardShmView,
+    ShardShmWriter,
+    shard_field_arrays,
+    sweep_stale_shard_blocks,
+)
 
 _CMD_UPDATE = "update"
 _CMD_WEIGHTS = "weights"
@@ -393,11 +399,16 @@ class LearnerDDP:
         # B2:shard IPC 传输方式。``pickle`` 为历史路径(mp.Queue feeder 线程
         # pickle → 管道 memcpy → learner unpickle,2.5GB 分片共 4 次拷贝);
         # ``shm`` 经 /dev/shm 传递 SoA 数组(driver 写入 1 次拷贝,learner
-        # 零拷贝视图),数组逐位一致。默认 pickle,消融后定默认。
-        self._shard_transport = str(config.get("learner_shard_transport", "pickle"))
+        # 零拷贝视图),数组逐位一致。默认 shm(消融:同口径 update_wall
+        # 112.7→96.9s,driver 侧 put 3.5s+传输尾差 6.8s→0.05s/0.04s,代价为
+        # shm 写入 ~3.8s;消融配置 audit/reports/v18/scripts/
+        # v18_ppo_perf_scaled_shm.yaml),置 pickle 回退历史路径。
+        self._shard_transport = str(config.get("learner_shard_transport", "shm"))
         if self._shard_transport not in {"pickle", "shm"}:
             raise ValueError("learner_shard_transport must be 'pickle' or 'shm'")
         self._shm_seq = 0
+        # 尽力清理历史上异常崩溃遗留的 tmpfs 块(存活 pid 的块不动)。
+        sweep_stale_shard_blocks()
         self._context = multiprocessing.get_context("spawn")
         self._command_queues = [
             self._context.Queue() for _ in range(self.world_size)
@@ -492,7 +503,7 @@ class LearnerDDP:
                 for rank, shard in enumerate(shards):
                     writer = ShardShmWriter(
                         shard_field_arrays(shard),
-                        name=f"riichi-ppo-shard-{os.getpid()}-{self._shm_seq}-{rank}",
+                        name=f"{SHARD_SHM_PREFIX}{os.getpid()}-{self._shm_seq}-{rank}",
                     )
                     writers.append(writer)
                     shard_metas.append(writer.write())

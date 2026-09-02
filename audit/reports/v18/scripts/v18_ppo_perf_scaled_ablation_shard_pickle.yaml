@@ -1,0 +1,114 @@
+# V18 PPO 性能测试缩放口径配置(自包含,不与 v18_ppo.yaml 叠加)。
+# 消融变体(自包含):与 v18_ppo_perf_scaled.yaml 逐项相同,唯一差异
+# minibatch_size 1536→2048(Tier 0.5 测量变体;等效有效 batch
+# 2048×10×2=40960,显存上界 46GB 卡内实测)。底本为 v18_ppo.yaml,
+# 仅按提示词第五节测试协议修改
+# 工作负载与编排键:resume checkpoint_00150 续跑、iterations 152(绝对总数,
+# resume 后 learner.iteration=150,正好 2 个 update)、games_per_update 1024、
+# update_epochs 1、checkpoint 目录重定向、评测关闭;PPO 全部超参与 rollout/
+# 推理拓扑(num_workers=12、envs_per_worker=32、inference_*、seed)与正式配置
+# 逐项相同。本文件仅用于性能迭代;正式训练仍以 v18_ppo.yaml 为准。
+seed: 20260828
+device: cuda
+learner_gpus: 2
+iterations: 152
+total_updates: 150
+model_size: v18
+context_tokens: 256
+policy_head_type: current_state_snapshot
+critic_layers: 2
+inference_dtype: bf16
+game_mode: 4p-red-half
+
+# V18 前置产物:grp_checkpoint 为必填;init_model 置 null(resume 与
+# init_model 互斥,resume checkpoint 已内含 SFT reference 权重)。
+init_model: null
+grp_checkpoint: checkpoints/train_riichi_v18/grp/best.pt
+
+# Rollout 与推理拓扑(与正式配置逐项相同)。
+num_workers: 12
+envs_per_worker: 32
+env_step_threads: 4
+rollout_worker_num_cpus: 2
+rollout_worker_cpu_threads: 1
+inference_max_batch_size: 512
+inference_batch_wait_ms: 16.0
+inference_batch_target_rows: 0
+inference_batch_target_workers: -1
+games_per_update: 1024
+
+# PPO 主超参(与正式配置逐项相同;仅 update_epochs=1 为测试协议缩减键)。
+gamma: 1.0
+gae_lambda: 0.95
+ppo_clip: 0.20
+update_epochs: 1
+minibatch_size: 2048
+gradient_accumulation_steps: 10
+update_batch_mode: streaming
+bucket_window_multiplier: 8
+update_validate_structure: false
+
+value_coef: 0.3
+value_loss: huber
+value_target_normalization: batch_std
+value_target_std_floor: 0.01
+
+entropy_loss_mode: normalized
+entropy_start: 0.014
+entropy_middle: 0.006
+entropy_end: 0.002
+entropy_middle_fraction: 0.33
+
+learning_rate: 0.00009
+actor_learning_rate: 0.00009
+actor_learning_rate_min: 0.0000225
+shared_learning_rate: 0.0000075
+shared_learning_rate_min: 0.00000375
+critic_learning_rate: 0.00008
+critic_learning_rate_min: 0.0000225
+critic_bootstrap_learning_rate: 0.00002
+warmup_fraction: 0.02
+adam_beta1: 0.9
+adam_beta2: 0.999
+adam_epsilon: 0.00001
+weight_decay: 0.0
+
+critic_bootstrap_updates: 2
+max_grad_norm: 0.5
+actor_max_grad_norm: 0.5
+shared_max_grad_norm: 0.5
+critic_max_grad_norm: 0.5
+critic_public_grad_scale: 0.25
+critic_private_embedding_grad_scale: 0.25
+target_kl: 0.01
+target_kl_check_interval: 8
+
+sft_kl_coef_start: 0.0025
+sft_kl_coef_middle: 0.001
+sft_kl_coef_end: 0.0005
+sft_kl_middle_fraction: 0.5
+
+# 缩放口径性能化键:输出重定向到专用目录,评测与 checkpoint 关闭。
+# 消融键(本文件):learner_shard_transport=pickle(B2 的「关」侧:回退
+# 历史 mp.Queue pickle 传输;交付态默认为 shm)。
+checkpoint_interval_updates: 5
+update_timeout_s: 1800
+eval1v3_interval_updates: 5
+checkpoint_dir: checkpoints/train_riichi_v18/ppo_perf/scaled_shard_pickle
+resume: checkpoints/train_riichi_v18/ppo/checkpoint_00150.pt
+
+opponent_mix:
+  enabled: false
+
+eval1v3_enabled: false
+eval1v3_model_b: checkpoints/train_riichi_v18/sft/best.pt
+eval1v3_hanchans_per_process: 600
+eval1v3_seed_base: 20260829
+eval1v3_devices: ["0", "1"]
+eval1v3_parallel_hanchans: 300
+eval1v3_output_dir: audit/reports/v18/eval
+
+progress_update_interval_updates: 10
+
+# 消融键(本文件):shard 传输回退历史 pickle 路径。
+learner_shard_transport: pickle

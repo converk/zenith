@@ -23,6 +23,37 @@ import numpy as np
 
 from .rollout_buffer import RolloutBuffer
 
+# 共享内存块命名前缀(清扫与命名共用单一来源)。
+SHARD_SHM_PREFIX = "riichi-ppo-shard-"
+
+
+def sweep_stale_shard_blocks() -> int:
+    """清理已消亡进程遗留的 shard 共享内存块,返回清理数量。
+
+    driver 异常消亡时 finally 的 unlink 可能不执行,tmpfs 块会滞留 /dev/shm
+    并占用内存;块名内嵌创建者 pid,本进程启动时对「pid 已不存在」的块做
+    一次尽力清扫(存活 pid 的块属于并行运行的其他训练,绝不动)。
+    """
+    import glob
+    import os
+
+    removed = 0
+    for path in glob.glob(f"/dev/shm/{SHARD_SHM_PREFIX}*"):
+        parts = os.path.basename(path).split("-")
+        try:
+            # 命名:riichi-ppo-shard-<pid>-<seq>-<rank>。
+            pid = int(parts[3])
+        except (IndexError, ValueError):
+            continue
+        if os.path.exists(f"/proc/{pid}"):
+            continue
+        try:
+            os.unlink(path)
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
 
 def shard_field_arrays(buffer: RolloutBuffer) -> dict[str, np.ndarray]:
     """收集 shard 传输所需的全部 SoA 数组(与 select 产物字段一致)。"""
