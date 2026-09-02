@@ -572,6 +572,70 @@ def test_prefetch_propagates_collate_exception(monkeypatch) -> None:
         learner.update(transitions, shuffle_seed=7)
 
 
+def test_reference_compile_flag_and_build_contract() -> None:
+    """C 项旗标与构造契约:torch_compile_reference 默认跟随 torch_compile;
+    _build_reference_model 产出冻结、eval 的 reference,state_dict 键与
+    eager 完全一致(编译只挂在 forward_actor 方法上,模块本体不包装)。"""
+    kwargs = _learner_kwargs(torch_compile=False)
+    learner = PPOLearner("v18", "cpu", **kwargs)
+    assert learner.torch_compile is False
+    assert learner.torch_compile_reference is False  # 默认跟随 torch_compile
+    overridden = PPOLearner(
+        "v18", "cpu", **{**kwargs, "torch_compile_reference": True},
+    )
+    assert overridden.torch_compile_reference is True
+
+    weights = {
+        name: value.detach().clone()
+        for name, value in learner.model.state_dict().items()
+    }
+    learner._build_reference_model(weights)
+    assert learner.reference_model is not None
+    assert learner.reference_model.training is False
+    assert all(
+        not parameter.requires_grad
+        for parameter in learner.reference_model.parameters()
+    )
+    # 键集合与训练模型一致(checkpoint 契约:无 _orig_mod 前缀)。
+    assert set(learner.reference_model.state_dict()) == set(weights)
+
+
+def test_reference_compile_matches_eager_within_bf16_tolerance() -> None:
+    """C 项数值对照:编译态 forward_actor 与 eager 的 reference logits 在
+    bf16 内核形状级差异内一致(△ 级),-inf 非法位必须逐位一致。"""
+    if not torch.cuda.is_available():
+        pytest.skip("reference 编译对照需要 CUDA")
+    from riichi_ppo_v1.model import KyokuTransformerActorCritic
+
+    buffer = RolloutBuffer(_transitions(np.random.default_rng(97), 24))
+    kwargs = _learner_kwargs(profile_enabled=False, torch_compile=False)
+    source = PPOLearner("v18", "cuda:0", **kwargs)
+    weights = {
+        name: value.detach().clone()
+        for name, value in source.model.state_dict().items()
+    }
+    del source
+    eager = PPOLearner(
+        "v18", "cuda:0", **{**kwargs, "torch_compile_reference": False},
+    )
+    compiled = PPOLearner(
+        "v18", "cuda:0", **{**kwargs, "torch_compile_reference": True},
+    )
+    eager._build_reference_model(weights)
+    compiled._build_reference_model(weights)
+    eager_logits = eager._precompute_reference_logits(buffer)
+    compiled_logits = compiled._precompute_reference_logits(buffer)
+    eager_finite = torch.isfinite(eager_logits)
+    assert torch.equal(eager_finite, torch.isfinite(compiled_logits))
+    max_diff = float(
+        (eager_logits[eager_finite] - compiled_logits[eager_finite]).abs().max()
+    )
+    # bf16 内核选择随编译图形状变化(既有 B2 预计算记录同量级 ≤2e-3,合成
+    # 数据实测 ≤4e-3);容差只用于拦截结构性错误(索引/掩蔽错误会是 ±inf 或
+    # 数量级差异),不做逐位断言。
+    assert max_diff <= 1e-2, f"compiled reference logits diff {max_diff:.3e}"
+
+
 def test_reference_precompute_pipeline_matches_serial() -> None:
     """SFT reference 预计算的 collate 后台线程化与串行版逐位一致。
 

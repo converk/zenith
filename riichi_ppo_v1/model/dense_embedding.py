@@ -63,6 +63,45 @@ def compute_kind_row_plan(actor_factors: np.ndarray) -> dict[int, np.ndarray]:
     return plan
 
 
+@torch._dynamo.disable
+def _merge_kind_row_plan_on_device(
+    kind_row_plan: dict[int, np.ndarray],
+    static_categories: tuple,
+    device: torch.device,
+) -> list[Tensor]:
+    """把 host 行表按静态类别键序合并为单次 pinned 异步 H2D(C2)。
+
+    禁译区(``torch._dynamo.disable``):本函数只做 numpy 合并 + pinned
+    分配 + host→device 传输,eager 语义与原内联实现完全一致。独立成禁译
+    函数的原因:torch 2.7 inductor 无法 lower ``empty(pin_memory=True)``,
+    参数无梯度(冻结模型/no_grad/inference_mode)时编译必现
+    NotImplementedError——显式把它隔离在所有编译子图之外,产物(GPU 索引
+    张量视图列表)重新进入编译图。graph_break 不足以做到这点(break 后
+    dynamo 会继续追踪后续语句)。
+    """
+    arrays = [
+        kind_row_plan[kind_value]
+        for kind_value, _key, _cls, _schema in static_categories
+        if kind_row_plan.get(kind_value) is not None
+        and kind_row_plan[kind_value].size
+    ]
+    idx_by_kind: list[Tensor] = []
+    if arrays:
+        total = int(sum(arr.size for arr in arrays))
+        pinned = torch.empty(
+            total, dtype=torch.long,
+            pin_memory=(device.type == "cuda"),
+        )
+        pinned.copy_(torch.from_numpy(np.concatenate(arrays)))
+        all_idx = pinned.to(device, non_blocking=True)
+        cursor = 0
+        for arr in arrays:
+            size = int(arr.size)
+            idx_by_kind.append(all_idx[cursor:cursor + size])
+            cursor += size
+    return idx_by_kind
+
+
 class SharedSimpleProjection(nn.Module):
     """简单类别共享 concat→单层投影。"""
 
@@ -244,29 +283,12 @@ class StateTokenEmbedding(nn.Module):
         if kind_row_plan is not None:
             # C2 host 计划路径:静态类别键序迭代 + host 行表(升序,与旧路径
             # 段内顺序一致),全程无 argsort/tolist/item 同步;行内容与累加
-            # 语义逐位等价(单测 torch.equal 断言)。行表先合并为单次 pinned
-            # 异步 H2D(逐类别 pageable 拷贝每次都是一个同步点),再按 host
-            # 偏移交量切片取视图。
-            arrays = [
-                kind_row_plan[kind_value]
-                for kind_value, _key, _cls, _schema in self._static_categories
-                if kind_row_plan.get(kind_value) is not None
-                and kind_row_plan[kind_value].size
-            ]
-            idx_by_kind: list[Tensor] = []
-            if arrays:
-                total = int(sum(arr.size for arr in arrays))
-                pinned = torch.empty(
-                    total, dtype=torch.long,
-                    pin_memory=(kind.device.type == "cuda"),
-                )
-                pinned.copy_(torch.from_numpy(np.concatenate(arrays)))
-                all_idx = pinned.to(kind.device, non_blocking=True)
-                cursor = 0
-                for arr in arrays:
-                    size = int(arr.size)
-                    idx_by_kind.append(all_idx[cursor:cursor + size])
-                    cursor += size
+            # 语义逐位等价(单测 torch.equal 断言)。行表合并 + pinned H2D 在
+            # 禁译辅助函数内完成(纯 host 侧传输,产物为 GPU 张量),其后的
+            # 逐类别 GPU 计算留在编译图。
+            idx_by_kind = _merge_kind_row_plan_on_device(
+                kind_row_plan, self._static_categories, kind.device,
+            )
             cursor = 0
             for kind_value, key, cls, schema in self._static_categories:
                 indices = kind_row_plan.get(kind_value)

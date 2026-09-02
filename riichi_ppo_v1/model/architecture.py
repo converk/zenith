@@ -341,7 +341,20 @@ class KyokuTransformerActorCritic(nn.Module):
         query_action_ids: Tensor,
         query_pair_counts: Tensor,
         legal_mask: Tensor,
+        shared_capacity: int | None = None,
+        kind_row_plan: dict[int, Any] | None = None,
+        validate_structure: bool = True,
     ) -> dict[str, Tensor]:
+        """policy-only 前向(冻结 SFT reference 预计算的唯一消费入口)。
+
+        独立 code object:``torch_compile_reference`` 编译本方法而非整个模块,
+        dynamo 按本函数独立维护缓存(默认 recompile_limit=8),不与训练模型
+        ``forward`` 的缓存槽位互相挤占(两者若共享同一 code object 缓存,
+        变体多的一方会把另一方挤出缓存、触发 eager 回退)。透传参数与
+        ``forward(policy_only=True)`` 完全一致:host 预计算的
+        ``shared_capacity``/``kind_row_plan`` 与 ``validate_structure`` 原样
+        下传,保持免同步快速路径。
+        """
         return self.forward(
             actor_factors=actor_factors,
             actor_numeric=actor_numeric,
@@ -350,6 +363,9 @@ class KyokuTransformerActorCritic(nn.Module):
             query_pair_counts=query_pair_counts,
             legal_mask=legal_mask,
             policy_only=True,
+            shared_capacity=shared_capacity,
+            kind_row_plan=kind_row_plan,
+            validate_structure=validate_structure,
         )
 
     def forward(

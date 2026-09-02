@@ -572,6 +572,14 @@ class PPOLearner:
         self.torch_compile = bool(hyperparameters.get("torch_compile", True))
         if self.torch_compile:
             self.model = torch.compile(self.model)
+        # C:冻结 SFT reference 的 policy-only 前向编译(△ 级,浮点归约顺序
+        # 改变;默认跟随 torch_compile,置 false 回退 eager reference)。实现
+        # 上只编译 ``forward_actor`` 这个独立 code object(见 architecture 文档),
+        # 与训练模型 forward 的 dynamo 缓存互不挤占;模块本体不包装,
+        # state_dict 键与 eager 完全一致,checkpoint 契约不受影响。
+        self.torch_compile_reference = bool(
+            hyperparameters.get("torch_compile_reference", self.torch_compile)
+        )
         self.model_ddp: DistributedDataParallel | None = (
             DistributedDataParallel(
                 self.model,
@@ -646,6 +654,21 @@ class PPOLearner:
         gc.collect()
         if self.device.type == "cuda":
             torch.cuda.empty_cache()
+
+    def _build_reference_model(self, state_dict: dict[str, torch.Tensor]) -> None:
+        """按给定权重构造冻结 SFT reference(必填键严格校验,compile 可选)。
+
+        ``torch_compile_reference`` 开启时仅把 ``forward_actor`` 换成编译包装
+        (独立 code object,不与训练模型 forward 抢缓存;模块本体不包装,
+        state_dict 键与 eager 完全一致)。冻结与 eval 语义与原两处构造一致。
+        """
+        model = KyokuTransformerActorCritic(self.config).to(self.device)
+        if self.torch_compile_reference:
+            model.forward_actor = torch.compile(model.forward_actor)
+        model.load_state_dict(state_dict, strict=True)
+        model.requires_grad_(False)
+        model.eval()
+        self.reference_model = model
 
     def _sync_cuda(self) -> None:
         if self.profile_cuda_sync and self.device.type == "cuda":
@@ -749,7 +772,7 @@ class PPOLearner:
         """对整个 rank 分片一次性预计算冻结 SFT reference 的 policy_logits。
 
         大批量(``update_reference_precompute_batch_size``,默认 8192 行)在
-        ``inference_mode`` + bf16 autocast 下前向,与 minibatch 内的 reference
+        ``no_grad`` + bf16 autocast 下前向,与 minibatch 内的 reference
         前向同构(同一 forward 路径,含 legal mask 的 -inf masking);冻结模型
         行值跨 epoch 不变,故每 update 一次取代每 minibatch 一次(约占 update
         forward 的 40%)。结果 [N, NUM_ACTIONS] fp32 驻留 GPU 至 update 结束,
@@ -790,7 +813,12 @@ class PPOLearner:
         )
         producer.start()
         chunks: list[torch.Tensor] = []
-        with torch.inference_mode():
+        # 用 no_grad 而非 inference_mode:inference_mode 张量在 torch 2.7 的
+        # inductor 下无法 lower token_embedding 行表路径的
+        # ``torch.empty(pin_memory=True)``,开启 torch_compile_reference 时
+        # 编译直接报错;no_grad 数值与张量语义完全一致(冻结模型 + 常量输入
+        # 本就无梯度),仅保留版本计数开销,预计算是 GPU-bound,可忽略。
+        with torch.no_grad():
             for _start in chunk_starts:
                 host_batch = producer_queue.get()
                 if host_batch is None:
@@ -802,25 +830,26 @@ class PPOLearner:
                 shared_capacity = host_batch.pop("shared_capacity", None)
                 host_batch.pop("critic_total_capacity", None)
                 kind_row_plan = host_batch.pop("kind_row_plan", None)
-                critic_kind_row_plan = host_batch.pop("critic_kind_row_plan", None)
+                host_batch.pop("critic_kind_row_plan", None)
                 batch = transfer_batch_to_device(host_batch, self.device, None)
                 with torch.autocast(
                     device_type=self.device.type,
                     dtype=torch.bfloat16,
                     enabled=self.use_bf16,
                 ):
-                    logits = model(
-                        batch["actor_factors"],
-                        batch["actor_numeric"],
-                        batch["actor_lengths"],
-                        batch["query_action_ids"],
-                        batch["query_pair_counts"],
-                        batch["legal_mask"],
-                        policy_only=True,
-                        validate_structure=self.update_validate_structure,
+                    # 统一走 forward_actor(policy-only 唯一消费入口):编译开关
+                    # 挂在该方法上,开启时此处自动走编译图;critic 侧容量/行表
+                    # 在 policy-only 路径不参与,仅从 host 批中移除。
+                    logits = model.forward_actor(
+                        actor_factors=batch["actor_factors"],
+                        actor_numeric=batch["actor_numeric"],
+                        actor_lengths=batch["actor_lengths"],
+                        query_action_ids=batch["query_action_ids"],
+                        query_pair_counts=batch["query_pair_counts"],
+                        legal_mask=batch["legal_mask"],
                         shared_capacity=shared_capacity,
                         kind_row_plan=kind_row_plan,
-                        critic_kind_row_plan=critic_kind_row_plan,
+                        validate_structure=self.update_validate_structure,
                     )["policy_logits"]
                 chunks.append(logits)
         # 排空生产者可能残留的哨兵/批次(主线程提前异常时避免挂起)。
@@ -829,8 +858,8 @@ class PPOLearner:
         producer.join(timeout=5.0)
         if producer.is_alive():
             raise RuntimeError("reference collate producer did not stop within 5s")
-        # inference_mode 张量不能参与 autograd 记录;在 inference_mode 之外
-        # cat 出普通张量,供 minibatch 内的 KL 计算安全使用。
+        # cat 出普通张量,供 minibatch 内的 KL 计算安全使用(no_grad 产物
+        # 本就是普通张量;单 chunk 时 clone 避免别名)。
         return torch.cat(chunks, dim=0) if len(chunks) > 1 else chunks[0].clone()
 
     def _start_collate_prefetch(
@@ -1555,10 +1584,7 @@ class PPOLearner:
         self.iteration = int(payload["iteration"])
         reference_state = payload.get("sft_reference_model")
         if reference_state is not None:
-            self.reference_model = KyokuTransformerActorCritic(self.config).to(self.device)
-            self.reference_model.load_state_dict(reference_state, strict=True)
-            self.reference_model.requires_grad_(False)
-            self.reference_model.eval()
+            self._build_reference_model(reference_state)
         elif float(self.hp.get("sft_kl_coef_start", 0.0)) > 0.0:
             raise RuntimeError(
                 "PPO checkpoint does not contain the frozen SFT reference required "
@@ -1598,8 +1624,5 @@ class PPOLearner:
                 "V18 SFT checkpoint model_config differs from the active PPO topology"
             )
         self._state_dict_source().load_state_dict(payload["model"], strict=True)
-        self.reference_model = KyokuTransformerActorCritic(self.config).to(self.device)
-        self.reference_model.load_state_dict(self.model.state_dict(), strict=True)
-        self.reference_model.requires_grad_(False)
-        self.reference_model.eval()
+        self._build_reference_model(self._state_dict_source().state_dict())
         self.iteration = 0
