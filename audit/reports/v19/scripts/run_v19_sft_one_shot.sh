@@ -43,7 +43,7 @@ encode_dataset() {
     --kyokus-per-shard 256 \
     --progress-every-kyokus 32 \
     --require-complete-action-coverage \
-    >"$log" 2>&1
+    2>&1 | tee "$log"
 }
 
 run_sft() {
@@ -100,7 +100,7 @@ if [[ -f "$ENCODED/manifest.json" ]]; then
   echo "[v19-sft] encoded dataset exists and will be reused: $ENCODED"
 else
   echo "[v19-sft] step 1: re-encode 2-year/60% subset with V19 + belief labels"
-  encode_dataset "$SOURCE" "$ENCODED" 8 "$LOG_DIR/sft_precompute.log"
+  encode_dataset "$SOURCE" "$ENCODED" 16 "$LOG_DIR/sft_precompute.log"
   echo "[v19-sft] step 1 done -> $ENCODED/manifest.json"
 fi
 
