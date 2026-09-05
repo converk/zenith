@@ -24,7 +24,9 @@ import numpy as np
 import torch
 
 from ..model.action_groups import action_group as _action_group
+from ..model.belief_labels import encode_belief_labels_batch
 from ..model.bridge import NUM_PLAYERS, BatchedStateBridge
+from ..training.belief import belief_metrics_batch
 from ..training.metrics import SemanticMetrics
 from ..training.rewards import PublicStateTracker
 from ..training.worker import active_decisions
@@ -45,9 +47,10 @@ def _greedy_actions(
     *,
     metrics: SemanticMetrics | None = None,
     public: PublicStateTracker | None = None,
-) -> tuple[list[int], list[Any]]:
+) -> tuple[list[int], list[Any], dict[str, float]]:
     prepared = adapter.prepare(bridge, decisions, analysis)
-    logits = adapter.masked_logits(prepared)
+    outputs = adapter.outputs(prepared)
+    logits = outputs["policy_logits"]
     action_ids = logits.argmax(-1).tolist()
     if metrics is not None and public is not None:
         for decision, action_id, legal_row in zip(
@@ -60,8 +63,24 @@ def _greedy_actions(
                 prior_riichi_count=int(public.riichi[decision.env_index].sum()),
                 seat=decision.seat_id,
             )
+    # V19 信念指标面(§5.3):标签由评测环境 Rust 侧生成,对学习模型与 SFT
+    # 对手都度量「对 SFT 对手的信念校准」。
+    belief_metrics: dict[str, float] = {}
+    if "belief_hand_logits" in outputs:
+        labels = encode_belief_labels_batch(
+            [decision.observation for decision in decisions]
+        )
+        device_tensors = {
+            "belief_hand": torch.as_tensor(labels.hand_counts, device=logits.device),
+            "belief_shanten": torch.as_tensor(labels.shanten, device=logits.device),
+            "belief_wait": torch.as_tensor(labels.wait, device=logits.device),
+            "belief_danger": torch.as_tensor(labels.danger, device=logits.device),
+            "belief_loss": torch.as_tensor(labels.loss, device=logits.device),
+        }
+        belief_metrics = belief_metrics_batch(outputs, device_tensors)
+        belief_metrics["decision_count"] = float(len(decisions))
     actions = bridge.decode(decisions, action_ids)
-    return action_ids, actions
+    return action_ids, actions, belief_metrics
 
 
 def evaluate_1v3(
@@ -133,6 +152,8 @@ def evaluate_1v3(
     completed = 0
     seat_counts = Counter()
     action_counts = {"a": Counter(), "b": Counter()}
+    belief_sums: dict[str, dict[str, float]] = {"a": {}, "b": {}}
+    belief_counts: dict[str, int] = {"a": 0, "b": 0}
 
     for batch_start in range(0, int(hanchan_count), batch_size):
         batch_size_now = min(batch_size, int(hanchan_count) - batch_start)
@@ -172,11 +193,16 @@ def evaluate_1v3(
                 if not policy_decisions:
                     continue
                 metrics = metric_a if policy_name == "a" else metric_b
-                action_ids, actions = _greedy_actions(
+                action_ids, actions, belief = _greedy_actions(
                     adapter, bridge, policy_decisions, None,
                     metrics=metrics, public=public,
                 )
                 action_counts[policy_name].update(int(value) for value in action_ids)
+                for name, value in belief.items():
+                    belief_sums[policy_name][name] = (
+                        belief_sums[policy_name].get(name, 0.0) + float(value)
+                    )
+                belief_counts[policy_name] += len(policy_decisions)
                 for decision, action in zip(policy_decisions, actions, strict=True):
                     actions_by_env[decision.env_index][decision.seat_id] = action
 
@@ -327,6 +353,16 @@ def evaluate_1v3(
     second_places = sum(rank == 2 for rank in rank_history)
     third_places = sum(rank == 3 for rank in rank_history)
 
+    def belief_metrics(policy: str) -> dict[str, float]:
+        count = max(belief_counts[policy], 1)
+        result = {
+            name: float(value) / float(count)
+            for name, value in belief_sums[policy].items()
+            if name != "decision_count"
+        }
+        result["decision_count"] = float(belief_counts[policy])
+        return result
+
     return {
         "protocol_version": 1,
         "game_mode": game_mode,
@@ -357,6 +393,7 @@ def evaluate_1v3(
             "action_type_rates": action_rates("a"),
             "kyoku_metrics": kyoku_metrics("model_a", summary_a),
             "semantic_metrics": summary_a,
+            "belief_metrics": belief_metrics("a"),
             "metadata": adapter_a.metadata(),
         },
         "model_b": {
@@ -365,6 +402,7 @@ def evaluate_1v3(
             "action_type_rates": action_rates("b"),
             "kyoku_metrics": kyoku_metrics("model_b", summary_b),
             "semantic_metrics": summary_b,
+            "belief_metrics": belief_metrics("b"),
             "metadata": adapter_b.metadata(),
         },
         "elapsed_s": elapsed,

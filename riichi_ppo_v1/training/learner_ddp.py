@@ -28,6 +28,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 
+from .belief import belief_metric_keys
 from .learner import (
     PPOLearner,
     discounted_empirical_returns,
@@ -76,6 +77,7 @@ _SAMPLE_WEIGHTED_KEYS = {
     "entropy", "entropy_normalized",
     "sft_reference_kl", "approx_kl", "clipfrac", "ratio",
     "update/executed_transition_tokens_mean",
+    *belief_metric_keys(),
 }
 # 按 executed minibatches 加权平均的指标。
 _STEP_WEIGHTED_KEYS = {
@@ -102,6 +104,10 @@ _RANK0_KEYS = {
     "system/learning_rate", "system/actor_learning_rate", "system/shared_learning_rate",
     "system/critic_learning_rate", "system/entropy_coef", "system/sft_kl_coef",
     "system/critic_public_grad_scale", "system/critic_private_embedding_grad_scale",
+    "system/belief_public_grad_scale", "system/belief_head_weight_hand",
+    "system/belief_head_weight_shanten", "system/belief_head_weight_wait",
+    "system/belief_head_weight_danger", "system/belief_head_weight_loss",
+    "system/belief_wait_danger_weight",
     "training/critic_bootstrap", "training/policy_update",
 }
 
@@ -302,7 +308,7 @@ def _learner_worker(
             learner.load_model_weights(init_model_path)
         else:
             raise ValueError(
-                "V18 PPO DDP learner requires --init-model or a resume checkpoint"
+                "V19 PPO DDP learner requires --init-model or a resume checkpoint"
             )
         result_queue.put({"kind": "ready", "iteration": learner.iteration})
         while True:
@@ -401,8 +407,8 @@ class LearnerDDP:
         # ``shm`` 经 /dev/shm 传递 SoA 数组(driver 写入 1 次拷贝,learner
         # 零拷贝视图),数组逐位一致。默认 shm(消融:同口径 update_wall
         # 112.7→96.9s,driver 侧 put 3.5s+传输尾差 6.8s→0.05s/0.04s,代价为
-        # shm 写入 ~3.8s;消融配置 audit/reports/v18/scripts/
-        # v18_ppo_perf_scaled_shm.yaml),置 pickle 回退历史路径。
+        # shm 写入 ~3.8s;消融配置 audit/reports/v19/scripts/
+        # v19_ppo_perf_scaled_shm.yaml),置 pickle 回退历史路径。
         self._shard_transport = str(config.get("learner_shard_transport", "shm"))
         if self._shard_transport not in {"pickle", "shm"}:
             raise ValueError("learner_shard_transport must be 'pickle' or 'shm'")

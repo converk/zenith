@@ -481,6 +481,9 @@ class KyokuTransformerActorCritic(nn.Module):
 
         # —— Actor 层：Shared 表示 + Analysis + Belief token + Action Query ——
         actor_input = actor_embeddings.clone()
+        # bf16 autocast 下信念网络的 Linear 输出为 bf16,而 actor 序列张量是
+        # float32;注入前统一到序列 dtype,避免 Index put dtype 不匹配。
+        belief_tokens = belief_tokens.to(dtype=actor_input.dtype)
         shared_positions = torch.arange(shared_capacity, device=device)[None, :]
         replace = shared_positions < shared_lengths[:, None]
         actor_input[:, :shared_capacity] = torch.where(

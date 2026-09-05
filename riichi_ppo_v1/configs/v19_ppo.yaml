@@ -7,6 +7,8 @@ learner_gpus: 2
 iterations: 150
 total_updates: 150
 model_size: v19
+layers: 5
+shared_layers: 3
 context_tokens: 320
 policy_head_type: current_state_snapshot
 critic_layers: 1

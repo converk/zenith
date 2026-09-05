@@ -1,4 +1,4 @@
-"""Ray rollout actors:V18 编码装配与纯 GRP 边界奖励推理。"""
+"""Ray rollout actors:V19 编码装配与纯 GRP 边界奖励推理。"""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ try:
 except ImportError:  # imported lazily by the command line program
     ray = None
 
+from ..model.belief_labels import encode_belief_labels_batch
 from ..model.bridge import NUM_PLAYERS, BatchedStateBridge, Decision
 from ..model.grp import (
     GRP_HIDDEN,
@@ -160,7 +161,14 @@ def resolve_opponent_fractions(
 
 
 def should_record_transition(policy: str) -> bool:
-    """Only the current self-play policy contributes learner transitions."""
+    """Only the current self-play policy contributes learner transitions.
+
+    V19 信念标签(D25)仍对所有 model 决策(current/sft/history)生成;
+    只有 current 决策写入 PPO buffer:非 current 座位不是策略学习者,其
+    transition 参与更新会污染 on-policy 样本。全自对局(opponent_mix 关闭,
+    v19_ppo.yaml 默认)下四家均为 current,D25「每个 rollout 决策都生成
+    标签」完整成立。
+    """
     return policy == "current"
 
 
@@ -405,7 +413,7 @@ if ray is not None:
             )
             self.state_machine = riichi.MjaiKyokuStateMachineManager(self.num_envs)
             self.profiler = StageProfiler(enabled=bool(config.get("profile_enabled", True)))
-            # V18 action query 只保留 Rust 紧凑事实与融合编码路径。
+            # V19 action query 只保留 Rust 紧凑事实与融合编码路径。
             self.bridge = BatchedStateBridge(
                 self.state_machine,
                 self.num_envs,
@@ -538,6 +546,14 @@ if ray is not None:
         ) -> tuple[Any, dict[str, np.ndarray]]:
             with self.profiler.stage("rollout/model_state_prepare"):
                 batch = self.bridge.prepare(decisions)
+            # V19 信念标签(D26):所有 model 决策(含 SFT/history/current)都从
+            # 观测调用 Rust 上帝视角标签 API 生成;只有 current 决策会写入
+            # Transition(见 should_record_transition 注释),非 current 行标签
+            # 仅保证「全程生成」的统一路径,不进入 PPO buffer。
+            with self.profiler.stage("rollout/belief_labels"):
+                belief_labels = encode_belief_labels_batch(
+                    [decision.observation for decision in decisions]
+                )
             # RPC 载荷紧凑化:类别因子/动作 id 以 uint8 传输(值域 < 256,与
             # RolloutBuffer 的 fail-closed uint8 存储同依据),object store
             # 流量 int32→uint8 缩 4 倍;推理侧 collate 直接以 int64 装配,
@@ -569,6 +585,12 @@ if ray is not None:
                 "legal_mask": batch.legal_mask,
                 "critic_factors": batch.critic_factors,
                 "critic_lengths": batch.critic_lengths,
+                # V19 信念标签数组与 prepared 等长,供 _model_actions 按行拆装。
+                "belief_hand": np.asarray(belief_labels.hand_counts, dtype=np.uint8),
+                "belief_shanten": np.asarray(belief_labels.shanten, dtype=np.uint8),
+                "belief_wait": np.asarray(belief_labels.wait, dtype=np.uint8),
+                "belief_danger": np.asarray(belief_labels.danger, dtype=np.uint8),
+                "belief_loss": np.asarray(belief_labels.loss, dtype=np.float32),
             }
 
         def _model_actions(
@@ -606,6 +628,12 @@ if ray is not None:
                                 if critic_length else None
                             ),
                             critic_length=critic_length,
+                            # V19 信念标签逐行写入(只进训练,不入推理)。
+                            belief_hand=prepared["belief_hand"][row].copy(),
+                            belief_shanten=prepared["belief_shanten"][row].copy(),
+                            belief_wait=prepared["belief_wait"][row].copy(),
+                            belief_danger=prepared["belief_danger"][row].copy(),
+                            belief_loss=prepared["belief_loss"][row].copy(),
                         )
                         self.semantic.record_decision(
                             action_ids[row], prepared["legal_mask"][row],

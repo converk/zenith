@@ -2,7 +2,7 @@
 
 worker 在 GAE 完成后把 ``list[Transition]`` 一次性物化成扁平 SoA 数组(变长字段
 使用 offset 索引),driver、learner 与 DDP 分片全程只传递该结构。``collate``
-把 minibatch 下标向量化 gather 成 V18 padded host 张量。
+把 minibatch 下标向量化 gather 成 V19 padded host 张量。
 
 边界说明:
 - 所有变长字段都存成「flat 数组 + offset(长度 N+1)」;collate 用一次性 gather
@@ -18,6 +18,13 @@ from collections.abc import Iterator, Sequence
 import numpy as np
 import torch
 
+from ..model.belief_labels import (
+    DANGER_LEN,
+    HAND_LEN,
+    LOSS_LEN,
+    SHANTEN_LEN,
+    WAIT_LEN,
+)
 from ..model.dense_embedding import compute_kind_row_plan
 from ..model.encoding_protocol import (
     SEGMENT_SHARED,
@@ -26,10 +33,21 @@ from ..model.encoding_protocol import (
 )
 from .trajectory import Transition, transition_sequence_length
 
-# V18 当前局面行宽与 critic 私有行宽共享 token schema。
+# V19 当前局面行宽与 critic 私有行宽共享 token schema。
 _ACTOR_W = TOKEN_ROW_WIDTH
 _NUMERIC_W = TOKEN_NUMERIC_WIDTH
 _CRITIC_W = TOKEN_ROW_WIDTH
+
+# 信念五头固定字段(每行):hand [102] uint8、shanten [3] uint8、
+# wait [105] uint8、danger [102] uint8、loss [102] float32。
+# 设计文档 §3 紧凑存储:先以 float32 求正确,缓冲有压力再换 float16。
+_BELIEF_FIXED_SHAPES = {
+    "belief_hand": (HAND_LEN, np.uint8),
+    "belief_shanten": (SHANTEN_LEN, np.uint8),
+    "belief_wait": (WAIT_LEN, np.uint8),
+    "belief_danger": (DANGER_LEN, np.uint8),
+    "belief_loss": (LOSS_LEN, np.float32),
+}
 
 # host→device 传输用紧凑索引 dtype:所有类别因子/动作 id 值域 < 256
 # (uint8 fail-closed 由 _compact_factor_flat 保证),int64 只是模型 embedding
@@ -78,7 +96,7 @@ def _gather_padded(
 
 
 def _compact_factor_flat(flat: np.ndarray, name: str) -> np.ndarray:
-    """把 V18 token 因子行压成 uint8(所有字段值 < 256,见 schema 单源)。
+    """把 V19 token 因子行压成 uint8(所有字段值 < 256,见 schema 单源)。
 
     存储与 Ray/多进程传输体积缩小 4 倍(实测 512 半庄全量缓冲 ~8GB → ~2GB),
     ``collate`` 输出仍按模型需求一次性转 int64,数值逐位一致。超出 uint8
@@ -106,6 +124,9 @@ class RolloutBuffer:
         "critic_lengths", "sequence_lengths", "actions", "old_logprobs",
         "values", "rewards", "kyoku_rewards", "done", "advantages",
         "legal_mask",
+        # V19 信念标签固定字段 + 逐行标签存在标志。
+        "belief_hand", "belief_shanten", "belief_wait", "belief_danger",
+        "belief_loss", "belief_present",
     )
     # 可变长字段:(offsets 属性名, flat 属性名, 重建 offsets 所用的长度字段)。
     _VARIABLE_FIELDS = (
@@ -153,6 +174,33 @@ class RolloutBuffer:
         self.legal_mask = np.stack([item.legal_mask for item in transitions], axis=0).astype(
             np.bool_
         )
+
+        # ---- V19 信念标签固定字段:缺省(None)时补零并置 present=False,
+        # 生产 rollout 的 current 决策默认全部 present(见 worker 注释)。----
+        present = [
+            (
+                item.belief_hand is not None
+                and item.belief_shanten is not None
+                and item.belief_wait is not None
+                and item.belief_danger is not None
+                and item.belief_loss is not None
+            )
+            for item in transitions
+        ]
+        self.belief_present = np.asarray(present, dtype=np.bool_)
+        for name, (width, dtype) in _BELIEF_FIXED_SHAPES.items():
+            rows = [
+                (
+                    np.asarray(getattr(item, name), dtype=dtype)
+                    if getattr(item, name) is not None
+                    else np.zeros(width, dtype=dtype)
+                )
+                for item in transitions
+            ]
+            setattr(
+                self, name,
+                np.stack(rows, axis=0) if rows else np.zeros((0, width), dtype=dtype),
+            )
 
         # ---- 可变长字段:flat + offset ----
         self.actor_offsets, actor_factors_flat, _ = self._concat_var(
@@ -321,10 +369,10 @@ class RolloutBuffer:
         self,
         indices: Sequence[int],
     ) -> dict[str, torch.Tensor]:
-        """把一个 minibatch 的下标数组 gather 成 V18 padded host 张量(CPU)。
+        """把一个 minibatch 的下标数组 gather 成 V19 padded host 张量(CPU)。
 
         模型 forward 只消费 ``query_action_ids``/``query_pair_counts``
-        (V18 action query 由 241 维专用表索引),不再搬运原始 query 行;
+        (V19 action query 由 241 维专用表索引),不再搬运原始 query 行;
         query 行的逐 token 一致性校验在 SFT 侧经
         ``assert_actor_input_semantics`` 完成。
         额外输出 host 侧标量 ``shared_capacity``/``critic_total_capacity``
@@ -393,6 +441,14 @@ class RolloutBuffer:
         old_logprobs = torch.from_numpy(self.old_logprobs[idx])
         advantages = torch.from_numpy(self.advantages[idx])
         legal = torch.from_numpy(self.legal_mask[idx])
+        # V19 信念标签固定形状字段:uint8 索引类由 transfer_batch_to_device
+        # 在 GPU 侧恢复 long(hand/shanten 供 CE、wait/danger 供 BCE 后转
+        # float),loss 保持 float32。
+        belief_tensors = {
+            name: torch.from_numpy(np.ascontiguousarray(getattr(self, name)[idx]))
+            for name in _BELIEF_FIXED_SHAPES
+        }
+        belief_present = torch.from_numpy(self.belief_present[idx])
 
         # host 侧容量预计算:shared 行数 = segment==SHARED 的有效行数(padding
         # 行 segment 为 0 不污染计数);critic 总长 = shared + critic + value 行。
@@ -417,6 +473,8 @@ class RolloutBuffer:
             "actions": actions,
             "old_logprobs": old_logprobs,
             "advantages": advantages,
+            "belief_present": belief_present,
+            **belief_tensors,
             # host 侧标量放末尾;非张量,learner 侧 pop 后透传 forward。
             "shared_capacity": shared_capacity,
             "critic_total_capacity": critic_total_capacity,

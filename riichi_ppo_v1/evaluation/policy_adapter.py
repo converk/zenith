@@ -1,4 +1,4 @@
-"""确定性 1v3 评测的 V18 策略边界。"""
+"""确定性 1v3 评测的 V19 策略边界(含信念指标面)。"""
 
 from __future__ import annotations
 
@@ -34,15 +34,22 @@ class PolicyAdapter(Protocol):
         self, bridge: BatchedStateBridge, decisions: list[Decision], analysis: Any | None = None,
     ) -> PreparedPolicyBatch: ...
 
+    def outputs(self, batch: PreparedPolicyBatch) -> dict[str, torch.Tensor]: ...
+
     def masked_logits(self, batch: PreparedPolicyBatch) -> torch.Tensor: ...
 
     def metadata(self) -> dict[str, Any]: ...
 
 
-class V18PolicyAdapter:
-    """V18 三段编码的策略边界:评测只做 policy-only 前向。"""
+class V19PolicyAdapter:
+    """V19 三段编码 + 信念网络的策略边界:评测做 policy-only 前向。
 
-    contract_id = "riichi-runtime-v18"
+    V19 模型在 ``policy_only`` 前向下也返回信念五头输出(信念是模型内部
+    产物,与策略共用同一条前向路径),评测因此能对学习模型与 SFT 对手同时
+    度量「对 SFT 对手的信念校准」(设计训练分册 §5.3)。
+    """
+
+    contract_id = "riichi-runtime-v19"
     requires_decision_analysis = False
 
     def __init__(self, model: torch.nn.Module, device: torch.device, checkpoint: Path) -> None:
@@ -65,7 +72,7 @@ class V18PolicyAdapter:
         )
 
     @torch.inference_mode()
-    def masked_logits(self, batch: PreparedPolicyBatch) -> torch.Tensor:
+    def outputs(self, batch: PreparedPolicyBatch) -> dict[str, torch.Tensor]:
         def tensor(value: np.ndarray) -> torch.Tensor:
             return torch.from_numpy(value).to(
                 self.device, non_blocking=self.device.type == "cuda",
@@ -73,7 +80,7 @@ class V18PolicyAdapter:
 
         use_bf16 = self.device.type == "cuda" and torch.cuda.is_bf16_supported()
         with torch.autocast(self.device.type, dtype=torch.bfloat16, enabled=use_bf16):
-            output = self.model(
+            return self.model(
                 tensor(batch.actor_factors).long(),
                 tensor(batch.actor_numeric),
                 tensor(batch.actor_lengths).long(),
@@ -81,8 +88,13 @@ class V18PolicyAdapter:
                 tensor(batch.query_pair_counts).long(),
                 tensor(batch.legal),
                 policy_only=True,
+                # 评测路径信念是模型自身输出,不做公共层梯度缩放(1.0)。
+                belief_public_grad_scale=1.0,
             )
-        return output["policy_logits"].float()
+
+    @torch.inference_mode()
+    def masked_logits(self, batch: PreparedPolicyBatch) -> torch.Tensor:
+        return self.outputs(batch)["policy_logits"].float()
 
     def metadata(self) -> dict[str, Any]:
         return {
@@ -95,7 +107,7 @@ class V18PolicyAdapter:
 def load_policy_adapter(
     path: str | Path, *, device: torch.device | str,
 ) -> PolicyAdapter:
-    """加载严格 V18 current_state_snapshot checkpoint。"""
+    """加载严格 V19 current_state_snapshot checkpoint。"""
     checkpoint = Path(path)
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
     if not isinstance(payload, dict):
@@ -108,7 +120,7 @@ def load_policy_adapter(
     except (TypeError, ValueError) as exc:
         raise RuntimeError("policy checkpoint has an invalid model_config") from exc
     if config.policy_head_type != "current_state_snapshot":
-        raise RuntimeError("only V18 current_state_snapshot checkpoints are supported")
+        raise RuntimeError("only V19 current_state_snapshot checkpoints are supported")
     state = payload.get("model")
     if not isinstance(state, dict):
         raise RuntimeError("policy checkpoint is missing model weights")
@@ -120,4 +132,4 @@ def load_policy_adapter(
     device_obj = torch.device(device)
     model.to(device_obj)
     model.eval()
-    return V18PolicyAdapter(model, device_obj, checkpoint)
+    return V19PolicyAdapter(model, device_obj, checkpoint)

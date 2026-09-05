@@ -1,4 +1,4 @@
-"""同步 Ray PPO 训练的命令行入口(V18)。
+"""同步 Ray PPO 训练的命令行入口(V19)。
 
 Ray 闭环:worker.collect → learner.update → inference.update_weights;每 5
 updates 按 ``evaluation/mechanism.py`` 的固定 1v3 机制(10 进程 × 600 =
@@ -337,7 +337,7 @@ def run(config: dict[str, Any]) -> None:
     if config.get("resume") and config.get("init_model"):
         raise ValueError("resume and init_model are mutually exclusive")
     if not config.get("grp_checkpoint"):
-        raise ValueError("V18 PPO requires grp_checkpoint in the run config")
+        raise ValueError("V19 PPO requires grp_checkpoint in the run config")
     if config.get("resume"):
         resume_payload = torch.load(config["resume"], map_location="cpu", weights_only=False)
         schema = int(resume_payload.get("token_schema_version", 0))
@@ -352,9 +352,9 @@ def run(config: dict[str, Any]) -> None:
         except RuntimeError as exc:
             raise RuntimeError(f"cannot initialize from incompatible checkpoint: {exc}") from exc
     else:
-        raise ValueError("V18 PPO requires --init-model or a resume checkpoint")
+        raise ValueError("V19 PPO requires --init-model or a resume checkpoint")
     if not torch.cuda.is_available():
-        raise RuntimeError("V18 PPO requires CUDA")
+        raise RuntimeError("V19 PPO requires CUDA")
     learner_gpus = int(config.get("learner_gpus", 1))
     if learner_gpus < 1:
         raise ValueError("learner_gpus must be positive")
@@ -364,7 +364,7 @@ def run(config: dict[str, Any]) -> None:
 
     if learner_gpus > 1:
         learner = LearnerDDP(
-            "v18",
+            "v19",
             "cuda",
             learner_gpus,
             config=config,
@@ -377,7 +377,7 @@ def run(config: dict[str, Any]) -> None:
             for key, value in config.items()
             if key not in {"model_size", "device"}
         }
-        learner = PPOLearner("v18", "cuda:0", **learner_hp)
+        learner = PPOLearner("v19", "cuda:0", **learner_hp)
         if config.get("resume"):
             learner.load(config["resume"])
         elif config.get("init_model"):
@@ -803,7 +803,13 @@ def run(config: dict[str, Any]) -> None:
                 + " ".join(
                     f"{key}={value:.5f}"
                     for key, value in metrics.items()
-                    if key in {"loss", "policy_loss", "value_loss", "entropy", "approx_kl", "clipfrac", "grad_norm"}
+                    if key in {
+                        "loss", "policy_loss", "value_loss", "entropy",
+                        "approx_kl", "clipfrac", "grad_norm",
+                        "belief/total_loss", "belief/hand_accuracy",
+                        "belief/shanten_top1", "belief/wait_auc",
+                        "belief/danger_auc", "belief/loss_mae",
+                    }
                 ),
                 flush=True,
             )

@@ -1,4 +1,4 @@
-"""V18 PPO 优化器:V18 批 collate、PPO clip + value Huber + GAE value advantage。
+"""V19 PPO 优化器:V19 批 collate、PPO clip + value Huber + GAE value advantage + 信念监督。
 
 ``PPOLearner`` 同时支持单卡(默认)与双卡 DDP:传 ``rank``/``world_size``
 后模型由 ``DistributedDataParallel`` 包装,update 内所有梯度 collective 与
@@ -27,22 +27,27 @@ from torch.nn.parallel import DistributedDataParallel
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
 from ..model.schema import TOKEN_SCHEMA_VERSION
+from .belief import belief_metrics_per_sample, belief_losses
 from .profiling import StageProfiler
 from .rollout_buffer import RolloutBuffer
 
-# V18 参数分支:actor/critic/shared 三组独立调度,gradient 按参数根分发。
+# V19 参数分支:actor(含信念网络/转换矩阵)/critic/shared 三组独立调度,
+# gradient 按参数根分发。信念网络/转换矩阵视为 actor 分支(设计未给信念
+# 独立 LR,信念分支与策略共享同一 actor 优化器组,仅 encoder 梯度由
+# belief_public_grad_scale 缩放)。
 ACTOR_ROOTS = {"actor_backbone", "action_fusion", "policy_mlp"}
+BELIEF_ROOTS = {"belief_network"}
 CRITIC_ROOTS = {"critic_embedding", "critic_backbone", "value_head", "value_query"}
 SHARED_ROOTS = {"token_embedding", "public_backbone"}
 
 
 def validate_fresh_model_checkpoint_contract(payload: dict[str, Any]) -> None:
-    """校验用作 V18 PPO 初始化的 SFT/模型 checkpoint 契约。"""
+    """校验用作 V19 PPO 初始化的 SFT/模型 checkpoint 契约。"""
     if not isinstance(payload, dict) or not isinstance(payload.get("model"), dict):
-        raise RuntimeError("V18 PPO requires a checkpoint with model weights")
+        raise RuntimeError("V19 PPO requires a checkpoint with model weights")
     raw_config = payload.get("model_config")
     if not isinstance(raw_config, dict) or raw_config.get("policy_head_type") != "current_state_snapshot":
-        raise RuntimeError("V18 PPO requires a current_state_snapshot model checkpoint")
+        raise RuntimeError("V19 PPO requires a current_state_snapshot model checkpoint")
 
 
 def scheduled_learning_rate(
@@ -341,7 +346,7 @@ def transition_length_metrics(
     transitions: RolloutBuffer,
     prefix: str = "update/buffer",
 ) -> dict[str, float]:
-    """描述 V18 语义序列长度与全量 padding 基线。"""
+    """描述 V19 语义序列长度与全量 padding 基线。"""
     lengths = np.asarray(transitions.sequence_lengths, dtype=np.int64)
     if np.any(lengths < 0):
         raise ValueError("sequence length cannot be negative")
@@ -492,7 +497,7 @@ def _prefetch_collate_worker(
 
 
 class PPOLearner:
-    """V18 Actor-Critic 的 PPO 优化器(单卡或双卡 DDP)。"""
+    """V19 Actor-Critic + 信念网络的 PPO 优化器(单卡或双卡 DDP)。"""
 
     def __init__(
         self,
@@ -503,8 +508,8 @@ class PPOLearner:
         world_size: int | None = None,
         **hyperparameters: Any,
     ) -> None:
-        if model_size != "v18":
-            raise ValueError("PPOLearner only supports model_size='v18'")
+        if model_size != "v19":
+            raise ValueError("PPOLearner only supports model_size='v19'")
         self.device = torch.device(device)
         self.rank = rank
         self.world_size = int(world_size) if world_size is not None else 1
@@ -518,7 +523,7 @@ class PPOLearner:
         if self.device.type == "cuda":
             torch.cuda.set_device(self.device)
         self.hp = hyperparameters
-        preset = ModelConfig.preset("v18")
+        preset = ModelConfig.preset("v19")
         self.config = replace(
             preset,
             context_tokens=int(hyperparameters.get("context_tokens", preset.context_tokens)),
@@ -534,7 +539,7 @@ class PPOLearner:
         }
         for name, parameter in self.model.named_parameters():
             root = name.split(".", 1)[0]
-            if root in ACTOR_ROOTS:
+            if root in ACTOR_ROOTS or root in BELIEF_ROOTS:
                 parameter_groups["actor"].append(parameter)
             elif root in CRITIC_ROOTS:
                 parameter_groups["critic"].append(parameter)
@@ -625,6 +630,27 @@ class PPOLearner:
         )
         if not 0.0 <= self.critic_private_embedding_grad_scale <= 1.0:
             raise ValueError("critic_private_embedding_grad_scale must be in [0, 1]")
+        # V19 信念监督(D15/D16/D30):grad scale 与 critic 同构,五头 λ 均非负,
+        # Wait-Danger 软约束小权重。信念参数进 actor 优化器组,不加独立 LR。
+        self.belief_public_grad_scale = float(
+            hyperparameters.get("belief_public_grad_scale", 1.0)
+        )
+        if not 0.0 <= self.belief_public_grad_scale <= 1.0:
+            raise ValueError("belief_public_grad_scale must be in [0, 1]")
+        self.belief_head_weights = {
+            "hand": float(hyperparameters.get("belief_head_weight_hand", 1.0)),
+            "shanten": float(hyperparameters.get("belief_head_weight_shanten", 1.0)),
+            "wait": float(hyperparameters.get("belief_head_weight_wait", 1.0)),
+            "danger": float(hyperparameters.get("belief_head_weight_danger", 1.0)),
+            "loss": float(hyperparameters.get("belief_head_weight_loss", 1.0)),
+        }
+        if any(value < 0.0 for value in self.belief_head_weights.values()):
+            raise ValueError("belief_head_weight_* must be non-negative")
+        self.belief_wait_danger_weight = float(
+            hyperparameters.get("belief_wait_danger_weight", 0.0)
+        )
+        if self.belief_wait_danger_weight < 0.0:
+            raise ValueError("belief_wait_danger_weight must be non-negative")
         self.branch_max_grad_norms = {
             "actor": float(hyperparameters["actor_max_grad_norm"]),
             "shared": float(hyperparameters["shared_max_grad_norm"]),
@@ -636,7 +662,7 @@ class PPOLearner:
             hyperparameters["entropy_loss_mode"]
         ).lower()
         if self.entropy_loss_mode != "normalized":
-            raise ValueError("V18 PPO requires entropy_loss_mode=normalized")
+            raise ValueError("V19 PPO requires entropy_loss_mode=normalized")
         self.gradient_accumulation_steps = max(
             1, int(hyperparameters.get("gradient_accumulation_steps", 1))
         )
@@ -677,7 +703,7 @@ class PPOLearner:
     def _rebuild_ddp_without_unused_when_ready(self, critic_bootstrap: bool) -> None:
         """bootstrap 结束后重建 DDP,关闭 ``find_unused_parameters``。
 
-        V18 PPO 只在 critic bootstrap 期存在未参与 loss 的 actor/shared 参数,
+        V19 PPO 只在 critic bootstrap 期存在未参与 loss 的 actor/shared 参数,
         因此必须保留 ``find_unused_parameters=True`` 才能通过 DDP 训练;bootstrap
         结束后所有参数都进入 loss,DDP 官方告警明确该旗标每次 backward 都会多走
         一次 autograd 图遍历,对双卡大更新(≈2000 minibatch)是可观的固定开销。
@@ -761,6 +787,7 @@ class PPOLearner:
             detach_critic_public=critic_bootstrap,
             critic_public_grad_scale=self.critic_public_grad_scale,
             critic_private_embedding_grad_scale=self.critic_private_embedding_grad_scale,
+            belief_public_grad_scale=self.belief_public_grad_scale,
             validate_structure=self.update_validate_structure,
             shared_capacity=shared_capacity,
             critic_total_capacity=critic_total_capacity,
@@ -1281,11 +1308,30 @@ class PPOLearner:
                                     output["policy_logits"],
                                     reference_logits_batch,
                                 )
+                            # V19 信念监督(D20-D22):只有带标签的 minibatch 才
+                            # 要求模型输出信念头;生产 rollout 的 current 决策
+                            # 全部带标签,因此正常路径下总是激活。
+                            belief_active = bool(batch["belief_present"].any().item())
+                            belief_loss_total: torch.Tensor | None = None
+                            belief_metric_values: dict[str, torch.Tensor] = {}
+                            if belief_active:
+                                belief_parts = belief_losses(
+                                    output,
+                                    batch,
+                                    head_weights=self.belief_head_weights,
+                                    wait_danger_weight=self.belief_wait_danger_weight,
+                                )
+                                belief_loss_total = belief_parts["belief_loss_total"]
+                                belief_metric_values = belief_metrics_per_sample(
+                                    output, batch,
+                                )
                             if critic_bootstrap:
                                 # 预热期只训 critic:policy/entropy/KL 不进入损失,
                                 # actor/shared 学习率同时为 0。实测把 policy 项以
                                 # 0 系数接入损失图会让 bootstrap backward 多走整条
                                 # policy 反传(104→246ms/step,负优化),故不采用。
+                                # 信念监督同样不进入 bootstrap 损失(动量为 0,
+                                # 保持「只训 critic」的既有语义;指标仍上报)。
                                 entropy_loss_values = entropy_values
                                 loss = value_coef * value_loss_values_.mean()
                             else:
@@ -1296,17 +1342,25 @@ class PPOLearner:
                                     - entropy_coef * entropy_loss_values.mean()
                                     + sft_kl_coef * sft_reference_kl_values.mean()
                                 )
+                                if belief_loss_total is not None:
+                                    loss = loss + belief_loss_total
                             evaluated_loss = loss
                         loss_is_finite = torch.isfinite(evaluated_loss)
 
                         def loss_detail() -> str:
                             # 诊断字符串仅在判定失败时构造:每 minibatch 无条件
                             # float() 取均值会引入 4 次 GPU→CPU 同步。
+                            belief_part = (
+                                f"belief={float(belief_loss_total)} "
+                                if belief_loss_total is not None
+                                else ""
+                            )
                             return (
                                 f"policy={float(policy_loss_values.mean())} "
                                 f"value={float(value_loss_values_.mean())} "
                                 f"entropy={float(entropy_values.mean())} "
-                                f"sft_kl={float(sft_reference_kl_values.mean())}"
+                                f"sft_kl={float(sft_reference_kl_values.mean())} "
+                                + belief_part
                             )
 
                         if self.world_size == 1 and not loss_is_finite:
@@ -1389,6 +1443,11 @@ class PPOLearner:
                                         checked_kl = running_kl_sum / max(running_kl_count, 1)
                                     if float(checked_kl) > float(self.hp["target_kl"]):
                                         stop_early = True
+                    belief_total_per_sample = (
+                        belief_loss_total.expand(len(indices))
+                        if belief_loss_total is not None
+                        else None
+                    )
                     for name, values in (
                         (
                             "loss",
@@ -1400,6 +1459,11 @@ class PPOLearner:
                                     + value_coef * value_loss_values_
                                     - entropy_coef * entropy_loss_values
                                     + sft_kl_coef * sft_reference_kl_values
+                                    + (
+                                        belief_total_per_sample
+                                        if belief_total_per_sample is not None
+                                        else 0.0
+                                    )
                                 )
                             ),
                         ),
@@ -1419,6 +1483,21 @@ class PPOLearner:
                             metric_sample_sums[name].add_(detached)
                         else:
                             metric_sample_sums[name] = detached.clone()
+                    for name, values in belief_metric_values.items():
+                        detached = values.detach().sum()
+                        if name in metric_sample_sums:
+                            metric_sample_sums[name].add_(detached)
+                        else:
+                            metric_sample_sums[name] = detached.clone()
+                    if belief_total_per_sample is not None:
+                        for name, values in (
+                            ("belief/total_loss", belief_total_per_sample),
+                        ):
+                            detached = values.detach().sum()
+                            if name in metric_sample_sums:
+                                metric_sample_sums[name].add_(detached)
+                            else:
+                                metric_sample_sums[name] = detached.clone()
                     metric_sample_count += len(indices)
                     if len(indices):
                         ratio_samples.append(ratio.detach())
@@ -1495,6 +1574,27 @@ class PPOLearner:
             "system/critic_private_embedding_grad_scale": float(
                 self.critic_private_embedding_grad_scale
             ),
+            "system/belief_public_grad_scale": float(
+                self.belief_public_grad_scale
+            ),
+            "system/belief_head_weight_hand": float(
+                self.belief_head_weights["hand"]
+            ),
+            "system/belief_head_weight_shanten": float(
+                self.belief_head_weights["shanten"]
+            ),
+            "system/belief_head_weight_wait": float(
+                self.belief_head_weights["wait"]
+            ),
+            "system/belief_head_weight_danger": float(
+                self.belief_head_weights["danger"]
+            ),
+            "system/belief_head_weight_loss": float(
+                self.belief_head_weights["loss"]
+            ),
+            "system/belief_wait_danger_weight": float(
+                self.belief_wait_danger_weight
+            ),
             "training/critic_bootstrap": float(critic_bootstrap),
             "training/policy_update": float(policy_update_number),
         })
@@ -1542,7 +1642,7 @@ class PPOLearner:
         # 单卡路径也保存 rank_rng_states,使旧格式与双卡 resume 共享同一入口。
         merged_extra.setdefault("rank_rng_states", [self.rng_state()])
         payload = {
-            "ppo_format_version": 4,
+            "ppo_format_version": 5,
             "model": self.weights(),
             "optimizer": self.optimizer.state_dict(),
             "model_config": asdict(self.config),
@@ -1566,7 +1666,7 @@ class PPOLearner:
         os.replace(temporary, destination)
 
     def load(self, path: str | Path) -> None:
-        """精确 resume:校验 V18 契约后恢复 model/optimizer/iteration/RNG。"""
+        """精确 resume:校验 V19 契约后恢复 model/optimizer/iteration/RNG。"""
         payload = torch.load(path, map_location=self.device, weights_only=False)
         required = {
             "model", "optimizer", "model_config", "iteration", "torch_rng",
@@ -1575,8 +1675,8 @@ class PPOLearner:
         missing = sorted(required - payload.keys())
         if missing:
             raise RuntimeError("PPO exact resume checkpoint is missing: " + ", ".join(missing))
-        if int(payload.get("ppo_format_version", 0)) != 4:
-            raise RuntimeError("only V18 PPO checkpoints (format 4) can be resumed")
+        if int(payload.get("ppo_format_version", 0)) != 5:
+            raise RuntimeError("only V19 PPO checkpoints (format 5) can be resumed")
         if int(payload.get("token_schema_version", 0)) != TOKEN_SCHEMA_VERSION:
             raise RuntimeError(
                 f"checkpoint token schema {payload.get('token_schema_version')} is "
@@ -1588,7 +1688,7 @@ class PPOLearner:
             raise RuntimeError("PPO checkpoint has an invalid model_config") from exc
         if checkpoint_config != self.config:
             raise RuntimeError(
-                "PPO exact resume model_config differs from the active V18 topology"
+                "PPO exact resume model_config differs from the active V19 topology"
             )
         self._state_dict_source().load_state_dict(payload["model"], strict=True)
         self.optimizer.load_state_dict(payload["optimizer"])
@@ -1626,13 +1726,13 @@ class PPOLearner:
                 ])
 
     def load_model_weights(self, path: str | Path) -> None:
-        """从 V18 SFT checkpoint 初始化全新 PPO(iteration 归零、optimizer 全新)。"""
+        """从 V19 SFT checkpoint 初始化全新 PPO(iteration 归零、optimizer 全新)。"""
         payload = torch.load(path, map_location=self.device, weights_only=False)
         validate_fresh_model_checkpoint_contract(payload)
         checkpoint_config = ModelConfig.from_mapping(dict(payload["model_config"]))
         if checkpoint_config != self.config:
             raise RuntimeError(
-                "V18 SFT checkpoint model_config differs from the active PPO topology"
+                "V19 SFT checkpoint model_config differs from the active PPO topology"
             )
         self._state_dict_source().load_state_dict(payload["model"], strict=True)
         self._build_reference_model(self._state_dict_source().state_dict())

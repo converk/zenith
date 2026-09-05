@@ -1,7 +1,7 @@
 """V19 centralized-value Critic 的严格私有事实。
 
 Critic 私有输入契约:SEP_CRITIC + 三家真实闭手(固定相对座次顺序)。
-V18 的未来五张牌山行已删除(D1:纯随机信息,不再进入任何输入)。
+V19 的未来五张牌山行已删除(D1:纯随机信息,不再进入任何输入)。
 行布局与 Actor 相同的 32 宽:[segment, kind, fields...];segment/kind 与
 ``encoding_protocol.py`` 单点定义一致。
 """

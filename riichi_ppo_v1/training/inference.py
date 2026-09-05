@@ -1,4 +1,4 @@
-"""GPU PPO 推理 actor:V18 输入的跨 worker 批处理。"""
+"""GPU PPO 推理 actor:V19 输入的跨 worker 批处理。"""
 
 from __future__ import annotations
 
@@ -84,7 +84,7 @@ def collate_request_rows(
     np.ndarray, np.ndarray, np.ndarray, np.ndarray,
     np.ndarray, np.ndarray, np.ndarray, np.ndarray,
 ]:
-    """把选中请求行按 V18 完整 Actor 序列 host-padding,保留请求/行映射。"""
+    """把选中请求行按 V19 完整 Actor 序列 host-padding,保留请求/行映射。"""
     if not group:
         raise ValueError("cannot collate an empty inference group")
 
@@ -199,8 +199,8 @@ if ray is not None:
             )
 
         def _model_config(self) -> ModelConfig:
-            values = vars(ModelConfig.preset("v18"))
-            # fallback 单源对齐 V18 契约上界;配置缺省时不得放大窗口。
+            values = vars(ModelConfig.preset("v19"))
+            # fallback 单源对齐 V19 契约上界;配置缺省时不得放大窗口。
             values["context_tokens"] = int(self.config.get("context_tokens", CONTEXT_TOKENS))
             return ModelConfig(**values)
 
@@ -614,6 +614,8 @@ if ray is not None:
                         device_tensors["legal"],
                         critic_factors=device_tensors["critic_factors"],
                         critic_lengths=device_tensors["critic_lengths"],
+                        # 推理路径信念是模型自身输出,不做公共层梯度缩放(1.0)。
+                        belief_public_grad_scale=1.0,
                         # 训练期 rollout 推理与 learner 共用同一配置开关:输入
                         # 由 Rust 编码器 fail-closed 生成,推理路径跳过 GPU 侧
                         # 重复校验。默认 True 保持历史行为(评测路径不受影响)。

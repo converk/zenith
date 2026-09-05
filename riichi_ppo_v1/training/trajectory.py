@@ -1,4 +1,4 @@
-"""V18 rollout 记录与小局内 value-based GAE advantage 结算。"""
+"""V19 rollout 记录与小局内 value-based GAE advantage 结算。"""
 
 from __future__ import annotations
 
@@ -10,10 +10,13 @@ import numpy as np
 
 @dataclass
 class Transition:
-    """一个 V18 决策点:完整 Actor 当前局面序列 + 每动作 Query 元数据。
+    """一个 V19 决策点:完整 Actor 当前局面序列 + 每动作 Query 元数据。
 
     Actor 输入在 rollout 时由 ``BatchedStateBridge.prepare`` 一次性编码并随
     决策保留;训练更新时只按完整序列 padding,不再恢复旧 history/snapshot split。
+    ``belief_*`` 五字段是决策时刻由环境上帝视角生成的信念监督标签(D17-D19):
+    只进训练、不入推理(D22),由 ``worker`` 在 ``encode_belief_labels_batch``
+    调用后写入。
     """
 
     actor_factors: np.ndarray
@@ -31,10 +34,17 @@ class Transition:
     advantage: float = 0.0
     critic_factors: np.ndarray | None = None
     critic_length: int = 0
+    # V19 信念五头监督标签(决策时刻反事实;None 表示该行不参与信念监督,
+    # 生产 rollout 的 current 决策始终带标签)。
+    belief_hand: np.ndarray | None = None  # [102] uint8
+    belief_shanten: np.ndarray | None = None  # [3] uint8
+    belief_wait: np.ndarray | None = None  # [105] uint8
+    belief_danger: np.ndarray | None = None  # [102] uint8
+    belief_loss: np.ndarray | None = None  # [102] float32(原始点数)
 
 
 def transition_sequence_length(transition: Transition) -> int:
-    """Actor 序列长度 = V18 当前局面完整 token 数。"""
+    """Actor 序列长度 = V19 当前局面完整 token 数(不含模型内部信念 token)。"""
     return int(transition.actor_length)
 
 

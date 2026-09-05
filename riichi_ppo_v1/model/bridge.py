@@ -1,6 +1,6 @@
 """RiichiEnv、MJAI 与 Rust 状态机之间的严格转换边界。
 
-V18 当前局面输入由 ``current_state.encode_batch`` 从原生 Observation 构造；
+V19 当前局面输入由 ``current_state.encode_batch`` 从原生 Observation 构造；
 本模块保留动作解码/合法掩码/生命周期职责与 Critic 私有行装配。
 """
 
@@ -39,7 +39,7 @@ class Decision:
 
 @dataclass(frozen=True)
 class PreparedBatch:
-    """现行 V18 输入装配结果：完整 Actor 序列 + Query 元数据 + Critic 私有行。"""
+    """现行 V19 输入装配结果：完整 Actor 序列 + Query 元数据 + Critic 私有行。"""
 
     actor_factors: np.ndarray
     actor_numeric: np.ndarray
@@ -190,7 +190,7 @@ class BatchedStateBridge:
             legal_objects = [objects for objects, _actions, _flag in action_rows]
             legal_actions = [actions for _objects, actions, _flag in action_rows]
         with self.profiler.stage("state/rust_prepare_decisions"):
-            # 只取合法掩码;V18 输入由 current_state.encode_batch 独立装配。
+            # 只取合法掩码;V19 输入由 current_state.encode_batch 独立装配。
             prepared = self.state_machine.prepare_decisions(
                 batch_indices, legal_actions,
             )

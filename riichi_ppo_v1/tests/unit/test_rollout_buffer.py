@@ -50,6 +50,13 @@ def _random_transition(rng: np.random.Generator) -> Transition:
         advantage=float(np.float32(rng.random())),
         critic_factors=critic["critic_factors"][0, :critic_length].numpy().astype(np.uint8),
         critic_length=critic_length,
+        # V19 合成信念标签:形状与 Rust 标签协议一致,便于 collate/learner
+        # 全链路测试;hand 计数 0..4、shanten 0..8、wait/danger 0/1。
+        belief_hand=rng.integers(0, 5, size=102, dtype=np.uint8),
+        belief_shanten=rng.integers(0, 9, size=3, dtype=np.uint8),
+        belief_wait=rng.integers(0, 2, size=105, dtype=np.uint8),
+        belief_danger=rng.integers(0, 2, size=102, dtype=np.uint8),
+        belief_loss=(rng.random(102) * 24000.0).astype(np.float32),
     )
 
 
@@ -149,6 +156,38 @@ def test_collate_preserves_all_segments_and_padding() -> None:
         assert batch["actions"][row] == item.action
         assert batch["old_logprobs"][row] == np.float32(item.logprob)
         assert batch["advantages"][row] == np.float32(item.advantage)
+
+
+def test_collate_belief_fixed_fields_shapes_and_values() -> None:
+    """V19 信念五头固定字段随 collate 输出,形状/数值/dtype 与 Transition 一致。"""
+    transitions = _transitions(np.random.default_rng(41), 16)
+    buffer = RolloutBuffer(transitions)
+    indices = np.arange(5)
+    batch = buffer.collate(indices)
+    assert batch["belief_hand"].shape == (5, 102)
+    assert batch["belief_shanten"].shape == (5, 3)
+    assert batch["belief_wait"].shape == (5, 105)
+    assert batch["belief_danger"].shape == (5, 102)
+    assert batch["belief_loss"].shape == (5, 102)
+    assert batch["belief_loss"].dtype == torch.float32
+    assert batch["belief_present"].all()
+    for row, index in enumerate(indices):
+        item = transitions[int(index)]
+        torch.testing.assert_close(
+            batch["belief_hand"][row], torch.from_numpy(item.belief_hand),
+        )
+        torch.testing.assert_close(
+            batch["belief_shanten"][row], torch.from_numpy(item.belief_shanten),
+        )
+        torch.testing.assert_close(
+            batch["belief_wait"][row], torch.from_numpy(item.belief_wait),
+        )
+        torch.testing.assert_close(
+            batch["belief_danger"][row], torch.from_numpy(item.belief_danger),
+        )
+        torch.testing.assert_close(
+            batch["belief_loss"][row], torch.from_numpy(item.belief_loss),
+        )
 
 
 def test_bucketed_minibatches_are_deterministic_and_cover_all_rows() -> None:
@@ -253,7 +292,7 @@ def test_accumulation_tail_group_uses_actual_group_size() -> None:
 
 def test_learner_accepts_only_rollout_buffer() -> None:
     transitions = _transitions(np.random.default_rng(7), 9)
-    learner = PPOLearner("v18", "cpu", **_learner_kwargs())
+    learner = PPOLearner("v19", "cpu", **_learner_kwargs())
     metrics = learner.update(RolloutBuffer(transitions), shuffle_seed=123)
     for name in ("loss", "policy_loss", "value_loss", "entropy", "approx_kl"):
         assert np.isfinite(metrics[name]), name
@@ -282,7 +321,7 @@ def test_target_kl_guardrail_early_stops_update() -> None:
     """
     transitions = RolloutBuffer(_transitions(np.random.default_rng(11), 40))
     learner = PPOLearner(
-        "v18", "cpu",
+        "v19", "cpu",
         **_learner_kwargs(target_kl=0.01, update_epochs=4, minibatch_size=8),
     )
     metrics = learner.update(transitions, shuffle_seed=7)
@@ -299,7 +338,7 @@ def test_target_kl_disabled_runs_all_epochs() -> None:
     """target_kl=0 时 guardrail 关闭,完整跑完全部 epoch 不提前停止。"""
     transitions = RolloutBuffer(_transitions(np.random.default_rng(11), 40))
     learner = PPOLearner(
-        "v18", "cpu",
+        "v19", "cpu",
         **_learner_kwargs(target_kl=0.0, update_epochs=4, minibatch_size=8),
     )
     metrics = learner.update(transitions, shuffle_seed=7)
@@ -324,15 +363,15 @@ def test_checkpoint_resume_restores_adam_moments_and_schedule(tmp_path) -> None:
     # 上断言「恢复与连续运行一致」,显式关闭 compile 保持逐位口径。
     kwargs["torch_compile"] = False
     torch.manual_seed(0)
-    plain = PPOLearner("v18", "cpu", **kwargs)
+    plain = PPOLearner("v19", "cpu", **kwargs)
     plain.update(make_buffer(), shuffle_seed=7)
     torch.manual_seed(0)
-    resumed = PPOLearner("v18", "cpu", **kwargs)
+    resumed = PPOLearner("v19", "cpu", **kwargs)
     resumed.update(make_buffer(), shuffle_seed=7)
     path = str(tmp_path / "resume.pt")
     resumed.save(path, {"phase": "test"})
 
-    loaded = PPOLearner("v18", "cpu", **kwargs)
+    loaded = PPOLearner("v19", "cpu", **kwargs)
     loaded.load(path)
     assert loaded.iteration == resumed.iteration == 1
     saved_state = resumed.optimizer.state_dict()
@@ -425,7 +464,7 @@ def test_accumulation_clips_and_steps_only_at_group_boundaries(monkeypatch) -> N
         ),
     )
     learner = PPOLearner(
-        "v18", "cpu",
+        "v19", "cpu",
         **_learner_kwargs(
             update_epochs=1, minibatch_size=3, gradient_accumulation_steps=3,
         ),
@@ -442,7 +481,7 @@ def test_accumulation_clips_and_steps_only_at_group_boundaries(monkeypatch) -> N
 
 
 def test_factor_flatten_compacts_to_uint8_and_fail_closed() -> None:
-    """V18 token 因子行压成 uint8 存储,collate 以 uint8 输出紧凑索引
+    """V19 token 因子行压成 uint8 存储,collate 以 uint8 输出紧凑索引
     (值域 < 256,传输体积缩 8 倍,由 transfer_batch_to_device 在 GPU 侧
     恢复 long,数值逐位一致);超出 255 的因子列 fail-closed,防止静默回绕。"""
     transitions = _transitions(np.random.default_rng(31), 12)
@@ -477,10 +516,10 @@ def test_prefetch_collate_matches_serial_update() -> None:
         update_epochs=2, minibatch_size=8, target_kl=0.0,
     )
     torch.manual_seed(1234)
-    serial = PPOLearner("v18", "cpu", **kwargs)
+    serial = PPOLearner("v19", "cpu", **kwargs)
     torch.manual_seed(1234)
     prefetch = PPOLearner(
-        "v18", "cpu", **{**kwargs, "update_collate_prefetch": True},
+        "v19", "cpu", **{**kwargs, "update_collate_prefetch": True},
     )
     serial_metrics = serial.update(
         RolloutBuffer(_transitions(np.random.default_rng(21), 40)),
@@ -510,7 +549,7 @@ def test_prefetch_early_stop_does_not_hang() -> None:
     """预取模式下 target_kl 提前停止:线程被安全停止,不挂起,指标口径不变。"""
     transitions = RolloutBuffer(_transitions(np.random.default_rng(11), 40))
     learner = PPOLearner(
-        "v18", "cpu",
+        "v19", "cpu",
         **_learner_kwargs(
             target_kl=0.01, update_epochs=4, minibatch_size=8,
             update_collate_prefetch=True,
@@ -529,7 +568,7 @@ def test_update_reports_stage_gap_timings() -> None:
     collate_put_block),全部为纯计时键,不影响任何训练指标数值。"""
     transitions = RolloutBuffer(_transitions(np.random.default_rng(29), 40))
     learner = PPOLearner(
-        "v18", "cpu",
+        "v19", "cpu",
         **_learner_kwargs(
             update_epochs=2, minibatch_size=8, target_kl=0.0,
             update_collate_prefetch=True, profile_enabled=True,
@@ -562,7 +601,7 @@ def test_prefetch_propagates_collate_exception(monkeypatch) -> None:
 
     monkeypatch.setattr(transitions, "collate", failing_collate)
     learner = PPOLearner(
-        "v18", "cpu",
+        "v19", "cpu",
         **_learner_kwargs(
             update_epochs=2, minibatch_size=8, target_kl=0.0,
             update_collate_prefetch=True,
@@ -577,11 +616,11 @@ def test_reference_compile_flag_and_build_contract() -> None:
     _build_reference_model 产出冻结、eval 的 reference,state_dict 键与
     eager 完全一致(编译只挂在 forward_actor 方法上,模块本体不包装)。"""
     kwargs = _learner_kwargs(torch_compile=False)
-    learner = PPOLearner("v18", "cpu", **kwargs)
+    learner = PPOLearner("v19", "cpu", **kwargs)
     assert learner.torch_compile is False
     assert learner.torch_compile_reference is False  # 默认跟随 torch_compile
     overridden = PPOLearner(
-        "v18", "cpu", **{**kwargs, "torch_compile_reference": True},
+        "v19", "cpu", **{**kwargs, "torch_compile_reference": True},
     )
     assert overridden.torch_compile_reference is True
 
@@ -609,17 +648,17 @@ def test_reference_compile_matches_eager_within_bf16_tolerance() -> None:
 
     buffer = RolloutBuffer(_transitions(np.random.default_rng(97), 24))
     kwargs = _learner_kwargs(profile_enabled=False, torch_compile=False)
-    source = PPOLearner("v18", "cuda:0", **kwargs)
+    source = PPOLearner("v19", "cuda:0", **kwargs)
     weights = {
         name: value.detach().clone()
         for name, value in source.model.state_dict().items()
     }
     del source
     eager = PPOLearner(
-        "v18", "cuda:0", **{**kwargs, "torch_compile_reference": False},
+        "v19", "cuda:0", **{**kwargs, "torch_compile_reference": False},
     )
     compiled = PPOLearner(
-        "v18", "cuda:0", **{**kwargs, "torch_compile_reference": True},
+        "v19", "cuda:0", **{**kwargs, "torch_compile_reference": True},
     )
     eager._build_reference_model(weights)
     compiled._build_reference_model(weights)
@@ -653,9 +692,9 @@ def test_reference_precompute_pipeline_matches_serial() -> None:
     kwargs = _learner_kwargs()
     kwargs["update_reference_precompute_batch_size"] = 8
     kwargs["total_updates"] = 50
-    learner_a = PPOLearner("v18", "cuda:0", **{**kwargs, "profile_enabled": False})
+    learner_a = PPOLearner("v19", "cuda:0", **{**kwargs, "profile_enabled": False})
     learner_a.reference_model = model
-    learner_b = PPOLearner("v18", "cuda:0", **{**kwargs, "profile_enabled": False})
+    learner_b = PPOLearner("v19", "cuda:0", **{**kwargs, "profile_enabled": False})
     learner_b.reference_model = model
 
     with torch.inference_mode():

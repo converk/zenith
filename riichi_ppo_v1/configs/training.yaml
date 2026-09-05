@@ -1,13 +1,13 @@
-# 中性 PPO 默认配置:现行拓扑为 V18 当前局面快照输入。
+# 中性 PPO 默认配置:现行拓扑为 V19 当前局面快照输入(含信念网络)。
 # 本文件仅提供实现默认值,本次升级不启动正式 PPO。
 seed: 1
 device: cuda
 learner_gpus: 2
 iterations: 5000
-model_size: v18
-context_tokens: 256
+model_size: v19
+context_tokens: 320
 policy_head_type: current_state_snapshot
-critic_layers: 2
+critic_layers: 1
 inference_dtype: bf16
 game_mode: 4p-red-half
 
@@ -54,6 +54,14 @@ weight_decay: 0.01
 critic_bootstrap_updates: 2
 critic_bootstrap_learning_rate: 0.00002
 critic_public_grad_scale: 0.25
+# V19 信念监督(full path 由 v19_ppo.yaml 提供具体值;中性默认与设计一致)。
+belief_public_grad_scale: 0.25
+belief_head_weight_hand: 1.0
+belief_head_weight_shanten: 1.0
+belief_head_weight_wait: 1.0
+belief_head_weight_danger: 1.0
+belief_head_weight_loss: 1.0
+belief_wait_danger_weight: 0.05
 sft_kl_coef_start: 0.0025
 sft_kl_coef_middle: 0.001
 sft_kl_coef_end: 0.002
@@ -61,6 +69,6 @@ sft_kl_middle_fraction: 0.5
 grp_checkpoint: null
 
 checkpoint_interval_updates: 50
-checkpoint_dir: checkpoints/train_riichi_current
+checkpoint_dir: checkpoints/train_riichi_v19/ppo
 resume: null
 init_model: null

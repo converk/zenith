@@ -187,7 +187,7 @@ class SemanticMetrics:
         self.bad_kans += int(is_kan and bad_kan)
 
     def record_transition_reward(self, transition: object) -> None:
-        """记录一条 V18 决策的奖励流(总奖励与 GRP 小局奖励两路)。"""
+        """记录一条 V19 决策的奖励流(总奖励与 GRP 小局奖励两路)。"""
         self.rewards.append(float(transition.reward))
         self.reward_kyoku.append(float(transition.kyoku_reward))
 
