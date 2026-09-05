@@ -17,6 +17,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
+from .belief_network import BeliefNetwork
 from .dense_embedding import StateTokenEmbedding
 from .encoding_protocol import (
     CONTEXT_TOKENS,
@@ -160,12 +161,13 @@ def _actor_structured_layout(
     lengths: Tensor,
     tokens: int,
 ) -> tuple[Tensor, Tensor]:
-    """根据 segment/kind 类别构造 Actor 结构化 mask。
+    """根据 segment/kind 类别构造 Actor 结构化 mask（V19 信念可见性规则）。
 
     - Shared(segment 1，含共享分隔符) ↔ Shared 双向；
     - Analysis(segment 2 + SEP_ACTIONS 分隔符) → Shared ∪ Analysis；
-    - 每个 Action pair（kind 11/12 中相邻两行）→ Shared ∪ Analysis ∪ 本 pair；
-    - 不同 pair 互不可见；padding 不可见。
+    - Belief(segment 5) → Shared ∪ Belief（信念互见；不读 analysis/动作/padding）；
+    - 每个 Action pair（kind 11/12 中相邻两行）→ Shared ∪ Analysis ∪ 本 pair ∪ Belief；
+    - 不同 pair 互不可见；analysis 不读信念；padding 不可见。
     """
     device = segments.device
     positions = torch.arange(tokens, device=device)[None, :]
@@ -173,6 +175,7 @@ def _actor_structured_layout(
     is_shared = segments.eq(SEGMENT_SHARED)
     is_analysis = segments.eq(SEGMENT_ANALYSIS)
     is_sep_actions = segments.eq(SEGMENT_ACTIONS) & kinds.eq(KIND_SEP_ACTIONS)
+    is_belief = segments.eq(SEGMENT_BELIEF)
     is_action = kinds.eq(11) | kinds.eq(12)
     action_mask = is_action & valid
     action_ranks = action_mask.long().cumsum(dim=1) - 1
@@ -181,10 +184,12 @@ def _actor_structured_layout(
     from_shared = is_shared[:, :, None] & is_shared[:, None, :]
     from_analysis = is_analysis[:, :, None] & (is_shared[:, None, :] | is_analysis[:, None, :])
     from_sep_actions = is_sep_actions[:, :, None] & is_sep_actions[:, None, :]
+    from_belief = is_belief[:, :, None] & (is_shared[:, None, :] | is_belief[:, None, :])
     from_action = is_action[:, :, None] & (
-        is_shared[:, None, :] | is_analysis[:, None, :] | is_sep_actions[:, None, :] | same_pair
+        is_shared[:, None, :] | is_analysis[:, None, :] | is_sep_actions[:, None, :]
+        | is_belief[:, None, :] | same_pair
     )
-    mask = from_shared | from_analysis | from_sep_actions | from_action
+    mask = from_shared | from_analysis | from_sep_actions | from_belief | from_action
     mask = mask & valid[:, :, None] & valid[:, None, :]
     return _first_key_escape(mask, valid[:, :, None]), valid
 
@@ -322,6 +327,7 @@ class KyokuTransformerActorCritic(nn.Module):
         self.public_backbone = Decoder(self.config, layers=self.config.shared_layers, final_norm=False)
         self.actor_backbone = Decoder(self.config, layers=self.config.layers - self.config.shared_layers)
         self.critic_backbone = Decoder(self.config, layers=self.config.critic_layers)
+        self.belief_network = BeliefNetwork(self.config.d_model)
         self.action_fusion = nn.Sequential(
             nn.Linear(2 * self.config.d_model, self.config.d_model),
             nn.SiLU(),
@@ -347,6 +353,7 @@ class KyokuTransformerActorCritic(nn.Module):
         shared_capacity: int | None = None,
         kind_row_plan: dict[int, Any] | None = None,
         validate_structure: bool = True,
+        belief_public_grad_scale: float = 1.0,
     ) -> dict[str, Tensor]:
         """policy-only 前向(冻结 SFT reference 预计算的唯一消费入口)。
 
@@ -369,6 +376,7 @@ class KyokuTransformerActorCritic(nn.Module):
             shared_capacity=shared_capacity,
             kind_row_plan=kind_row_plan,
             validate_structure=validate_structure,
+            belief_public_grad_scale=belief_public_grad_scale,
         )
 
     def forward(
@@ -387,6 +395,7 @@ class KyokuTransformerActorCritic(nn.Module):
         critic_private_embedding_grad_scale: float = 1.0,
         policy_only: bool = False,
         validate_structure: bool = True,
+        belief_public_grad_scale: float = 1.0,
         shared_capacity: int | None = None,
         critic_total_capacity: int | None = None,
         kind_row_plan: dict[int, Any] | None = None,
@@ -406,6 +415,10 @@ class KyokuTransformerActorCritic(nn.Module):
         (``dense_embedding.compute_kind_row_plan``,分别对应 actor/critic
         输入的展平行号);传入时 token_embedding 走静态键表路径,免去
         argsort/tolist 同步;None 时保持旧路径。
+
+        ``belief_public_grad_scale`` 在 z_pool → encoder 边界实施与 critic
+        相同的 detach+重标度 trick(0.0 完全 detach;1.0 原样;0.25 为训练分册
+        定版耦合比),只缩放信念分支回传公共 backbone 的梯度,前向不变。
         """
         if self.config.policy_head_type != "current_state_snapshot":
             raise ValueError("V19 forward requires current_state_snapshot")
@@ -450,39 +463,92 @@ class KyokuTransformerActorCritic(nn.Module):
             shared_tokens, shared_lengths, attention_mask=shared_mask_bool, valid=shared_valid,
         )
 
-        # —— Actor 层：Shared 表示 + Analysis + Action Query 的完整序列 ——
+        # —— 信念网络：从公共表示生成五头预测与注入 token ——
+        belief_grad_scale = float(belief_public_grad_scale)
+        if not 0.0 <= belief_grad_scale <= 1.0:
+            raise ValueError("belief_public_grad_scale must be in [0, 1]")
+        if belief_grad_scale == 0.0:
+            shared_for_belief = shared_hidden.detach()
+        elif belief_grad_scale == 1.0:
+            shared_for_belief = shared_hidden
+        else:
+            detached_belief = shared_hidden.detach()
+            shared_for_belief = detached_belief + belief_grad_scale * (
+                shared_hidden - detached_belief
+            )
+        belief = self.belief_network(shared_for_belief)
+        belief_tokens = belief["belief_tokens"]
+
+        # —— Actor 层：Shared 表示 + Analysis + Belief token + Action Query ——
         actor_input = actor_embeddings.clone()
         shared_positions = torch.arange(shared_capacity, device=device)[None, :]
         replace = shared_positions < shared_lengths[:, None]
         actor_input[:, :shared_capacity] = torch.where(
             replace[..., None], shared_hidden, actor_input[:, :shared_capacity],
         )
-        actor_mask_bool, actor_valid = _actor_structured_layout(
-            actor_factors[..., 0], actor_factors[..., 1], actor_lengths, actor_capacity,
-        )
-        actor_hidden = self.actor_backbone(
-            actor_input, actor_lengths, attention_mask=actor_mask_bool, valid=actor_valid,
-        )
-
-        # —— 策略头：按 action query kind 定位 pair，映射到 action id ——
-        action_kind_mask = actor_factors[..., 1].eq(11) | actor_factors[..., 1].eq(12)
-        query_mask = action_kind_mask & (
-            torch.arange(actor_capacity, device=device)[None] < actor_lengths[:, None]
-        )
         pair_counts = query_pair_counts.to(device=device, dtype=torch.long)
         action_capacity = query_action_ids.shape[1]
         if validate_structure:
             if torch.any(pair_counts < 0) or torch.any(pair_counts > action_capacity):
                 raise ValueError("query_pair_counts out of range")
-            # canonical 契约:action query 行为每行序列尾部连续 2×pair_count 行
+        # 信念块插入位：SEP_ACTIONS 行之后、第一对 O/D Query 之前。
+        # 最后一个信念 token 距第一对 Query 恒距 1（输入分册 §6 不变式）。
+        sep_pos = actor_lengths - 2 * pair_counts - 1
+        aug_capacity = actor_capacity + 30
+        aug_lengths = actor_lengths + 30
+        aug_actor_input = actor_input.new_zeros((batch, aug_capacity, self.config.d_model))
+        src_positions = torch.arange(actor_capacity, device=device)[None, :].expand(batch, -1)
+        # 插入后：sep_pos 及之前的行位置不变，其后所有行整体后移 30（信念块占位）。
+        dst_positions = torch.where(
+            src_positions <= sep_pos[:, None], src_positions, src_positions + 30,
+        )
+        batch_rows = torch.arange(batch, device=device)[:, None]
+        aug_actor_input[
+            batch_rows.expand(batch, actor_capacity).reshape(-1),
+            dst_positions.reshape(-1),
+        ] = actor_input.reshape(batch * actor_capacity, self.config.d_model)
+        belief_slots = torch.arange(30, device=device)[None, :]
+        belief_dst = sep_pos[:, None] + 1 + belief_slots
+        aug_actor_input[
+            batch_rows.expand(batch, 30).reshape(-1),
+            belief_dst.reshape(-1),
+        ] = belief_tokens.reshape(batch * 30, self.config.d_model)
+
+        # 增广 segment/kind：原序列行按插入映射回填，信念行填 SEGMENT_BELIEF/KIND_BELIEF。
+        aug_segments = actor_factors.new_zeros((batch, aug_capacity))
+        aug_kinds = actor_factors.new_zeros((batch, aug_capacity))
+        aug_segments[
+            batch_rows.expand(batch, actor_capacity).reshape(-1),
+            dst_positions.reshape(-1),
+        ] = actor_factors[..., 0].reshape(-1)
+        aug_kinds[
+            batch_rows.expand(batch, actor_capacity).reshape(-1),
+            dst_positions.reshape(-1),
+        ] = actor_factors[..., 1].reshape(-1)
+        aug_segments[batch_rows.expand(batch, 30).reshape(-1), belief_dst.reshape(-1)] = SEGMENT_BELIEF
+        aug_kinds[batch_rows.expand(batch, 30).reshape(-1), belief_dst.reshape(-1)] = KIND_BELIEF
+        actor_mask_bool, actor_valid = _actor_structured_layout(
+            aug_segments, aug_kinds, aug_lengths, aug_capacity,
+        )
+        actor_hidden = self.actor_backbone(
+            aug_actor_input, aug_lengths, attention_mask=actor_mask_bool, valid=actor_valid,
+        )
+
+        # —— 策略头：按 action query kind 定位 pair，映射到 action id ——
+        action_kind_mask = aug_kinds.eq(11) | aug_kinds.eq(12)
+        query_mask = action_kind_mask & (
+            torch.arange(aug_capacity, device=device)[None] < aug_lengths[:, None]
+        )
+        if validate_structure:
+            # canonical 契约:action query 行为增广序列尾部连续 2×pair_count 行
             # (O 先 D 后相邻成对;来源:Rust 编码器 fail-closed 构造 +
             # test_v19_architecture 的契约断言)。校验路径比旧实现更严:旧实现
             # 只核对数量,这里核对整个 tail 窗口位置一一对应。
             tail_window = (
-                torch.arange(actor_capacity, device=device)[None]
-                >= actor_lengths[:, None] - 2 * pair_counts[:, None]
+                torch.arange(aug_capacity, device=device)[None]
+                >= aug_lengths[:, None] - 2 * pair_counts[:, None]
             ) & (
-                torch.arange(actor_capacity, device=device)[None] < actor_lengths[:, None]
+                torch.arange(aug_capacity, device=device)[None] < aug_lengths[:, None]
             )
             if bool((query_mask != tail_window).any()):
                 raise ValueError(
@@ -491,13 +557,14 @@ class KyokuTransformerActorCritic(nn.Module):
         # 算术索引取代 torch.nonzero/repeat_interleave:两者输出形状依赖数据,
         # 必然 GPU→CPU 同步,且是 torch.compile fullgraph 的断裂源。无效槽位
         # clamp 到界内取占位 hidden,logits 以 where 置 0,scatter 加 0 无影响
-        # (x + 0.0 == x,softmax/log 对 ±0.0 亦不变)。
+        # (x + 0.0 == x,softmax/log 对 ±0.0 亦不变)。tail 窗口/offense 列均
+        # 按增广长度计算;增广序列最后 2×pair_count 行仍为 O/D 对。
         pair_index = torch.arange(action_capacity, device=device)
         valid_pair = pair_index[None, :] < pair_counts[:, None]
         offense_cols = (
-            actor_lengths[:, None] - 2 * pair_counts[:, None] + 2 * pair_index[None, :]
+            aug_lengths[:, None] - 2 * pair_counts[:, None] + 2 * pair_index[None, :]
         )
-        col_upper = max(int(actor_capacity) - 1, 0)
+        col_upper = max(int(aug_capacity) - 1, 0)
         safe_cols = offense_cols.clamp(0, col_upper)
         rows_matrix = torch.arange(batch, device=device)[:, None].expand(
             batch, action_capacity
@@ -523,7 +590,16 @@ class KyokuTransformerActorCritic(nn.Module):
         targets = rows_matrix * NUM_ACTIONS + flat_ids
         raw.view(-1).scatter_add_(0, targets.reshape(-1), action_logits.reshape(-1))
         logits = raw.masked_fill(~legal_mask.to(device=device, dtype=torch.bool), float("-inf"))
-        output: dict[str, Tensor] = {"raw_policy_logits": raw, "policy_logits": logits}
+        output: dict[str, Tensor] = {
+            "raw_policy_logits": raw,
+            "policy_logits": logits,
+            "belief_hand_logits": belief["belief_hand_logits"],
+            "belief_shanten_logits": belief["belief_shanten_logits"],
+            "belief_wait_logits": belief["belief_wait_logits"],
+            "belief_danger_logits": belief["belief_danger_logits"],
+            "belief_loss_pred": belief["belief_loss_pred"],
+            "belief_tokens": belief_tokens,
+        }
         if policy_only:
             return output
 
