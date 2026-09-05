@@ -11,7 +11,7 @@ from typing import Any
 from .bridge import OnlineStateBridge
 from .policy import PolicyEngine
 from .safety import choose_safe_response
-from .telemetry import SessionMetrics
+from .telemetry import MjaiEventLogger, SessionMetrics
 
 
 @dataclass(frozen=True)
@@ -47,6 +47,7 @@ def play_local_game(
     seed: int,
     max_steps: int = 4000,
     recorder: Any = None,
+    mjai_logger: MjaiEventLogger | None = None,
 ) -> LocalGameResult:
     from riichienv import RiichiEnv
 
@@ -140,6 +141,14 @@ def play_local_game(
             f"local game exceeded max_steps={max_steps}"
         )
     elapsed = time.perf_counter() - started
+    if mjai_logger is not None:
+        # 本地对局用 RiichiEnv 的全局 mjai_log(完整事件流),一次写入后即可
+        # 交给 MjaiReplay 回放;seat 标记 local 表示四家完整流。
+        mjai_logger.record_many(
+            env.mjai_log,
+            seat="local",
+            game_id=f"game{game}",
+        )
     return LocalGameResult(
         game=game,
         seed=seed,

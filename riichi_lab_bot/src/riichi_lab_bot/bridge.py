@@ -1,4 +1,4 @@
-"""单席位在线 Observation 到 V18 Actor 输入的桥接。"""
+"""单席位在线 Observation 到 V19 Actor 输入的桥接。"""
 
 from __future__ import annotations
 
@@ -9,10 +9,9 @@ from typing import Any
 import numpy as np
 from riichi_ppo_v1.model.bridge import (
     NUM_PLAYERS,
-    BatchedStateBridge,
-    Decision,
     action_jsons_and_decision_flag,
 )
+from riichi_ppo_v1.model.current_state import encode_batch
 from riichi_ppo_v1.model.semantic_validation import (
     assert_actor_input_semantics,
 )
@@ -60,7 +59,11 @@ class EventContext:
 
 @dataclass(frozen=True)
 class PreparedDecision:
-    """单次决策的 V18 Actor 输入(只保留有效行,不含 padding)。"""
+    """单次决策的 V19 Actor 输入(只保留有效行,不含 padding)。
+
+    与训练/评测共用 ``riichi_ppo_v1.model.current_state.encode_batch`` 编码路径;
+    critic 私有行不参与在线推理。
+    """
 
     observation: Any
     seat: int
@@ -107,7 +110,7 @@ def _accepted_model_events(raw_events: list[str]) -> tuple[list[str], bool]:
 
 
 class OnlineStateBridge:
-    """一个连接、一个 bot 席位的有状态 V18 桥接器。"""
+    """一个连接、一个 bot 席位的有状态 V19 桥接器。"""
 
     def __init__(self, seat: int) -> None:
         if not 0 <= int(seat) < NUM_PLAYERS:
@@ -120,7 +123,6 @@ class OnlineStateBridge:
             ) from exc
         self.seat = int(seat)
         self.manager = riichi.MjaiKyokuStateMachineManager(1)
-        self.training_bridge = BatchedStateBridge(self.manager, 1)
         self.event_context = EventContext()
         self.threats = ThreatSnapshotTracker(self.seat)
 
@@ -151,28 +153,51 @@ class OnlineStateBridge:
         )
         observation = self._with_rebuilt_fields(observation)
 
+        # 状态机仅需推进 own-seat 事件流;管理器负责合法掩码与动作解码。
         events_by_player = [
             accepted_events if player == self.seat else []
             for player in range(NUM_PLAYERS)
         ]
         self.manager.apply_events_batch([0], [events_by_player])
 
+        # 与训练 rollout 同一条编码路径:action 对象→action id 映射→
+        # current_state.encode_batch 整批装配(无 critic 私有行)。
         legal_jsons, _decision_flag = action_jsons_and_decision_flag(
             observation
         )
-        batch = self.training_bridge.prepare(
-            [Decision(0, self.seat, observation)]
-        )
+        legal_objects = list(observation.legal_actions())
+        mask = np.asarray(
+            self.manager.prepare_decisions([self.seat], [legal_jsons]),
+            dtype=np.bool_,
+        )[0]
+        index_rows = self.manager.action_ids_with_source_indices([self.seat])
+        actions_by_id: list[tuple[Any, int]] = []
+        for raw_action_id, raw_source_index in index_rows[0]:
+            action_id = int(raw_action_id)
+            source_index = int(raw_source_index)
+            if not 0 <= source_index < len(legal_objects):
+                raise RuntimeError(
+                    "state machine returned invalid legal action index "
+                    f"{source_index}"
+                )
+            actions_by_id.append((legal_objects[source_index], action_id))
+        expected_ids = np.flatnonzero(mask).tolist()
+        if [action_id for _action, action_id in actions_by_id] != expected_ids:
+            raise RuntimeError(
+                "state machine action-id mapping disagrees with legal mask"
+            )
+        batch = encode_batch([(observation, actions_by_id)])
+
         actor_length = int(batch.actor_lengths[0])
         query_pair_count = int(batch.query_pair_counts[0])
-        # 与 PPO rollout 同约定:V18 当前局面路径不产生 query_rows,传 None
+        # 与 PPO rollout 同约定:当前局面路径不产生 query_rows,传 None
         # 跳过逐 query 行一致性校验,其余结构/域/action 集合校验照常生效。
         assert_actor_input_semantics(
             batch.actor_factors,
             batch.actor_numeric,
             batch.actor_lengths,
             None,
-            batch.query_action_ids,
+            batch.action_ids,
             batch.query_pair_counts,
             batch.legal_mask,
         )
@@ -182,7 +207,7 @@ class OnlineStateBridge:
             actor_factors=batch.actor_factors[0, :actor_length].copy(),
             actor_numeric=batch.actor_numeric[0, :actor_length].copy(),
             actor_length=actor_length,
-            query_action_ids=batch.query_action_ids[
+            query_action_ids=batch.action_ids[
                 0, :query_pair_count
             ].copy(),
             query_pair_count=query_pair_count,

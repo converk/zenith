@@ -15,7 +15,7 @@ from riichi_lab_bot.client import (
     run_ranked,
 )
 from riichi_lab_bot.policy import InferenceResult
-from riichi_lab_bot.telemetry import EventRecorder
+from riichi_lab_bot.telemetry import EventRecorder, MjaiEventLogger
 
 
 class FirstLegalPolicy:
@@ -221,3 +221,52 @@ def test_ranked_retries_transient_disconnect(
     assert len(results) == 1
     assert calls == 2
     assert waits == [5.0]
+
+
+def test_mjai_event_log_records_each_game_message_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    request, _possible = _request_fixture()
+    websocket = FakeWebSocket(
+        [
+            json.dumps({"type": "start_game", "id": 0}),
+            request,
+            json.dumps(
+                {"type": "action_ack", "status": "accepted", "request_id": 42}
+            ),
+            json.dumps(
+                {"type": "end_game", "scores": [25000] * 4}
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        "websockets.asyncio.client.connect", FakeConnect(websocket)
+    )
+    logger = MjaiEventLogger(tmp_path, session="test-session")
+    result = asyncio.run(
+        play_connection(
+            url="wss://example.invalid/ranked",
+            mode="ranked",
+            token="secret",
+            policy=FirstLegalPolicy(),
+            recorder=EventRecorder(),
+            mjai_logger=logger,
+        )
+    )
+    assert result.metrics["responses"] == 1
+    files = list(tmp_path.glob("test-session-*.jsonl"))
+    assert len(files) == 1
+    records = [
+        json.loads(line) for line in files[0].read_text().splitlines()
+    ]
+    # 仅 MJAI 事件进日志:request_action / action_ack 均不出现,start/end 各一次。
+    assert [record["event"]["type"] for record in records] == [
+        "start_game",
+        "end_game",
+    ]
+    assert records[0]["log_no"] == 1
+    assert records[1]["log_no"] == 2
+    assert records[0]["seat"] == 0
+    assert records[0]["event"]["id"] == 0
+    assert records[1]["event"]["scores"] == [25000] * 4

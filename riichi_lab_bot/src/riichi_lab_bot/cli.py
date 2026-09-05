@@ -17,7 +17,11 @@ from .client import (
 )
 from .local_play import play_local_game
 from .policy import PolicyEngine
-from .telemetry import EventRecorder
+from .telemetry import (
+    DEFAULT_MJAI_LOG_DIR,
+    EventRecorder,
+    MjaiEventLogger,
+)
 
 
 def _default_checkpoint() -> str | None:
@@ -47,6 +51,16 @@ def _common_parser() -> argparse.ArgumentParser:
     )
     common.add_argument("--jsonl-log", default=None)
     common.add_argument("--audit-log", default=None)
+    common.add_argument(
+        "--mjai-log-dir",
+        default=os.environ.get("RIICHI_MJAI_LOG_DIR", DEFAULT_MJAI_LOG_DIR),
+        help="MJAI 事件原文日志根目录 (default: logs/v19/bot_mjai)",
+    )
+    common.add_argument(
+        "--session",
+        default=os.environ.get("RIICHI_BOT_SESSION", "bot"),
+        help="日志文件名中的 session 标识 (default: bot)",
+    )
     return common
 
 
@@ -121,6 +135,7 @@ def main() -> None:
     )
     recorder = EventRecorder(args.jsonl_log)
     audit_recorder = InputAuditRecorder(args.audit_log)
+    mjai_logger = MjaiEventLogger(args.mjai_log_dir, session=args.session)
     try:
         policy = _load_policy(args, recorder)
         if args.command == "local":
@@ -134,6 +149,7 @@ def main() -> None:
                     seed=args.seed + game,
                     max_steps=args.max_steps,
                     recorder=recorder,
+                    mjai_logger=mjai_logger,
                 )
                 payload = {
                     **result.__dict__,
@@ -174,6 +190,7 @@ def main() -> None:
                     policy=policy,
                     recorder=recorder,
                     audit_recorder=audit_recorder,
+                    mjai_logger=mjai_logger,
                 )
             )
             print(
@@ -195,6 +212,7 @@ def main() -> None:
                 policy=policy,
                 recorder=recorder,
                 games=games,
+                mjai_logger=mjai_logger,
             )
         )
         print(

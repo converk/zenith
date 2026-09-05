@@ -1,4 +1,4 @@
-"""V18 checkpoint 加载与确定性策略推理。"""
+"""V19 checkpoint 加载与确定性策略推理。"""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from riichi_ppo_v1.model.encoding_protocol import (
     KIND_BOS,
     KIND_OPPONENT_ANALYSIS,
     KIND_PLAYER,
-    KIND_RIVER_SUMMARY,
+    KIND_RIICHI_CARD,
     KIND_SELF_HAND,
     KIND_SELF_STATE_ANALYSIS,
     KIND_SEP_ACTIONS,
@@ -84,8 +84,9 @@ def _checkpoint_format(payload: dict[str, Any]) -> str:
     if ppo_format is not None:
         return f"ppo_v{int(ppo_format)}"
     if payload.get("sft_contract_version") is not None:
-        return "sft_v18"
-    return "v18_weights"
+        return f"sft_{str(payload['sft_contract_version'])}"
+    schema_version = payload.get("token_schema_version")
+    return f"v{schema_version}_weights" if schema_version is not None else "weights"
 
 
 def _warmup_row(kind: int, fields: dict[int, int]) -> np.ndarray:
@@ -110,11 +111,12 @@ def _warmup_inputs() -> tuple[
     np.ndarray,
     np.ndarray,
 ]:
-    """构造一条最小但语义合法的 V18 policy-only 前向样本。
+    """构造一条最小但语义合法的 V19 policy-only 前向样本。
 
     行序列严格遵循 ``assert_actor_input_semantics`` 的规范顺序
-    (BOS→TABLE→手牌→玩家→牌河→副露→牌况→分析→Action Query)。未显式覆盖的
-    离散字段取 0(在各类别基数域内);空牌河/无副露均为合法形态。
+    (BOS→TABLE→手牌→玩家→牌河(每河末尾恒发 RIICHI_CARD)→副露→牌况→分析→
+    Action Query)。未显式覆盖的离散字段取 0(在各类别基数域内);空牌河/无副露
+    均为合法形态。
     """
     rows = [
         _warmup_row(KIND_BOS, {}),
@@ -137,16 +139,15 @@ def _warmup_inputs() -> tuple[
             )
             for row in (
                 _warmup_row(river_sep, {}),
-                # 空牌河:valid_length=0,槽位全零为合法 padding。
-                _warmup_row(KIND_RIVER_SUMMARY, {}),
-                _warmup_row(KIND_RIVER_SUMMARY, {}),
+                # V19:每家用一条恒发射 RIICHI_CARD 收尾(未立直时字段全零)。
+                _warmup_row(KIND_RIICHI_CARD, {}),
             )
         ),
         _warmup_row(KIND_SEP_MELDS, {}),
         _warmup_row(KIND_SEP_TILE_STATE, {}),
-        # 34 类牌况:tile_type 升序 1..34;全零可见性时 unknown=4、known=0。
+        # 34 类牌况:tile_type 升序 1..34;unknown=4、all_seen=0 为合法未完全可见形态。
         *(
-            _warmup_row(KIND_TILE_STATE, {2: tile_type, 8: 4})
+            _warmup_row(KIND_TILE_STATE, {2: tile_type, 6: 4})
             for tile_type in range(1, TILE_KINDS + 1)
         ),
         _warmup_row(KIND_SEP_OPPONENT_ANALYSIS, {}),
@@ -206,7 +207,7 @@ class PolicyEngine:
             raise ValueError("checkpoint is missing model_config")  # noqa: TRY004
         if raw_config.get("policy_head_type") != "current_state_snapshot":
             raise RuntimeError(
-                "V18 bot requires policy_head_type=current_state_snapshot"
+                "V19 bot requires policy_head_type=current_state_snapshot"
             )
         try:
             config = ModelConfig.from_mapping(dict(raw_config))

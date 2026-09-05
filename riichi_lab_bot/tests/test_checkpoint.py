@@ -14,7 +14,7 @@ from riichi_lab_bot.policy import PolicyEngine
 
 @pytest.mark.parametrize("checkpoint", [v16_sft_checkpoint, v17_ppo_checkpoint])
 def test_legacy_checkpoint_is_rejected(checkpoint) -> None:
-    with pytest.raises(RuntimeError, match="V18"):
+    with pytest.raises(RuntimeError, match="V19"):
         PolicyEngine(checkpoint(), device="cpu", dtype="fp32")
 
 
@@ -44,7 +44,7 @@ def test_non_isolated_policy_head_is_rejected(
         PolicyEngine(path, device="cpu", dtype="fp32")
 
 
-def _first_legal_prepared(seed: int = 20260730):
+def _first_legal_prepared(seed: int = 20260730, seat: int | None = None):
     from riichienv import RiichiEnv
 
     from riichi_lab_bot.local_play import observation_with_events
@@ -54,19 +54,21 @@ def _first_legal_prepared(seed: int = 20260730):
     pending = {seat: [] for seat in range(4)}
     rng = random.Random(seed)
     for _step in range(4000):
-        for seat, observation in observations.items():
-            pending[int(seat)].extend(observation.new_events())
-        for seat, observation in observations.items():
+        for view_seat, observation in observations.items():
+            pending[int(view_seat)].extend(observation.new_events())
+        for view_seat, observation in observations.items():
             if not observation.legal_actions():
                 continue
+            if seat is not None and int(view_seat) != seat:
+                continue
             server_observation = observation_with_events(
-                observation, pending[int(seat)]
+                observation, pending[int(view_seat)]
             )
-            bridge = OnlineStateBridge(int(seat))
+            bridge = OnlineStateBridge(int(view_seat))
             return bridge, bridge.prepare(server_observation)
         actions = {
-            seat: rng.choice(observation.legal_actions())
-            for seat, observation in observations.items()
+            view_seat: rng.choice(observation.legal_actions())
+            for view_seat, observation in observations.items()
             if observation.legal_actions()
         }
         if not actions:
@@ -75,12 +77,17 @@ def _first_legal_prepared(seed: int = 20260730):
     raise RuntimeError("no legal decision found in 4000 steps")
 
 
-def test_v18_checkpoint_end_to_end_decision() -> None:
-    """加载→warmup→编码→forward→解码→安全校验的完整 V18 链路冒烟。"""
+def test_v19_checkpoint_end_to_end_decision() -> None:
+    """加载→warmup→编码→forward→解码→安全校验的完整 V19 链路冒烟。"""
     from riichi_lab_bot.safety import choose_safe_response
 
     policy = PolicyEngine(default_checkpoint(), device="cpu", dtype="fp32")
     assert policy.metadata["policy_head_type"] == "current_state_snapshot"
+    # V19 拓扑:共享 3 + actor 2 + critic 1;context 320。
+    assert policy.config.layers == 5
+    assert policy.config.shared_layers == 3
+    assert policy.config.critic_layers == 1
+    assert policy.config.context_tokens == 320
     assert policy.warmup() >= 0.0
     bridge, prepared = _first_legal_prepared()
     result = policy.infer(prepared)
@@ -89,6 +96,21 @@ def test_v18_checkpoint_end_to_end_decision() -> None:
     safe = choose_safe_response(prepared, action, possible, 1)
     assert safe.source == "model"
     assert safe.payload is not None
+
+
+def test_v19_nonzero_seat_prepare_and_decode() -> None:
+    """非 0 座位的桥接必须用正确 batch_index 登记合法动作并解码。"""
+    for seat in (1, 2, 3):
+        bridge, prepared = _first_legal_prepared(seed=20260730 + seat, seat=seat)
+        action_id = int(
+            next(
+                index
+                for index, legal in enumerate(prepared.legal_mask)
+                if bool(legal)
+            )
+        )
+        action = bridge.decode(prepared, action_id)
+        assert action is not None
 
 
 def test_fp32_and_bf16_inference_agree_on_l20() -> None:

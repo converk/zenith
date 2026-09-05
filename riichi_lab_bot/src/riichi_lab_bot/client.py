@@ -17,7 +17,12 @@ from .observation import (
 )
 from .policy import PolicyEngine
 from .safety import SafeResponse, choose_safe_response
-from .telemetry import EventRecorder, SessionMetrics
+from .telemetry import (
+    EventRecorder,
+    MjaiEventLogger,
+    SessionMetrics,
+    is_mjai_event,
+)
 
 VALIDATION_URL = "wss://game.riichi.dev/ws/validate"
 RANKED_URL = "wss://game.riichi.dev/ws/ranked"
@@ -59,6 +64,7 @@ async def play_connection(
     policy: PolicyEngine,
     recorder: EventRecorder,
     audit_recorder: InputAuditRecorder | None = None,
+    mjai_logger: MjaiEventLogger | None = None,
     deadline_margin_ms: int = 250,
 ) -> SessionResult:
     from websockets.asyncio.client import connect
@@ -124,6 +130,14 @@ async def play_connection(
                 raise RuntimeError(error)
 
             message_type = message.get("type")
+            # 每条 MJAI 事件(含 start_game/start_kyoku)恰好记录一次;协议控制
+            # 消息不进入事件日志。写失败由 logger 自行降级,不影响本循环。
+            if mjai_logger is not None and is_mjai_event(message):
+                seat_hint = message.get("id")
+                if not (isinstance(seat_hint, int) and 0 <= seat_hint < 4):
+                    seat_hint = None
+                mjai_logger.record(message, seat=seat_hint)
+
             if message_type == "start_game":
                 value = message.get("id", 0)
                 if not isinstance(value, int) or not 0 <= value < 4:
@@ -329,6 +343,7 @@ async def run_ranked(
     policy: PolicyEngine,
     recorder: EventRecorder,
     games: int | None,
+    mjai_logger: MjaiEventLogger | None = None,
 ) -> list[SessionResult]:
     results: list[SessionResult] = []
     backoff = 5.0
@@ -340,6 +355,7 @@ async def run_ranked(
                 token=token,
                 policy=policy,
                 recorder=recorder,
+                mjai_logger=mjai_logger,
             )
             if result.completed:
                 results.append(result)

@@ -1,4 +1,4 @@
-"""V18 在线输入审计记录器。"""
+"""V19 在线输入审计记录器。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from .bridge import PreparedDecision
 
 
 class InputAuditRecorder:
-    """把每次线上决策实际送入模型的 V18 输入落到本地 JSONL。"""
+    """把每次线上决策实际送入模型的 V19 输入落到本地 JSONL。"""
 
     def __init__(self, path: str | None = None) -> None:
         self.path = Path(path).expanduser() if path else None

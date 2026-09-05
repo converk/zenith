@@ -27,13 +27,13 @@ def default_checkpoint() -> Path:
         return Path(override).expanduser().resolve()
     from riichi_ppo_v1.model import KyokuTransformerActorCritic
 
-    path = Path(tempfile.gettempdir()) / f"riichi_lab_bot_v18_{os.getpid()}.pt"
+    path = Path(tempfile.gettempdir()) / f"riichi_lab_bot_v19_{os.getpid()}.pt"
     if not path.exists():
         model = KyokuTransformerActorCritic()
         torch.save({
             "model_config": vars(model.config),
             "model": model.state_dict(),
-            "token_schema_version": 18,
+            "token_schema_version": 19,
         }, path)
         atexit.register(path.unlink, missing_ok=True)
     return path
