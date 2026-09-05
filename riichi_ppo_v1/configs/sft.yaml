@@ -5,12 +5,12 @@ learner_gpus: 2
 model_size: v19
 context_tokens: 320
 policy_head_type: current_state_snapshot
-dataset: datasets/tenhou_sft_2024_2025_encoded_60pct_v19
+dataset: datasets/tenhou_sft_2024_2025_encoded_100pct_v19
 epochs: 1
 actor_only: true
 train_critic: false
 train_public_value: false
-batch_size: 512
+batch_size: 1024
 learning_rate: 0.00015
 min_learning_rate: 0.00002
 warmup_fraction: 0.02

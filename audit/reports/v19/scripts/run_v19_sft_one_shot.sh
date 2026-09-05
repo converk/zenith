@@ -19,14 +19,14 @@ for arg in "$@"; do
 done
 
 SOURCE="${V19_SFT_SOURCE:-datasets/tenhou_sft_2024_2025}"
-ENCODED="${V19_SFT_ENCODED:-datasets/tenhou_sft_2024_2025_encoded_60pct_v19}"
+ENCODED="${V19_SFT_ENCODED:-datasets/tenhou_sft_2024_2025_encoded_100pct_v19}"
 SFT_CONFIG="${V19_SFT_CONFIG:-riichi_ppo_v1/configs/v19_sft.yaml}"
 LOG_DIR="${V19_LOG_DIR:-logs/v19}"
 mkdir -p "$LOG_DIR"
 
-# V18 同口径抽样：subset 3/5（60%），game-level 100%。
-SUBSET_DENOM=5
-SUBSET_REMAINDERS="0,1,2"
+# 两年 100% 数据：subset 分母 1（全部），game-level 100%。
+SUBSET_DENOM=1
+SUBSET_REMAINDERS="0"
 GAME_SAMPLE_DENOM=1
 GAME_SAMPLE_REMAINDER=0
 

@@ -30,8 +30,8 @@ V19 SFT 参数拓扑为 `d_model=256`、16 Q heads、4 KV heads、`head_dim=16`�
 ```bash
 CUDA_DEVICE=0,1 conda run -n Mahjong-AI riichi-sft-precompute \
   --source datasets/tenhou_sft_2024_2025 \
-  --output datasets/tenhou_sft_2024_2025_encoded_60pct_v19 \
-  --subset-denominator 5 --subset-remainders 0,1,2 --workers 16
+  --output datasets/tenhou_sft_2024_2025_encoded_100pct_v19 \
+  --subset-denominator 1 --subset-remainders 0 --workers 16
 
 CUDA_DEVICE=0,1 conda run -n Mahjong-AI riichi-sft-train \
   --config riichi_ppo_v1/configs/v19_sft.yaml

@@ -84,8 +84,8 @@
   `report/`(实验报告与 `PROGRESS.md` 进度记录)、`scripts/`(运行与验证脚本);
   禁止随意命名或散落其他目录。
 - 现行原始数据集为 `datasets/tenhou_sft_2024_2025`;下一份编码数据集固定写入
-  `datasets/tenhou_sft_2024_2025_encoded_60pct_v19`。归档 V16/V17/V18 编码数据与
-  V17 GRP 数据只允许只读统计,不得覆盖或作为活跃训练输入。
+  `datasets/tenhou_sft_2024_2025_encoded_100pct_v19`（两年 100% selection）。
+  归档 V16/V17/V18 编码数据与 V17 GRP 数据只允许只读统计,不得覆盖或作为活跃训练输入。
 - 文件名必须自描述,能从名称看出职责与版本;CLI 默认路径与 README/docs 必须与
   实际产物路径一致。
 
