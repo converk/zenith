@@ -149,8 +149,14 @@ D25 全路径生成标签，但只有 current policy 决策写入 PPO buffer（�
   未触发梯度检查点预案。
 - SFT 一体化脚本 `--smoke` 自检通过：mini 首 shard 重编码（5251 kyokus）→
   2 步 CPU SFT（loss 7.57→7.54），临时产物由 trap 清理。
+- PPO 短程冒烟（`riichi-ppo-smoke`，1 games/1 update/1 worker，临时随机
+  V19 SFT 初始化，CUDA L20）：iteration=1 transitions=1070 kyokus=12，
+  loss=0.1615 value_loss=0.5384 entropy=2.022 belief 五头指标有限
+  （hand_acc 0.186、shanten_top1 0.161、wait_auc 0.265、danger_auc 0.476、
+  loss_mae 0.499、belief_total_loss 5.332），4 epochs 跑满，冒烟产物由
+  smoke_main 自动清理，`ray stop` 后无残留。
 - 记录与说明：critic explained variance 的“不低于 V18 基线”无法从现有
   V18 日志/checkpoint 指标直接取证（V18 metrics.jsonl 未含该字段）；
-  V19 短程 PPO update 已在 `test_v19_learner_belief_loss` 中实际跑通并获得
-  有限 value/EV 指标；设计已保留风险预案（critic_layers 可回退 2 层，
-  +705,280 参数）供正式训练 A/B 验证。其余验收线全部达标。
+  V19 冒烟/单测已给出有限 value_loss 与 value 指标；设计已保留风险预案
+  （critic_layers 可回退 2 层，+705,280 参数）供正式训练 A/B 验证。
+  其余验收线全部达标。
