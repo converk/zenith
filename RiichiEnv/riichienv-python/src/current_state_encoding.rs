@@ -426,8 +426,8 @@ fn suji_category(tile: usize, river: u64) -> i32 {
         return 3;
     }
     let rank = tile % 9;
-    let lower = (rank >= 3).then_some(tile - 3);
-    let upper = (rank <= 5).then_some(tile + 3);
+    let lower = (rank >= 3).then(|| tile - 3);
+    let upper = (rank <= 5).then(|| tile + 3);
     let present = |anchor: Option<usize>| anchor.is_some_and(|value| river & (1_u64 << value) != 0);
     match (present(lower), present(upper)) {
         (true, true) => 2,
@@ -1483,5 +1483,92 @@ mod tests {
         assert_eq!(bucket_dora_aka(8), 8);
         assert_eq!(bucket_base_han(9), 9);
         assert_eq!(bucket_base_han(10), 10);
+    }
+
+    /// 构造一个含 4 家手牌/河/副露的最小 Observation(仅用于编码器单测)。
+    fn test_observation(
+        hands: [Vec<u8>; 4],
+        melds: [Vec<Meld>; 4],
+        discards: [Vec<u8>; 4],
+    ) -> Observation {
+        let mut obs = Observation::new(
+            0,
+            hands,
+            melds,
+            discards,
+            vec![],
+            [25000; 4],
+            [false, true, false, false],
+            [false, true, false, false],
+            [None, Some(0), None, None],
+            false,
+            false,
+            0,
+            vec![],
+            vec![],
+            0,
+            0,
+            0,
+            0,
+            0,
+            vec![],
+            false,
+            [None; 4],
+            [None; 4],
+            None,
+            None,
+            None,
+        );
+        obs.privileged_hands = Some(std::array::from_fn(|i| {
+            obs.hands[i].iter().map(|&tile| tile as u32).collect()
+        }));
+        obs
+    }
+
+    #[test]
+    fn encode_one_emits_riichi_cards_and_removes_summaries() {
+        let observer_hand = vec![0, 4, 8, 12, 16, 20, 60, 64, 68, 72, 73, 74, 76];
+        let obs = test_observation(
+            [observer_hand, vec![], vec![], vec![]],
+            [
+                vec![],
+                vec![],
+                vec![meld(MeldType::Pon, 1, Some(0), Some(0))],
+                vec![],
+            ],
+            [vec![], vec![0, 4], vec![], vec![]],
+        );
+        let (rows, _numeric) = encode_one(&obs).expect("encode_one should succeed");
+        let kinds: Vec<i32> = rows.iter().skip(1).step_by(ROW_WIDTH).cloned().collect();
+        assert!(!kinds.contains(&6_i32), "RIVER_SUMMARY(kind 6) must be removed");
+        assert_eq!(kinds.iter().filter(|&&v| v == KIND_RIICHI_CARD as i32).count(), 3);
+        // 被鸣的河牌 1m(下标 0)不应再出现在河行,只剩 2m 一张。
+        let river_rows = rows.chunks(ROW_WIDTH).filter(|row| row[1] == KIND_RIVER_DISCARD as i32);
+        assert_eq!(river_rows.count(), 1);
+        let meld_rows: Vec<&[i32]> = rows.chunks(ROW_WIDTH).filter(|row| row[1] == KIND_MELD as i32).collect();
+        assert_eq!(meld_rows.len(), 1);
+        // meld_turn = 原始被鸣下标 0 + 1 = 1;called_tsumogiri = false。
+        assert_eq!(meld_rows[0][17], 1);
+        assert_eq!(meld_rows[0][18], 0);
+    }
+
+    #[test]
+    fn compute_labels_marks_tenpai_wait_and_danger() {
+        // 对手(座位 1)听 2s:123m456m789p111s + 单 2s;已立直保证有役。
+        let tenpai_hand = vec![0, 4, 8, 12, 16, 20, 60, 64, 68, 72, 73, 74, 76];
+        let obs = test_observation(
+            [vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], tenpai_hand, vec![], vec![]],
+            [vec![], vec![], vec![], vec![]],
+            [vec![], vec![], vec![], vec![]],
+        );
+        let (hands, shanten, wait, danger, loss) = compute_one_labels(&obs).expect("labels");
+        // 对手 1 的暗手计数和 = 13;整体向听 = 0;等待位 2s(kind 19)=1。
+        assert_eq!(hands[0..34].iter().sum::<u8>(), 13);
+        assert_eq!(shanten[0], 0);
+        assert_eq!(wait[19], 1);
+        assert_eq!(wait[34], 0, "听牌时 N/A 位应为 0");
+        // 无振听且手牌可荣 2s → danger=1、loss>0(至少 1000 点)。
+        assert_eq!(danger[19], 1);
+        assert!(loss[19] > 0.0);
     }
 }
