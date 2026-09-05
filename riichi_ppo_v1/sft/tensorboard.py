@@ -35,6 +35,11 @@ SCALAR_TAGS = {
     "train/policy_ce": "SFT/训练/策略交叉熵 (policy_ce)",
     "train/top1": "SFT/训练/Top-1 准确率 (top1)",
     "train/top3": "SFT/训练/Top-3 准确率 (top3)",
+    "train/belief_hand_acc": "SFT/训练/信念手牌逐格精度 (belief_hand_acc)",
+    "train/belief_shanten_top1": "SFT/训练/信念向听 Top-1 (belief_shanten_top1)",
+    "train/belief_wait_topk": "SFT/训练/信念听牌 Top-5 (belief_wait_topk)",
+    "train/belief_danger_auc": "SFT/训练/信念危险度 AUC (belief_danger_auc)",
+    "train/belief_loss_mae": "SFT/训练/信念打点 MAE (belief_loss_mae)",
     "data/legal_actions_mean": "SFT/数据/平均合法动作数 (legal_actions_mean)",
     "data/token_length_mean": "SFT/数据/平均序列长度 (token_length_mean)",
     "data/token_length_max": "SFT/数据/最大序列长度 (token_length_max)",
@@ -43,6 +48,15 @@ SCALAR_TAGS = {
     "performance/effective_tokens_per_s": "SFT/性能/有效 Token 每秒 (effective_tokens_per_s)",
     "performance/step_time_s": "SFT/性能/平均 Step 耗时·秒 (step_time_s)",
 }
+
+# 训练窗口里随 batch 加权累计的信念指标。
+BELIEF_METRIC_KEYS = (
+    "belief_hand_acc",
+    "belief_shanten_top1",
+    "belief_wait_topk",
+    "belief_danger_auc",
+    "belief_loss_mae",
+)
 
 
 def _group_masks(actions: Tensor) -> dict[str, Tensor]:
@@ -87,6 +101,7 @@ class SftMetricWindow:
         effective_tokens: int,
         padded_tokens: int,
         step_seconds: float,
+        belief_metrics: dict[str, Tensor] | None = None,
     ) -> None:
         batch = int(actions.numel())
         top = logits.detach().topk(3, dim=-1).indices
@@ -110,6 +125,11 @@ class SftMetricWindow:
             self._add(f"{group}/count", mask.float().sum())
             self._add(f"{group}/top1", (top1 & mask).float().sum())
             self._add(f"{group}/top3", (top3 & mask).float().sum())
+        if belief_metrics:
+            for name, value in belief_metrics.items():
+                if name not in BELIEF_METRIC_KEYS:
+                    continue
+                self._add(f"{name}_sum", value.detach().float() * batch)
         self.steps += 1
         self.step_seconds += float(step_seconds)
         self.effective_tokens += int(effective_tokens)
@@ -134,6 +154,10 @@ class SftMetricWindow:
             "performance/effective_tokens_per_s": self.effective_tokens / seconds,
             "performance/step_time_s": seconds / max(self.steps, 1),
         }
+        for name in BELIEF_METRIC_KEYS:
+            key = f"{name}_sum"
+            if key in values:
+                result[f"train/{name}"] = values[key] / samples
         for group in ACTION_GROUPS:
             count = values[f"{group}/count"]
             result[f"train/action/{group}/count"] = count
@@ -156,6 +180,8 @@ def _display_tag(name: str) -> str | None:
         suffix = name.removeprefix("validation/")
         if suffix in {"loss", "policy_ce", "top1", "top3", "samples"}:
             return f"SFT/验证/{suffix}"
+        if suffix.startswith("belief_"):
+            return f"SFT/验证/信念/{suffix.removeprefix('belief_')}"
     return None
 
 

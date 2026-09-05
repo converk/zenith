@@ -1,4 +1,4 @@
-"""V18 SFT 精确恢复 checkpoint 边界。"""
+"""V19 SFT 精确恢复 checkpoint 边界。"""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def load_exact_resume(
     world_size: int,
     trainable_scope: str | None = None,
 ) -> dict[str, Any]:
-    """加载完整 V18 训练状态,不接受迁移或旧契约。"""
+    """加载完整 V19 训练状态,不接受迁移或旧契约。"""
     payload = torch.load(Path(path), map_location="cpu", weights_only=False)
     if not isinstance(payload, dict):
         raise RuntimeError("invalid SFT checkpoint payload")

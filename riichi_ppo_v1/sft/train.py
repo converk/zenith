@@ -1,4 +1,4 @@
-"""V18 actor-only SFT CLI 入口。"""
+"""V19 actor-only SFT（Actor BC + 信念监督联合）CLI 入口。"""
 
 from __future__ import annotations
 

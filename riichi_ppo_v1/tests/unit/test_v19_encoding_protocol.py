@@ -1,4 +1,4 @@
-"""V18 当前局面协议单点来源测试。"""
+"""V19 当前局面协议单点来源测试。"""
 
 from __future__ import annotations
 
@@ -9,9 +9,10 @@ from riichi_ppo_v1.model.encoding_protocol import (
     DEFENSE_SLOT_ORDER,
     ENCODED_FORMAT,
     ENCODING_PROTOCOL_VERSION,
+    KIND_BELIEF,
     KIND_BOS,
-    KIND_CRITIC_FUTURE,
     KIND_CRITIC_HAND,
+    KIND_RIICHI_CARD,
     KIND_SEP_ACTIONS,
     KIND_SEP_CRITIC,
     KIND_SEP_OPPONENT_ANALYSIS,
@@ -24,6 +25,7 @@ from riichi_ppo_v1.model.encoding_protocol import (
     QUERY_SLOT_COUNT,
     SEGMENT_ACTIONS,
     SEGMENT_ANALYSIS,
+    SEGMENT_BELIEF,
     SEGMENT_CRITIC_PRIVATE,
     SEGMENT_SHARED,
     SEPARATOR_IDS,
@@ -38,12 +40,12 @@ from riichi_ppo_v1.model.encoding_protocol import (
 
 
 def test_protocol_version_and_widths() -> None:
-    assert ENCODING_PROTOCOL_VERSION == 18
-    assert ENCODED_FORMAT == "riichi-sft-encoded-v18"
-    assert STATE_PROTOCOL_VERSION.startswith("riichi-current-state-v18")
+    assert ENCODING_PROTOCOL_VERSION == 19
+    assert ENCODED_FORMAT == "riichi-sft-encoded-v19"
+    assert STATE_PROTOCOL_VERSION.startswith("riichi-current-state-v19")
     assert TOKEN_ROW_WIDTH == 32
     assert TOKEN_NUMERIC_WIDTH == 8
-    assert CONTEXT_TOKENS == 256
+    assert CONTEXT_TOKENS == 320
     assert QUERY_ROW_WIDTH == 15
     assert QUERY_SLOT_COUNT == 10
 
@@ -59,9 +61,12 @@ def test_separators_single_source() -> None:
 
 
 def test_category_schema_domains() -> None:
+    assert KIND_RIICHI_CARD == 14
+    assert KIND_BELIEF == 15
+    assert SEGMENT_BELIEF == 5
     assert set(CATEGORY_SCHEMAS) == {
-        KIND_BOS, KIND_TABLE, 3, 4, 5, 6, 7, 8, KIND_TILE_STATE, 10, 11, 12,
-        KIND_CRITIC_HAND, KIND_CRITIC_FUTURE,
+        KIND_BOS, KIND_TABLE, 3, 4, 5, 7, 8, KIND_TILE_STATE, 10, 11, 12,
+        KIND_CRITIC_HAND, KIND_RIICHI_CARD, KIND_BELIEF,
     }
     for kind, schema in CATEGORY_SCHEMAS.items():
         assert schema.kind == kind
@@ -70,6 +75,7 @@ def test_category_schema_domains() -> None:
         assert all(field.cardinality > 0 for field in schema.discrete)
     assert CATEGORY_SCHEMAS[KIND_TABLE].segment == SEGMENT_SHARED
     assert CATEGORY_SCHEMAS[KIND_TILE_STATE].segment == SEGMENT_SHARED
+    assert CATEGORY_SCHEMAS[KIND_BELIEF].segment == SEGMENT_BELIEF
 
 
 def test_query_slot_orders_and_cardinalities() -> None:
@@ -100,5 +106,6 @@ def test_no_legacy_snapshot_constants() -> None:
     for legacy in (
         "SNAPSHOT_FIELD_COUNT", "SNAPSHOT_FACTOR_WIDTH", "SNAPSHOT_NUMERIC_WIDTH",
         "SNAPSHOT_FIELDS", "SNAPSHOT_FACTOR_CARDINALITIES",
+        "KIND_CRITIC_FUTURE", "SEGMENT_CRITIC_FUTURE", "KIND_RIVER_SUMMARY",
     ):
         assert not hasattr(module, legacy), legacy

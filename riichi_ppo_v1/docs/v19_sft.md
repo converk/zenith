@@ -1,0 +1,39 @@
+# V19 Actor-only SFT（当前局面快照 + 信念监督）
+
+V19 SFT 的入口为 `riichi-sft-precompute` 与 `riichi-sft-train`，当前自包含配置为
+`riichi_ppo_v1/configs/v19_sft.yaml`（默认 `configs/sft.yaml` 同构）。数据仍使用
+2024–2025 既定 60% selection（remainder `0,1,2 / 5`），输出格式必须是新建的
+`datasets/tenhou_sft_2024_2025_encoded_60pct_v19`；不得覆盖归档旧版本数据。
+
+## 数据契约
+
+manifest 必须包含 `format=riichi-sft-encoded-v19`、`encoding_protocol_version=19`、
+`state_protocol=riichi-current-state-v19-1`、运行时从 schema 推导的 contract SHA256、
+`belief_labels=true` 与 `belief_shape`（102/3/105/102/102），以及正数的
+train/validation 局数和决策数。训练加载器会 fail closed，拒绝旧格式、未知 hash、
+缺失信念标签或形状不完整。
+
+每条样本保存完整 Actor 序列（`actor_factors[T,32]`、`actor_numeric[T,8]`、长度）、
+Query rows（`[2Q,15]`）、action IDs、legal mask、监督动作，以及信念五头标签
+（hand `[102]`、shanten `[3]`、wait `[105]`、danger `[102]`、loss `[102]`）。
+V19 不保留旧格式适配层，旧读写路径已移除。
+
+## Actor-only 生命周期
+
+`actor_only: true`、`train_critic: false`、`train_public_value: false` 时，优化器仅
+接收 Actor 参数（token_embedding、public/actor backbone、行动作融合、策略头与
+`belief_network`）；Critic backbone/value 参数冻结且无梯度。SFT 目标为
+`L_BC + belief_sft_coef·Σλ_k·L_k + λ_c·L_wait_danger`，默认
+`belief_sft_coef=1.0`、λ_k=1.0、`belief_wait_danger_weight=0.05`，Loss 目标按
+`min(raw, 24000)/24000` 归一化。
+
+固定验证与 checkpoint 间隔为 3000 steps，最终评估为 96 半庄，不能在实验配置里覆盖。
+正式运行前先执行：
+
+```bash
+conda run -n Mahjong-AI python -m pytest \
+  riichi_ppo_v1/tests/unit/test_v19_actor_sft.py \
+  riichi_ppo_v1/tests/integration/test_v19_sft_lifecycle.py
+```
+
+本阶段只验证 SFT-ready 接口；完整数据集生成、SFT 与 PPO 按 V19 排期执行。

@@ -1,4 +1,4 @@
-"""V18 Actor-only 行为克隆的参数隔离边界。
+"""V19 Actor-only 行为克隆（含信念网络）的参数隔离边界。
 
 checkpoint 持久化统一走 ``sft/checkpoint.py`` 的完整训练状态 payload;
 bot 等推理端直接加载该 payload,本模块只负责 Actor/Critic 参数划分。
@@ -16,6 +16,11 @@ _CRITIC_ROOTS = frozenset({
 
 
 def is_actor_parameter(name: str) -> bool:
+    """V19：belief_network 与 actor 一起训练，不属于 Critic 私有根。
+
+    ``_CRITIC_ROOTS`` 只列出 value/critic 私有模块；``belief_network`` 不在
+    其中，因此默认被视为 Actor 参数（与 policy/backbone 共享同一个优化器）。
+    """
     return name.split(".", 1)[0] not in _CRITIC_ROOTS
 
 

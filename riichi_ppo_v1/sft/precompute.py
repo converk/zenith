@@ -1,4 +1,4 @@
-"""物化确定性的 V18 当前局面 actor-only SFT 子集以加速训练。"""
+"""物化确定性的 V19 当前局面 actor-only SFT 子集以加速训练。"""
 
 from __future__ import annotations
 
@@ -28,7 +28,6 @@ from ..model.encoding_protocol import (
     ENCODING_PROTOCOL_VERSION,
     OFFENSE_SLOT_ORDER,
     QUERY_ROW_ANSWER_START,
-    SEGMENT_CRITIC_FUTURE,
     SEGMENT_CRITIC_PRIVATE,
     SLOT_CARDINALITIES,
     STATE_PROTOCOL_VERSION,
@@ -38,6 +37,7 @@ from ..model.encoding_protocol import (
 from ..model.schema import NUM_ACTIONS
 from .contract import (
     ACTOR_INPUT_CONTRACT_SHA256,
+    BELIEF_LABEL_SHAPES,
     validate_manifest,
 )
 from .data import EncodedSample, _member_metadata, encode_kyoku
@@ -141,7 +141,7 @@ def _require_complete_action_coverage(statistics: dict[str, np.ndarray]) -> None
 
 
 def _write_chunk(path: Path, samples: list[EncodedSample]) -> int:
-    """物化一批 V18 当前局面样本：actor 序列 + query 元数据 + 身份字段。"""
+    """物化一批 V19 当前局面样本：actor 序列 + query 元数据 + 身份字段 + 信念标签。"""
     count = len(samples)
     actor_offsets = np.zeros(count + 1, dtype=np.int64)
     actor_offsets[1:] = np.cumsum([sample.token_length for sample in samples], dtype=np.int64)
@@ -149,6 +149,22 @@ def _write_chunk(path: Path, samples: list[EncodedSample]) -> int:
     query_offsets[1:] = np.cumsum([sample.query_rows.shape[0] for sample in samples], dtype=np.int64)
     action_offsets = np.zeros(count + 1, dtype=np.int64)
     action_offsets[1:] = np.cumsum([sample.query_pair_count for sample in samples], dtype=np.int64)
+    # 信念五个字段为固定形状（每行 102/3/105/102/102），与 actor 行数共用 offsets。
+    belief_hand = np.stack([np.asarray(sample.belief_hand, dtype=np.uint8) for sample in samples])
+    belief_shanten = np.stack([np.asarray(sample.belief_shanten, dtype=np.uint8) for sample in samples])
+    belief_wait = np.stack([np.asarray(sample.belief_wait, dtype=np.uint8) for sample in samples])
+    belief_danger = np.stack([np.asarray(sample.belief_danger, dtype=np.uint8) for sample in samples])
+    belief_loss = np.stack([np.asarray(sample.belief_loss, dtype=np.float32) for sample in samples])
+    if belief_hand.shape != (count, *BELIEF_LABEL_SHAPES["hand"]):
+        raise RuntimeError(f"belief_hand shape mismatch in {path}")
+    if belief_shanten.shape != (count, *BELIEF_LABEL_SHAPES["shanten"]):
+        raise RuntimeError(f"belief_shanten shape mismatch in {path}")
+    if belief_wait.shape != (count, *BELIEF_LABEL_SHAPES["wait"]):
+        raise RuntimeError(f"belief_wait shape mismatch in {path}")
+    if belief_danger.shape != (count, *BELIEF_LABEL_SHAPES["danger"]):
+        raise RuntimeError(f"belief_danger shape mismatch in {path}")
+    if belief_loss.shape != (count, *BELIEF_LABEL_SHAPES["loss"]):
+        raise RuntimeError(f"belief_loss shape mismatch in {path}")
     temporary = path.with_suffix(".tmp.npz")
     np.savez_compressed(
         temporary,
@@ -166,6 +182,11 @@ def _write_chunk(path: Path, samples: list[EncodedSample]) -> int:
         kyoku_indices=np.asarray([sample.kyoku_index for sample in samples], dtype=np.int16),
         seats=np.asarray([sample.seat for sample in samples], dtype=np.uint8),
         decision_indices=np.asarray([sample.decision_index for sample in samples], dtype=np.int32),
+        belief_hand=belief_hand,
+        belief_shanten=belief_shanten,
+        belief_wait=belief_wait,
+        belief_danger=belief_danger,
+        belief_loss=belief_loss,
     )
     os.replace(temporary, path)
     return count
@@ -227,10 +248,10 @@ def _accumulate_field_statistics(
 
 
 def _assert_public_actor(samples: list[EncodedSample], source: str) -> None:
-    """拒绝 Actor 行中混入 Critic 私有信息。"""
+    """拒绝 Actor 行中混入 Critic 私有信息（V19 已无 future 段，只查私有段）。"""
     for sample in samples:
         segments = sample.actor_factors[:, 0].astype(int)
-        if np.any(np.isin(segments, (SEGMENT_CRITIC_PRIVATE, SEGMENT_CRITIC_FUTURE))):
+        if np.any(segments == SEGMENT_CRITIC_PRIVATE):
             raise RuntimeError(f"replay actor sequence contains hidden information: {source}")
 
 
@@ -247,7 +268,7 @@ def _precompute_source_shard(
     progress_queue: Any | None = None,
     progress_every_kyokus: int = 32,
 ) -> tuple[str, int, int, int, dict[str, list[int]]]:
-    """独立进程内编码一个源 tar 为 V18 chunk。"""
+    """独立进程内编码一个源 tar 为 V19 chunk。"""
     shard = Path(source_shard)
     target_dir = Path(destination)
     buffered: list[EncodedSample] = []
@@ -314,7 +335,7 @@ def precompute(
     require_complete_action_coverage: bool = False,
     base_encoded: Path | None = None,
 ) -> None:
-    """V18 当前局面子集的确定性重编码,可复用已有 V18 编码缓存。"""
+    """V19 当前局面子集的确定性重编码,可复用已有 V19 编码缓存。"""
     remainders = tuple(sorted(set(remainders)))
     if denominator <= 0 or not remainders or any(not 0 <= value < denominator for value in remainders):
         raise ValueError("subset remainder must be in [0, subset denominator)")
@@ -472,9 +493,9 @@ def precompute(
     if require_complete_action_coverage:
         _require_complete_action_coverage(field_statistics)
     if int(field_statistics["query_answer_out_of_range"][0]) != 0:
-        raise RuntimeError("V18 encoding produced out-of-range query answers")
+        raise RuntimeError("V19 encoding produced out-of-range query answers")
     if int(field_statistics["actor_field_out_of_range"][0]) != 0:
-        raise RuntimeError("V18 encoding produced out-of-range actor fields")
+        raise RuntimeError("V19 encoding produced out-of-range actor fields")
     for split in ("train", "validation"):
         if int(counts[f"{split}_kyokus"]) != int(total_kyokus[split]):
             raise RuntimeError(
@@ -497,6 +518,8 @@ def precompute(
         "actor_only": True,
         "numeric_dtype": "float32",
         "legal_encoding": f"packbits-little-{NUM_ACTIONS}",
+        "belief_labels": True,
+        "belief_shape": BELIEF_LABEL_SHAPES,
         "current_state_snapshot_verified": True,
         "complete_action_coverage_required": bool(require_complete_action_coverage),
         "preflight_target_kyokus": total_kyokus,
@@ -526,7 +549,7 @@ def iter_precomputed_samples(
     rank: int = 0,
     world_size: int = 1,
 ) -> Iterator[EncodedSample]:
-    """按确定性全局行流读取 V18 当前局面编码 chunk。"""
+    """按确定性全局行流读取 V19 当前局面编码 chunk。"""
     manifest = json.loads((dataset / "manifest.json").read_text(encoding="utf-8"))
     validate_manifest(manifest)
     paths = sorted((dataset / split).glob(f"{split}-*.npz"))
@@ -593,6 +616,25 @@ def iter_precomputed_samples(
                 raise RuntimeError(f"query offsets length mismatch in {path}")
             if int(action_offsets[-1]) != action_ids.shape[0]:
                 raise RuntimeError(f"action offsets length mismatch in {path}")
+            try:
+                belief_hand, belief_shanten, belief_wait, belief_danger, belief_loss = (
+                    data[name] for name in (
+                        "belief_hand", "belief_shanten", "belief_wait",
+                        "belief_danger", "belief_loss",
+                    )
+                )
+            except KeyError as exc:
+                raise RuntimeError(f"V19 chunk lacks belief label array in {path}") from exc
+            rows_in_chunk = int(actions.shape[0])
+            for name, array, shape in (
+                ("belief_hand", belief_hand, BELIEF_LABEL_SHAPES["hand"]),
+                ("belief_shanten", belief_shanten, BELIEF_LABEL_SHAPES["shanten"]),
+                ("belief_wait", belief_wait, BELIEF_LABEL_SHAPES["wait"]),
+                ("belief_danger", belief_danger, BELIEF_LABEL_SHAPES["danger"]),
+                ("belief_loss", belief_loss, BELIEF_LABEL_SHAPES["loss"]),
+            ):
+                if np.asarray(array).shape != (rows_in_chunk, *shape):
+                    raise RuntimeError(f"{name} shape mismatch in {path}")
             years, game_ids, kyoku_indices, seats, decision_indices = (
                 data[name] for name in (
                     "years", "game_ids", "kyoku_indices", "seats", "decision_indices",
@@ -600,7 +642,7 @@ def iter_precomputed_samples(
             )
             order = list(range(len(actions)))
             if shuffle:
-                random.Random(f"riichi-sft-v18-row-order\0{seed}\0{path.name}").shuffle(order)
+                random.Random(f"riichi-sft-v19-row-order\0{seed}\0{path.name}").shuffle(order)
             for row in order[selected_start:selected_end]:
                 yield EncodedSample(
                     actor_factors[actor_offsets[row]:actor_offsets[row + 1]].copy(),
@@ -611,6 +653,11 @@ def iter_precomputed_samples(
                     int(actions[row]),
                     int(years[row]), str(game_ids[row]),
                     int(kyoku_indices[row]), int(seats[row]),
+                    belief_hand[row].copy(),
+                    belief_shanten[row].copy(),
+                    belief_wait[row].copy(),
+                    belief_danger[row].copy(),
+                    belief_loss[row].astype(np.float32).copy(),
                     int(decision_indices[row]),
                 )
 
@@ -618,7 +665,7 @@ def iter_precomputed_samples(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=Path("datasets/tenhou_sft_2024_2025"))
-    parser.add_argument("--output", type=Path, required=True, help="V18 编码缓存输出目录(必填)")
+    parser.add_argument("--output", type=Path, required=True, help="V19 编码缓存输出目录(必填)")
     parser.add_argument("--subset-denominator", type=int, default=5)
     parser.add_argument("--subset-remainder", type=int, default=None)
     parser.add_argument(
@@ -627,7 +674,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--reuse-encoded", type=Path, default=None,
-        help="复用已有 V18 编码缓存,只追加本次 remainders 的新数据",
+        help="复用已有 V19 编码缓存,只追加本次 remainders 的新数据",
     )
     parser.add_argument("--kyokus-per-shard", type=int, default=256)
     parser.add_argument("--workers", type=int, default=8, help="independent tar-shard encoder processes")

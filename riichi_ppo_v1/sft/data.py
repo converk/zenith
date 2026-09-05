@@ -1,4 +1,4 @@
-"""V18 当前局面 SFT 输入编码与预计算样本读取。"""
+"""V19 当前局面 SFT 输入编码与预计算样本读取。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from ..model.action_groups import action_id
+from ..model.belief_labels import encode_belief_labels_batch
 from ..model.bridge import (
     action_jsons,
 )
@@ -19,7 +20,7 @@ from ..model.encoding_protocol import ENCODED_FORMAT
 
 @dataclass(slots=True)
 class EncodedSample:
-    """V18 决策样本：完整 Actor 序列 + Query 元数据 + 监督动作。"""
+    """V19 决策样本：完整 Actor 序列 + Query 元数据 + 监督动作 + 信念五头标签。"""
 
     actor_factors: np.ndarray  # [T, 32] int32
     actor_numeric: np.ndarray  # [T, 8] float32
@@ -31,6 +32,12 @@ class EncodedSample:
     game_id: str
     kyoku_index: int
     seat: int
+    # 信念五头监督标签（Rust 上帝视角生成；只进训练，不进推理）。
+    belief_hand: np.ndarray  # [102] uint8
+    belief_shanten: np.ndarray  # [3] uint8
+    belief_wait: np.ndarray  # [105] uint8
+    belief_danger: np.ndarray  # [102] uint8
+    belief_loss: np.ndarray  # [102] float32（原始点数，trainer 内归一化）
     decision_index: int = 0
 
     @property
@@ -80,6 +87,7 @@ def encode_kyoku(
             int, object,
             np.ndarray, np.ndarray, np.ndarray, np.ndarray,
             np.ndarray, int,
+            np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
         ]
     ] = []
     active = set(range(4))
@@ -150,6 +158,11 @@ def encode_kyoku(
             seat_list.append(seat)
             target_actions.append(int(target_action))
         encoded: EncodedStateBatch = encode_batch(decisions)
+        # 信念标签与 Actor 编码使用同一批 observations（同批同序），Rust 上帝
+        # 视角批量计算五头标签；按行拆分挂到 pending，不引入第二次流遍历。
+        beliefs = encode_belief_labels_batch([
+            observation for _seat, observation, _action in batch
+        ])
         for row, (seat, observation, _expert_action) in enumerate(batch):
             count = int(encoded.query_pair_counts[row])
             pending.append((
@@ -160,6 +173,11 @@ def encode_kyoku(
                 encoded.action_ids[row, :count].copy(),
                 encoded.legal_mask[row].copy(),
                 target_actions[row],
+                beliefs.hand_counts[row].copy(),
+                beliefs.shanten[row].copy(),
+                beliefs.wait[row].copy(),
+                beliefs.danger[row].copy(),
+                beliefs.loss[row].copy(),
             ))
     if not pending:
         return []
@@ -167,6 +185,7 @@ def encode_kyoku(
     for (
         seat, _observation, actor_factors, actor_numeric, query_rows,
         action_ids_array, legal, target_action,
+        belief_hand, belief_shanten, belief_wait, belief_danger, belief_loss,
     ) in pending:
         seat_samples[seat].append(EncodedSample(
             actor_factors=actor_factors,
@@ -180,6 +199,11 @@ def encode_kyoku(
             kyoku_index=int(kyoku_index),
             seat=seat,
             decision_index=len(seat_samples[seat]),
+            belief_hand=belief_hand,
+            belief_shanten=belief_shanten,
+            belief_wait=belief_wait,
+            belief_danger=belief_danger,
+            belief_loss=belief_loss,
         ))
     return [
         sample
@@ -198,18 +222,18 @@ def iter_split_samples(
     world_size: int = 1,
     include_critic: bool = True,
 ) -> Iterator[EncodedSample]:
-    """读取 V18 预计算数据集 split。"""
+    """读取 V19 预计算数据集 split。"""
     manifest_path = dataset / "manifest.json"
     if not manifest_path.is_file():
-        raise RuntimeError("SFT training requires a V18 encoded dataset manifest")
+        raise RuntimeError("SFT training requires a V19 encoded dataset manifest")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if str(manifest.get("format", "")) != ENCODED_FORMAT:
-        raise RuntimeError("only the V18 encoded SFT format is supported")
+        raise RuntimeError("only the V19 encoded SFT format is supported")
     from .contract import validate_manifest
 
     validate_manifest(manifest)
     if include_critic:
-        raise ValueError("the V18 encoded subset is actor-only; set train_critic: false")
+        raise ValueError("the V19 encoded subset is actor-only; set train_critic: false")
     from .precompute import iter_precomputed_samples
 
     yield from iter_precomputed_samples(

@@ -1,4 +1,4 @@
-"""信息编码协议 V18 单一来源的契约测试。"""
+"""信息编码协议 V19 单一来源的契约测试。"""
 
 from __future__ import annotations
 
@@ -8,13 +8,24 @@ from riichi_ppo_v1.model.schema import TOKEN_SCHEMA_VERSION
 
 def test_single_protocol_version() -> None:
     """协议版本唯一且数据集格式标识由同一常量派生。"""
-    assert protocol.ENCODING_PROTOCOL_VERSION == 18
-    assert protocol.ENCODED_FORMAT == "riichi-sft-encoded-v18"
+    assert protocol.ENCODING_PROTOCOL_VERSION == 19
+    assert protocol.ENCODED_FORMAT == "riichi-sft-encoded-v19"
     assert TOKEN_SCHEMA_VERSION == protocol.ENCODING_PROTOCOL_VERSION
 
 
+def test_v19_contract_identity() -> None:
+    """V19 定版：context 320、无 critic future/RIVER_SUMMARY、复用立直卡/信念编号。"""
+    assert protocol.STATE_PROTOCOL_VERSION.startswith("riichi-current-state-v19")
+    assert protocol.CONTEXT_TOKENS == 320
+    assert protocol.KIND_RIICHI_CARD == 14
+    assert protocol.KIND_BELIEF == 15
+    assert protocol.SEGMENT_BELIEF == 5
+    for legacy in ("KIND_CRITIC_FUTURE", "SEGMENT_CRITIC_FUTURE", "KIND_RIVER_SUMMARY"):
+        assert not hasattr(protocol, legacy), legacy
+
+
 def test_slot_cardinalities_match_contract() -> None:
-    """20 个 slot 的基数与 V18 输入契约逐项一致。"""
+    """20 个 slot 的基数与 V19 输入契约逐项一致。"""
     expected = {
         "O0": 7, "O1": 11, "O2": 7, "O3": 14, "O4": 4, "O5": 6,
         "O6": 4, "O7": 2, "O8": 3, "O9": 6,

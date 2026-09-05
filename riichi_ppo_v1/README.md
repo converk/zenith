@@ -1,9 +1,10 @@
-# V18 SFT/PPO 训练框架
+# V19 SFT / V18 PPO 训练框架
 
-本包的活跃协议仅为 V18：**决策时刻状态快照**（Shared 公共前缀 + 三家 Opponent
-Analysis + 每个合法动作一对 Offense/Defense Query，全 token RoPE、公共双向 GQA、
-结构化 Actor mask）。V16/V17 配置与产物保留为冷存储，不能由活跃 checkpoint、SFT、
-评测或 bot 路径加载；PPO/rollout 与 bot 的旧输入引用为后续待迁移项。
+本包的活跃 SFT 协议为 V19：**决策时刻状态快照 + 信念五头监督**（Shared 公共前缀 +
+三家 Opponent Analysis + 信念 token + 每个合法动作一对 Offense/Defense Query，
+全 token RoPE、公共双向 GQA、结构化 Actor mask）。V16/V17 配置与产物保留为冷存储，
+不能由活跃 checkpoint、SFT、评测或 bot 路径加载；PPO/rollout 与 bot 的旧输入引用
+为后续待迁移项。
 
 ## 安装与验证
 
@@ -16,37 +17,38 @@ python -m riichi_ppo_v1.tools.validate --parameter-contract
 python -m pytest riichi_ppo_v1/tests
 ```
 
-参数契约固定为 `d_model=256`、16 Q heads、4 KV heads、`head_dim=16`、
-`ffn_dim=704`、3 Shared + 1 Actor + 2 Critic，密集槽位 `dense_slot_dim=32`、
-`dense_fusion_dim=512`，`context_tokens=256`，完整 Actor-Critic 参数量 ≤6.0M（当前
-约 5.80M）。模型不包含 Q scorer、candidate-Q 输出、MHA 双分支或旧协议兼容 key。
+V19 SFT 参数拓扑为 `d_model=256`、16 Q heads、4 KV heads、`head_dim=16`、
+`ffn_dim=704`、3 Shared + 2 Actor + 1 Critic，密集槽位 `dense_slot_dim=32`、
+`dense_fusion_dim=512`，`context_tokens=320`，并含信念网络（五头 + 三家各 10 token）。
+模型不包含 Q scorer、candidate-Q 输出、MHA 双分支或旧协议兼容 key。
 
-## V18 SFT-ready 路径
+## V19 SFT-ready 路径
 
-现行自包含配置是 `configs/v18_sft.yaml`。本次升级只交付可训练接口，不生成完整
-V18 数据集，也不启动正式 SFT/PPO：
+现行自包含配置是 `configs/v19_sft.yaml`。V19 SFT 目标为 Actor BC 与信念五头监督
+联合（`L_BC + belief_sft_coef·Σλ_k·L_k + λ_c·L_wait_danger`）：
 
 ```bash
 CUDA_DEVICE=0,1 conda run -n Mahjong-AI riichi-sft-precompute \
   --source datasets/tenhou_sft_2024_2025 \
-  --output datasets/tenhou_sft_2024_2025_encoded_60pct_v18 \
+  --output datasets/tenhou_sft_2024_2025_encoded_60pct_v19 \
   --subset-denominator 5 --subset-remainders 0,1,2 --workers 16
 
 CUDA_DEVICE=0,1 conda run -n Mahjong-AI riichi-sft-train \
-  --config riichi_ppo_v1/configs/v18_sft.yaml
+  --config riichi_ppo_v1/configs/v19_sft.yaml
 ```
 
 数据生成 + 训练可一键执行（产物地址与校验见脚本头部注释）：
 
 ```bash
-bash audit/reports/v18/scripts/run_v18_precompute_and_sft.sh            # 生成数据 + 训练
-bash audit/reports/v18/scripts/run_v18_precompute_and_sft.sh --skip-precompute  # 已有数据仅训练
+bash audit/reports/v19/scripts/run_v19_precompute_and_sft.sh            # 生成数据 + 训练
+bash audit/reports/v19/scripts/run_v19_precompute_and_sft.sh --skip-precompute  # 已有数据仅训练
 ```
 
-预计算 manifest 必须声明 `riichi-sft-encoded-v18`、protocol 18 和冻结的 V18
-contract hash；旧缓存会 fail closed。actor-only BC 只优化 Actor 参数，并只保存
-可被 V18 精确加载的 Actor artifact。固定验证/checkpoint 节奏为每 3000 steps，
-最终评估为 96 半庄。
+预计算 manifest 必须声明 `riichi-sft-encoded-v19`、protocol 19、冻结的 V19
+contract hash、`belief_labels=true` 与 `belief_shape`；旧缓存会 fail closed。
+actor-only BC + 信念只优化 Actor 参数（含 `belief_network`），并只保存可被 V19
+精确加载的 Actor artifact。固定验证/checkpoint 节奏为每 3000 steps，最终评估为
+96 半庄。
 
 ## PPO 与评测边界
 
@@ -61,7 +63,7 @@ RAY_LOG_TO_STDERR=0 CUDA_DEVICE=0,1 PYTHONUNBUFFERED=1 \
   --config <V18-自包含-PPO-配置> --device cuda --learner-gpus 2
 ```
 
-产物目录固定为 `checkpoints/train_riichi_v18/<阶段>`、`logs/v18/` 与
-`audit/reports/v18/{design,eval,report,scripts}`。详细协议见
-[V18 输入协议](docs/v18_input_protocol.md)，SFT 参数与生命周期见
-[V18 SFT](docs/v18_sft.md)。
+产物目录固定为 `checkpoints/train_riichi_v19/<阶段>`、`logs/v19/` 与
+`audit/reports/v19/{design,eval,report,scripts}`。详细协议见
+[V19 输入协议](docs/v19_input_protocol.md)，SFT 参数与生命周期见
+[V19 SFT](docs/v19_sft.md)。

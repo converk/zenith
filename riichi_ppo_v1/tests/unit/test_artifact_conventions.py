@@ -85,8 +85,11 @@ def test_packaged_configs_are_current_and_neutral() -> None:
     assert training["checkpoint_dir"] == "checkpoints/train_riichi_current"
     sft = load_sft_config(CONFIG_DIR / "sft.yaml")
     assert sft["policy_head_type"] == "current_state_snapshot"
-    assert sft["model_size"] == "v18"
-    assert sft["checkpoint_dir"] == "checkpoints/train_riichi_current/sft"
+    assert sft["model_size"] == "v19"
+    assert sft["context_tokens"] == 320
+    assert sft["checkpoint_dir"] == "checkpoints/train_riichi_v19/sft"
+    assert sft["belief_sft_coef"] == 1.0
+    assert sft["belief_wait_danger_weight"] == 0.05
 
 
 def test_current_datasets_present() -> None:

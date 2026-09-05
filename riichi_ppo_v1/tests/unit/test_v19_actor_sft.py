@@ -1,4 +1,4 @@
-"""V18 Actor-only BC 的梯度与优化器隔离。"""
+"""V19 Actor-only BC + 信念网络的梯度与优化器隔离。"""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ def _actor_loss(model: torch.nn.Module, inputs: dict[str, torch.Tensor], targets
 def test_actor_parameter_scope() -> None:
     model = KyokuTransformerActorCritic()
     freeze_critic(model)
+    assert any(name.startswith("belief_network.") for name, _parameter in model.named_parameters())
     for name, parameter in model.named_parameters():
         assert parameter.requires_grad == is_actor_parameter(name)
     optimized = list(actor_parameters(model))

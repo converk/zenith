@@ -33,6 +33,15 @@ DATA_PLAN_VERSION = 3
 DATA_CURSOR_VERSION = 1
 TRAINING_MODES = frozenset({"actor_only", "actor_public_value", "joint_actor_critic"})
 
+# V19 信念五头标签的逐样本固定形状（标签只进训练，不进推理）。
+BELIEF_LABEL_SHAPES: dict[str, list[int]] = {
+    "hand": [102],
+    "shanten": [3],
+    "wait": [105],
+    "danger": [102],
+    "loss": [102],
+}
+
 # 固定 SFT 节奏(见 AGENTS.md「评测与验证机制」):验证、checkpoint 保存每
 # 3000 steps 一次,最终评估保持 96 半庄。参数只在代码中定义一处,禁止在实验
 # 配置里复制。
@@ -116,6 +125,13 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
         raise RuntimeError("manifest legal_encoding must be packbits-little-241")
     if manifest.get("actor_only") is not True:
         raise RuntimeError("manifest actor_only must be True for the actor-only SFT path")
+    if manifest.get("belief_labels") is not True:
+        raise RuntimeError("V19 SFT manifest must declare belief_labels=True")
+    belief_shape = manifest.get("belief_shape")
+    if belief_shape != BELIEF_LABEL_SHAPES:
+        raise RuntimeError(
+            "V19 SFT manifest belief_shape disagrees with the runtime belief contract"
+        )
     if int(manifest.get("subset_denominator", -1)) <= 0:
         raise RuntimeError("manifest subset_denominator must be positive")
     remainders = manifest.get("subset_remainders")

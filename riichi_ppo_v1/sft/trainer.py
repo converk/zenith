@@ -1,7 +1,7 @@
-"""V18 actor-only SFT 从零训练入口。
+"""V19 actor-only SFT（Actor BC + 信念五头监督联合）从零训练入口。
 
-V18 输入为当前局面状态快照（Shared 公共前缀 + Opponent Analysis + 每动作
-Offense/Defense Query），网络为 current_state_snapshot 策略头。节奏键
+V19 输入为当前局面状态快照（Shared 公共前缀 + Opponent Analysis + 信念 token + 每动作
+Offense/Defense Query），网络为 current_state_snapshot 策略头 + 信念网络。节奏键
 (每 3000 steps 验证/保存、最终 96 半庄)只引用 ``sft/contract.py`` 的机制常量,
 禁止实验配置复制。
 """
@@ -37,6 +37,7 @@ from ..model.schema import NUM_ACTIONS
 from .actor_bc import actor_parameters, freeze_critic
 from .checkpoint import checkpoint_payload, load_exact_resume
 from .contract import (
+    BELIEF_LABEL_SHAPES,
     SFT_CADENCE_STEPS,
     dataset_manifest_hash,
     load_manifest,
@@ -50,8 +51,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "seed": 1,
     "device": "cuda",
     "learner_gpus": 2,
-    "model_size": "v18",
-    "context_tokens": 256,
+    "model_size": "v19",
+    "context_tokens": 320,
     "policy_head_type": "current_state_snapshot",
     "dense_slot_dim": 32,
     "dense_fusion_dim": 512,
@@ -78,6 +79,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tensorboard_dirname": "tensorboard",
     "resume": None,
     "init_model": None,
+    # V19 信念监督联合（训练分册 §4.4/§6）：缺省时向前兼容 v19_sft.yaml。
+    "belief_sft_coef": 1.0,
+    "belief_head_weight_hand": 1.0,
+    "belief_head_weight_shanten": 1.0,
+    "belief_head_weight_wait": 1.0,
+    "belief_head_weight_danger": 1.0,
+    "belief_head_weight_loss": 1.0,
+    "belief_wait_danger_weight": 0.05,
 }
 
 # 节奏键单一来源(sft/contract.py 常量),实验配置出现这些键即拒绝。
@@ -93,7 +102,7 @@ def load_config(path: Path | None) -> dict[str, Any]:
         with path.open(encoding="utf-8") as file:
             overlay = yaml.safe_load(file)
         if not isinstance(overlay, dict):
-            raise ValueError("V18 SFT config must be a mapping")
+            raise ValueError("V19 SFT config must be a mapping")
         config.update(overlay)
     return config
 
@@ -102,18 +111,18 @@ def validate_config(config: dict[str, Any]) -> None:
     duplicated = set(_CADENCE_KEYS) & set(config)
     if duplicated:
         raise ValueError(
-            "V18 SFT cadence keys must stay single-sourced in sft/contract.py: "
+            "V19 SFT cadence keys must stay single-sourced in sft/contract.py: "
             + ", ".join(sorted(duplicated))
         )
     if str(config.get("policy_head_type")) != "current_state_snapshot":
-        raise ValueError("V18 SFT requires policy_head_type=current_state_snapshot")
-    if str(config.get("model_size")) != "v18":
-        raise ValueError("V18 SFT requires model_size=v18")
+        raise ValueError("V19 SFT requires policy_head_type=current_state_snapshot")
+    if str(config.get("model_size")) != "v19":
+        raise ValueError("V19 SFT requires model_size=v19")
     if bool(config.get("train_critic", False)) or bool(config.get("train_public_value", False)):
-        raise ValueError("V18 SFT is actor-only; critic training is not supported here")
+        raise ValueError("V19 SFT is actor-only; critic training is not supported here")
     dataset = Path(str(config["dataset"]))
     if not (dataset / "manifest.json").is_file():
-        raise FileNotFoundError(f"V18 SFT dataset manifest does not exist: {dataset}")
+        raise FileNotFoundError(f"V19 SFT dataset manifest does not exist: {dataset}")
     world_size = int(config["learner_gpus"]) if str(config["device"]).startswith("cuda") else 1
     if world_size <= 0:
         raise ValueError("learner_gpus must be positive")
@@ -155,6 +164,11 @@ def collate_samples(
     pair_counts_np = np.empty(batch, dtype=np.int64)
     legal_np = np.zeros((batch, NUM_ACTIONS), dtype=np.bool_)
     actions_np = np.empty(batch, dtype=np.int64)
+    belief_hand_np = np.zeros((batch, *BELIEF_LABEL_SHAPES["hand"]), dtype=np.uint8)
+    belief_shanten_np = np.zeros((batch, *BELIEF_LABEL_SHAPES["shanten"]), dtype=np.uint8)
+    belief_wait_np = np.zeros((batch, *BELIEF_LABEL_SHAPES["wait"]), dtype=np.uint8)
+    belief_danger_np = np.zeros((batch, *BELIEF_LABEL_SHAPES["danger"]), dtype=np.uint8)
+    belief_loss_np = np.zeros((batch, *BELIEF_LABEL_SHAPES["loss"]), dtype=np.float32)
     for row, sample in enumerate(samples):
         actor_factors_np[row, : sample.token_length] = sample.actor_factors
         actor_numeric_np[row, : sample.token_length] = sample.actor_numeric
@@ -164,6 +178,19 @@ def collate_samples(
         pair_counts_np[row] = sample.query_pair_count
         legal_np[row] = sample.legal_mask
         actions_np[row] = sample.action
+        for name, array, target in (
+            ("belief_hand", sample.belief_hand, belief_hand_np[row]),
+            ("belief_shanten", sample.belief_shanten, belief_shanten_np[row]),
+            ("belief_wait", sample.belief_wait, belief_wait_np[row]),
+            ("belief_danger", sample.belief_danger, belief_danger_np[row]),
+            ("belief_loss", sample.belief_loss, belief_loss_np[row]),
+        ):
+            values = np.asarray(array)
+            if values.shape != target.shape:
+                raise ValueError(
+                    f"{name} shape {values.shape} != {target.shape} in SFT sample"
+                )
+            target[:] = values
     if validate_semantics:
         from ..model.semantic_validation import assert_actor_input_semantics
 
@@ -184,6 +211,11 @@ def collate_samples(
     pair_counts = torch.from_numpy(pair_counts_np).to(device, non_blocking=True)
     legal = torch.from_numpy(legal_np).to(device, non_blocking=True)
     actions = torch.from_numpy(actions_np).to(device, non_blocking=True)
+    belief_hand = torch.from_numpy(belief_hand_np).to(device, non_blocking=True)
+    belief_shanten = torch.from_numpy(belief_shanten_np).to(device, non_blocking=True)
+    belief_wait = torch.from_numpy(belief_wait_np).to(device, non_blocking=True)
+    belief_danger = torch.from_numpy(belief_danger_np).to(device, non_blocking=True)
+    belief_loss = torch.from_numpy(belief_loss_np).to(device, non_blocking=True)
     return {
         "actor_factors": actor_factors,
         "actor_numeric": actor_numeric,
@@ -193,6 +225,11 @@ def collate_samples(
         "pair_counts": pair_counts,
         "legal_mask": legal,
         "actions": actions,
+        "belief_hand": belief_hand,
+        "belief_shanten": belief_shanten,
+        "belief_wait": belief_wait,
+        "belief_danger": belief_danger,
+        "belief_loss": belief_loss,
     }
 
 
@@ -243,6 +280,154 @@ def _assert_targets_legal(actions: torch.Tensor, legal_mask: torch.Tensor) -> No
         raise RuntimeError("BC target action is not present in legal_mask (corrupt sample)")
 
 
+_BELIEF_OUTPUT_KEYS = (
+    "belief_hand_logits",
+    "belief_shanten_logits",
+    "belief_wait_logits",
+    "belief_danger_logits",
+    "belief_loss_pred",
+)
+
+
+def _require_belief_outputs(output: dict[str, torch.Tensor]) -> None:
+    missing = sorted(set(_BELIEF_OUTPUT_KEYS) - set(output))
+    if missing:
+        raise RuntimeError(
+            "model forward did not emit belief outputs (missing: "
+            + ", ".join(missing) + "); V19 SFT requires the belief network"
+        )
+
+
+def _belief_losses(
+    output: dict[str, torch.Tensor],
+    batch: dict[str, torch.Tensor],
+    config: dict[str, Any],
+) -> dict[str, torch.Tensor]:
+    """V19 信念联合损失：L_BC 之外的五头监督 + Wait-Danger 软约束。
+
+    五头逐格取均值（``reduction="mean"``）后乘各自 λ_k；Loss 目标先做
+    ``min(raw, 24000) / 24000`` 归一化，与模型 sigmoid 预测同尺度。
+    """
+    _require_belief_outputs(output)
+    hand_labels = batch["belief_hand"].long()
+    shanten_labels = batch["belief_shanten"].long()
+    wait_labels = batch["belief_wait"].float().view(-1, 3, 35)
+    danger_labels = batch["belief_danger"].float().view(-1, 3, 34)
+    loss_raw = batch["belief_loss"].float().view(-1, 3, 34)
+    loss_target = torch.clamp(loss_raw, max=24000.0) / 24000.0
+
+    hand_loss = F.cross_entropy(
+        output["belief_hand_logits"].float().reshape(-1, 5), hand_labels.reshape(-1),
+    )
+    shanten_loss = F.cross_entropy(
+        output["belief_shanten_logits"].float().reshape(-1, 9), shanten_labels.reshape(-1),
+    )
+    wait_loss = F.binary_cross_entropy_with_logits(
+        output["belief_wait_logits"].float(), wait_labels,
+    )
+    danger_loss = F.binary_cross_entropy_with_logits(
+        output["belief_danger_logits"].float(), danger_labels,
+    )
+    loss_pred = output["belief_loss_pred"].float()
+    loss_huber = F.huber_loss(loss_pred, loss_target, reduction="mean")
+    wait_prob = torch.sigmoid(output["belief_wait_logits"].float())[:, :, :34]
+    danger_prob = torch.sigmoid(output["belief_danger_logits"].float())
+    wait_danger = torch.clamp(danger_prob - wait_prob * danger_labels, min=0.0).mean()
+
+    weights = {
+        "hand": float(config.get("belief_head_weight_hand", 1.0)),
+        "shanten": float(config.get("belief_head_weight_shanten", 1.0)),
+        "wait": float(config.get("belief_head_weight_wait", 1.0)),
+        "danger": float(config.get("belief_head_weight_danger", 1.0)),
+        "loss": float(config.get("belief_head_weight_loss", 1.0)),
+    }
+    weighted = (
+        weights["hand"] * hand_loss
+        + weights["shanten"] * shanten_loss
+        + weights["wait"] * wait_loss
+        + weights["danger"] * danger_loss
+        + weights["loss"] * loss_huber
+    )
+    coef = float(config.get("belief_sft_coef", 1.0))
+    wait_danger_weight = float(config.get("belief_wait_danger_weight", 0.05))
+    return {
+        "belief_hand_loss": hand_loss,
+        "belief_shanten_loss": shanten_loss,
+        "belief_wait_loss": wait_loss,
+        "belief_danger_loss": danger_loss,
+        "belief_loss_loss": loss_huber,
+        "belief_wait_danger": wait_danger,
+        "belief_loss_weighted": weighted,
+        "belief_loss_total": coef * weighted + wait_danger_weight * wait_danger,
+    }
+
+
+def _binary_auc(probabilities: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    """手动 rank-based AUC（含平局平均秩；单类别时返回 0.5）。"""
+    device = probabilities.device
+    probs = probabilities.detach().float().reshape(-1).cpu().numpy()
+    truth = labels.detach().float().reshape(-1).cpu().numpy()
+    total = int(truth.shape[0])
+    positive = int(truth.sum())
+    negative = total - positive
+    if total == 0 or positive == 0 or negative == 0:
+        return probabilities.new_tensor(0.5)
+    order = np.argsort(probs, kind="mergesort")
+    sorted_probs = probs[order]
+    ranks = np.empty(total, dtype=np.float64)
+    start = 0
+    while start < total:
+        end = start + 1
+        while end < total and sorted_probs[end] == sorted_probs[start]:
+            end += 1
+        average_rank = (start + 1 + end) / 2.0
+        ranks[order[start:end]] = average_rank
+        start = end
+    positive_ranks = float(ranks[truth == 1].sum())
+    auc = (positive_ranks - positive * (positive + 1) / 2.0) / (
+        positive * negative
+    )
+    return probabilities.new_tensor(float(auc))
+
+
+def _belief_metrics(
+    output: dict[str, torch.Tensor],
+    batch: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    """SFT 训练/验证通用的五头信念指标（逐批均值）。"""
+    _require_belief_outputs(output)
+    hand_logits = output["belief_hand_logits"].float()
+    hand_labels = batch["belief_hand"].long()
+    hand_acc = (hand_logits.argmax(-1) == hand_labels.view(-1, 3, 34)).float().mean()
+
+    shanten_logits = output["belief_shanten_logits"].float()
+    shanten_labels = batch["belief_shanten"].long()
+    top1 = (shanten_logits.argmax(-1) == shanten_labels).float().mean()
+
+    wait_logits = output["belief_wait_logits"].float()
+    wait_labels = batch["belief_wait"].float().view(-1, 3, 35)
+    wait_probs = torch.sigmoid(wait_logits)
+    top5 = wait_probs.topk(5, dim=-1).indices
+    wait_topk = wait_labels.gather(-1, top5).float().mean()
+
+    danger_logits = output["belief_danger_logits"].float()
+    danger_auc = _binary_auc(
+        torch.sigmoid(danger_logits), batch["belief_danger"],
+    )
+
+    loss_target = (
+        torch.clamp(batch["belief_loss"].float(), max=24000.0) / 24000.0
+    ).view(-1, 3, 34)
+    loss_mae = (output["belief_loss_pred"].float() - loss_target).abs().mean()
+    return {
+        "belief_hand_acc": hand_acc,
+        "belief_shanten_top1": top1,
+        "belief_wait_topk": wait_topk,
+        "belief_danger_auc": danger_auc,
+        "belief_loss_mae": loss_mae,
+    }
+
+
 @torch.no_grad()
 def evaluate(
     model: nn.Module,
@@ -269,6 +454,13 @@ def evaluate(
         and device.type == "cuda" and torch.cuda.is_bf16_supported()
     )
     total = ce_sum = top1 = top3 = 0
+    belief_sums: dict[str, float] = {
+        "belief_hand_acc": 0.0,
+        "belief_shanten_top1": 0.0,
+        "belief_wait_topk": 0.0,
+        "belief_danger_auc": 0.0,
+        "belief_loss_mae": 0.0,
+    }
     for rows in batches:
         batch = collate_samples(
             rows, device, validate_semantics=bool(config.get("validate_semantics", True)),
@@ -282,15 +474,20 @@ def evaluate(
         top = logits.topk(3, dim=-1).indices
         top1 += int((top[:, 0] == targets).sum())
         top3 += int((top == targets[:, None]).any(-1).sum())
+        for name, value in _belief_metrics(output, batch).items():
+            belief_sums[name] += float(value) * len(rows)
         total += len(rows)
     count = max(total, 1)
-    return {
+    result = {
         "validation/samples": float(total),
         "validation/policy_ce": ce_sum / count,
         "validation/top1": top1 / count,
         "validation/top3": top3 / count,
         "validation/loss": ce_sum / count,
     }
+    for name, accumulated in belief_sums.items():
+        result[f"validation/{name}"] = accumulated / count
+    return result
 
 
 def _save_checkpoint(
@@ -362,7 +559,7 @@ def _train_worker_impl(
         model = torch.compile(model)
     optimized = list(actor_parameters(model))
     if not optimized:
-        raise RuntimeError("V18 SFT configuration leaves no trainable parameters")
+        raise RuntimeError("V19 SFT configuration leaves no trainable parameters")
     optimizer = torch.optim.AdamW(
         optimized,
         lr=float(config["learning_rate"]),
@@ -465,8 +662,10 @@ def _train_worker_impl(
                 with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
                     model_output = _forward_actor(model, batch)
                     _assert_targets_legal(batch["actions"], batch["legal_mask"])
-                    loss = F.cross_entropy(model_output["policy_logits"].float(), batch["actions"])
-                    policy_ce = loss.detach()
+                    policy_ce = F.cross_entropy(model_output["policy_logits"].float(), batch["actions"])
+                    belief_parts = _belief_losses(model_output, batch, config)
+                    loss = policy_ce + belief_parts["belief_loss_total"]
+                    policy_ce = policy_ce.detach()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(
                     [parameter for parameter in model.parameters() if parameter.requires_grad],
@@ -488,6 +687,7 @@ def _train_worker_impl(
                         effective_tokens=effective_tokens,
                         padded_tokens=padded_tokens,
                         step_seconds=time.perf_counter() - step_started,
+                        belief_metrics=_belief_metrics(model_output, batch),
                     )
                 if global_step % int(config["log_interval_steps"]) == 0 and rank == 0:
                     print(f"epoch={epoch} step={global_step} loss={float(loss):.4f}", flush=True)
@@ -551,7 +751,7 @@ def _train_worker_impl(
         dist.barrier()
         dist.destroy_process_group()
     elapsed = time.perf_counter() - started
-    print(f"rank={rank} V18 SFT finished steps={global_step} elapsed={elapsed:.1f}s", flush=True)
+    print(f"rank={rank} V19 SFT finished steps={global_step} elapsed={elapsed:.1f}s", flush=True)
 
 
 def train_worker(
