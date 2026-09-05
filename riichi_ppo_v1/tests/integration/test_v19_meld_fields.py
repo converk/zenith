@@ -1,10 +1,10 @@
-"""V18 副露/赤牌/杠后决策模式的字段级集成测试（B9：红牌/kakan/chi 形状/实体去重证据）。"""
+"""V19 副露/赤牌/杠后决策模式的字段级集成测试（红牌/kakan/chi 形状/被鸣移除证据）。"""
 
 from __future__ import annotations
 
 import numpy as np
 
-from riichi_ppo_v1.tests.v18_fixtures import make_observation
+from riichi_ppo_v1.tests.v19_fixtures import make_observation
 
 
 def _rows(obs: object) -> np.ndarray:
@@ -24,10 +24,11 @@ def _meld(meld_type: str, tiles: list[int], *, from_who: int = 1,
 
 
 def test_red_five_fields_across_actor_categories() -> None:
+    # 河 [6m, 5p]，被鸣的是 6m（called_index=0），5p 红牌保留在河行中。
     obs = make_observation(
         hands=[[16, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], [], [], []],
-        discards=[[], [52], [], []],
-        melds=[[], [], [_meld("Pon", [16, 17, 18], called=16, called_index=0)], []],
+        discards=[[], [20, 52], [], []],
+        melds=[[], [], [_meld("Pon", [16, 17, 18], called=20, called_index=0)], []],
         dora_indicators=[88],
     )
     rows = _rows(obs)
@@ -37,9 +38,7 @@ def test_red_five_fields_across_actor_categories() -> None:
     five_m = [row for row in self_hand if int(row[2]) == 5]
     assert five_m and int(five_m[0][4]) == 1  # has_red
     discard = rows[rows[:, 1] == 7][0]
-    assert int(discard[5]) == 1  # RIVER_DISCARD red
-    summary = rows[rows[:, 1] == 6][0]
-    assert int(summary[4]) == 1  # FIRST_SIX slot1 red
+    assert int(discard[4]) == 1  # RIVER_DISCARD red
     meld_rows = rows[rows[:, 1] == 8]
     assert int(meld_rows[0][3]) == 2  # meld_type_code=pon
     assert int(meld_rows[0][5]) == 1  # tile0_red
@@ -106,13 +105,14 @@ def test_three_chi_shapes_encode_consume_identity() -> None:
         assert int(meld_row[12]) == int(called) // 4 + 1  # called_tile_type
 
 
-def test_supplied_marks_exact_claimed_index_only() -> None:
-    # 同牌种两张河牌只一张被鸣：investigate river marks。
+def test_claimed_river_tile_is_removed_from_river() -> None:
+    # 同牌种两张河牌只一张被鸣：被鸣牌不再占河行（V19 纯打牌序列）。
     obs = make_observation(
         discards=[[], [108, 108, 104], [], []],
         melds=[[], [], [_meld("Pon", [108, 108, 109], called=108, called_index=0)], []],
     )
     rows = _rows(obs)
     river = rows[rows[:, 1] == 7]
-    marks = [(int(row[3]), int(row[8])) for row in river]
-    assert marks == [(1, 1), (2, 0), (3, 0)]
+    assert river.shape[0] == 2
+    # 压缩河内序连续 1..2。
+    assert river[:, 2].tolist() == [1, 2]

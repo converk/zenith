@@ -1,4 +1,4 @@
-"""V18 Query metadata、动作 ID 集合、supplier 域与 O0-O9/D0-D9 域测试。"""
+"""V19 Query metadata、动作 ID 集合、supplier 域与 O0-O9/D0-D9 域测试。"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from riichi_ppo_v1.model.encoding_protocol import (
     SUPPLIER_REQUIRED_ACTION_TYPES,
 )
 from riichi_ppo_v1.sft.data import encode_kyoku
-from riichi_ppo_v1.tests.v18_fixtures import first_kyoku_record
+from riichi_ppo_v1.tests.v19_fixtures import first_kyoku_record
 
 
 def test_query_rows_pair_and_order() -> None:

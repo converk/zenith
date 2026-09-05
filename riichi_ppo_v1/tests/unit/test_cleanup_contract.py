@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 
 from riichi_lab_bot import (
     cli,  # noqa: F401
-    client,  # 仅作可导入冒烟:bot 已运行在 V18 当前局面输入上
+    client,  # 仅作可导入冒烟:bot 已运行在 V19 当前局面输入上
 )
 
 from riichi_ppo_v1.sft.train import load_config as load_sft_config
@@ -30,8 +30,8 @@ def test_remaining_tools_are_importable_and_covered() -> None:
 def test_remaining_configs_are_loadable() -> None:
     training = load_config()
     assert training["policy_head_type"] == "current_state_snapshot"
-    assert training["model_size"] == "v18"
-    assert training["checkpoint_dir"] == "checkpoints/train_riichi_current"
+    assert training["model_size"] == "v19"
+    assert training["checkpoint_dir"] == "checkpoints/train_riichi_v19/ppo"
     sft = load_sft_config(ROOT / "configs" / "sft.yaml")
     assert sft["policy_head_type"] == "current_state_snapshot"
     assert sft["model_size"] == "v19"

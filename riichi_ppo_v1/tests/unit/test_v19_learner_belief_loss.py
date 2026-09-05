@@ -6,7 +6,7 @@ import numpy as np
 import torch
 
 from riichi_ppo_v1.model import KyokuTransformerActorCritic
-from riichi_ppo_v1.tests.v18_fixtures import actor_inputs, critic_inputs
+from riichi_ppo_v1.tests.v19_fixtures import actor_inputs, critic_inputs
 from riichi_ppo_v1.training.learner import PPOLearner
 from riichi_ppo_v1.training.rollout_buffer import RolloutBuffer
 from riichi_ppo_v1.training.trajectory import Transition

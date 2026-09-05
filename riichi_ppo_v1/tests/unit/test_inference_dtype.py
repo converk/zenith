@@ -28,7 +28,7 @@ def test_same_weights_double_forward_ratio_is_one() -> None:
     """参数未更新时:同一 batch 二次 forward 的 logits/logprob 应完全一致,
     ratio 非常接近 1(数值误差范围),作为 rollout/update dtype 一致性的地基。"""
     from riichi_ppo_v1.model import KyokuTransformerActorCritic
-    from riichi_ppo_v1.tests.v18_fixtures import actor_inputs
+    from riichi_ppo_v1.tests.v19_fixtures import actor_inputs
 
     torch.manual_seed(0)
     model = KyokuTransformerActorCritic().eval()
@@ -75,7 +75,7 @@ def test_learner_and_rollout_share_dtype_gate() -> None:
         "entropy_loss_mode": "normalized",
     }
     for dtype_name in ("bf16", "fp32"):
-        learner = PPOLearner("v18", "cpu", inference_dtype=dtype_name, **kwargs)
+        learner = PPOLearner("v19", "cpu", inference_dtype=dtype_name, **kwargs)
         _dtype, inference_enabled = inference_autocast_config(dtype_name, device_type="cpu")
         assert learner.use_bf16 == inference_enabled
     # CUDA 下两条路径同样以硬件 BF16 支持为门。

@@ -7,7 +7,7 @@ import torch
 
 from riichi_ppo_v1.model import KyokuTransformerActorCritic
 from riichi_ppo_v1.sft.data import encode_kyoku
-from riichi_ppo_v1.tests.v18_fixtures import first_kyoku_record
+from riichi_ppo_v1.tests.v19_fixtures import first_kyoku_record
 
 
 def test_encoding_bridge_full_model_forward() -> None:

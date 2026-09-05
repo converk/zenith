@@ -19,7 +19,7 @@ from riichi_ppo_v1.sft.contract import dataset_manifest_hash
 from riichi_ppo_v1.sft.data import iter_split_samples
 from riichi_ppo_v1.sft.precompute import precompute
 from riichi_ppo_v1.sft.trainer import collate_samples, main as train_main
-from riichi_ppo_v1.tests.v18_fixtures import first_kyoku_record
+from riichi_ppo_v1.tests.v19_fixtures import first_kyoku_record
 
 
 def _build_source(root: Path) -> Path:

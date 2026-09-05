@@ -50,7 +50,7 @@ class BatchedPipelineTest(unittest.TestCase):
                 if observation.legal_actions():
                     decisions.append(Decision(env_index, seat, observation))
         self.assertGreaterEqual(len(decisions), 2)
-        prepared = bridge.prepare(decisions, walls=list(envs.walls()))
+        prepared = bridge.prepare(decisions)
         self.assertEqual(prepared.actor_factors.shape, (len(decisions), prepared.actor_factors.shape[1], 32))
         self.assertEqual(prepared.actor_numeric.shape, (*prepared.actor_factors.shape[:2], 8))
         self.assertEqual(prepared.critic_factors.shape, (len(decisions), prepared.critic_factors.shape[1], 32))
@@ -89,7 +89,7 @@ class BatchedPipelineTest(unittest.TestCase):
         bridge = BatchedStateBridge(riichi.MjaiKyokuStateMachineManager(1), 1)
         bridge.sync(observations)
         decisions = [Decision(0, int(seat), obs) for seat, obs in observations[0].items() if obs.legal_actions()]
-        prepared = bridge.prepare(decisions, walls=list(envs.walls()))
+        prepared = bridge.prepare(decisions)
         assert_actor_input_semantics(
             prepared.actor_factors,
             prepared.actor_numeric,

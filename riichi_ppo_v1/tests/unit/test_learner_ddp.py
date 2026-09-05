@@ -125,9 +125,9 @@ def test_aggregate_metrics_weights_samples_and_steps() -> None:
 def test_learner_ddp_rejects_non_cuda_or_small_world_size() -> None:
     config = {"minibatch_size": 512, "seed": 1}
     with pytest.raises(ValueError, match="world_size"):
-        LearnerDDP("v18", "cuda", 1, config=config)
+        LearnerDDP("v19", "cuda", 1, config=config)
     with pytest.raises(ValueError, match="CUDA"):
-        LearnerDDP("v18", "cpu", 2, config=config)
+        LearnerDDP("v19", "cpu", 2, config=config)
 
 
 def test_enable_parent_death_signal_sets_pdeathsig() -> None:
@@ -331,7 +331,7 @@ def _run_ddp_probe_update(monkeypatch, config: dict):
         learner_ddp_module, "_learner_worker", _instrumented_update_probe_worker,
     )
     transitions = RolloutBuffer([transition(0.1) for _ in range(16)])
-    manager = LearnerDDP("v18", "cuda", 2, config={"minibatch_size": 4, "seed": 1, **config})
+    manager = LearnerDDP("v19", "cuda", 2, config={"minibatch_size": 4, "seed": 1, **config})
     try:
         metrics, per_rank = manager.update(transitions, shuffle_seed=7)
     finally:
@@ -409,5 +409,5 @@ def test_shard_shm_roundtrip_matches_select_output() -> None:
 
 def test_release_cache_is_safe_without_cuda() -> None:
     """release_cache 在 CPU(无 CUDA 分支)与未加载模型时不抛错。"""
-    learner = PPOLearner("v18", "cpu", **_learner_kwargs())
+    learner = PPOLearner("v19", "cpu", **_learner_kwargs())
     learner.release_cache()

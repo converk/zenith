@@ -81,8 +81,8 @@ def test_packaged_configs_are_current_and_neutral() -> None:
 
     training = load_config()
     assert training["policy_head_type"] == "current_state_snapshot"
-    assert training["model_size"] == "v18"
-    assert training["checkpoint_dir"] == "checkpoints/train_riichi_current"
+    assert training["model_size"] == "v19"
+    assert training["checkpoint_dir"] == "checkpoints/train_riichi_v19/ppo"
     sft = load_sft_config(CONFIG_DIR / "sft.yaml")
     assert sft["policy_head_type"] == "current_state_snapshot"
     assert sft["model_size"] == "v19"

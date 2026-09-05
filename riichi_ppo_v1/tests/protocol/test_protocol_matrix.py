@@ -1,4 +1,4 @@
-"""V18 当前局面协议矩阵：规范类别顺序与关键字段一致性的轻量矩阵测试。"""
+"""V19 当前局面协议矩阵：规范类别顺序与关键字段一致性的轻量矩阵测试。"""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from riichi_ppo_v1.model.encoding_protocol import (
     KIND_BOS,
     KIND_OPPONENT_ANALYSIS,
     KIND_PLAYER,
+    KIND_RIICHI_CARD,
     KIND_RIVER_DISCARD,
-    KIND_RIVER_SUMMARY,
     KIND_SELF_HAND,
     KIND_SELF_STATE_ANALYSIS,
     KIND_SEP_ACTIONS,
@@ -24,7 +24,7 @@ from riichi_ppo_v1.model.encoding_protocol import (
     is_separator_kind,
 )
 from riichi_ppo_v1.sft.data import encode_kyoku
-from riichi_ppo_v1.tests.v18_fixtures import first_kyoku_record
+from riichi_ppo_v1.tests.v19_fixtures import first_kyoku_record
 
 
 def _summary_of_kinds(sample) -> list[tuple[str, int]]:
@@ -44,8 +44,8 @@ def _summary_of_kinds(sample) -> list[tuple[str, int]]:
             name = "SELF_STATE"
         elif kind == KIND_PLAYER:
             name = "PLAYER"
-        elif kind == KIND_RIVER_SUMMARY:
-            name = "RIVER_SUMMARY"
+        elif kind == KIND_RIICHI_CARD:
+            name = "RIICHI_CARD"
         elif kind == KIND_RIVER_DISCARD:
             name = "RIVER_DISCARD"
         elif kind == KIND_TILE_STATE:
@@ -79,7 +79,9 @@ def test_canonical_category_order_matrix() -> None:
     assert names[2] == "SEP_SELF_HAND"
     assert "SELF_STATE" in names
     assert "PLAYER" in names
-    assert sum(count for name, count in matrix if name == "RIVER_SUMMARY") == 6
+    # V19：无 RIVER_SUMMARY；每家恒发射 RIICHI_CARD。
+    assert "RIVER_SUMMARY" not in names
+    assert "RIICHI_CARD" in names
     assert "TILE_STATE" in names
     assert "OPPONENT_ANALYSIS" in names and names[-3] == "OPPONENT_ANALYSIS"
     assert names[-2] == "SEP_ACTIONS"

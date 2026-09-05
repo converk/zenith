@@ -1,6 +1,6 @@
 """V19 架构测试：信念 token 注入、mask 可达性、梯度缩放与参数量。
 
-复用 ``riichi_ppo_v1.tests.v18_fixtures`` 的合法合成输入（夹具本身已是 V19
+复用 ``riichi_ppo_v1.tests.v19_fixtures`` 的合法合成输入（夹具本身已是 V19
 协议；文件名仅历史遗留，后续阶段统一清理）。
 """
 
@@ -20,7 +20,7 @@ from riichi_ppo_v1.model.encoding_protocol import (
     SEGMENT_SHARED,
 )
 from riichi_ppo_v1.model.parameter_count import assert_v19_parameter_contract
-from riichi_ppo_v1.tests.v18_fixtures import actor_inputs, critic_inputs
+from riichi_ppo_v1.tests.v19_fixtures import actor_inputs, critic_inputs
 
 
 def _tiny_config() -> ModelConfig:

@@ -5,10 +5,13 @@ from riichi_ppo_v1.model.bridge import (
     tile_id_to_mjai,
 )
 from riichi_ppo_v1.model.critic_features import (
-    SEGMENT_CRITIC_FUTURE,
     SEGMENT_CRITIC_PRIVATE,
     TableState,
     encode_critic_features,
+)
+from riichi_ppo_v1.model.encoding_protocol import (
+    KIND_CRITIC_HAND,
+    KIND_SEP_CRITIC,
 )
 
 
@@ -50,13 +53,13 @@ def test_tile_conversion_and_physical_tsumogiri() -> None:
     assert actions[1]["tsumogiri"] is False
 
 
-def test_critic_appends_ordered_future_wall_after_three_hands() -> None:
+def test_critic_contains_three_hands_without_future() -> None:
     table = TableState(((0, 1, 2), (16, 17), (52,), (108,)))
-    wall = [134, 41, 119, 67, 90]
-    critic = encode_critic_features(table, observer=0, future_wall_tiles=wall)
-    assert critic.length == 1 + 4 + 5
+    critic = encode_critic_features(table, observer=0)
+    assert critic.length == 1 + 4
     segments = critic.factors[:, 0].tolist()
-    assert segments[:5] == [SEGMENT_CRITIC_PRIVATE] * 5
-    assert segments[5:] == [SEGMENT_CRITIC_FUTURE] * 5
-    positions = critic.factors[5:10, 2].tolist()
-    assert positions == [1, 2, 3, 4, 5]
+    assert segments == [SEGMENT_CRITIC_PRIVATE] * 5
+    kinds = critic.factors[:, 1].tolist()
+    # 三家：SEP_CRITIC + 下家两行(5m 红/普) + 对家一行 + 上家一行。
+    assert kinds[0] == KIND_SEP_CRITIC
+    assert len([value for value in kinds[1:] if value == KIND_CRITIC_HAND]) == 4

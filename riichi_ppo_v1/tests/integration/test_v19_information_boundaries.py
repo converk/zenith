@@ -1,4 +1,4 @@
-"""V18 Actor/Critic 信息边界测试。"""
+"""V19 Actor/Critic 信息边界测试。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import torch
 
 from riichi_ppo_v1.model import KyokuTransformerActorCritic
 from riichi_ppo_v1.model.semantic_validation import assert_critic_token_semantics
-from riichi_ppo_v1.tests.v18_fixtures import actor_inputs, critic_inputs
+from riichi_ppo_v1.tests.v19_fixtures import actor_inputs, critic_inputs
 
 
 def _forward(model, inputs, critic=None):
@@ -53,4 +53,4 @@ def test_critic_rows_exclude_analysis_and_action() -> None:
     critic = critic_inputs(batch=2)
     assert_critic_token_semantics(critic["critic_factors"], critic["critic_lengths"])
     segments = critic["critic_factors"][:, :, 0].unique().tolist()
-    assert set(segments) <= {4, 5}
+    assert set(segments) <= {4}

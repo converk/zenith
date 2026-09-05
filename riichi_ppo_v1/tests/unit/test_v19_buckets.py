@@ -1,4 +1,4 @@
-"""V18 bucket 边界永久化测试（Python 侧；Rust 侧见 current_state_encoding.rs 测试）。"""
+"""V19 bucket 边界永久化测试（Python 侧；Rust 侧见 current_state_encoding.rs 测试）。"""
 
 from __future__ import annotations
 

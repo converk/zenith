@@ -1,4 +1,4 @@
-"""V18 当前局面输入的槽位感知嵌入层。
+"""V19 当前局面输入的槽位感知嵌入层。
 
 密集类别使用：
 - 每个离散槽位一张独立 embedding 表（``dense_slot_dim=32``，code 0 零贡献）；
@@ -164,7 +164,7 @@ class SharedDenseMLP(nn.Module):
 
 
 class StateTokenEmbedding(nn.Module):
-    """V18 状态快照 token 嵌入：segment/kind/separator + 共享槽位融合。"""
+    """V19 状态快照 token 嵌入：segment/kind/separator + 共享槽位融合。"""
 
     def __init__(self, d_model: int, *, dense_slot_dim: int = DENSE_SLOT_DIM,
                  dense_fusion_dim: int = DENSE_FUSION_DIM, eps: float = 1e-6) -> None:

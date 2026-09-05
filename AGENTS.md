@@ -20,17 +20,19 @@
 
 - 本文件是项目工程约定的最高治理文档;与其他文档冲突时,以本文件为准,并回改
   其余文档保持同步。
-- 现行版本契约:encoding protocol 与活跃训练代均为 V18,全仓只保留一个活跃的
-  输入、schema、模型与 checkpoint 契约。V16/V17 及更早代次的 checkpoint、数据集、
-  配置、日志和历史报告仅作冷存储,不得被活跃代码加载或迁移,也不得为其保留协议
-  适配、旧输入转换、双模型分支、legacy adapter、旧字段 fallback 或 state-dict
-  迁移。
-- V18 输入协议为**当前局面状态快照**(Shared 公共前缀 + 三家 Opponent Analysis +
-  每个合法动作一对 Offense/Defense Query;全 token RoPE、公共双向 GQA、结构化 Actor
-  mask;`d_model=256`/16Q/4KV GQA/`dense_slot_dim=32`/`dense_fusion_dim=512`/
-  `context_tokens=256`);MJAI 事件仅用于同步/生命周期/动作执行,不再作为模型输入。
-  PPO/rollout 与 `riichi_lab_bot` 对旧输入契约的引用为 V18 后续待迁移项。
-- V18 Actor 的公开信息边界与 Critic 的私有信息边界属于协议契约:任何扩大 Actor
+- 现行版本契约:encoding protocol 与活跃训练代均为 V19,全仓只保留一个活跃的
+  输入、schema、模型与 checkpoint 契约。V16/V17/V18 及更早代次的 checkpoint、
+  数据集、配置、日志和历史报告仅作冷存储,不得被活跃代码加载或迁移,也不得为其
+  保留协议适配、旧输入转换、双模型分支、legacy adapter、旧字段 fallback 或
+  state-dict 迁移。
+- V19 输入协议为**当前局面状态快照 + 信念注入**(Shared 公共前缀 + 三家
+  Opponent Analysis + 三家 RIICHI_CARD + 模型内部 30 个信念 token + 每个合法动作
+  一对 Offense/Defense Query;全 token RoPE、公共双向 GQA、结构化 Actor mask;
+  `d_model=256`/16Q/4KV GQA/`dense_slot_dim=32`/`dense_fusion_dim=512`/
+  `context_tokens=320`、`layers=5`(shared 3 + actor 2)/`critic_layers=1`);
+  信念网络五头监督与 PPO/SFT 联合训练,标签只进训练不进推理;MJAI 事件仅用于
+  同步/生命周期/动作执行,不再作为模型输入。
+- V19 Actor 的公开信息边界与 Critic 的私有信息边界属于协议契约:任何扩大 Actor
   可见信息、改变 Critic 私有输入或恢复 Q scorer/Q-boosting 的变更,必须先以显式
   规范文档登记并同步协议文档,不得直接修改代码。
 - 禁止为旧 checkpoint 长期保留双版本兼容代码;确需新增兼容层时,必须先行显式
@@ -72,7 +74,7 @@
 # 产物存储与命名约定
 
 - checkpoint 目录固定为 `checkpoints/train_riichi_<版本号>/`,阶段产物放其下子目录
-  (现行为 `train_riichi_v18/sft` 与后续 `train_riichi_v18/ppo`);每个 checkpoint 内部
+  (现行为 `train_riichi_v19/sft` 与后续 `train_riichi_v19/ppo`);每个 checkpoint 内部
   保存配置快照以便追溯。
 - 现有 checkpoint 一律保留,只允许归档移动,禁止删除(除非另行显式批准)。
 - 所有运行日志(json、txt、log 等)写入 `logs/<版本号>/`,禁止在 `logs/` 根目录或
@@ -82,8 +84,8 @@
   `report/`(实验报告与 `PROGRESS.md` 进度记录)、`scripts/`(运行与验证脚本);
   禁止随意命名或散落其他目录。
 - 现行原始数据集为 `datasets/tenhou_sft_2024_2025`;下一份编码数据集固定写入
-  `datasets/tenhou_sft_2024_2025_encoded_60pct_v18`。归档 V16 编码数据与 V17
-  GRP 数据只允许只读统计,不得覆盖或作为活跃训练输入。
+  `datasets/tenhou_sft_2024_2025_encoded_60pct_v19`。归档 V16/V17/V18 编码数据与
+  V17 GRP 数据只允许只读统计,不得覆盖或作为活跃训练输入。
 - 文件名必须自描述,能从名称看出职责与版本;CLI 默认路径与 README/docs 必须与
   实际产物路径一致。
 

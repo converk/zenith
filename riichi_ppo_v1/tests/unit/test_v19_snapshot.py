@@ -1,4 +1,4 @@
-"""V18 当前局面 Rust 编码器的结构与守恒检查。"""
+"""V19 当前局面 Rust 编码器的结构与守恒检查。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from riichienv import MjaiReplay
 
 from riichi_ppo_v1.model.encoding_protocol import (
     KIND_OPPONENT_ANALYSIS,
-    KIND_RIVER_SUMMARY,
+    KIND_RIICHI_CARD,
     KIND_SEP_OPPONENT_ANALYSIS,
     KIND_TILE_STATE,
     SEGMENT_ANALYSIS,
@@ -52,9 +52,9 @@ def test_current_state_rows_structure() -> None:
         tile_rows = chunk[chunk[:, 1] == KIND_TILE_STATE]
         assert tile_rows.shape[0] == 34
         assert tile_rows[:, 2].tolist() == list(range(1, 35))
-        # 每家 river 恰好两个摘要。
-        summary_count = int(np.count_nonzero(chunk[:, 1] == KIND_RIVER_SUMMARY))
-        assert summary_count == 6
+        # V19：无 RIVER_SUMMARY；三家恒发射 RIICHI_CARD。
+        assert not np.any(chunk[:, 1] == 6)
+        assert int(np.count_nonzero(chunk[:, 1] == KIND_RIICHI_CARD)) == 3
         # 三个 Opponent Analysis + 分隔符。
         analysis_rows = chunk[chunk[:, 1] == KIND_OPPONENT_ANALYSIS]
         assert analysis_rows.shape[0] == 3
@@ -62,7 +62,7 @@ def test_current_state_rows_structure() -> None:
         assert int(np.count_nonzero(chunk[:, 1] == KIND_SEP_OPPONENT_ANALYSIS)) == 1
         # 无 tiles_left / 历史 token 字段（仅检查不存在未知 kind）。
         for kind in chunk[:, 1].astype(int):
-            assert kind in set(range(1, 15)) | set(range(101, 110))
+            assert kind in set(range(1, 16)) | set(range(101, 110))
 
 
 def test_no_event_history_tokens() -> None:
@@ -72,8 +72,6 @@ def test_no_event_history_tokens() -> None:
     )
     rows = np.asarray(batch.rows, dtype=np.int32)
     kinds = rows[:, 1].astype(int)
-    # 事件历史 token 在旧协议中是 segment 1 的 10 列 factor 行；新协议每行
-    # 都有唯一 kind，且不存在任何 20-99 的 kind（旧事件 kind 区间）。
     assert not np.any((kinds >= 20) & (kinds < 100))
 
 
@@ -83,7 +81,8 @@ def test_own_river_has_no_discard_tokens() -> None:
         [getattr(obs, "native_observation", obs) for obs in observations]
     )
     rows = np.asarray(batch.rows, dtype=np.int32)
-    # RIVER_DISCARD kind=7 只允许 relative_seat 1..3（本编码器不含自身逐张）。
+    # RIVER_DISCARD kind=7 只出现在三家（编码器不含自身逐张），
+    # V19 压缩河内序从 1 开始连续。
     discard_rows = rows[rows[:, 1] == 7]
     assert np.all(discard_rows[:, 2] >= 1)
-    assert np.all(discard_rows[:, 2] <= 3)
+    assert np.all(discard_rows[:, 2] <= 24)

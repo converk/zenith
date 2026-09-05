@@ -13,16 +13,16 @@ from riichi_ppo_v1.training.train import (
 
 
 class ConfigLoadingTest(unittest.TestCase):
-    def test_packaged_groups_provide_v18_neutral_defaults(self) -> None:
+    def test_packaged_groups_provide_v19_neutral_defaults(self) -> None:
         config = load_config()
-        self.assertEqual(config["model_size"], "v18")
+        self.assertEqual(config["model_size"], "v19")
         self.assertEqual(config["policy_head_type"], "current_state_snapshot")
         self.assertEqual(config["game_mode"], "4p-red-half")
         self.assertEqual(config["envs_per_worker"], 32)
         self.assertEqual(config["update_epochs"], 4)
         self.assertEqual(config["target_kl"], 0.0)
         self.assertEqual(config["games_per_update"], 512)
-        self.assertEqual(config["checkpoint_dir"], "checkpoints/train_riichi_current")
+        self.assertEqual(config["checkpoint_dir"], "checkpoints/train_riichi_v19/ppo")
         self.assertIsNone(config["resume"])
         self.assertIsNone(config["init_model"])
         self.assertNotIn("offense_" + "fusion", config)

@@ -7,7 +7,7 @@ from torch.nn import functional as F
 
 from riichi_ppo_v1.model import KyokuTransformerActorCritic
 from riichi_ppo_v1.sft.actor_bc import actor_parameters, freeze_critic, is_actor_parameter
-from riichi_ppo_v1.tests.v18_fixtures import actor_inputs
+from riichi_ppo_v1.tests.v19_fixtures import actor_inputs
 
 
 def _actor_loss(model: torch.nn.Module, inputs: dict[str, torch.Tensor], targets: torch.Tensor) -> torch.Tensor:
