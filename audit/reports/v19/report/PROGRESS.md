@@ -134,11 +134,23 @@ D25 全路径生成标签，但只有 current policy 决策写入 PPO buffer（�
 测试：`test_v19_ppo_config.py` + `test_rollout_buffer.py` +
 `test_v19_learner_belief_loss.py` 28 passed（含 CUDA reference 编译对照）。
 
-## 集成与剩余验收（主会话进行中）
+## 集成与剩余验收（已完成，主会话）
 
 - 全量测试迁移：删除/重命名全部 v18 前缀测试为 v19（架构/参数量/快照/
   buckets/dense-embedding/integration 六件套），修正 batched_pipeline 的
-  walls 参数与 artifact/cleanup 的 checkpoint_dir 断言。
-- 业务语义脚本 `verify_v19_semantics.py`（初始+20 步局中）已通过。
-- 显存实测通过（B=2048 peak 21.03GB≤35GB）。
-- 待办：全量 pytest 收尾、一体化 SFT 启动脚本 --smoke 自检、正式命令输出。
+  walls 参数与 artifact/cleanup 的 checkpoint_dir 断言；
+  `tests/v18_fixtures.py → tests/v19_fixtures.py`。
+- **全量 pytest（riichi_ppo_v1 + riichi_lab_bot）245 passed, 1 skipped**
+  （skip 为 bot CUDA L20 bf16 仅需 CUDA_DEVICE=2,3 的已知项）。
+- 业务语义脚本 `verify_v19_semantics.py`：初始 + 20 步真实环境局中决策通过
+  （正向：RIICHI_CARD×3、critic 真手、信念标签 13 张/危险⊆待牌/loss⇔danger；
+  反向：无 critic/信念段、无 RIVER_SUMMARY、数值域合法）。
+- 显存实测通过：B=2048 peak allocated 21.03GB（reserved 23.30GB）≤35GB，
+  未触发梯度检查点预案。
+- SFT 一体化脚本 `--smoke` 自检通过：mini 首 shard 重编码（5251 kyokus）→
+  2 步 CPU SFT（loss 7.57→7.54），临时产物由 trap 清理。
+- 记录与说明：critic explained variance 的“不低于 V18 基线”无法从现有
+  V18 日志/checkpoint 指标直接取证（V18 metrics.jsonl 未含该字段）；
+  V19 短程 PPO update 已在 `test_v19_learner_belief_loss` 中实际跑通并获得
+  有限 value/EV 指标；设计已保留风险预案（critic_layers 可回退 2 层，
+  +705,280 参数）供正式训练 A/B 验证。其余验收线全部达标。
