@@ -8,6 +8,7 @@ from ._riichienv import (
     MjSoulReplay,
     Observation,
     CurrentStateBatch,
+    BeliefLabelBatch,
     CompactEncodingFacts,
     EncodingYakuValues,
     BatchedRiichiEnv,
@@ -30,6 +31,7 @@ from ._riichienv import (
     get_yaku_by_id,
     parse_hand,
     parse_tile,
+    prepare_belief_labels_batch,
 )
 from .action import Action, ActionType
 from .game_mode import GameType
@@ -53,12 +55,14 @@ __all__ = [
     "Score",
     "Wind",
     "CurrentStateBatch",
+    "BeliefLabelBatch",
     "CompactEncodingFacts",
     "EncodingYakuValues",
     "analyze_encoding_yaku_batch",
     "assemble_current_state_batch",
     "prepare_encoding_facts",
     "prepare_current_state_batch",
+    "prepare_belief_labels_batch",
     "calculate_score",
     "calculate_shanten",
     "check_riichi_candidates",

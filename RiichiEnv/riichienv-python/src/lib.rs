@@ -74,6 +74,7 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<encoding_facts::EncodingYakuValues>()?;
     m.add_class::<current_state_encoding::CurrentStateBatch>()?;
     m.add_class::<current_state_encoding::AssembledCurrentStateBatch>()?;
+    m.add_class::<current_state_encoding::BeliefLabelBatch>()?;
 
     m.add_function(wrap_pyfunction!(calculate_score_py, m)?)?;
     m.add_function(wrap_pyfunction!(parse_hand_py, m)?)?;
@@ -91,6 +92,10 @@ fn _riichienv(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(
         current_state_encoding::assemble_current_state_batch,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        current_state_encoding::prepare_belief_labels_batch,
         m
     )?)?;
     m.add_function(wrap_pyfunction!(

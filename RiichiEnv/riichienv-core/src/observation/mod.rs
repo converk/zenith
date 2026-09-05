@@ -39,6 +39,14 @@ pub struct Observation {
     /// Persistent furiten caused by declining a legal win after declaring riichi.
     /// Only the observing player's value is exposed; this is private own state.
     pub missed_agari_riichi: bool,
+    /// 各玩家当前临时振听(见逃)标记;由 GameState 以全状态填充,供 V19
+    /// 公开输入(OPPONENT_ANALYSIS.opp_temp_furiten)与信念标签使用。
+    #[serde(default, skip)]
+    pub temp_furiten: [bool; 4],
+    /// 各玩家立直后见逃的永久振听标记;由 GameState 以全状态填充,供信念
+    /// Danger/Loss 标签的振听判定使用(不入公开输入)。
+    #[serde(default, skip)]
+    pub permanent_furiten: [bool; 4],
     /// Number of drawable live-wall tiles remaining.
     pub tiles_left: u8,
 
@@ -135,6 +143,8 @@ impl Observation {
             riichi_declaration_indices,
             missed_agari_doujun,
             missed_agari_riichi,
+            temp_furiten: [false; 4],
+            permanent_furiten: [false; 4],
             tiles_left,
             _legal_actions: legal_actions,
             events,

@@ -412,7 +412,6 @@ if ray is not None:
                 self.profiler,
             )
             self.observations = list(self.envs.reset())
-            self.walls = list(self.envs.walls())
             self.bridge.sync(self.observations)
             self.start_scores = [[int(x) for x in scores] for scores in self.envs.scores()]
             self.match_kyoku_counts = [0] * self.num_envs
@@ -538,7 +537,7 @@ if ray is not None:
             greedy: bool,
         ) -> tuple[Any, dict[str, np.ndarray]]:
             with self.profiler.stage("rollout/model_state_prepare"):
-                batch = self.bridge.prepare(decisions, walls=self.walls)
+                batch = self.bridge.prepare(decisions)
             # RPC 载荷紧凑化:类别因子/动作 id 以 uint8 传输(值域 < 256,与
             # RolloutBuffer 的 fail-closed uint8 存储同依据),object store
             # 流量 int32→uint8 缩 4 倍;推理侧 collate 直接以 int64 装配,
@@ -624,8 +623,6 @@ if ray is not None:
                 return
             with self.profiler.stage("env/reset_completed_native"):
                 self.observations = list(self.envs.reset_indices(done_indices))
-            with self.profiler.stage("env/walls_refresh_after_reset"):
-                self.walls = list(self.envs.walls())
             with self.profiler.stage("rollout/event_sync_after_reset"):
                 self.bridge.sync(self.observations)
             scores_by_env = self.envs.scores()
@@ -717,8 +714,6 @@ if ray is not None:
                     )
             with self.profiler.stage("env/step_batch_native"):
                 self.observations = list(self.envs.step_batch(actions_by_env))
-            with self.profiler.stage("env/walls_refresh_after_step"):
-                self.walls = list(self.envs.walls())
             with self.profiler.stage("rollout/event_sync_after_step"):
                 end_kyoku, _end_game = self.bridge.sync(self.observations)
             scores_by_env = self.envs.scores()

@@ -1,9 +1,9 @@
-"""V18 当前局面快照 GQA Actor-Critic。
+"""V19 当前局面快照 GQA Actor-Critic。
 
-Actor 输入为完整状态快照序列（Shared 公共前缀 + 三个 Opponent Analysis + 按 action ID
-升序的 Offense/Defense Query），所有有效 token 使用连续 RoPE 位置；Shared 公共 backbone 用
-双向 GQA；Actor-only 层用结构化隔离 mask；Critic 在公共表示后拼接三家真实闭手与未来五张牌
-（独立尾部），不接收 Analysis/Action token。
+Actor 输入为完整状态快照序列（Shared 公共前缀 + 三个 Opponent Analysis + 信念 token +
+按 action ID 升序的 Offense/Defense Query），所有有效 token 使用连续 RoPE 位置；Shared
+公共 backbone 用双向 GQA；Actor-only 层用结构化隔离 mask；Critic 在公共表示后拼接三家
+真实闭手（独立尾部，不接收 Analysis/Action/Belief token）。
 """
 
 from __future__ import annotations
@@ -20,14 +20,15 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from .dense_embedding import StateTokenEmbedding
 from .encoding_protocol import (
     CONTEXT_TOKENS,
+    KIND_BELIEF,
     KIND_BOS,
-    KIND_CRITIC_FUTURE,
     KIND_CRITIC_HAND,
+    KIND_RIICHI_CARD,
     KIND_SEP_ACTIONS,
     KIND_SEP_CRITIC,
     SEGMENT_ACTIONS,
     SEGMENT_ANALYSIS,
-    SEGMENT_CRITIC_FUTURE,
+    SEGMENT_BELIEF,
     SEGMENT_CRITIC_PRIVATE,
     SEGMENT_SHARED,
     TOKEN_NUMERIC_WIDTH,
@@ -38,9 +39,9 @@ from .schema import NUM_ACTIONS
 
 @dataclass(frozen=True)
 class ModelConfig:
-    layers: int = 4
+    layers: int = 5
     shared_layers: int = 3
-    critic_layers: int = 2
+    critic_layers: int = 1
     d_model: int = 256
     query_heads: int = 16
     kv_heads: int = 4
@@ -75,13 +76,13 @@ class ModelConfig:
 
     @classmethod
     def preset(cls, size: str) -> ModelConfig:
-        if size != "v18":
-            raise ValueError("model size must be 'v18'")
+        if size != "v19":
+            raise ValueError("model size must be 'v19'")
         return cls()
 
     @classmethod
     def from_mapping(cls, values: dict[str, object]) -> ModelConfig:
-        """从纯 V18 checkpoint/config 映射恢复精确拓扑。"""
+        """从纯 V19 checkpoint/config 映射恢复精确拓扑。"""
         return cls(**dict(values))
 
 
@@ -237,17 +238,19 @@ class Decoder(nn.Module):
 
 
 def _segment_map(kind: Tensor) -> Tensor:
-    """kind → 期望 segment 的整批查表（1..14 与 101..111 之外的 kind 映射为 0）。
+    """kind → 期望 segment 的整批查表（V19：1..15 与 101..111 之外的 kind 映射为 0）。
 
     等价于逐 token 的类别→segment 映射，纯向量化、无 per-row Python 循环。
     """
     is_sep = (kind >= 101) & (kind <= 111)
-    shared = ((kind >= 1) & (kind <= 9)) | ((kind >= 101) & (kind <= 108))
+    shared = ((kind >= 1) & (kind <= 9)) | (kind == KIND_RIICHI_CARD) | (
+        (kind >= 101) & (kind <= 108)
+    )
     analysis = (kind == 10) | (kind == 109)
     actions = (kind == 11) | (kind == 12) | (kind == 110)
     critic_private = (kind == 13) | (kind == 111)
-    critic_future = kind == 14
-    invalid = ~(shared | analysis | actions | critic_private | critic_future) & ~is_sep
+    belief = kind == KIND_BELIEF
+    invalid = ~(shared | analysis | actions | critic_private | belief) & ~is_sep
     return torch.where(
         invalid, torch.zeros_like(kind),
         torch.where(
@@ -258,7 +261,7 @@ def _segment_map(kind: Tensor) -> Tensor:
                     actions, torch.full_like(kind, SEGMENT_ACTIONS),
                     torch.where(
                         critic_private, torch.full_like(kind, SEGMENT_CRITIC_PRIVATE),
-                        torch.full_like(kind, SEGMENT_CRITIC_FUTURE),
+                        torch.full_like(kind, SEGMENT_BELIEF),
                     ),
                 ),
             ),
@@ -289,7 +292,7 @@ def _assert_structure(factors: Tensor, lengths: Tensor, *, critic: bool) -> None
         if bool((factors[:, 0, 1].long() != KIND_SEP_CRITIC).any()):
             raise ValueError("critic rows must start with SEP_CRITIC")
         non_critic = valid & ~(
-            (kind == KIND_SEP_CRITIC) | (kind == KIND_CRITIC_HAND) | (kind == KIND_CRITIC_FUTURE)
+            (kind == KIND_SEP_CRITIC) | (kind == KIND_CRITIC_HAND)
         )
         if bool(non_critic.any()):
             raise ValueError("critic rows contain a non-critic kind")
@@ -308,7 +311,7 @@ class KyokuTransformerActorCritic(nn.Module):
 
     def __init__(self, config: ModelConfig | None = None) -> None:
         super().__init__()
-        self.config = config or ModelConfig.preset("v18")
+        self.config = config or ModelConfig.preset("v19")
         self.token_embedding = StateTokenEmbedding(
             self.config.d_model,
             dense_slot_dim=self.config.dense_slot_dim,
@@ -389,7 +392,7 @@ class KyokuTransformerActorCritic(nn.Module):
         kind_row_plan: dict[int, Any] | None = None,
         critic_kind_row_plan: dict[int, Any] | None = None,
     ) -> dict[str, Tensor]:
-        """V18 前向。
+        """V19 前向。
 
         ``validate_structure=False`` 时跳过全部 GPU 侧结构校验(训练期由 Rust
         编码器 fail-closed 生成 + SFT 契约校验 + 单测覆盖,重复校验每次
@@ -405,7 +408,7 @@ class KyokuTransformerActorCritic(nn.Module):
         argsort/tolist 同步;None 时保持旧路径。
         """
         if self.config.policy_head_type != "current_state_snapshot":
-            raise ValueError("V18 forward requires current_state_snapshot")
+            raise ValueError("V19 forward requires current_state_snapshot")
         batch, actor_capacity, _width = actor_factors.shape
         if actor_numeric.shape != (batch, actor_capacity, TOKEN_NUMERIC_WIDTH):
             raise ValueError("actor_numeric must match [batch, tokens, 8]")
@@ -473,7 +476,7 @@ class KyokuTransformerActorCritic(nn.Module):
                 raise ValueError("query_pair_counts out of range")
             # canonical 契约:action query 行为每行序列尾部连续 2×pair_count 行
             # (O 先 D 后相邻成对;来源:Rust 编码器 fail-closed 构造 +
-            # test_v18_architecture 的契约断言)。校验路径比旧实现更严:旧实现
+            # test_v19_architecture 的契约断言)。校验路径比旧实现更严:旧实现
             # 只核对数量,这里核对整个 tail 窗口位置一一对应。
             tail_window = (
                 torch.arange(actor_capacity, device=device)[None]

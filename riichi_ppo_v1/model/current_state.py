@@ -1,4 +1,4 @@
-"""V18 当前局面批编码的 Python 装配层。
+"""V19 当前局面批编码的 Python 装配层。
 
 Rust/PyO3 编码器（``riichienv.prepare_current_state_batch``）直接以原生
 Observation 当前字段构造 Shared 公共前缀 + 三个 Opponent Analysis 的扁平行；

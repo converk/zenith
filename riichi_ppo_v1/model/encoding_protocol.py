@@ -1,12 +1,14 @@
-"""现行 V18 当前局面输入协议的 Python 单一来源。
+"""现行 V19 当前局面输入协议的 Python 单一来源。
 
 本模块定义：
 - 全局协议常数（行宽、数值宽、context 上限、segment/kind/separator 编号）；
 - 每个 token 类别的字段 schema（离散字段基数 + 数值字段归一化），顺序即行偏移；
-- Action Query 行与 O0–O9 / D0–D9 槽位定义（沿用旧协议语义）。
+- Action Query 行与 O0–O9 / D0–D9 槽位定义（沿用既有协议语义）。
 
 Rust 编码器 ``riichienv-python/src/current_state_encoding.rs`` 镜像同一常量；
 两处必须同步修改，并由 ``semantic_validation.py`` 与集成测试做交叉验证。
+信念 token（KIND_BELIEF=15 / SEGMENT_BELIEF=5）是模型内部产物，不经 Rust
+编码器生成；此处仅登记其 identity 供结构校验与契约哈希引用。
 """
 
 from __future__ import annotations
@@ -15,15 +17,15 @@ from dataclasses import dataclass
 
 import riichi
 
-# 唯一协议版本与派生的格式标识（版本号保持 V18，契约 hash 随 schema 更新而变化）。
+# 唯一协议版本与派生的格式标识（版本号保持 V19，契约 hash 随 schema 更新而变化）。
 ENCODING_PROTOCOL_VERSION = int(riichi.ENCODING_PROTOCOL_VERSION)
-if ENCODING_PROTOCOL_VERSION != 18:
-    raise RuntimeError("installed riichi extension does not provide encoding protocol V18")
+if ENCODING_PROTOCOL_VERSION != 19:
+    raise RuntimeError("installed riichi extension does not provide encoding protocol V19")
 ENCODED_FORMAT = f"riichi-sft-encoded-v{ENCODING_PROTOCOL_VERSION}"
-STATE_PROTOCOL_VERSION = "riichi-current-state-v18-1"
+STATE_PROTOCOL_VERSION = "riichi-current-state-v19-1"
 
-# 溢出桶常量(Rust 单源:riichienv-state-machine/src/lib.rs;两者与
-# CATEGORY_SCHEMAS 的「+1 基数」一致性由 test_v18_encoding_protocol.py 交叉验证)。
+# 溢出桶常量(Rust 单源:riichienv-state-machine/src/lib.rs;与
+# CATEGORY_SCHEMAS 的「+1 基数」一致性由 test_v19_encoding_protocol.py 交叉验证)。
 OPEN_MELD_YAKUHAI_HAN_OVERFLOW_BUCKET = int(riichi.OPEN_MELD_YAKUHAI_HAN_OVERFLOW_BUCKET)
 VISIBLE_MELD_DORA_AKA_OVERFLOW_BUCKET = int(riichi.VISIBLE_MELD_DORA_AKA_OVERFLOW_BUCKET)
 
@@ -33,15 +35,16 @@ NUM_ACTIONS = 241
 # 行布局：row[:, 0]=segment, row[:, 1]=token_kind, row[:, 2:]=类别字段。
 TOKEN_ROW_WIDTH = 32
 TOKEN_NUMERIC_WIDTH = 8
-# 生产 context 上限。
-CONTEXT_TOKENS = 256
+# 生产 context 上限（V19 定版 D13:256→320,给信念 token 与查询增长留余量）。
+CONTEXT_TOKENS = 320
 
 # ---- segment 编号 ----
 SEGMENT_SHARED = 1
 SEGMENT_ANALYSIS = 2
 SEGMENT_ACTIONS = 3
 SEGMENT_CRITIC_PRIVATE = 4
-SEGMENT_CRITIC_FUTURE = 5
+# 信念 token 复用 V18 删除 critic-future 后的 5 号位(segment 表仍 6 行,不扩容)。
+SEGMENT_BELIEF = 5
 
 # ---- token kind 编号 ----
 KIND_BOS = 1
@@ -49,7 +52,6 @@ KIND_TABLE = 2
 KIND_SELF_HAND = 3
 KIND_SELF_STATE_ANALYSIS = 4
 KIND_PLAYER = 5
-KIND_RIVER_SUMMARY = 6
 KIND_RIVER_DISCARD = 7
 KIND_MELD = 8
 KIND_TILE_STATE = 9
@@ -57,7 +59,8 @@ KIND_OPPONENT_ANALYSIS = 10
 KIND_ACTION_OFFENSE_QUERY = 11
 KIND_ACTION_DEFENSE_QUERY = 12
 KIND_CRITIC_HAND = 13
-KIND_CRITIC_FUTURE = 14
+KIND_RIICHI_CARD = 14
+KIND_BELIEF = 15
 
 # ---- 分隔符（kind = 100 + separator_id；单点定义） ----
 SEPARATOR_IDS: dict[str, int] = {
@@ -131,13 +134,13 @@ class CategorySchema:
     cls: str  # "SIMPLE" / "DENSE" / "SEPARATOR"
     discrete: tuple[DiscreteField, ...]
     numeric: tuple[NumericField, ...] = ()
-    slot_count: int = 0  # 仅 RIVER_SUMMARY 为 6
+    slot_count: int = 0
 
 
 _D = DiscreteField
 _N = NumericField
 
-# ---- 类别 schema 表（顺序必须与 contracts/v18-current-state-contract.md §3 一致） ----
+# ---- 类别 schema 表（顺序必须与 contracts 中的 v19 协议文档一致） ----
 CATEGORY_SCHEMAS: dict[int, CategorySchema] = {
     KIND_BOS: CategorySchema(KIND_BOS, "BOS", SEGMENT_SHARED, "SIMPLE", ()),
     KIND_TABLE: CategorySchema(
@@ -215,38 +218,26 @@ CATEGORY_SCHEMAS: dict[int, CategorySchema] = {
             _D("meld_count", 5),
             _D("kan_count", 5),
             _D("menzen", 2),
-            _D("river_length", 25),
-            _D("riichi_status", 3),
-            _D("riichi_turn", 27),
-            _D("riichi_decl_tile_type", 35),
-            _D("riichi_decl_red", 2),
-            _D("post_riichi_discard_count", 17),
-            _D("open_meld_yakuhai_han", 7),
-            _D("visible_meld_dora_aka_han", 9),
         ),
         (_N("points"), _N("diff")),
-    ),
-    KIND_RIVER_SUMMARY: CategorySchema(
-        KIND_RIVER_SUMMARY, "RIVER_SUMMARY", SEGMENT_SHARED, "DENSE",
-        (
-            _D("valid_length", 7),
-            *(
-                field
-                for i in range(1, 7)
-                for field in (
-                    _D(f"slot_{i}_tile_type", 35), _D(f"slot_{i}_red", 2),
-                    _D(f"slot_{i}_cut", 3), _D(f"slot_{i}_riichi_stage", 4),
-                )
-            ),
-        ),
-        slot_count=6,
     ),
     KIND_RIVER_DISCARD: CategorySchema(
         KIND_RIVER_DISCARD, "RIVER_DISCARD", SEGMENT_SHARED, "SIMPLE",
         (
-            _D("relative_seat", 4), _D("river_index", 25), _D("tile_type", 35),
-            _D("red", 2), _D("cut", 2), _D("riichi_stage", 3), _D("supplied", 2),
-            _D("age_bucket", 4),
+            _D("river_index", 25), _D("tile_type", 35),
+            _D("red", 2), _D("cut", 2), _D("riichi_stage", 3), _D("age_bucket", 4),
+        ),
+    ),
+    KIND_RIICHI_CARD: CategorySchema(
+        KIND_RIICHI_CARD, "RIICHI_CARD", SEGMENT_SHARED, "DENSE",
+        (
+            _D("riichi_status", 3),
+            _D("riichi_turn", 27),
+            _D("riichi_decl_tile_type", 35),
+            _D("riichi_decl_red", 2),
+            _D("post_riichi_tedashi", 17),
+            _D("post_riichi_tsumogiri", 17),
+            _D("decl_claimed", 2),
         ),
     ),
     KIND_MELD: CategorySchema(
@@ -260,46 +251,45 @@ CATEGORY_SCHEMAS: dict[int, CategorySchema] = {
             _D("called_tile_type", 35), _D("called_tile_red", 2),
             _D("supplier_relative", 4), _D("open", 2), _D("meld_index", 5),
             _D("yakuhai_han", 7), _D("visible_dora_aka_han", 9),
+            _D("meld_turn", 27), _D("called_tsumogiri", 2),
         ),
     ),
     KIND_TILE_STATE: CategorySchema(
         KIND_TILE_STATE, "TILE_STATE", SEGMENT_SHARED, "SIMPLE",
         (
             _D("tile_type", 35), _D("self_concealed_count", 5), _D("self_discard_count", 5),
-            _D("self_ever_discarded", 2), _D("public_count", 5), _D("known_count", 5),
-            _D("unknown_count", 5), _D("all_seen", 2), _D("dora_multiplicity", 6),
-            _D("is_dora", 2), _D("round_wind_match", 2), _D("seat_wind_match", 2),
-            _D("red_five_kind", 2), _D("is_advance", 2), _D("is_win", 2),
-            _D("genbutsu_shimo", 2), _D("genbutsu_toimen", 2), _D("genbutsu_kamicha", 2),
-            _D("suji_shimo", 4), _D("suji_toimen", 4), _D("suji_kamicha", 4),
-            _D("wall_class", 3), _D("dora_neighbor", 2),
+            _D("self_ever_discarded", 2), _D("unknown_count", 5), _D("all_seen", 2),
+            _D("dora_multiplicity", 6), _D("is_dora", 2), _D("round_wind_match", 2),
+            _D("seat_wind_match", 2), _D("red_five_kind", 2), _D("is_advance", 2),
+            _D("is_win", 2), _D("genbutsu_shimo", 2), _D("genbutsu_toimen", 2),
+            _D("genbutsu_kamicha", 2), _D("suji_shimo", 4), _D("suji_toimen", 4),
+            _D("suji_kamicha", 4), _D("wall_class", 3), _D("dora_neighbor", 2),
         ),
     ),
     KIND_OPPONENT_ANALYSIS: CategorySchema(
         KIND_OPPONENT_ANALYSIS, "OPPONENT_ANALYSIS", SEGMENT_ANALYSIS, "DENSE",
         (
-            _D("relative_seat", 4), _D("riichi_status", 3), _D("riichi_turn", 27),
-            _D("riichi_decl_tile_type", 35), _D("riichi_decl_red", 2), _D("menzen", 2),
-            _D("concealed_count", 15), _D("meld_count", 5), _D("kan_count", 5),
-            _D("open_meld_yakuhai_han", 7), _D("visible_meld_dora_aka_han", 9),
-            _D("post_riichi_tedashi", 17), _D("post_riichi_tsumogiri", 17),
-            _D("recent6_tedashi", 7), _D("recent6_tsumogiri", 7),
-            _D("own_genbutsu_kind_count", 35), _D("own_genbutsu_entity_count", 101),
-            _D("river_length", 25),
+            _D("relative_seat", 4),
+            _D("recent6_tedashi", 7),
+            _D("recent6_tsumogiri", 7),
+            _D("full_game_tedashi", 17),
+            _D("own_genbutsu_kind_count", 35),
+            _D("own_genbutsu_entity_count", 101),
+            _D("opp_temp_furiten", 2),
         ),
     ),
     KIND_CRITIC_HAND: CategorySchema(
         KIND_CRITIC_HAND, "CRITIC_HAND", SEGMENT_CRITIC_PRIVATE, "SIMPLE",
         (_D("relative_seat", 4), _D("tile_type", 35), _D("red", 2), _D("count", 5)),
     ),
-    KIND_CRITIC_FUTURE: CategorySchema(
-        KIND_CRITIC_FUTURE, "CRITIC_FUTURE", SEGMENT_CRITIC_FUTURE, "SIMPLE",
-        (_D("position", 6), _D("tile_type", 35), _D("red", 2)),
+    # 信念 token:模型内部产物,不进入 Rust 编码器行;登记 identity 供契约哈希。
+    KIND_BELIEF: CategorySchema(
+        KIND_BELIEF, "BELIEF", SEGMENT_BELIEF, "SIMPLE", (),
     ),
 }
 
 
-# ---- Action Query 行（沿用旧协议，行宽 15；槽位定义先于 ACTION schema 构造） ----
+# ---- Action Query 行（沿用既有协议，行宽 15；槽位定义先于 ACTION schema 构造） ----
 QUERY_OFFENSE = 1
 QUERY_DEFENSE = 2
 QUERY_SLOT_COUNT = 10

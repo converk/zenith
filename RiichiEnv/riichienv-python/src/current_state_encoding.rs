@@ -1,4 +1,4 @@
-//! V18 当前局面快照的 Rust/PyO3 批编码器。
+//! V19 当前局面快照的 Rust/PyO3 批编码器。
 //!
 //! 直接以原生 `Observation` 当前字段构造共享公共前缀 + 三个 Opponent Analysis 的
 //! 扁平行；Action Query 行由 Python 侧沿用 `riichi.encode_query_batch` 生成并拼接。
@@ -13,8 +13,9 @@ use pyo3::{exceptions::PyValueError, prelude::*};
 
 use riichi::analysis;
 use riichi::shanten;
+use riichienv_core::hand_evaluator::HandEvaluator;
 use riichienv_core::observation::Observation;
-use riichienv_core::types::{Meld, MeldType};
+use riichienv_core::types::{Conditions, Meld, MeldType, Wind};
 
 use crate::encoding_facts::{
     count_dora_aka, decompose_melds, dora_kind, kernel_shape, open_meld_yakuhai_han,
@@ -36,11 +37,11 @@ const KIND_TABLE: u8 = 2;
 const KIND_SELF_HAND: u8 = 3;
 const KIND_SELF_STATE: u8 = 4;
 const KIND_PLAYER: u8 = 5;
-const KIND_RIVER_SUMMARY: u8 = 6;
 const KIND_RIVER_DISCARD: u8 = 7;
 const KIND_MELD: u8 = 8;
 const KIND_TILE_STATE: u8 = 9;
 const KIND_OPPONENT_ANALYSIS: u8 = 10;
+const KIND_RIICHI_CARD: u8 = 14;
 const KIND_SEP_SELF_HAND: u8 = 101;
 const KIND_SEP_PLAYERS: u8 = 102;
 const KIND_SEP_RIVERS: u8 = 103;
@@ -420,33 +421,6 @@ fn riichi_stage(declared: bool, declaration: Option<u8>, index: usize) -> i32 {
     }
 }
 
-fn summary_fields(observation: &Observation, player: usize, recent: bool) -> Vec<i32> {
-    let discards = &observation.discards[player];
-    let flags = &observation.tsumogiri_flags[player];
-    let declared = observation.riichi_declared[player];
-    let declaration = observation.riichi_declaration_indices[player];
-    let count = discards.len();
-    let selected: Vec<(usize, u32)> = if recent {
-        let start = count.saturating_sub(6);
-        (start..count).map(|index| (index, discards[index])).collect()
-    } else {
-        (0..count.min(6)).map(|index| (index, discards[index])).collect()
-    };
-    let mut fields = vec![selected.len() as i32];
-    for slot in 0..6 {
-        if let Some((index, tile)) = selected.get(slot) {
-            let flag = flags.get(*index).copied().unwrap_or(false);
-            fields.push(tile_type_code(*tile));
-            fields.push(red_flag(*tile));
-            fields.push(i32::from(flag));
-            fields.push(riichi_stage(declared, declaration, *index));
-        } else {
-            fields.extend([0, 0, 0, 0]);
-        }
-    }
-    fields
-}
-
 fn suji_category(tile: usize, river: u64) -> i32 {
     if tile >= 27 {
         return 3;
@@ -636,36 +610,10 @@ fn encode_one(observation: &Observation) -> Result<(Vec<i32>, Vec<f32>), String>
     let rank_values = ranks(&observation.scores);
     for (relative, player) in order.iter().enumerate() {
         let player = *player;
-        let flags = &observation.tsumogiri_flags[player];
-        let river_len = observation.discards[player].len();
-        let declaration = observation.riichi_declaration_indices[player];
-        let status = self_riichi_status(observation, player);
-        let riichi_turn = declaration.map(|value| value + 1).unwrap_or(0);
-        let decl_tile = declaration
-            .and_then(|index| observation.discards[player].get(index as usize).copied());
-        let post_riichi = declaration.map(|index| {
-            let start = usize::from(index) + 1;
-            let mut cut = 0usize;
-            let mut tsumo = 0usize;
-            for flag in flags.iter().skip(start) {
-                if *flag {
-                    tsumo += 1;
-                } else {
-                    cut += 1;
-                }
-            }
-            (cut, tsumo)
-        });
         let kan_count = observation.melds[player]
             .iter()
             .filter(|meld| matches!(meld.meld_type, MeldType::Daiminkan | MeldType::Ankan | MeldType::Kakan))
             .count() as i32;
-        let player_yakuhai = open_meld_yakuhai_han(
-            &observation.melds[player],
-            seat_wind(player, observation.oya),
-            observation.round_wind,
-        )?;
-        let player_dora_aka = visible_meld_dora_aka_han(&observation.melds[player], &dora_multiplicity)?;
         push_row(
             &mut rows,
             SEGMENT_SHARED,
@@ -680,14 +628,6 @@ fn encode_one(observation: &Observation) -> Result<(Vec<i32>, Vec<f32>), String>
                 observation.melds[player].len() as i32,
                 kan_count,
                 i32::from(observation.melds[player].iter().all(|meld| !meld.opened)),
-                river_len.min(24) as i32,
-                status,
-                bucket_turn(riichi_turn),
-                decl_tile.map(tile_type_code).unwrap_or(0),
-                decl_tile.map(red_flag).unwrap_or(0),
-                post_riichi.map(|(cut, tsumo)| bucket_post_riichi(cut + tsumo)).unwrap_or(0),
-                bucket_yakuhai(player_yakuhai),
-                bucket_dora_aka(player_dora_aka),
             ],
         );
         push_numeric(
@@ -700,7 +640,7 @@ fn encode_one(observation: &Observation) -> Result<(Vec<i32>, Vec<f32>), String>
         );
     }
 
-    // 8) SEP_RIVERS + 三家牌河
+    // 8) SEP_RIVERS + 三家牌河(被鸣牌从河中移除)+ 每家恒发射 RIICHI_CARD
     push_row(&mut rows, SEGMENT_SHARED, KIND_SEP_RIVERS, &[]);
     push_numeric(&mut numerics, &[]);
     for river_index in 0..3 {
@@ -712,19 +652,17 @@ fn encode_one(observation: &Observation) -> Result<(Vec<i32>, Vec<f32>), String>
         };
         push_row(&mut rows, SEGMENT_SHARED, river_sep, &[]);
         push_numeric(&mut numerics, &[]);
-        push_row(
-            &mut rows,
-            SEGMENT_SHARED,
-            KIND_RIVER_SUMMARY,
-            &summary_fields(observation, player, false),
-        );
-        push_numeric(&mut numerics, &[]);
         let discards = &observation.discards[player];
         let flags = &observation.tsumogiri_flags[player];
         let declared = observation.riichi_declared[player];
         let declaration = observation.riichi_declaration_indices[player];
         let count = discards.len();
+        let mut compressed_index = 0usize;
         for (index, tile) in discards.iter().enumerate() {
+            if is_supplied(observation, player, index) {
+                continue;
+            }
+            compressed_index += 1;
             let age = if count <= 1 {
                 0
             } else {
@@ -744,23 +682,56 @@ fn encode_one(observation: &Observation) -> Result<(Vec<i32>, Vec<f32>), String>
                 SEGMENT_SHARED,
                 KIND_RIVER_DISCARD,
                 &[
-                    (river_index + 1) as i32,
-                    (index + 1) as i32,
+                    compressed_index as i32,
                     tile_type_code(*tile),
                     red_flag(*tile),
                     i32::from(flags.get(index).copied().unwrap_or(false)),
                     riichi_stage(declared, declaration, index),
-                    i32::from(is_supplied(observation, player, index)),
                     age,
                 ],
             );
             push_numeric(&mut numerics, &[]);
         }
+        // 立直卡:三家恒发射,未立直时字段全零(RoPE 布局稳定)。
+        let decl_tile = declaration
+            .and_then(|index| discards.get(index as usize).copied());
+        let (post_cut, post_tsumo) = declaration
+            .map(|index| {
+                let start = usize::from(index) + 1;
+                let mut cut = 0usize;
+                let mut tsumo = 0usize;
+                for flag in flags.iter().skip(start) {
+                    if *flag {
+                        tsumo += 1;
+                    } else {
+                        cut += 1;
+                    }
+                }
+                (cut, tsumo)
+            })
+            .unwrap_or((0, 0));
+        let decl_claimed = declaration
+            .map(|decl| {
+                observation.melds.iter().flatten().any(|meld| {
+                    meld.from_who >= 0
+                        && meld.from_who as usize == player
+                        && meld.called_tile_index == Some(decl)
+                })
+            })
+            .unwrap_or(false);
         push_row(
             &mut rows,
             SEGMENT_SHARED,
-            KIND_RIVER_SUMMARY,
-            &summary_fields(observation, player, true),
+            KIND_RIICHI_CARD,
+            &[
+                self_riichi_status(observation, player),
+                bucket_turn(declaration.map(|value| value + 1).unwrap_or(0)),
+                decl_tile.map(tile_type_code).unwrap_or(0),
+                decl_tile.map(red_flag).unwrap_or(0),
+                bucket_post_riichi(post_cut),
+                bucket_post_riichi(post_tsumo),
+                i32::from(decl_claimed),
+            ],
         );
         push_numeric(&mut numerics, &[]);
     }
@@ -806,6 +777,26 @@ fn encode_one(observation: &Observation) -> Result<(Vec<i32>, Vec<f32>), String>
                 visible_meld_dora_aka_han(std::slice::from_ref(meld), &dora_multiplicity)?;
             fields.push(bucket_yakuhai(meld_yakuhai));
             fields.push(bucket_dora_aka(meld_dora_aka));
+            // 副露巡目:被鸣牌在供牌者河中的原始下标+1(0=无/暗杠等无被鸣牌)。
+            let meld_turn = meld
+                .called_tile_index
+                .map(|value| value + 1)
+                .unwrap_or(0);
+            // 被鸣牌是否为供牌者摸切(锚行删除后的信息守恒)。
+            let called_tsumogiri = meld
+                .called_tile_index
+                .and_then(|index| {
+                    (meld.from_who >= 0)
+                        .then(|| {
+                            observation.tsumogiri_flags
+                                .get(meld.from_who as usize)
+                                .and_then(|row| row.get(index as usize).copied())
+                                .unwrap_or(false)
+                        })
+                })
+                .unwrap_or(false);
+            fields.push(bucket_turn(meld_turn));
+            fields.push(i32::from(called_tsumogiri));
             push_row(&mut rows, SEGMENT_SHARED, KIND_MELD, &fields);
             push_numeric(&mut numerics, &[]);
         }
@@ -843,8 +834,6 @@ fn encode_one(observation: &Observation) -> Result<(Vec<i32>, Vec<f32>), String>
                 own_concealed,
                 i32::from(own_river_counts[kind]),
                 i32::from(own_river_counts[kind] > 0),
-                public_count,
-                known,
                 unknown,
                 i32::from(unknown == 0),
                 i32::from(dora_multiplicity[kind]),
@@ -873,32 +862,22 @@ fn encode_one(observation: &Observation) -> Result<(Vec<i32>, Vec<f32>), String>
     for river_index in 0..3 {
         let player = order[river_index + 1];
         let relative = (river_index + 1) as i32;
-        let declaration = observation.riichi_declaration_indices[player];
         let flags = &observation.tsumogiri_flags[player];
         let count = observation.discards[player].len();
-        let (post_cut, post_tsumo) = declaration
-            .map(|index| {
-                let start = usize::from(index) + 1;
-                let mut cut = 0usize;
-                let mut tsumo = 0usize;
-                for flag in flags.iter().skip(start) {
-                    if *flag {
-                        tsumo += 1;
-                    } else {
-                        cut += 1;
-                    }
-                }
-                (cut, tsumo)
-            })
-            .unwrap_or((0, 0));
         let recent_start = count.saturating_sub(6);
         let mut recent_cut = 0usize;
         let mut recent_tsumo = 0usize;
-        for flag in flags.iter().skip(recent_start) {
-            if *flag {
-                recent_tsumo += 1;
-            } else {
-                recent_cut += 1;
+        let mut full_cut = 0usize;
+        for (index, flag) in flags.iter().enumerate() {
+            if index >= recent_start {
+                if *flag {
+                    recent_tsumo += 1;
+                } else {
+                    recent_cut += 1;
+                }
+            }
+            if !*flag {
+                full_cut += 1;
             }
         }
         let river_mask_value = river_mask(observation, player);
@@ -910,40 +889,18 @@ fn encode_one(observation: &Observation) -> Result<(Vec<i32>, Vec<f32>), String>
                 own_genbutsu_entities += usize::from(count);
             }
         }
-        let decl_tile = declaration
-            .and_then(|index| observation.discards[player].get(index as usize).copied());
-        let opp_yakuhai = open_meld_yakuhai_han(
-            &observation.melds[player],
-            seat_wind(player, observation.oya),
-            observation.round_wind,
-        )?;
-        let opp_dora_aka = visible_meld_dora_aka_han(&observation.melds[player], &dora_multiplicity)?;
         push_row(
             &mut rows,
             SEGMENT_ANALYSIS,
             KIND_OPPONENT_ANALYSIS,
             &[
                 relative,
-                self_riichi_status(observation, player),
-                bucket_turn(declaration.map(|value| value + 1).unwrap_or(0)),
-                decl_tile.map(tile_type_code).unwrap_or(0),
-                decl_tile.map(red_flag).unwrap_or(0),
-                i32::from(observation.melds[player].iter().all(|meld| !meld.opened)),
-                concealed_count(observation, player, pending),
-                observation.melds[player].len() as i32,
-                observation.melds[player]
-                    .iter()
-                    .filter(|meld| matches!(meld.meld_type, MeldType::Daiminkan | MeldType::Ankan | MeldType::Kakan))
-                    .count() as i32,
-                bucket_yakuhai(opp_yakuhai),
-                bucket_dora_aka(opp_dora_aka),
-                bucket_post_riichi(post_cut),
-                bucket_post_riichi(post_tsumo),
                 bucket_count6(recent_cut),
                 bucket_count6(recent_tsumo),
+                bucket_post_riichi(full_cut),
                 bucket_kind_count(own_genbutsu_kinds),
                 bucket_entity_count(own_genbutsu_entities),
-                count.min(24) as i32,
+                i32::from(observation.temp_furiten.get(player).copied().unwrap_or(false)),
             ],
         );
         push_numeric(&mut numerics, &[]);
@@ -1264,6 +1221,159 @@ pub fn assemble_current_state_batch<'py>(
         action_ids: action_ids.unbind(),
         query_pair_counts: query_pair_counts.unbind(),
         legal_mask: legal_mask.unbind(),
+    })
+}
+
+// ---- V19 信念五头监督标签(D26:Rust 侧上帝视角批量导出) ----
+
+/// 五头标签的批量 Numpy 面:全部为决策时刻反事实,不含未来信息。
+#[pyclass(name = "BeliefLabelBatch", frozen)]
+pub struct BeliefLabelBatch {
+    #[pyo3(get)]
+    hand_counts: Py<PyArray2<u8>>,
+    #[pyo3(get)]
+    shanten: Py<PyArray2<u8>>,
+    #[pyo3(get)]
+    wait: Py<PyArray2<u8>>,
+    #[pyo3(get)]
+    danger: Py<PyArray2<u8>>,
+    #[pyo3(get)]
+    loss: Py<PyArray2<f32>>,
+}
+
+fn target_conditions(observation: &Observation, target: usize) -> Conditions {
+    let p_wind = ((target as u32 + 4 - u32::from(observation.oya)) % 4) as u8;
+    Conditions {
+        tsumo: false,
+        riichi: observation.riichi_declared[target],
+        double_riichi: observation.riichi_declared[target] && observation.riichi_declaration_indices[target] == Some(0),
+        player_wind: Wind::from(p_wind),
+        round_wind: Wind::from(observation.round_wind),
+        honba: u32::from(observation.honba),
+        riichi_sticks: observation.riichi_sticks,
+        ..Default::default()
+    }
+}
+
+fn compute_one_labels(observation: &Observation) -> Result<([u8; 102], [u8; 3], [u8; 105], [u8; 102], [f32; 102]), String> {
+    let seat = usize::from(observation.player_id);
+    let privileged = observation
+        .privileged_hands
+        .as_ref()
+        .ok_or_else(|| "信念标签要求 Observation 携带 privileged_hands".to_string())?;
+    let mut hand_out = [0_u8; 102];
+    let mut shanten_out = [0_u8; 3];
+    let mut wait_out = [0_u8; 105];
+    let mut danger_out = [0_u8; 102];
+    let mut loss_out = [0_f32; 102];
+    let dora_tiles: Vec<u8> = observation.dora_indicators.iter().map(|&tile| tile as u8).collect();
+    for relative in 0..3usize {
+        let target = (seat + relative + 1) % 4;
+        let tiles: Vec<u8> = privileged[target].iter().map(|&tile| tile as u8).collect();
+        let melds = &observation.melds[target];
+        let mut counts = [0_u8; TILE_KINDS];
+        for &tile in &tiles {
+            counts[usize::from(tile) / 4] += 1;
+        }
+        for kind in 0..TILE_KINDS {
+            hand_out[relative * 34 + kind] = counts[kind];
+        }
+        let (three_melds, kans) = decompose_melds(melds);
+        let (kernel, open) = kernel_shape(&tiles, three_melds, &kans, 13);
+        let shanten_value = shanten::calculate(&kernel, open);
+        shanten_out[relative] = i32::from(shanten_value.overall).max(0).min(8) as u8;
+        let evaluator = HandEvaluator::new(tiles.clone(), melds.clone());
+        let waits = evaluator.get_waits_u8();
+        let wait_base = relative * 35;
+        if waits.is_empty() {
+            wait_out[wait_base + 34] = 1;
+        } else {
+            for &kind in &waits {
+                wait_out[wait_base + usize::from(kind)] = 1;
+            }
+        }
+        let danger_base = relative * 34;
+        let conditions = target_conditions(observation, target);
+        for kind in 0..TILE_KINDS {
+            if waits.contains(&(kind as u8)) && wait_out[wait_base + kind] == 1 {
+                // 振听判定与 legal_actions 同口径:自家河含该等待牌为永久振听,
+                // 见逃临时/立直见逃永久振听亦禁止荣和。
+                let own_discarded = observation.discards[target]
+                    .iter()
+                    .any(|&tile| tile as usize / 4 == kind);
+                if own_discarded
+                    || observation.temp_furiten[target]
+                    || observation.permanent_furiten[target]
+                {
+                    continue;
+                }
+                let representative = (kind * 4) as u8;
+                let result = evaluator.calc(
+                    representative,
+                    dora_tiles.clone(),
+                    vec![],
+                    Some(conditions.clone()),
+                );
+                if result.is_win {
+                    danger_out[danger_base + kind] = 1;
+                    loss_out[danger_base + kind] = result.ron_agari as f32;
+                }
+            }
+        }
+    }
+    Ok((hand_out, shanten_out, wait_out, danger_out, loss_out))
+}
+
+/// 从批量 Observations 导出五头上帝标签(每观测 = 一家视角,三家对手)。
+#[pyfunction]
+pub fn prepare_belief_labels_batch(
+    py: Python<'_>,
+    observations: Vec<Observation>,
+) -> PyResult<BeliefLabelBatch> {
+    if observations.is_empty() {
+        return Err(PyValueError::new_err("belief-label 批次不能为空"));
+    }
+    let mut all_hands: Vec<u8> = Vec::new();
+    let mut all_shanten: Vec<u8> = Vec::new();
+    let mut all_wait: Vec<u8> = Vec::new();
+    let mut all_danger: Vec<u8> = Vec::new();
+    let mut all_loss: Vec<f32> = Vec::new();
+    let compute_result: Result<(), PyErr> = py.detach(|| {
+        for observation in &observations {
+            let (hands, shanten, wait, danger, loss) =
+                compute_one_labels(observation)
+                    .map_err(|error| PyValueError::new_err(error.to_string()))?;
+            all_hands.extend(hands);
+            all_shanten.extend(shanten);
+            all_wait.extend(wait);
+            all_danger.extend(danger);
+            all_loss.extend(loss);
+        }
+        Ok(())
+    });
+    compute_result?;
+    let batch = observations.len();
+    let hands = Array2::from_shape_vec((batch, 102), all_hands)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?
+        .into_pyarray(py);
+    let shanten = Array2::from_shape_vec((batch, 3), all_shanten)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?
+        .into_pyarray(py);
+    let wait = Array2::from_shape_vec((batch, 105), all_wait)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?
+        .into_pyarray(py);
+    let danger = Array2::from_shape_vec((batch, 102), all_danger)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?
+        .into_pyarray(py);
+    let loss = Array2::from_shape_vec((batch, 102), all_loss)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?
+        .into_pyarray(py);
+    Ok(BeliefLabelBatch {
+        hand_counts: hands.unbind(),
+        shanten: shanten.unbind(),
+        wait: wait.unbind(),
+        danger: danger.unbind(),
+        loss: loss.unbind(),
     })
 }
 

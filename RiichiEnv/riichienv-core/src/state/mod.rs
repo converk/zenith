@@ -278,6 +278,21 @@ impl GameState {
                 .collect()
         });
 
+        // V19:训练侧批判/Critic 特权行与信念标签由完整真手导出。该字段对
+        // 模型输入不可见(bridge/current_state 只消费公开字段),仅作为
+        // Rust 侧标签 API 与 critic_features 的上帝视角数据源。
+        obs.privileged_hands = Some(std::array::from_fn(|i| {
+            self.players[i]
+                .hand
+                .iter()
+                .map(|&tile| tile as u32)
+                .collect()
+        }));
+        // V19:公开输入需要“对手临时振听(见逃)”标记;GameState 持有全状态。
+        obs.temp_furiten = std::array::from_fn(|i| self.players[i].missed_agari_doujun);
+        // V19:信念 Danger/Loss 标签需要“立直后见逃”永久振听标记。
+        obs.permanent_furiten = std::array::from_fn(|i| self.players[i].missed_agari_riichi);
+
         // Attach pre-computed progression snapshot.
         #[cfg(feature = "python")]
         if self.enable_seq_caching {

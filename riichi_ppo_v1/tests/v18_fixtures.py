@@ -1,4 +1,4 @@
-"""V18 模型测试共用的合法张量构造器（当前局面快照协议）。"""
+"""V19 模型测试共用的合法张量构造器（当前局面快照协议）。"""
 
 from __future__ import annotations
 
@@ -9,13 +9,12 @@ from riichi_ppo_v1.model.encoding_protocol import (
     KIND_ACTION_DEFENSE_QUERY,
     KIND_ACTION_OFFENSE_QUERY,
     KIND_BOS,
-    KIND_CRITIC_FUTURE,
     KIND_CRITIC_HAND,
     KIND_MELD,
     KIND_OPPONENT_ANALYSIS,
     KIND_PLAYER,
+    KIND_RIICHI_CARD,
     KIND_RIVER_DISCARD,
-    KIND_RIVER_SUMMARY,
     KIND_SELF_HAND,
     KIND_SELF_STATE_ANALYSIS,
     KIND_SEP_ACTIONS,
@@ -33,7 +32,6 @@ from riichi_ppo_v1.model.encoding_protocol import (
     KIND_TILE_STATE,
     SEGMENT_ACTIONS,
     SEGMENT_ANALYSIS,
-    SEGMENT_CRITIC_FUTURE,
     SEGMENT_CRITIC_PRIVATE,
     SEGMENT_SHARED,
     TOKEN_NUMERIC_WIDTH,
@@ -68,7 +66,7 @@ def make_observation(
     events: list[str] | None = None,
     drawn_tile: int | None = None,
 ) -> object:
-    """构造带副露/赤牌/事件的合成 Observation（V18 测试夹具）。
+    """构造带副露/赤牌/事件的合成 Observation（V19 测试夹具）。
 
     ``events`` 为 JSON 字符串列表（与 Observation.new_events 一致）。
     仅用于编码器字段级断言；麻将合法性由调用方负责。
@@ -109,7 +107,7 @@ def _row(segment: int, kind: int, fields: tuple[int, ...] = ()) -> np.ndarray:
 
 
 def shared_prefix_rows() -> list[np.ndarray]:
-    """构造一个最短合法 Shared 公共前缀（空副露、空牌河、2 种自身手牌）。"""
+    """构造一个最短合法 Shared 公共前缀（空副露、三家各一张河牌、2 种自身手牌）。"""
     rows: list[np.ndarray] = [
         _row(SEGMENT_SHARED, KIND_BOS),
         _row(SEGMENT_SHARED, KIND_TABLE, (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
@@ -118,31 +116,32 @@ def shared_prefix_rows() -> list[np.ndarray]:
         _row(SEGMENT_SHARED, KIND_SELF_HAND, (5, 2, 0, 0, 0)),
         _row(SEGMENT_SHARED, KIND_SELF_STATE_ANALYSIS, (0,) * 18),
         _row(SEGMENT_SHARED, KIND_SEP_PLAYERS),
-        _row(SEGMENT_SHARED, KIND_PLAYER, (0,) * 17),
-        _row(SEGMENT_SHARED, KIND_PLAYER, (1,) * 17),
-        _row(SEGMENT_SHARED, KIND_PLAYER, (2,) * 17),
-        _row(SEGMENT_SHARED, KIND_PLAYER, (3,) * 17),
+        _row(SEGMENT_SHARED, KIND_PLAYER, (0, 0, 0, 0, 1, 13, 0, 0, 1)),
+        _row(SEGMENT_SHARED, KIND_PLAYER, (1, 1, 1, 0, 2, 13, 0, 0, 1)),
+        _row(SEGMENT_SHARED, KIND_PLAYER, (2, 2, 2, 0, 3, 13, 0, 0, 1)),
+        _row(SEGMENT_SHARED, KIND_PLAYER, (3, 3, 3, 0, 4, 13, 0, 0, 1)),
         _row(SEGMENT_SHARED, KIND_SEP_RIVERS),
     ]
-    for river_index, river_sep in enumerate(
-        (KIND_SEP_SHIMOCHA_RIVER, KIND_SEP_TOIMEN_RIVER, KIND_SEP_KAMICHA_RIVER), start=1
-    ):
+    for river_sep in (KIND_SEP_SHIMOCHA_RIVER, KIND_SEP_TOIMEN_RIVER, KIND_SEP_KAMICHA_RIVER):
         rows.append(_row(SEGMENT_SHARED, river_sep))
-        rows.append(_row(SEGMENT_SHARED, KIND_RIVER_SUMMARY, (1, 1, 0, 1, 0) + (0,) * 20))
-        rows.append(_row(SEGMENT_SHARED, KIND_RIVER_DISCARD, (river_index, 1, 1, 0, 0, 0, 0, 0)))
-        rows.append(_row(SEGMENT_SHARED, KIND_RIVER_SUMMARY, (1, 1, 0, 1, 0) + (0,) * 20))
+        rows.append(_row(SEGMENT_SHARED, KIND_RIVER_DISCARD, (1, 1, 0, 0, 0, 0)))
+        rows.append(_row(SEGMENT_SHARED, KIND_RIICHI_CARD, (0, 0, 0, 0, 0, 0, 0)))
     rows.append(_row(SEGMENT_SHARED, KIND_SEP_MELDS))
-    rows.append(_row(SEGMENT_SHARED, KIND_MELD, (0, 1, 1, 0, 2, 0, 3, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0)))
+    # owner/type + 4 槽(type,red) + called(type,red) + supplier/open/meld_index/yakuhai/dora/meld_turn/called_tsumogiri
+    rows.append(_row(
+        SEGMENT_SHARED, KIND_MELD,
+        (0, 1, 1, 0, 2, 0, 3, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 0),
+    ))
     rows.append(_row(SEGMENT_SHARED, KIND_SEP_TILE_STATE))
     for kind in range(1, 35):
         rows.append(_row(
             SEGMENT_SHARED, KIND_TILE_STATE,
-            (kind, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+            (kind, 0, 0, 0, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
         ))
     rows.append(_row(SEGMENT_ANALYSIS, KIND_SEP_OPPONENT_ANALYSIS))
-    rows.append(_row(SEGMENT_ANALYSIS, KIND_OPPONENT_ANALYSIS, (1,) * 18))
-    rows.append(_row(SEGMENT_ANALYSIS, KIND_OPPONENT_ANALYSIS, (2,) * 18))
-    rows.append(_row(SEGMENT_ANALYSIS, KIND_OPPONENT_ANALYSIS, (3,) * 18))
+    rows.append(_row(SEGMENT_ANALYSIS, KIND_OPPONENT_ANALYSIS, (1, 0, 0, 0, 0, 0, 0)))
+    rows.append(_row(SEGMENT_ANALYSIS, KIND_OPPONENT_ANALYSIS, (2, 0, 0, 0, 0, 0, 0)))
+    rows.append(_row(SEGMENT_ANALYSIS, KIND_OPPONENT_ANALYSIS, (3, 0, 0, 0, 0, 0, 0)))
     return rows
 
 
@@ -178,12 +177,10 @@ def actor_inputs(*, batch: int = 2, action_ids: tuple[int, ...] = (1, 7, 12)) ->
 
 
 def critic_inputs(*, batch: int = 2, observer: int = 0) -> dict[str, torch.Tensor]:
-    """构造合成 Critic 私有行：SEP_CRITIC + 三家闭手各 1 行 + 未来 5 张。"""
+    """构造合成 Critic 私有行：SEP_CRITIC + 三家闭手各 1 行（无 future）。"""
     rows: list[np.ndarray] = [_row(SEGMENT_CRITIC_PRIVATE, KIND_SEP_CRITIC)]
     for relative in (1, 2, 3):
         rows.append(_row(SEGMENT_CRITIC_PRIVATE, KIND_CRITIC_HAND, (relative, 1, 0, 1)))
-    for position in range(1, 6):
-        rows.append(_row(SEGMENT_CRITIC_FUTURE, KIND_CRITIC_FUTURE, (position, 1, 0)))
     factors = np.stack(rows)
     lengths = torch.full((batch,), factors.shape[0], dtype=torch.long)
     return {

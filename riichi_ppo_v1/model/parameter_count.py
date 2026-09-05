@@ -1,4 +1,4 @@
-"""V18 模型参数与 state-key 的统一审计。"""
+"""V19 模型参数与 state-key 的统一审计。"""
 
 from __future__ import annotations
 
@@ -49,10 +49,10 @@ def parameter_report(model: nn.Module) -> dict[str, Any]:
     }
 
 
-def assert_v18_parameter_contract(model: nn.Module) -> dict[str, Any]:
+def assert_v19_parameter_contract(model: nn.Module) -> dict[str, Any]:
     report = parameter_report(model)
-    if report["total"] > 6_000_000:
-        raise RuntimeError(f"V18 parameter count exceeds 6.0M: {report['total']}")
+    if report["total"] > 7_200_000:
+        raise RuntimeError(f"V19 parameter count exceeds 7.2M: {report['total']}")
     if report["forbidden_q_keys"]:
-        raise RuntimeError("V18 state contains forbidden Q/legacy keys")
+        raise RuntimeError("V19 state contains forbidden Q/legacy keys")
     return report

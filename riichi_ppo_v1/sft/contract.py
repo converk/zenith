@@ -1,4 +1,4 @@
-"""V18 当前局面 SFT 路径的唯一 fail-closed 契约边界。"""
+"""V19 当前局面 SFT 路径的唯一 fail-closed 契约边界。"""
 
 from __future__ import annotations
 
@@ -27,9 +27,9 @@ from ..model.encoding_protocol import (
 )
 from ..model.schema import NUM_ACTIONS, TID_COUNT, TILE_KINDS
 
-SFT_CONTRACT_VERSION = "riichi-sft-v18-2"
-RUNTIME_CONTRACT_ID = "riichi-runtime-v18-1"
-DATA_PLAN_VERSION = 2
+SFT_CONTRACT_VERSION = "riichi-sft-v19-2"
+RUNTIME_CONTRACT_ID = "riichi-runtime-v19-1"
+DATA_PLAN_VERSION = 3
 DATA_CURSOR_VERSION = 1
 TRAINING_MODES = frozenset({"actor_only", "actor_public_value", "joint_actor_critic"})
 
@@ -39,7 +39,7 @@ TRAINING_MODES = frozenset({"actor_only", "actor_public_value", "joint_actor_cri
 SFT_CADENCE_STEPS = 3000
 SFT_FINAL_EVAL_HANCHAN_COUNT = 96
 
-# V18 当前局面输入契约的规范化载荷：协议版本、格式、token 行宽/数值宽、
+# V19 当前局面输入契约的规范化载荷：协议版本、格式、token 行宽/数值宽、
 # 类别 schema 全表（kind/name/segment/离散字段基数/数值字段）、分隔符、动作空间。
 # 任何一项变化都会使哈希变化，旧数据集 manifest 会 fail closed。
 _ACTOR_INPUT_CONTRACT_PAYLOAD = {
@@ -91,16 +91,16 @@ def load_manifest(dataset: Path) -> dict[str, Any]:
 
 
 def validate_manifest(manifest: Mapping[str, Any]) -> None:
-    """对 V18 当前局面单版本 manifest 执行 fail-closed 校验。"""
+    """对 V19 当前局面单版本 manifest 执行 fail-closed 校验。"""
     if manifest.get("format") != ENCODED_FORMAT:
-        raise RuntimeError("only the V18 encoded SFT format is supported")
+        raise RuntimeError("only the V19 encoded SFT format is supported")
     if manifest.get("encoding_protocol_version") != ENCODING_PROTOCOL_VERSION:
         raise RuntimeError(
-            f"V18 SFT manifest requires encoding_protocol_version={ENCODING_PROTOCOL_VERSION}"
+            f"V19 SFT manifest requires encoding_protocol_version={ENCODING_PROTOCOL_VERSION}"
         )
     if manifest.get("encoding_contract_sha256") != ACTOR_INPUT_CONTRACT_SHA256:
         raise RuntimeError(
-            "encoded dataset carries an unknown V18 protocol contract hash"
+            "encoded dataset carries an unknown V19 protocol contract hash"
         )
     if manifest.get("state_protocol") != STATE_PROTOCOL_VERSION:
         raise RuntimeError("encoded dataset carries an unknown state protocol version")
@@ -131,7 +131,7 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
     if not 0 <= game_remainder < game_denominator:
         raise RuntimeError("manifest game_sample_remainder must be within [0, game_sample_denominator)")
     if not isinstance(manifest.get("source_manifest_sha256"), str) or not manifest["source_manifest_sha256"]:
-        raise RuntimeError("V18 SFT manifest lacks source_manifest_sha256")
+        raise RuntimeError("V19 SFT manifest lacks source_manifest_sha256")
     counts = manifest.get("counts")
     if not isinstance(counts, Mapping) or any(
         int(counts.get(name, 0)) <= 0
@@ -141,7 +141,7 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
         )
     ):
         raise RuntimeError(
-            "V18 SFT requires positive train/validation kyoku and decision counts"
+            "V19 SFT requires positive train/validation kyoku and decision counts"
         )
 
 
@@ -154,7 +154,7 @@ def training_mode(config: Mapping[str, Any]) -> str:
 
 
 def assert_runtime_contract() -> None:
-    """检查 V18 输入边界依赖的两个原生扩展版本。"""
+    """检查 V19 输入边界依赖的两个原生扩展版本。"""
     import riichi
     import riichienv
 

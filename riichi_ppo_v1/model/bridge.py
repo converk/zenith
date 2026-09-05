@@ -174,9 +174,8 @@ class BatchedStateBridge:
     def prepare(
         self,
         decisions: list[Decision],
-        walls: list[list[int]] | None = None,
     ) -> PreparedBatch:
-        """装配 V18 当前局面输入：Shared+Analysis+Query 序列；Critic 私有行单独返回。
+        """装配 V19 当前局面输入：Shared+Analysis+Query 序列；Critic 私有行单独返回。
 
         动作解码与合法掩码由状态机负责（生命周期/动作执行）。
         """
@@ -234,11 +233,6 @@ class BatchedStateBridge:
                     encode_critic_features(
                         table_cache[decision.env_index],
                         decision.seat_id,
-                        future_wall_tiles=(
-                            walls[decision.env_index][:5]
-                            if walls is not None
-                            else ()
-                        ),
                     )
                     for decision in decisions
                 ]
