@@ -7,8 +7,8 @@ AGENTS.md 的结构约定。治理范围覆盖 riichi_ppo_v1、riichi_lab_bot、
 
 | 目录 | 职责 |
 | --- | --- |
-| `configs/` | 打包默认配置、V18 自包含配置与只读归档实验配置 |
-| `docs/` | 协议、动作空间、V18 输入契约与 SFT 使用文档 |
+| `configs/` | 打包默认配置与 V19 自包含版本配置 |
+| `docs/` | 协议、动作空间、V19 输入契约与 SFT 使用文档 |
 | `evaluation/` | 跨阶段确定性评测:1v3 对抗、分片驱动与策略适配边界 |
 | `model/` | 模型结构、领域常量单一来源、动作分组与模型/环境转换边界（当前局面协议 schema、密集槽位融合嵌入、Rust 编码装配） |
 | `sft/` | SFT 数据准备、预计算、训练、契约与 checkpoint 持久化 |
@@ -33,4 +33,4 @@ AGENTS.md 的结构约定。治理范围覆盖 riichi_ppo_v1、riichi_lab_bot、
 | `riichienv-python/` | PyO3 绑定构建入口（含当前局面批编码器 `current_state_encoding.rs`） |
 | `tests/` | 环境行为、动作合法性、和了与协议测试 |
 | `docs/` | 环境文档 |
-| `scripts/` | 构建、安装与日志校验脚本 |
+| `scripts/` | 构建与安装脚本 |

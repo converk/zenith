@@ -1,4 +1,4 @@
-"""V18 GRP(Mortal 方案扩展)契约测试:21 维输入、24 类排列、calc_matrix、冻结。
+"""GRP(Mortal 方案)契约测试:21 维输入、24 类排列、calc_matrix、冻结。
 
 新增覆盖:局风类型映射、上局结果类型、各玩家累计和了/放铳/听牌流局计数、
 离线(features_from_boundaries)与在线(feature_row + 累计推进)特征逐位一致。
@@ -115,7 +115,7 @@ def test_features_from_boundaries_twenty_one_dims() -> None:
     boundaries = _boundaries()
     features = features_from_boundaries(boundaries, game_type=1)
     assert features.shape == (2, 21)
-    # 前 7 维与 V17 完全一致:首局 2.5 / 25000;第二局 3.1 / 23000。
+    # 前 7 维与既有 GRP 契约一致:首局 2.5 / 25000;第二局 3.1 / 23000。
     assert np.allclose(features[0, 3:7], 2.5)
     assert np.allclose(features[1, 3:7], [3.1, 2.3, 2.3, 2.3])
     assert features[1, 0] == 1.0  # E2
@@ -301,7 +301,7 @@ def test_parse_hanchan_produces_boundaries() -> None:
 
 
 def test_prepare_grp_dataset_max_shards_limits_input_tars() -> None:
-    """``max_shards`` 截断每个 split 处理的 tar 数量,dataset.json 记录 v18 契约。"""
+    """``max_shards`` 截断每个 split 处理的 tar 数量,dataset.json 记录 GRP 契约。"""
     import io
     import tarfile
     import tempfile

@@ -10,9 +10,9 @@
   协议状态转换与持久化子包,公开模块名保持 `riichi`,且不依赖 `riichienv`。
 - `riichi_ppo_v1/` 是本项目的主训练代码框架。
 - 无需与 `evaluations/` 兼容;该组件将被整体重写。
-- 默认的性能与训练测试必须显式使用 `target_kl=0.0`、`update_epochs=4`;历史 V16
-  及以前使用 `kyokus_per_worker=16`,V17 起改为每 update 收集 512 个完整半庄
-  (`games_per_update=512`)。该测试基线与长期训练的默认值相互独立。
+- 默认的性能与训练测试必须显式使用 `target_kl=0.0`、`update_epochs=4`;基线为
+  每 update 收集 512 个完整半庄(`games_per_update=512`)。该测试基线与长期训练的
+  默认值相互独立。
 - 运行测试时默认打印耗时监控和所有相关性能指标。默认运行三轮;将第一轮视为
   潜在预热,并单独报告后续轮次的性能统计。
 
@@ -21,10 +21,10 @@
 - 本文件是项目工程约定的最高治理文档;与其他文档冲突时,以本文件为准,并回改
   其余文档保持同步。
 - 现行版本契约:encoding protocol 与活跃训练代均为 V19,全仓只保留一个活跃的
-  输入、schema、模型与 checkpoint 契约。V16/V17/V18 及更早代次的 checkpoint、
-  数据集、配置、日志和历史报告仅作冷存储,不得被活跃代码加载或迁移,也不得为其
-  保留协议适配、旧输入转换、双模型分支、legacy adapter、旧字段 fallback 或
-  state-dict 迁移。
+  输入、schema、模型与 checkpoint 契约。历史代次的 checkpoint、数据集、日志和
+  报告若仍在磁盘上,仅作冷存储,不得被活跃代码加载或迁移,也不得为其保留协议
+  适配、旧输入转换、双模型分支、legacy adapter、旧字段 fallback 或 state-dict
+  迁移。
 - V19 输入协议为**当前局面状态快照 + 信念注入**(Shared 公共前缀 + 三家
   Opponent Analysis + 三家 RIICHI_CARD + 模型内部 30 个信念 token + 每个合法动作
   一对 Offense/Defense Query;全 token RoPE、公共双向 GQA、结构化 Actor mask;
@@ -40,7 +40,7 @@
 - 禁止为旧 checkpoint 长期保留双版本兼容代码;确需新增兼容层时,必须先行显式
   说明并获批准。
 - 每个版本的配置必须自包含地写在自己的文件中,禁止 overlay/继承式覆盖;resume
-  类配置同样必须是完整自包含副本(参照 `v17_ppo_resume.yaml` 的做法)。
+  类配置同样必须是完整自包含副本(按现行 V19 配置的写法)。
 
 # 目录与组件职责
 
@@ -88,8 +88,8 @@
 - 现行原始数据集为 `datasets/tenhou_sft_2024_2025`;现行活跃编码数据集为
   `datasets/tenhou_sft_2024_2025_encoded_60pct_v19`（用户已确认的 V19 标准训练输入,
   已预处理完成,禁止重跑 precompute）。`datasets/tenhou_sft_2024_2025_encoded_100pct_v19`
-  为全量版本备选/归档。归档 V16/V17/V18 编码数据与 V17 GRP 数据只允许只读统计,
-  不得覆盖或作为活跃训练输入。
+  为全量版本备选/归档。历史代次编码数据与 GRP 数据只允许只读统计,不得覆盖或
+  作为活跃训练输入。
 - 文件名必须自描述,能从名称看出职责与版本;CLI 默认路径与 README/docs 必须与
   实际产物路径一致。
 

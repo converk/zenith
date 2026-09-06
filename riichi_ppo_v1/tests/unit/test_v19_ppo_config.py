@@ -53,7 +53,7 @@ def test_v19_config_topology() -> None:
 
 
 def test_v19_global_effective_minibatch_is_40960() -> None:
-    """有效批 = per_gpu × learner_gpus × 梯度累积(与 v18 同基线,配置自包含)。"""
+    """有效批 = per_gpu × learner_gpus × 梯度累积(既定基线,配置自包含)。"""
     config = _v19_config()
     per_gpu = int(config["minibatch_size"])
     learner_gpus = int(config["learner_gpus"])

@@ -224,7 +224,7 @@ def build_rollout_lineups(
 
 
 class GrpRollout:
-    """每个小局边界执行一次 GRP 的纯奖励装配(Mortal 方案,V18 契约)。
+    """每个小局边界执行一次 GRP 的纯奖励装配(Mortal 方案)。
 
     每环境维护 1 条 21 维全局特征前缀序列与累计计数(各玩家和了/放铳/听牌流局
     次数);边界行由 ``feature_row`` 逐边界生成,与离线数据构造逐位一致;局风

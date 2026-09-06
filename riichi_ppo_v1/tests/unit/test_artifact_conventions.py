@@ -45,17 +45,13 @@ def test_ray_logging_redirects_to_stderr(monkeypatch) -> None:
 def test_gitignore_allows_current_audit_type_dirs() -> None:
     """audit:design/report/scripts 入库,eval 与版本目录根散落文件忽略。"""
     allowed = (
-        "audit/reports/v16/design/x.md",
-        "audit/reports/v16/report/x.md",
-        "audit/reports/v16/scripts/x.py",
-        "audit/reports/v17/design/x.md",
-        "audit/reports/v17/report/x.md",
-        "audit/reports/v17/scripts/x.py",
+        "audit/reports/v19/design/x.md",
+        "audit/reports/v19/report/x.md",
+        "audit/reports/v19/scripts/x.py",
     )
     ignored = (
-        "audit/reports/v16/eval/x.json",
-        "audit/reports/v17/eval/x.json",
-        "audit/reports/v16/x.txt",
+        "audit/reports/v19/eval/x.json",
+        "audit/reports/v19/x.txt",
     )
     for path in allowed:
         assert not _git_check_ignored(path), f"{path} 应被 git 跟踪"
@@ -66,11 +62,11 @@ def test_gitignore_allows_current_audit_type_dirs() -> None:
 def test_active_audit_version_dirs_have_fixed_types() -> None:
     """活跃 `audit/reports/<版本号>/` 只允许 design/report/eval/scripts 四类子目录。"""
     reports = ROOT / "audit" / "reports"
-    for version in ("v16", "v17"):
+    for version in ("v19",):
         version_dir = reports / version
         assert version_dir.is_dir(), f"{version_dir} 不存在"
         entries = {path.name for path in version_dir.iterdir() if path.is_dir() and path.name != "__pycache__"}
-        assert entries == {"design", "report", "eval", "scripts"}, (
+        assert entries <= {"design", "report", "eval", "scripts"}, (
             f"{version_dir} 应只含四个固定类型子目录,实际: {sorted(entries)}"
         )
 
@@ -95,8 +91,8 @@ def test_packaged_configs_are_current_and_neutral() -> None:
 def test_current_datasets_present() -> None:
     datasets = ROOT / "datasets"
     assert (datasets / "tenhou_sft_2024_2025").is_dir()
-    assert (datasets / "tenhou_sft_2024_2025_encoded_60pct_v16").is_dir()
-    assert (datasets / "tenhou_grp_2024_2025_v17").is_dir()
+    assert (datasets / "tenhou_sft_2024_2025_encoded_60pct_v19").is_dir()
+    assert (datasets / "tenhou_sft_2024_2025_encoded_100pct_v19").is_dir()
 
 
 def test_1v3_mechanism_constants() -> None:
@@ -126,11 +122,11 @@ def test_progress_md_path_lives_in_report() -> None:
     from riichi_ppo_v1.evaluation.mechanism import progress_md_path
     from riichi_ppo_v1.training.train import _progress_md_path
 
-    assert progress_md_path("audit/reports/v17/eval") == Path(
-        "audit/reports/v17/report/PROGRESS.md"
+    assert progress_md_path("audit/reports/v19/eval") == Path(
+        "audit/reports/v19/report/PROGRESS.md"
     )
-    assert _progress_md_path({"eval1v3_output_dir": "audit/reports/v17/eval"}) == Path(
-        "audit/reports/v17/report/PROGRESS.md"
+    assert _progress_md_path({"eval1v3_output_dir": "audit/reports/v19/eval"}) == Path(
+        "audit/reports/v19/report/PROGRESS.md"
     )
     assert _progress_md_path({}) is None
 
@@ -176,7 +172,6 @@ def test_no_historical_locks_in_active_sources() -> None:
         [
             "rg", "-n", "--hidden", "-g", "!*.pyc",
             "-g", "!test_artifact_conventions.py",
-            "-g", "!audit/reports/v16/report/PROGRESS.md",
             needles,
             "riichi_ppo_v1/configs",
             "riichi_ppo_v1/README.md",

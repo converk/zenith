@@ -5,7 +5,7 @@ from riichienv import Action, ActionType, Observation
 
 
 class TestActionToMjaiFormat:
-    def test_v13_observation_fields_are_required(self):
+    def test_observation_fields_are_required(self):
         signature = inspect.signature(Observation)
         for name in (
             "riichi_accepted", "riichi_declaration_indices",

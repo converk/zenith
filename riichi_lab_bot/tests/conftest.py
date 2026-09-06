@@ -37,24 +37,3 @@ def default_checkpoint() -> Path:
         }, path)
         atexit.register(path.unlink, missing_ok=True)
     return path
-
-
-def v16_sft_checkpoint() -> Path:
-    return (
-        repository_root()
-        / "checkpoints"
-        / "train_riichi_v16"
-        / "sft"
-        / "best.pt"
-    )
-
-
-def v17_ppo_checkpoint() -> Path:
-    return (
-        repository_root()
-        / "checkpoints"
-        / "train_riichi_v17"
-        / "archive_20260819_V1run1"
-        / "ppo"
-        / "latest.pt"
-    )

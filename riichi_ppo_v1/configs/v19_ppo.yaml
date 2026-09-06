@@ -1,6 +1,6 @@
 # V19 PPO 稳定性训练正式配置:150 updates × 2048 完整半庄。
 # 自包含配置,不与 training.yaml 或其他历史配置叠加。
-# 超参完全沿用 v18_ppo.yaml(训练分册 D30),新增仅信念键(训练分册 §6)。
+# 超参沿用既有 PPO 基线(训练分册 D30),新增仅信念键(训练分册 §6)。
 seed: 20260828
 device: cuda
 learner_gpus: 2
@@ -43,7 +43,7 @@ update_batch_mode: streaming
 bucket_window_multiplier: 8
 update_validate_structure: false
 
-# Tier 2 性能开关(与 v18_ppo.yaml 同基线)。
+# Tier 2 性能开关(既定基线)。
 torch_compile: true
 rollout_update_overlap: true
 torch_compile_reference: true
@@ -62,7 +62,7 @@ entropy_middle: 0.006
 entropy_end: 0.002
 entropy_middle_fraction: 0.33
 
-# 三分支独立学习率调度(与 v18_ppo.yaml 相同)。
+# 三分支独立学习率调度。
 learning_rate: 0.00009
 actor_learning_rate: 0.00009
 actor_learning_rate_min: 0.0000225
@@ -88,13 +88,13 @@ critic_private_embedding_grad_scale: 0.25
 target_kl: 0.01
 target_kl_check_interval: 8
 
-# SFT reference KL(与 v18_ppo.yaml 相同)。
+# SFT reference KL。
 sft_kl_coef_start: 0.0025
 sft_kl_coef_middle: 0.001
 sft_kl_coef_end: 0.0005
 sft_kl_middle_fraction: 0.5
 
-# V19 信念键(训练分册 §6 + 60% 条件化/读出)。
+# V19 信念键(训练分册 §6 + 条件化/读出)。
 belief_public_grad_scale: 0.25
 belief_head_weight_hand: 1.0
 belief_head_weight_shanten: 1.0
@@ -106,7 +106,7 @@ belief_sft_coef: 1.0
 # 逐动作信念读出：PPO 阶段开启且不 detach（策略梯度可塑形信念头）。
 belief_readout_enabled: true
 belief_readout_detach: false
-# 条件/加权损失（与 SFT 60% 同构）。
+# 条件/加权损失（与 SFT 同构）。
 belief_wait_tenpai_weight: 1.0
 belief_wait_tile_weight: 1.0
 belief_danger_pos_weight: 5.0

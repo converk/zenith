@@ -4,8 +4,8 @@ V19 是唯一活跃输入契约。Actor 输入为**决策时刻的状态快照�
 （桌况 / 自身手牌 / SELF_STATE_ANALYSIS / 四家 PLAYER / 三家纯打牌序列河（被鸣牌已移除）
 与每家恒发射 RIICHI_CARD / 当前副露 / 34 tile-state）+ Actor-only 尾部（三个
 Opponent Analysis + 模型内部生成的 30 个信念 token + 按 action ID 升序的
-Offense/Defense Query）。Critic 在共享公共表示之后单独读取三家真实闭手（V18 未来
-五张牌已删除）。V18 文档与产物仅作冷存储；活跃代码不提供任何旧协议分支。
+Offense/Defense Query）。Critic 在共享公共表示之后单独读取三家真实闭手（未来
+五张牌已删除）。活跃代码不提供任何旧协议分支。
 
 ## 1. 张量契约
 
@@ -14,7 +14,7 @@ Offense/Defense Query）。Critic 在共享公共表示之后单独读取三家�
 | `actor_factors` | `[B,T,32] int64` | 完整 Actor 序列行：`[segment, kind, fields...]`，不含信念 token |
 | `actor_numeric` | `[B,T,8] float32` | 数值槽位（桌况分数/点差、player 点数/点差），归一化到 [-1,1] |
 | `actor_lengths` | `[B] int64` | 每行有效 token 数（不含 30 个信念 token；模型前向内部 +30） |
-| `query_rows` | `[B,2Q,15] int64` | 每动作 Offense/Defense 连续两行（旧语义） |
+| `query_rows` | `[B,2Q,15] int64` | 每动作 Offense/Defense 连续两行 |
 | `query_action_ids` | `[B,Q] int64` | 升序唯一，与 legal_mask 集合相等 |
 | `query_pair_counts` | `[B] int64` | 每行合法动作数 |
 | `legal_mask` | `[B,241] bool` | 动作 ID 集合 |
@@ -58,8 +58,8 @@ ACTION_OFFENSE_QUERY / ACTION_DEFENSE_QUERY ×(2 per action)   # action_id 升�
 
 ## 3. 关键类别字段（摘要）
 
-- **TABLE**：同 V18 字段不变。
-- **SELF_STATE_ANALYSIS**：同 V18 字段不变。
+- **TABLE**：保持既有字段不变。
+- **SELF_STATE_ANALYSIS**：保持既有字段不变。
 - **PLAYER**（纯静态卡）：相对/绝对座次、自风、是否庄家、名次、点数/点差（numeric）、
   暗牌数、副露数、杠数、是否门清。删除了 river_length、立直 5 字段与副露番/宝牌字段
   （后者由 MELD/RIICHI_CARD 完整承载）。
@@ -67,7 +67,7 @@ ACTION_OFFENSE_QUERY / ACTION_DEFENSE_QUERY ×(2 per action)   # action_id 升�
   立直前/宣言/立直后三态、相对最新舍牌的年龄桶。删除了 relative_seat、supplied。
 - **RIICHI_CARD**（恒发射 ×3）：riichi_status / riichi_turn / 宣言牌 type/red /
   立直后手切数 / 立直后摸切数 / 宣言牌是否被鸣走；未立直时全零。
-- **MELD**：保留 V18 全部构成字段，新增 meld_turn（被鸣牌在供牌者河中的原始下标+1）
+- **MELD**：保留既有全部构成字段，新增 meld_turn（被鸣牌在供牌者河中的原始下标+1）
   与 called_tsumogiri（被鸣牌是否为供牌者摸切）。
 - **TILE_STATE**（34 个）：自身暗手/舍牌张数、未知枚数与四张全见（public_count/known_count
   已删，为线性可推）、宝牌倍率、场风/自风/赤五对应、进张/和牌标记、对三家现物与筋类别、
@@ -76,11 +76,11 @@ ACTION_OFFENSE_QUERY / ACTION_DEFENSE_QUERY ×(2 per action)   # action_id 升�
   自己手中对该家现物牌种/实体数、对手临时振听（见逃）标记。立直/门清/副露字段全部移出。
 - **BELIEF token**：模型内部由共享表示经信念网络 + 转换矩阵生成，不代表编码器行；
   query 读信念、信念只读共享段、信念互见、分析不读信念（D32）。
-- **逐动作信念读出（模型内部，60% 方案）**：每个合法动作 Query 行的
+- **逐动作信念读出（模型内部）**：每个合法动作 Query 行的
   `primary_tile_code`（第 3 列）在各家信念特征（danger/loss/wait/向听等）上取数，
   经零初始化投影后加到 `pair_hiddens`；是模型内部计算，不改变 30 个信念 token、
   mask、协议行布局或契约 hash。SFT 阶段 detach 特征，PPO 阶段不 detach。
-- **ACTION_QUERY**：同 V18（15 个嵌入特征、action_id 专用 241 维表）。
+- **ACTION_QUERY**：15 个嵌入特征、action_id 专用 241 维表。
 
 ## 4. RoPE、分隔符与结构化注意力
 

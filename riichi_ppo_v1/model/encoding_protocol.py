@@ -43,7 +43,7 @@ SEGMENT_SHARED = 1
 SEGMENT_ANALYSIS = 2
 SEGMENT_ACTIONS = 3
 SEGMENT_CRITIC_PRIVATE = 4
-# 信念 token 复用 V18 删除 critic-future 后的 5 号位(segment 表仍 6 行,不扩容)。
+# 信念 token 复用删除 critic-future 后空出的 5 号位(segment 表仍 6 行,不扩容)。
 SEGMENT_BELIEF = 5
 
 # ---- token kind 编号 ----

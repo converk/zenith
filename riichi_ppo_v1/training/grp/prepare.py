@@ -1,4 +1,4 @@
-"""V18 GRP 数据集构造(Mortal 方案扩展):21 维边界状态、24 类排列标签。
+"""GRP 数据集构造(Mortal 方案扩展):21 维边界状态、24 类排列标签。
 
 从 `datasets/tenhou_sft_2024_2025` 的 tar 半庄记录构造
 `datasets/tenhou_grp_2024_2025_v18`(沿用 60/40 无重叠惯例:40% 子集,
@@ -153,7 +153,7 @@ def feature_row(
     dealins: tuple[int, int, int, int],
     tenpai: tuple[int, int, int, int],
 ) -> np.ndarray:
-    """把单个边界编码为 [21] float32 特征行(V18 输入契约)。
+    """把单个边界编码为 [21] float32 特征行(GRP 输入契约)。
 
     ``[grand_kyoku, honba, kyotaku, s0..s3/1e4, game_type, prev_result_type,
     wins0..3, dealins0..3, tenpai0..3]``;累计计数为截至本小局开始的值。
@@ -175,7 +175,7 @@ def feature_row(
 def features_from_boundaries(
     boundaries: list[Boundary], game_type: int,
 ) -> np.ndarray:
-    """把绝对座位边界序列编码为 [T, 21] float32 全局特征(V18 输入契约)。
+    """把绝对座位边界序列编码为 [T, 21] float32 全局特征(GRP 输入契约)。
 
     累计计数按边界链推进:第 k 行反映截至第 k 小局开始(即前 k 个小局结果)
     的累计值;首局行全 0。
@@ -384,7 +384,7 @@ def prepare_grp_dataset(
     max_shards: int | None = None,
     workers: int = 6,
 ) -> dict:
-    """按 game_id 聚合完整半庄后构造 v18 GRP 数据集并写 dataset.json。
+    """按 game_id 聚合完整半庄后构造 GRP 数据集并写 dataset.json。
 
     每个半庄生成 1 条 21 维全局特征序列与 rank_by_player;训练时将 prefix 展开。
     ``max_shards`` 限制每个 split 最多处理的 tar shard 数(默认全部),

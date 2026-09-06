@@ -6,16 +6,23 @@ import random
 
 import pytest
 import torch
-from conftest import default_checkpoint, v16_sft_checkpoint, v17_ppo_checkpoint
+from conftest import default_checkpoint
 
 from riichi_lab_bot.bridge import OnlineStateBridge
 from riichi_lab_bot.policy import PolicyEngine
 
 
-@pytest.mark.parametrize("checkpoint", [v16_sft_checkpoint, v17_ppo_checkpoint])
-def test_legacy_checkpoint_is_rejected(checkpoint) -> None:
-    with pytest.raises(RuntimeError, match="V19"):
-        PolicyEngine(checkpoint(), device="cpu", dtype="fp32")
+@pytest.mark.parametrize(
+    "policy_head_type", ["unsupported_query", "query_snapshot", "legacy_snapshot"]
+)
+def test_legacy_checkpoint_is_rejected(tmp_path, policy_head_type) -> None:
+    path = tmp_path / "legacy.pt"
+    torch.save(
+        {"model_config": {"policy_head_type": policy_head_type}, "model": {}},
+        path,
+    )
+    with pytest.raises(RuntimeError, match="current_state_snapshot"):
+        PolicyEngine(path, device="cpu", dtype="fp32")
 
 
 def test_missing_model_config_fails_before_model_load(

@@ -951,7 +951,7 @@ pub fn prepare_current_state_batch(
     })
 }
 
-// ---- V18 完整 Actor 批装配（Rust 侧一次性物化，替代 Python 逐决策 numpy 拼接）----
+// ---- 完整 Actor 批装配（Rust 侧一次性物化，替代 Python 逐决策 numpy 拼接）----
 
 /// Action Query 行宽（与 ``encoding_protocol.QUERY_ROW_WIDTH`` 镜像）。
 const QUERY_ROW_WIDTH: usize = 15;
@@ -967,7 +967,7 @@ const KIND_SEP_ACTIONS: i32 = 110;
 /// 固定 241 维动作空间（断言用）。
 const NUM_ACTIONS: usize = 241;
 
-/// Rust 装配后的完整 V18 Actor 批（含动作 token/分隔符、query 元数据与合法掩码）。
+/// Rust 装配后的完整 Actor 批（含动作 token/分隔符、query 元数据与合法掩码）。
 #[pyclass(name = "AssembledCurrentStateBatch", frozen)]
 pub struct AssembledCurrentStateBatch {
     #[pyo3(get)]
@@ -1023,7 +1023,7 @@ fn write_action_row(
 /// 一次装配完整 Actor 批：Shared/Analysis 行 + SEP_ACTIONS + O/D Query 行。
 ///
 /// 输入均为 ``encode_batch`` 已有中间产物（Rust 编码行与 query 行），输出布局与
-/// 旧 Python 装配逐位一致：``actor_factors`` 容量 =
+/// Python 装配逐位一致：``actor_factors`` 容量 =
 /// ``max(最大共享/分析行数 + 1 + 2×最大动作对数, 1)``。
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
@@ -1107,7 +1107,7 @@ pub fn assemble_current_state_batch<'py>(
         ));
     }
 
-    // 兼容旧 Python 容量公式：max_native + 1 + 2×max_pairs。
+    // 与 Python 容量公式一致：max_native + 1 + 2×max_pairs。
     let native_max = counts_slice
         .iter()
         .zip(offsets_slice.windows(2))

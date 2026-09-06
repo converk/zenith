@@ -1,7 +1,7 @@
 # RiichiLab V19 独立对局客户端
 
 客户端只接受 V19 `current_state_snapshot` checkpoint,并复用训练侧模型、
-`riichi_ppo_v1.model.current_state.encode_batch` 编码路径与语义校验。V16/V17
+`riichi_ppo_v1.model.current_state.encode_batch` 编码路径与语义校验。旧代次
 checkpoint 会被明确拒绝,不提供 fallback 或迁移。
 
 ## 数据流

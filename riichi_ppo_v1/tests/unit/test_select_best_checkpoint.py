@@ -15,7 +15,7 @@ def _write_summary(directory: Path, update: int, point_diff: float, mean_rank: f
     (directory / f"vs_sft_u{update:03d}.json").write_text(json.dumps({
         "hanchan_count": 6000,
         "model_a": {
-            "checkpoint": f"checkpoints/train_riichi_v17/ppo/checkpoint_{update:05d}.pt",
+            "checkpoint": f"checkpoints/train_riichi_v19/ppo/checkpoint_{update:05d}.pt",
             "point_diff_vs_mean_opponent_mean": point_diff,
             "point_diff_vs_mean_opponent_bootstrap_ci95": [point_diff - 1, point_diff + 1],
             "mean_rank": mean_rank,

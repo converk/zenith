@@ -97,7 +97,7 @@ impl MjaiKyokuStateMachineManager {
 
     /// Atomically records legal actions and returns the fixed 241-action legal mask。
     ///
-    /// 旧 per-player semantic-token 历史/快照材料已删除(V18 输入由
+    /// 旧 per-player semantic-token 历史/快照材料已删除(V19 输入由
     /// `prepare_current_state_batch` + `encode_query_batch` 独立装配);
     /// 本方法只保留「固定动作空间」登记与合法掩码职责。
     fn prepare_decisions<'py>(

@@ -1,4 +1,4 @@
-"""GRP 离线训练入口(Mortal 方案,V18 契约):24 类排列 CE、validation-loss best。
+"""GRP 离线训练入口(Mortal 方案):24 类排列 CE、validation-loss best。
 
 输入为 21 维边界状态(见 ``model.grp.GRP_INPUT_LAYOUT``);每半庄的全部 prefix
 独立监督最终排列标签;batch、AdamW 与 lr 等由配置提供(DEFAULT_CONFIG 默认
