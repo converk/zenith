@@ -14,7 +14,9 @@
 
 信念 token 是策略的一部分：训练/推理同一条前向路径，不依赖外部标签。
 ``token_matrix`` 结构与训练方式均不变——**只**由 actor/policy 梯度更新，
-监督损失不经过 token 路径。
+监督损失不经过 token 路径；且 token 路径的输入为 ``detach(summary)``，
+策略/BC 损失止于转换矩阵，不进入五头/backbone/belief_query（梯度隔离，
+见 `audit/reports/v19/design/V19_信念网络策略梯度隔离_实施方案.md`）。
 """
 
 from __future__ import annotations
@@ -129,7 +131,13 @@ class BeliefNetwork(nn.Module):
 
         # 共享转换矩阵按家应用：每家 282 维 → token_count×d，再 reshape 为
         # [B, 3×token_count, d]（玩家主序：rel0 的 10 token、rel1、rel2）。
-        summary_flat = summary.reshape(-1, SUMMARY_DIM)
+        # 梯度隔离：token_matrix 是「信念 → 策略 token」的接口，只由
+        # actor/policy 梯度更新；因此输入摘要必须先 detach，策略/BC 损失
+        # 沿 30 个信念 token 回传时止步于转换矩阵，不再进入五头/backbone/
+        # belief_query。信念网络（五头 + backbone + query）的梯度只来自
+        # 五头监督标签（供 SFT 与 PPO 共用）。
+        summary_for_tokens = summary.detach()
+        summary_flat = summary_for_tokens.reshape(-1, SUMMARY_DIM)
         belief_tokens = self.token_matrix(summary_flat).view(
             batch, BELIEF_PLAYERS * self.token_count, self.d_model,
         )

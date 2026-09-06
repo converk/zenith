@@ -515,6 +515,9 @@ class KyokuTransformerActorCritic(nn.Module):
         )
         belief = self.belief_network(player_query_hidden)
         belief_tokens = belief["belief_tokens"]
+        # 梯度隔离：token 路径输入已在 BeliefNetwork 内 detach(summary)，
+        # 逐动作读出默认 detach 特征，因此策略损失不会沿这两条路径进入
+        # 信念五头 / belief_backbone / belief_query（仅监督标签更新它们）。
 
         # —— Actor 层：Shared 表示 + Analysis + Belief token + Action Query ——
         actor_input = actor_embeddings.clone()
