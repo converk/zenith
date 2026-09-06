@@ -59,6 +59,27 @@ def test_v19_sft_config_initial_belief_head_weights() -> None:
         assert float(config[name]) == value, name
 
 
+def test_v19_sft_resume_config_is_self_contained() -> None:
+    """resume 配置必须自包含：resume 指向稳定快照，其余关键项与 v19_sft 一致。"""
+    root = Path(__file__).resolve().parents[2] / "configs"
+    resume_config = load_config(str(root / "v19_sft_resume.yaml"))
+    base_config = load_config(str(root / "v19_sft.yaml"))
+    assert resume_config["resume"] == "checkpoints/train_riichi_v19/sft/resume_84000.pt"
+    assert resume_config["init_model"] is None
+    # resume 配置里不得缺失任何 v19_sft 顶层键（自包含，非 overlay）。
+    assert set(base_config) <= set(resume_config)
+    for key in (
+        "dataset", "checkpoint_dir", "learner_gpus", "batch_size", "epochs",
+        "seed", "belief_sft_coef", "belief_head_weight_hand",
+        "belief_head_weight_shanten", "belief_head_weight_wait",
+        "belief_head_weight_danger", "belief_head_weight_loss",
+        "belief_wait_tile_weight", "belief_wait_tenpai_weight",
+        "belief_public_grad_scale", "belief_readout_detach",
+    ):
+        assert resume_config[key] == base_config[key], key
+    assert resume_config["tensorboard_dirname"] == "tensorboard_resume"
+
+
 def test_v19_config_topology() -> None:
     """V19 拓扑:5 层 shared/actor 重排 + 1 层 critic + context 320。"""
     config = _v19_config()

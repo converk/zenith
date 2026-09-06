@@ -349,5 +349,26 @@ wait_tile 时的 ~3.6。运行中的训练需停止后重跑或从头/resume 应
 预期：hand 贡献从约 0.56 降至约 0.42（原始 loss≈0.702 × 0.6）；
 信息量更大的 wait/danger/loss 相对占比进一步提升。
 
+## 阶段 13：resume 配置与稳定快照（已完成，本次实施轮）
+
+> 用户决策（2026-09-06）：应用最新权重从既有训练继续。由于 SFT 只覆盖保存
+> `latest.pt`/`best.pt`，step 60000 快照已不存在，用户确认使用 step 84000
+> 的 `latest.pt` 继续。
+
+改动：
+- 复制当前 `checkpoints/train_riichi_v19/sft/latest.pt` 为稳定快照
+  `checkpoints/train_riichi_v19/sft/resume_84000.pt`（防止后续验证点覆盖）。
+- 新增 `riichi_ppo_v1/configs/v19_sft_resume.yaml`：完整自包含副本，
+  `resume: checkpoints/train_riichi_v19/sft/resume_84000.pt`、
+  `tensorboard_dirname: tensorboard_resume`，其余与 `v19_sft.yaml` 一致
+  （含 hand=0.6 / wait=1.5 / danger=5.0 / loss=5.0 / wait_tile=0.0）。
+- 测试：新增 `test_v19_sft_resume_config_is_self_contained` 锁定 resume 路径、
+  自包含键集与关键超参与标准配置一致。
+- 文档：`v19_sft.md` 说明 resume 配置；本进度文件。
+
+注意：resume 前必须停止当前运行中的旧训练进程；后续验证点会继续覆盖
+`latest.pt`/`best.pt`，但 resume 配置固定指向 `resume_84000.pt`。
+
+
 
 
