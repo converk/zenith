@@ -1,9 +1,11 @@
 # V19 Actor-only SFT（当前局面快照 + 信念监督）
 
-V19 SFT 的入口为 `riichi-sft-precompute` 与 `riichi-sft-train`，当前自包含配置为
-`riichi_ppo_v1/configs/v19_sft.yaml`（默认 `configs/sft.yaml` 同构）。数据使用
-2024–2025 **全量 100%** selection（subset 分母 1），输出格式必须是新建的
-`datasets/tenhou_sft_2024_2025_encoded_100pct_v19`；不得覆盖归档旧版本数据。
+V19 SFT 的入口为 `riichi-sft-precompute` 与 `riichi-sft-train`。**当前正式配置为
+`riichi_ppo_v1/configs/v19_sft_60pct.yaml`**（60% 重训，数据
+`datasets/tenhou_sft_2024_2025_encoded_60pct_v19`，已预处理完成）；历史
+`configs/v19_sft.yaml` 为 100% 全量配置，仅作冷存储参考。数据使用 2024–2025
+selection，输出格式必须是新建的 `datasets/tenhou_sft_2024_2025_encoded_60pct_v19`；
+不得覆盖归档旧版本数据。
 
 ## 数据契约
 
@@ -21,13 +23,17 @@ V19 不保留旧格式适配层，旧读写路径已移除。
 ## Actor-only 生命周期
 
 `actor_only: true`、`train_critic: false`、`train_public_value: false` 时，优化器仅
-接收 Actor 参数（token_embedding、public/actor backbone、行动作融合、策略头与
-`belief_network`）；Critic backbone/value 参数冻结且无梯度。SFT 目标为
-`L_BC + belief_sft_coef·Σλ_k·L_k + λ_c·L_wait_danger`，默认
+接收 Actor 参数（token_embedding、public/actor backbone、行动作融合、策略头、
+信念 backbone/查询/读出与 `belief_network`）；Critic backbone/value 参数冻结且无梯度。
+SFT 目标为 `L_BC + belief_sft_coef·Σλ_k·L_k + λ_c·L_wait_danger`，默认
 `belief_sft_coef=1.0`、λ_k=1.0、`belief_wait_danger_weight=0.05`，Loss 目标按
-`min(raw, 24000)/24000` 归一化。
+`min(raw, 24000)/24000` 归一化。60% 配置下信念损失为条件/加权式（wait N/A 二判 +
+仅听牌行 34 牌、danger pos_weight=5.0、loss 正例加权 huber），逐动作读出
+`belief_readout_enabled=true`、`belief_readout_detach=true`（信念头只由标签校准），
+`belief_public_grad_scale=0.25` 已由 `_forward_actor` 透传。
 
-固定验证与 checkpoint 间隔为 3000 steps，最终评估为 96 半庄，不能在实验配置里覆盖。
+`torch_compile: true`、`validate_structure: false` 一起开启；首次编译约 1–2 分钟
+属正常。固定验证与 checkpoint 间隔为 3000 steps，最终评估为 96 半庄，不能在实验配置里覆盖。
 正式运行前先执行：
 
 ```bash

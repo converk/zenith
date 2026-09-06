@@ -23,10 +23,22 @@ def test_v19_config_contains_belief_keys() -> None:
         "belief_head_weight_danger": 1.0,
         "belief_head_weight_loss": 1.0,
         "belief_wait_danger_weight": 0.05,
+        "belief_readout_enabled": True,
+        "belief_readout_detach": False,
+        "belief_wait_tenpai_weight": 1.0,
+        "belief_wait_tile_weight": 1.0,
+        "belief_danger_pos_weight": 5.0,
+        "belief_loss_positive_weight": 20.0,
     }
     for name, value in expected.items():
         assert name in config, f"v19_ppo.yaml 缺少信念键 {name}"
         assert float(config[name]) == value, name
+
+
+def test_v19_config_init_model_points_to_60pct_sft() -> None:
+    """PPO init_model 必须指向 60% 重训 SFT 产物（用户确认决策，不启动）。"""
+    config = _v19_config()
+    assert config["init_model"] == "checkpoints/train_riichi_v19/sft_60pct/best.pt"
 
 
 def test_v19_config_topology() -> None:

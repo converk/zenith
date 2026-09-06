@@ -16,7 +16,8 @@ inference_dtype: bf16
 game_mode: 4p-red-half
 
 # V19 前置产物:SFT 初始化/参考策略与冻结 GRP reward。
-init_model: checkpoints/train_riichi_v19/sft/best.pt
+# 60% 重训：init_model 指向 60% SFT 产物（不启动，仅准备配置）。
+init_model: checkpoints/train_riichi_v19/sft_60pct/best.pt
 grp_checkpoint: checkpoints/train_riichi_v18/grp/best.pt
 
 # Rollout 与推理拓扑。
@@ -93,7 +94,7 @@ sft_kl_coef_middle: 0.001
 sft_kl_coef_end: 0.0005
 sft_kl_middle_fraction: 0.5
 
-# V19 信念键(训练分册 §6)。
+# V19 信念键(训练分册 §6 + 60% 条件化/读出)。
 belief_public_grad_scale: 0.25
 belief_head_weight_hand: 1.0
 belief_head_weight_shanten: 1.0
@@ -102,6 +103,14 @@ belief_head_weight_danger: 1.0
 belief_head_weight_loss: 1.0
 belief_wait_danger_weight: 0.05
 belief_sft_coef: 1.0
+# 逐动作信念读出：PPO 阶段开启且不 detach（策略梯度可塑形信念头）。
+belief_readout_enabled: true
+belief_readout_detach: false
+# 条件/加权损失（与 SFT 60% 同构）。
+belief_wait_tenpai_weight: 1.0
+belief_wait_tile_weight: 1.0
+belief_danger_pos_weight: 5.0
+belief_loss_positive_weight: 20.0
 
 # 保存与评测节奏(机制常量见 evaluation/mechanism.py)。
 checkpoint_interval_updates: 5
@@ -114,7 +123,7 @@ opponent_mix:
   enabled: false
 
 eval1v3_enabled: true
-eval1v3_model_b: checkpoints/train_riichi_v19/sft/best.pt
+eval1v3_model_b: checkpoints/train_riichi_v19/sft_60pct/best.pt
 eval1v3_hanchans_per_process: 600
 eval1v3_seed_base: 20260829
 eval1v3_devices: ["0", "1"]

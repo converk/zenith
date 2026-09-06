@@ -76,6 +76,10 @@ ACTION_OFFENSE_QUERY / ACTION_DEFENSE_QUERY ×(2 per action)   # action_id 升�
   自己手中对该家现物牌种/实体数、对手临时振听（见逃）标记。立直/门清/副露字段全部移出。
 - **BELIEF token**：模型内部由共享表示经信念网络 + 转换矩阵生成，不代表编码器行；
   query 读信念、信念只读共享段、信念互见、分析不读信念（D32）。
+- **逐动作信念读出（模型内部，60% 方案）**：每个合法动作 Query 行的
+  `primary_tile_code`（第 3 列）在各家信念特征（danger/loss/wait/向听等）上取数，
+  经零初始化投影后加到 `pair_hiddens`；是模型内部计算，不改变 30 个信念 token、
+  mask、协议行布局或契约 hash。SFT 阶段 detach 特征，PPO 阶段不 detach。
 - **ACTION_QUERY**：同 V18（15 个嵌入特征、action_id 专用 241 维表）。
 
 ## 4. RoPE、分隔符与结构化注意力
@@ -97,10 +101,11 @@ ACTION_OFFENSE_QUERY / ACTION_DEFENSE_QUERY ×(2 per action)   # action_id 升�
 
 固定拓扑：`d_model=256`、16 Q heads / 4 KV heads（GQA）、`head_dim=16`、`ffn_dim=704`、
 3 Shared + 2 Actor + 1 Critic 层（总 block 数 6 不变），`dense_slot_dim=32`、
-`dense_fusion_dim=512`，`context_tokens=320`；新增信念网络（z_pool→256→512→五头）与
-282→2560 三家共享转换矩阵。RMSNorm/RoPE/gated FFN。密集类别使用槽位独立 embedding 表 +
-共享输入投影（512）+ 共享 gated MLP；总参数约 7.09M。无 MHA 双分支、无 Q scorer/Q boost。
-checkpoint 只接受 V19 `current_state_snapshot` 配置与精确 state keys。
+`dense_fusion_dim=512`，`context_tokens=320`；信念分支为 1 层 FFN=512 backbone
+（完整 shared_hidden + 每玩家 3 查询共 9 个）+ 五头逐查询平均 + 282→2560 三家共享
+转换矩阵 + 逐动作信念读出（零初始化）。RMSNorm/RoPE/gated FFN。密集类别使用槽位独立
+embedding 表 + 共享输入投影（512）+ 共享 gated MLP；总参数约 7.11M。无 MHA 双分支、
+无 Q scorer/Q boost。checkpoint 只接受 V19 `current_state_snapshot` 配置与精确 state keys。
 
 encoded manifest format 为 `riichi-sft-encoded-v19`，含 `state_protocol=
 riichi-current-state-v19-1`；协议 hash、token 行宽、字段 schema、RoPE/mask 语义与信息

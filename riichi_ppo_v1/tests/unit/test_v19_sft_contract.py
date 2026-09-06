@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from riichi_ppo_v1.sft.contract import (
     ACTOR_INPUT_CONTRACT_SHA256,
     BELIEF_LABEL_SHAPES,
     STATE_PROTOCOL_VERSION,
     validate_manifest,
 )
+from riichi_ppo_v1.sft.trainer import load_config
 
 
 def _base_manifest() -> dict[str, object]:
@@ -49,6 +52,16 @@ def test_belief_shape_contract() -> None:
         "danger": [102],
         "loss": [102],
     }
+
+
+def test_60pct_config_does_not_copy_cadence_constants() -> None:
+    """60% 配置不能复制 3000 步/96 半庄等 SFT 机制常量（sft/contract.py 单点）。"""
+    path = Path(__file__).resolve().parents[2] / "configs" / "v19_sft_60pct.yaml"
+    config = load_config(path)
+    assert "validation_interval_steps" not in config
+    assert "checkpoint_interval_steps" not in config
+    assert "validation_interval" not in config
+    assert "checkpoint_interval" not in config
 
 
 def test_manifest_fail_closed() -> None:

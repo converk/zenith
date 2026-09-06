@@ -160,3 +160,24 @@ D25 全路径生成标签，但只有 current policy 决策写入 PPO buffer（�
   V19 冒烟/单测已给出有限 value_loss 与 value 指标；设计已保留风险预案
   （critic_layers 可回退 2 层，+705,280 参数）供正式训练 A/B 验证。
   其余验收线全部达标。
+## 阶段 7：V19 60% 重训——信念骨干同构 + 逐动作读出 + 条件损失（已完成，本次实施轮）
+
+改动文件（摘要）：`model/belief_network.py` 改为五头/摘要/token 模块（输入
+`player_query_hidden [B,3,3,256]`，共享逐家小头、逐查询平均）；
+新增 `model/belief_readout.py`（21 维逐动作信念特征 → d_model，零初始化，
+detach 语义）；`model/architecture.py`（1 层 Ffn=512 信念 backbone + 9 查询 +
+读出动量/透传）；`sft/trainer.py`（`_forward_actor(model,batch,config)` 透传
+真 grad_scale/readout/validate_structure/kind_row_plan，`_belief_losses`/
+`_belief_metrics` 条件化，`collate_samples` host 侧 shared_capacity/kind_row_plan，
+DEFAULT_CONFIG 新键）；`training/belief.py`、`learner.py`、`learner_ddp.py`、
+`tensorboard.py`、`inference.py`、`evaluation/policy_adapter.py`；
+新增 `configs/v19_sft_60pct.yaml`；`v19_ppo.yaml` 增键与 `init_model` 指向 60% SFT。
+
+关键决策：token_matrix 仍只由 actor/policy 梯度更新，监督损失不经过 token 路径；
+SFT `belief_readout_detach=true`、PPO `false`；SFT 训练步不走 CPU AUC（新增指标
+全部为 GPU 纯 torch，AUC/条件 AUC 只在验证 cadence）；CPU 单测关闭 torch.compile
+（生产配置仍 true，首次编译约 1–2 分钟）。
+
+测试：全量 `pytest riichi_ppo_v1/tests -q` **236 passed**；新读出动量单测覆盖
+detach/tile_code=0/零初始一致/训练后改变 logits；参数实测 7,112,252 在
+[7.0M, 7.2M] 契约内；SFT 2 步 CPU 集成跑通并输出新指标键。

@@ -1,0 +1,71 @@
+# V19 60% 重训 SFT 自包含配置（用户已确认实施方案，2026-09-06）。
+# 目标 = actor BC + 信念监督联合(L_BC + belief_sft_coef·Σλ_k·L_k + λ_c·L_wait_danger)
+# + 1 层信念 backbone(与 Critic 同构) + 逐动作信念读出(SFT detach=true)。
+# 输入协议 30 token/mask 不变；不运行 precompute，数据已预处理完成。
+seed: 1
+device: cuda
+learner_gpus: 2
+model_size: v19
+layers: 5
+shared_layers: 3
+critic_layers: 1
+d_model: 256
+query_heads: 16
+kv_heads: 4
+head_dim: 16
+ffn_dim: 704
+dense_slot_dim: 32
+dense_fusion_dim: 512
+context_tokens: 320
+rope_base: 10000.0
+eps: 0.000001
+policy_head_type: current_state_snapshot
+dataset: datasets/tenhou_sft_2024_2025_encoded_60pct_v19
+epochs: 1
+actor_only: true
+train_critic: false
+train_public_value: false
+batch_size: 1024
+learning_rate: 0.00015
+min_learning_rate: 0.00002
+warmup_fraction: 0.02
+weight_decay: 0.01
+adam_beta1: 0.9
+adam_beta2: 0.999
+adam_epsilon: 0.00000001
+max_grad_norm: 1.0
+inference_dtype: bf16
+length_bucket_window_batches: 32
+log_interval_steps: 100
+validate_semantics: false
+# 训练开关：compile 首次编译约 1-2 分钟属正常；验证结构校验交给 Rust 编码器
+# + SFT 契约 + 单测，重复 forward 校验反而拖慢与破坏编译。
+torch_compile: true
+validate_structure: false
+validation_max_samples: 0
+validation_samples_per_run: 100000
+checkpoint_dir: checkpoints/train_riichi_v19/sft_60pct
+tensorboard_enabled: true
+tensorboard_dirname: tensorboard
+resume: null
+init_model: null
+
+# V19 信念监督键(训练分册 §6;SFT 阶段 belief_sft_coef=1.0)。
+belief_sft_coef: 1.0
+belief_head_weight_hand: 1.0
+belief_head_weight_shanten: 1.0
+belief_head_weight_wait: 1.0
+belief_head_weight_danger: 1.0
+belief_head_weight_loss: 1.0
+belief_wait_danger_weight: 0.05
+
+# 60% 方案新增：公共层梯度耦合 + 逐动作读出 + 条件/加权损失。
+belief_public_grad_scale: 0.25
+belief_readout_enabled: true
+belief_readout_detach: true
+belief_wait_tenpai_weight: 1.0
+belief_wait_tile_weight: 1.0
+belief_danger_pos_weight: 5.0
+belief_loss_positive_weight: 20.0
+
+# 机制常量（3000 steps / 96 hanchan）仍只在 sft/contract.py 定义，禁止复制。

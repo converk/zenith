@@ -31,7 +31,9 @@
   `d_model=256`/16Q/4KV GQA/`dense_slot_dim=32`/`dense_fusion_dim=512`/
   `context_tokens=320`、`layers=5`(shared 3 + actor 2)/`critic_layers=1`);
   信念网络五头监督与 PPO/SFT 联合训练,标签只进训练不进推理;MJAI 事件仅用于
-  同步/生命周期/动作执行,不再作为模型输入。
+  同步/生命周期/动作执行,不再作为模型输入。信念分支为 1 层与 Critic 同构的
+  backbone(完整 shared_hidden + 每玩家 3 查询共 9 个)+ 五头逐查询平均 +
+  逐动作信念读出(SFT detach/PPO 不 detach),30 个信念 token/输入契约不变。
 - V19 Actor 的公开信息边界与 Critic 的私有信息边界属于协议契约:任何扩大 Actor
   可见信息、改变 Critic 私有输入或恢复 Q scorer/Q-boosting 的变更,必须先以显式
   规范文档登记并同步协议文档,不得直接修改代码。
@@ -83,9 +85,11 @@
   的唯一存放位置,固定子目录:`design/`(设计文档)、`eval/`(评测输出)、
   `report/`(实验报告与 `PROGRESS.md` 进度记录)、`scripts/`(运行与验证脚本);
   禁止随意命名或散落其他目录。
-- 现行原始数据集为 `datasets/tenhou_sft_2024_2025`;下一份编码数据集固定写入
-  `datasets/tenhou_sft_2024_2025_encoded_100pct_v19`（两年 100% selection）。
-  归档 V16/V17/V18 编码数据与 V17 GRP 数据只允许只读统计,不得覆盖或作为活跃训练输入。
+- 现行原始数据集为 `datasets/tenhou_sft_2024_2025`;现行活跃编码数据集为
+  `datasets/tenhou_sft_2024_2025_encoded_60pct_v19`（用户已确认的 60% 重训输入,
+  已预处理完成,禁止重跑 precompute）。`datasets/tenhou_sft_2024_2025_encoded_100pct_v19`
+  为全量版本备选/归档。归档 V16/V17/V18 编码数据与 V17 GRP 数据只允许只读统计,
+  不得覆盖或作为活跃训练输入。
 - 文件名必须自描述,能从名称看出职责与版本;CLI 默认路径与 README/docs 必须与
   实际产物路径一致。
 
