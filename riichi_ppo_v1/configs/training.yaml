@@ -55,11 +55,11 @@ critic_bootstrap_updates: 2
 critic_bootstrap_learning_rate: 0.00002
 critic_public_grad_scale: 0.25
 # V19 信念监督(full path 由 v19_ppo.yaml 提供具体值;中性默认与设计一致)。
-# 五头权重为 2026-09-06 初始标定(见 PROGRESS.md 阶段 9)。
+# 五头权重为 2026-09-06 标定；wait 头只剩听牌二判后回调至 0.8。
 belief_public_grad_scale: 0.25
 belief_head_weight_hand: 1.0
 belief_head_weight_shanten: 1.0
-belief_head_weight_wait: 0.25
+belief_head_weight_wait: 0.8
 belief_head_weight_danger: 3.0
 belief_head_weight_loss: 3.0
 belief_wait_danger_weight: 0.05

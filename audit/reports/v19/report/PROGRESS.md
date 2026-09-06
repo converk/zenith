@@ -271,3 +271,36 @@ danger 0.40、loss 0.013，五头贡献同量级；wait 头从约 8.1 降到约 
 
 测试结果：`test_v19_ppo_config.py` 与相关单测通过；全量 pytest 通过
 （见本次运行记录）。
+
+## 阶段 10：关闭 wait_tile BCE 并回调 wait 头权重（已完成，本次实施轮）
+
+> 用户决策（2026-09-06）：未知局面的逐牌等待概率过于随机、难以监督且长期
+> 主导损失，关闭 `belief_wait_tile_weight`；wait 头只保留听牌/非听二判，
+> 故 `belief_head_weight_wait` 由 0.25 回调至 0.8。
+
+改动文件（摘要）：
+- `riichi_ppo_v1/configs/v19_sft.yaml`、`v19_ppo.yaml`：`belief_wait_tile_weight:
+  1.0 → 0.0`、`belief_head_weight_wait: 0.25 → 0.8`，注释说明决策依据。
+- `riichi_ppo_v1/configs/training.yaml`：`belief_head_weight_wait: 0.8`（中性默认）。
+- `riichi_ppo_v1/sft/trainer.py`：`DEFAULT_CONFIG` 与 `_belief_losses` 默认值同步
+  （wait=0.8、tile=0.0）。
+- `riichi_ppo_v1/training/belief.py`：`belief_losses`/`_belief_loss_components`
+  默认 `wait_tile_weight=0.0`、五头默认 wait=0.8 / danger=3.0 / loss=3.0。
+- `riichi_ppo_v1/training/learner.py`：`belief_head_weight_wait` 与
+  `belief_wait_tile_weight` 默认值同步。
+- 测试：`test_v19_ppo_config.py` 期望值更新（SFT/PPO 均锁定 wait=0.8、
+  tile=0.0）；`test_v19_learner_belief_loss.py` 的合成 kwargs 同步；
+  `test_v19_belief_gradient_isolation.py` 新增
+  `test_wait_tile_bce_disabled_by_default`（默认 wait_loss 只剩 tenpai 二判，
+  raw tile BCE 仍上报）。
+- 文档同步：`riichi_ppo_v1/docs/v19_sft.md`、训练分册 §4.1/§6、梯度隔离
+  实施方案 §7、本进度文件。
+
+关键决策/预期：
+- 训练 loss 中 wait_tile 贡献将从约 1.41（0.25 × 5.63）降为 0；
+  wait_tenpai 以 0.8 权重保留（约 0.19 贡献），wait 头不再主导总损失。
+- 模型仍然消费 wait tile 概率（摘要/读出），但不再接受直接监督，后续需
+  观察 wait_tile 指标是否漂移；如果下游策略因此受损，再评估是否移除
+  tile 级下游特征（阶段 11 备选）。
+- 不改网络结构、不改输入协议；运行中的训练需停止后重跑或等本轮结束再应用。
+

@@ -645,9 +645,9 @@ class PPOLearner:
         self.belief_head_weights = {
             "hand": float(hyperparameters.get("belief_head_weight_hand", 1.0)),
             "shanten": float(hyperparameters.get("belief_head_weight_shanten", 1.0)),
-            "wait": float(hyperparameters.get("belief_head_weight_wait", 1.0)),
-            "danger": float(hyperparameters.get("belief_head_weight_danger", 1.0)),
-            "loss": float(hyperparameters.get("belief_head_weight_loss", 1.0)),
+            "wait": float(hyperparameters.get("belief_head_weight_wait", 0.8)),
+            "danger": float(hyperparameters.get("belief_head_weight_danger", 3.0)),
+            "loss": float(hyperparameters.get("belief_head_weight_loss", 3.0)),
         }
         if any(value < 0.0 for value in self.belief_head_weights.values()):
             raise ValueError("belief_head_weight_* must be non-negative")
@@ -665,12 +665,13 @@ class PPOLearner:
         self.belief_readout_detach = bool(
             hyperparameters.get("belief_readout_detach", True)
         )
-        # 条件/加权损失超参（实施方案 §4.1）。
+        # 条件/加权损失超参（实施方案 §4.1）；wait_tile BCE 默认关闭
+        # （2026-09-06 决策：未知局面逐牌等待过于随机，保留 tenpai 二判）。
         self.belief_wait_tenpai_weight = float(
             hyperparameters.get("belief_wait_tenpai_weight", 1.0)
         )
         self.belief_wait_tile_weight = float(
-            hyperparameters.get("belief_wait_tile_weight", 1.0)
+            hyperparameters.get("belief_wait_tile_weight", 0.0)
         )
         self.belief_danger_pos_weight = float(
             hyperparameters.get("belief_danger_pos_weight", 5.0)

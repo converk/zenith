@@ -95,12 +95,12 @@ sft_kl_coef_end: 0.0005
 sft_kl_middle_fraction: 0.5
 
 # V19 信念键(训练分册 §6 + 条件化/读出)。
-# 五头权重为 2026-09-06 初始标定(依据停止中的 SFT step24000 验证损失尺度,
-# 见 PROGRESS.md 阶段 9):wait 降权、danger/loss 略放大,使加权贡献同量级。
+# 五头权重：2026-09-06 初始标定(danger/loss 略放大);同日 wait_tile BCE
+# 关闭后 wait 头只剩听牌二判，权重回调至 0.8（见 PROGRESS.md 阶段 10）。
 belief_public_grad_scale: 0.25
 belief_head_weight_hand: 1.0
 belief_head_weight_shanten: 1.0
-belief_head_weight_wait: 0.25
+belief_head_weight_wait: 0.8
 belief_head_weight_danger: 3.0
 belief_head_weight_loss: 3.0
 belief_wait_danger_weight: 0.05
@@ -110,8 +110,10 @@ belief_sft_coef: 1.0
 belief_readout_enabled: true
 belief_readout_detach: true
 # 条件/加权损失（与 SFT 同构）。
+# wait_tile BCE 关闭（2026-09-06 决策）：未知局面的逐牌等待概率过于随机、
+# 难以监督且长期主导损失；保留 wait_tenpai（听牌/非听）二判与 wait_danger。
 belief_wait_tenpai_weight: 1.0
-belief_wait_tile_weight: 1.0
+belief_wait_tile_weight: 0.0
 belief_danger_pos_weight: 5.0
 belief_loss_positive_weight: 20.0
 

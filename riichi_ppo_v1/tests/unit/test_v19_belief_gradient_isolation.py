@@ -92,6 +92,28 @@ def test_policy_loss_updates_token_matrix_but_not_belief_network() -> None:
     assert _belief_heads_have_no_grad(model)
 
 
+def test_wait_tile_bce_disabled_by_default() -> None:
+    """默认 belief_losses 关闭 wait_tile BCE：wait_loss 仅剩 tenpai 二判。"""
+    model, inputs = _model_and_inputs()
+    output = _forward_policy_only(model, inputs)
+    batch = {
+        "belief_hand": torch.randint(0, 5, (2, 102), dtype=torch.long),
+        "belief_shanten": torch.randint(0, 9, (2, 3), dtype=torch.long),
+        "belief_wait": torch.randint(0, 2, (2, 105), dtype=torch.float32),
+        "belief_danger": torch.randint(0, 2, (2, 102), dtype=torch.float32),
+        "belief_loss": torch.rand(2, 102, dtype=torch.float32) * 24000.0,
+    }
+    parts = belief_losses(output, batch, head_weights={
+        "hand": 1.0, "shanten": 1.0, "wait": 0.8,
+        "danger": 3.0, "loss": 3.0,
+    })
+    # raw tile BCE 仍上报（便于监控），但不进入 wait_loss / belief_loss_total。
+    assert parts["belief/wait_tile_loss"] > 0.0
+    torch.testing.assert_close(
+        parts["belief/wait_loss"], parts["belief/wait_tenpai_loss"],
+    )
+
+
 def test_supervised_loss_updates_belief_network_only_path() -> None:
     """五头监督损失更新信念网络，且不经过 token_matrix。"""
     model, inputs = _model_and_inputs()

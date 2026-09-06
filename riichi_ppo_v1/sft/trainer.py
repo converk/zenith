@@ -87,7 +87,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "belief_sft_coef": 1.0,
     "belief_head_weight_hand": 1.0,
     "belief_head_weight_shanten": 1.0,
-    "belief_head_weight_wait": 0.25,
+    "belief_head_weight_wait": 0.8,
     "belief_head_weight_danger": 3.0,
     "belief_head_weight_loss": 3.0,
     "belief_wait_danger_weight": 0.05,
@@ -96,9 +96,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # 逐动作信念读出：SFT 阶段开启并 detach 特征（信念头只由标签校准）。
     "belief_readout_enabled": True,
     "belief_readout_detach": True,
-    # 条件/加权损失（实施方案 §4.1）。
+    # 条件/加权损失（实施方案 §4.1）；wait_tile BCE 关闭（2026-09-06 决策）。
     "belief_wait_tenpai_weight": 1.0,
-    "belief_wait_tile_weight": 1.0,
+    "belief_wait_tile_weight": 0.0,
     "belief_danger_pos_weight": 5.0,
     "belief_loss_positive_weight": 20.0,
 }
@@ -343,8 +343,9 @@ def _belief_losses(
 
     五头逐格取均值（``reduction="mean"``）后乘各自 λ_k；Loss 目标先做
     ``min(raw, 24000) / 24000`` 归一化，与模型 sigmoid 预测同尺度。
-    V19 起：wait 拆 N/A 二判 + 仅听牌行 34 牌、danger 正例加权、
-    loss 逐格正例加权 huber（实施方案 §4.1）。
+    V19 起：wait 拆 N/A 二判 + 仅听牌行 34 牌（2026-09-06 起
+    ``wait_tile_weight=0.0`` 默认关闭 tile BCE，仅保留听牌二判）、
+    danger 正例加权、loss 逐格正例加权 huber（实施方案 §4.1）。
     """
     _require_belief_outputs(output)
     hand_logits = output["belief_hand_logits"].float()
@@ -375,7 +376,7 @@ def _belief_losses(
     selected = tenpai_mask.unsqueeze(-1)
     wait_tile_loss = (wait_tile_bce * selected).sum() / selected.sum().clamp_min(1)
     wait_tenpai_weight = float(config.get("belief_wait_tenpai_weight", 1.0))
-    wait_tile_weight = float(config.get("belief_wait_tile_weight", 1.0))
+    wait_tile_weight = float(config.get("belief_wait_tile_weight", 0.0))
     wait_loss = wait_tenpai_weight * wait_tenpai_loss + wait_tile_weight * wait_tile_loss
 
     # danger：正例加权 BCE（pos_weight=5.0）。
@@ -402,9 +403,9 @@ def _belief_losses(
     weights = {
         "hand": float(config.get("belief_head_weight_hand", 1.0)),
         "shanten": float(config.get("belief_head_weight_shanten", 1.0)),
-        "wait": float(config.get("belief_head_weight_wait", 1.0)),
-        "danger": float(config.get("belief_head_weight_danger", 1.0)),
-        "loss": float(config.get("belief_head_weight_loss", 1.0)),
+        "wait": float(config.get("belief_head_weight_wait", 0.8)),
+        "danger": float(config.get("belief_head_weight_danger", 3.0)),
+        "loss": float(config.get("belief_head_weight_loss", 3.0)),
     }
     weighted = (
         weights["hand"] * hand_loss

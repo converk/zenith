@@ -79,9 +79,9 @@ def _learner_kwargs() -> dict[str, object]:
         "belief_public_grad_scale": 0.25,
         "belief_head_weight_hand": 1.0,
         "belief_head_weight_shanten": 1.0,
-        "belief_head_weight_wait": 1.0,
-        "belief_head_weight_danger": 1.0,
-        "belief_head_weight_loss": 1.0,
+        "belief_head_weight_wait": 0.8,
+        "belief_head_weight_danger": 3.0,
+        "belief_head_weight_loss": 3.0,
         "belief_wait_danger_weight": 0.05,
         "bucket_window_multiplier": 8,
     }

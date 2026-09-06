@@ -19,14 +19,14 @@ def test_v19_config_contains_belief_keys() -> None:
         "belief_public_grad_scale": 0.25,
         "belief_head_weight_hand": 1.0,
         "belief_head_weight_shanten": 1.0,
-        "belief_head_weight_wait": 0.25,
+        "belief_head_weight_wait": 0.8,
         "belief_head_weight_danger": 3.0,
         "belief_head_weight_loss": 3.0,
         "belief_wait_danger_weight": 0.05,
         "belief_readout_enabled": True,
         "belief_readout_detach": True,
         "belief_wait_tenpai_weight": 1.0,
-        "belief_wait_tile_weight": 1.0,
+        "belief_wait_tile_weight": 0.0,
         "belief_danger_pos_weight": 5.0,
         "belief_loss_positive_weight": 20.0,
     }
@@ -42,15 +42,17 @@ def test_v19_config_init_model_points_to_standard_sft() -> None:
 
 
 def test_v19_sft_config_initial_belief_head_weights() -> None:
-    """v19_sft.yaml 五头权重必须与初始标定一致（SFT/PPO 同值）。"""
+    """v19_sft.yaml 五头权重与 wait_tile 关闭必须与现行决策一致。"""
     path = Path(__file__).resolve().parents[2] / "configs" / "v19_sft.yaml"
     config = load_config(str(path))
     expected = {
         "belief_head_weight_hand": 1.0,
         "belief_head_weight_shanten": 1.0,
-        "belief_head_weight_wait": 0.25,
+        "belief_head_weight_wait": 0.8,
         "belief_head_weight_danger": 3.0,
         "belief_head_weight_loss": 3.0,
+        "belief_wait_tenpai_weight": 1.0,
+        "belief_wait_tile_weight": 0.0,
     }
     for name, value in expected.items():
         assert name in config, f"v19_sft.yaml 缺少信念权重键 {name}"

@@ -7,6 +7,8 @@ AUC 近似(训练更新不引入逐 minibatch GPU→CPU 往返)。
 v19 60% 方案(D20-D22 修订):wait 拆「N/A 二判 + 仅听牌行 34 牌」两级、
 danger 用 pos_weight=5.0 的正例加权、loss 用「(1 + 20·I(target>0))」逐格
 加权 huber;新增条件指标与 per-head loss 日志。
+2026-09-06:wait_tile BCE 默认关闭(`wait_tile_weight=0.0`,仅保留 N/A 听牌
+二判),原始 tile BCE 指标仍上报供监控。
 """
 
 from __future__ import annotations
@@ -73,7 +75,7 @@ def _belief_loss_components(
     batch: dict[str, torch.Tensor],
     *,
     wait_tenpai_weight: float = 1.0,
-    wait_tile_weight: float = 1.0,
+    wait_tile_weight: float = 0.0,
     danger_pos_weight: float = 5.0,
     loss_positive_weight: float = 20.0,
 ) -> dict[str, torch.Tensor]:
@@ -151,7 +153,7 @@ def belief_losses(
     head_weights: dict[str, float] | None = None,
     wait_danger_weight: float = 0.05,
     wait_tenpai_weight: float = 1.0,
-    wait_tile_weight: float = 1.0,
+    wait_tile_weight: float = 0.0,
     danger_pos_weight: float = 5.0,
     loss_positive_weight: float = 20.0,
 ) -> dict[str, torch.Tensor]:
@@ -171,9 +173,9 @@ def belief_losses(
     weights = {
         "hand": 1.0,
         "shanten": 1.0,
-        "wait": 1.0,
-        "danger": 1.0,
-        "loss": 1.0,
+        "wait": 0.8,
+        "danger": 3.0,
+        "loss": 3.0,
     }
     if head_weights:
         weights.update({key: float(value) for key, value in head_weights.items()})
