@@ -83,12 +83,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # SFT 契约校验覆盖），与 torch_compile 配合稳定编译。
     "validate_structure": False,
     # V19 信念监督联合（训练分册 §4.4/§6）：唯一现行配置为 v19_sft.yaml。
+    # 五头权重为 2026-09-06 初始标定（见 PROGRESS.md 阶段 9）。
     "belief_sft_coef": 1.0,
     "belief_head_weight_hand": 1.0,
     "belief_head_weight_shanten": 1.0,
-    "belief_head_weight_wait": 1.0,
-    "belief_head_weight_danger": 1.0,
-    "belief_head_weight_loss": 1.0,
+    "belief_head_weight_wait": 0.25,
+    "belief_head_weight_danger": 3.0,
+    "belief_head_weight_loss": 3.0,
     "belief_wait_danger_weight": 0.05,
     # 信念共享层梯度耦合（与 critic 同构，实施方案 §5.1；SFT 定版 0.25）。
     "belief_public_grad_scale": 0.25,

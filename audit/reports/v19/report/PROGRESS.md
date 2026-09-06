@@ -227,7 +227,7 @@ detach/tile_code=0/零初始一致/训练后改变 logits；参数实测 7,112,2
 `riichi_ppo_v1/docs/v19_input_protocol.md`、`riichi_ppo_v1/docs/v19_sft.md`、
 `AGENTS.md` 版本契约、本进度文件。
 
-### 五头损失比例调整建议（只建议，未改权重）
+### 五头损失比例调整建议（阶段 8 建议，阶段 9 已落地）
 
 依据停止中的 SFT 训练（`checkpoints/train_riichi_v19/sft/metrics.json`，
 step 24000 终态）：验证集 `belief_hand_loss≈0.730`、`belief_shanten_loss≈1.227`、
@@ -247,3 +247,27 @@ step 24000 终态）：验证集 `belief_hand_loss≈0.730`、`belief_shanten_lo
 danger 0.40、loss 0.013，五头贡献同量级；wait 头从约 8.1 降到约 2.0 的
 加权损失，`belief_loss_total` 预期从约 10.2 降到约 4.4。实际数值需在
 梯度隔离复训后按验证集曲线再定终值。
+
+## 阶段 9：五头损失权重初始标定（已完成，本次实施轮）
+
+> 用户指示把阶段 8 的建议值落地为实际训练权重；仍保留“终值待复训确认”。
+
+改动文件（摘要）：
+- `riichi_ppo_v1/configs/v19_sft.yaml`、`v19_ppo.yaml`、`training.yaml`：
+  五头权重从全 1.0 改为 hand=1.0 / shanten=1.0 / wait=0.25 / danger=3.0 /
+  loss=3.0，并加初始标定注释。
+- `riichi_ppo_v1/sft/trainer.py`：`DEFAULT_CONFIG` 五头权重同步为初始标定值。
+- `riichi_ppo_v1/tests/unit/test_v19_ppo_config.py`：PPO 期望值更新，新增
+  `test_v19_sft_config_initial_belief_head_weights` 锁定 SFT 配置同值。
+- 文档同步：`riichi_ppo_v1/docs/v19_sft.md`、训练分册 §4.1/§6、梯度隔离
+  实施方案 §7（“建议”改为“已落地”）、本进度文件。
+
+关键决策：
+- 依据 `checkpoints/train_riichi_v19/sft/metrics.json`（step 24000 终态）的
+  验证损失尺度：wait≈8.11、shanten≈1.23、hand≈0.73、danger≈0.135、
+  loss≈0.0042；等权时 wait 单独贡献约 79%。初始标定让五头加权贡献同量级。
+- 不触碰梯度隔离结构；正式 SFT/PPO 复训后用验证曲线定终值，必要时再调
+  wait（0.2–0.5 区间为下限窗口）。
+
+测试结果：`test_v19_ppo_config.py` 与相关单测通过；全量 pytest 通过
+（见本次运行记录）。

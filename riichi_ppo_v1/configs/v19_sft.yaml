@@ -51,12 +51,14 @@ resume: null
 init_model: null
 
 # V19 信念监督键(训练分册 §6;SFT 阶段 belief_sft_coef=1.0)。
+# 五头权重为 2026-09-06 初始标定(依据停止中的 SFT step24000 验证损失尺度,
+# 见 PROGRESS.md 阶段 9):wait 降权、danger/loss 略放大,使加权贡献同量级。
 belief_sft_coef: 1.0
 belief_head_weight_hand: 1.0
 belief_head_weight_shanten: 1.0
-belief_head_weight_wait: 1.0
-belief_head_weight_danger: 1.0
-belief_head_weight_loss: 1.0
+belief_head_weight_wait: 0.25
+belief_head_weight_danger: 3.0
+belief_head_weight_loss: 3.0
 belief_wait_danger_weight: 0.05
 
 # V19 标准新增：公共层梯度耦合 + 逐动作读出 + 条件/加权损失。

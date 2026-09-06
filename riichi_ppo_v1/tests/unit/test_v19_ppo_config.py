@@ -19,9 +19,9 @@ def test_v19_config_contains_belief_keys() -> None:
         "belief_public_grad_scale": 0.25,
         "belief_head_weight_hand": 1.0,
         "belief_head_weight_shanten": 1.0,
-        "belief_head_weight_wait": 1.0,
-        "belief_head_weight_danger": 1.0,
-        "belief_head_weight_loss": 1.0,
+        "belief_head_weight_wait": 0.25,
+        "belief_head_weight_danger": 3.0,
+        "belief_head_weight_loss": 3.0,
         "belief_wait_danger_weight": 0.05,
         "belief_readout_enabled": True,
         "belief_readout_detach": True,
@@ -39,6 +39,22 @@ def test_v19_config_init_model_points_to_standard_sft() -> None:
     """PPO init_model 必须指向 V19 标准 SFT 产物（不启动）。"""
     config = _v19_config()
     assert config["init_model"] == "checkpoints/train_riichi_v19/sft/best.pt"
+
+
+def test_v19_sft_config_initial_belief_head_weights() -> None:
+    """v19_sft.yaml 五头权重必须与初始标定一致（SFT/PPO 同值）。"""
+    path = Path(__file__).resolve().parents[2] / "configs" / "v19_sft.yaml"
+    config = load_config(str(path))
+    expected = {
+        "belief_head_weight_hand": 1.0,
+        "belief_head_weight_shanten": 1.0,
+        "belief_head_weight_wait": 0.25,
+        "belief_head_weight_danger": 3.0,
+        "belief_head_weight_loss": 3.0,
+    }
+    for name, value in expected.items():
+        assert name in config, f"v19_sft.yaml 缺少信念权重键 {name}"
+        assert float(config[name]) == value, name
 
 
 def test_v19_config_topology() -> None:
