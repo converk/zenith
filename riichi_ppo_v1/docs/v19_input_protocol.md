@@ -75,11 +75,15 @@ ACTION_OFFENSE_QUERY / ACTION_DEFENSE_QUERY ×(2 per action)   # action_id 升�
 - **OPPONENT_ANALYSIS**（行为统计卡）：relative_seat、最近六张手切/摸切数、全期手切数、
   自己手中对该家现物牌种/实体数、对手临时振听（见逃）标记。立直/门清/副露字段全部移出。
 - **BELIEF token**：模型内部由共享表示经信念网络 + 转换矩阵生成，不代表编码器行；
-  query 读信念、信念只读共享段、信念互见、分析不读信念（D32）。
+  query 读信念、信念只读共享段、信念互见、分析不读信念（D32）。梯度隔离：
+  转换矩阵的输入为 `detach(summary)`，策略/BC 损失沿 token 回传止于
+  `token_matrix`（它只由 actor/policy 梯度更新）；信念五头、1 层 backbone 与
+  `belief_query` 只由五头监督标签更新，SFT 与 PPO 一致。
 - **逐动作信念读出（模型内部）**：每个合法动作 Query 行的
   `primary_tile_code`（第 3 列）在各家信念特征（danger/loss/wait/向听等）上取数，
   经零初始化投影后加到 `pair_hiddens`；是模型内部计算，不改变 30 个信念 token、
-  mask、协议行布局或契约 hash。SFT 阶段 detach 特征，PPO 阶段不 detach。
+  mask、协议行布局或契约 hash。SFT 与 PPO 均 detach 特征，读出投影只由
+  actor 损失训练，策略梯度不进入信念网络。
 - **ACTION_QUERY**：15 个嵌入特征、action_id 专用 241 维表。
 
 ## 4. RoPE、分隔符与结构化注意力

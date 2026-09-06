@@ -30,6 +30,12 @@ SFT 目标为 `L_BC + belief_sft_coef·Σλ_k·L_k + λ_c·L_wait_danger`，默�
 `belief_readout_enabled=true`、`belief_readout_detach=true`（信念头只由标签校准），
 `belief_public_grad_scale=0.25` 已由 `_forward_actor` 透传。
 
+梯度隔离（监督单源，SFT 与 PPO 一致）：策略/BC 损失不得进入信念网络——
+`token_matrix` 的输入为 `detach(summary)`，策略梯度沿 30 个信念 token 回传
+止于转换矩阵；逐动作读出特征恒 detach；信念五头、1 层 belief backbone 与
+`belief_query` 只由五头监督标签更新，共享层仅按 `belief_public_grad_scale=0.25`
+接收监督梯度。
+
 `torch_compile: true`、`validate_structure: false` 一起开启；首次编译约 1–2 分钟
 属正常。固定验证与 checkpoint 间隔为 3000 steps，最终评估为 96 半庄，不能在实验配置里覆盖。
 正式运行前先执行：

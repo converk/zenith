@@ -185,3 +185,65 @@ detach/tile_code=0/零初始一致/训练后改变 logits；参数实测 7,112,2
 - 补充（用户要求）：最终只保留一份 V19 标准 SFT 配置文件
   `configs/v19_sft.yaml`；历史 `configs/sft.yaml` 等冗余配置已删除；
   相关测试/README/文档同步。
+
+## 阶段 8：信念网络策略梯度隔离（监督单源，已完成，本次实施轮）
+
+> 依据：`audit/reports/v19/design/V19_信念网络策略梯度隔离_实施方案.md`。
+> 本修正取代阶段 7 中“SFT detach=true、PPO detach=false”的旧决策：
+> 策略/BC 损失不得以任何形式进入 token_matrix 之后的私有信念网络。
+
+改动文件（摘要）：
+- `riichi_ppo_v1/model/belief_network.py`：`token_matrix` 输入改为
+  `detach(summary)`，策略梯度沿 30 个信念 token 回传止于转换矩阵；中文注释
+  说明 token_matrix 只由 actor/policy 梯度更新、信念网络只由监督标签更新。
+- `riichi_ppo_v1/model/architecture.py`：防御性注释（token 路径与读出路径均
+  不进入信念网络梯度），无结构改动。
+- `riichi_ppo_v1/configs/v19_ppo.yaml`：`belief_readout_detach: false → true`，
+  注释改为“SFT/PPO 均恒 detach，策略梯度不得塑形信念网络”。
+- `riichi_ppo_v1/training/learner.py`：`belief_readout_detach` 默认值
+  `False → True`，注释同步监督单源语义。
+- 新增 `riichi_ppo_v1/tests/unit/test_v19_belief_gradient_isolation.py`：
+  - 策略/BC 损失 backward 后 `token_matrix` 有梯度，
+    信念五头 / `belief_backbone.*` / `belief_query` 无梯度；
+    读出投影仍由 actor 损失更新；
+  - 五头监督损失 backward 后五头 / backbone / `belief_query` 有梯度，
+    `token_matrix` 无梯度（监督不经过 token 路径）。
+- 同步测试：`test_v19_ppo_config.py` 期望 `belief_readout_detach=True`；
+  `test_v19_learner_belief_loss.py` 转发断言 `detach=True`；
+  `test_v19_belief_readout.py` detach=false 用例注明仅为模块级能力。
+
+关键决策：
+- 信念网络（1 层 backbone + 五头 + belief_query）的梯度完全来自五头监督标签，
+  SFT 与 PPO 一致；共享层按 `belief_public_grad_scale=0.25` 接收监督梯度。
+- 逐动作读出特征 SFT/PPO 均恒 detach；读出投影自身仍由 actor 损失训练。
+- 不改输入协议、30 token、mask、编码格式与契约 hash。
+
+测试结果：
+- `test_v19_belief_gradient_isolation.py` + 既有 belief/architecture/readout/
+  ppo_config/learner_belief_loss 相关单测通过。
+- 全量 `pytest riichi_ppo_v1/tests -q` 通过（见本轮失败记录若无）。
+
+文档同步：三册设计文档（信念网络 / 信念监督标签与训练 / 输入与模型编码）、
+`riichi_ppo_v1/docs/v19_input_protocol.md`、`riichi_ppo_v1/docs/v19_sft.md`、
+`AGENTS.md` 版本契约、本进度文件。
+
+### 五头损失比例调整建议（只建议，未改权重）
+
+依据停止中的 SFT 训练（`checkpoints/train_riichi_v19/sft/metrics.json`，
+step 24000 终态）：验证集 `belief_hand_loss≈0.730`、`belief_shanten_loss≈1.227`、
+`belief_wait_loss≈8.113`（其中 `wait_tile≈7.850`）、`belief_danger_loss≈0.135`、
+`belief_loss_loss≈0.0042`。等权 λ=1.0 时 wait 头贡献约 79% 的加权监督损失，
+与实施方案 §7 的判断一致。
+
+建议起始值（梯度隔离落地后用小步 SFT 标定，不要一次大改）：
+- `belief_head_weight_wait: 0.25`（候选取 0.2–0.5，以
+  `wait_conditional_auc` / `wait_tenpai_acc` 不崩为下限）
+- `belief_head_weight_hand: 1.0`
+- `belief_head_weight_shanten: 1.0`
+- `belief_head_weight_danger: 3.0`
+- `belief_head_weight_loss: 3.0`
+
+按上述起始值估算：验证贡献约 wait 2.03、shanten 1.23、hand 0.73、
+danger 0.40、loss 0.013，五头贡献同量级；wait 头从约 8.1 降到约 2.0 的
+加权损失，`belief_loss_total` 预期从约 10.2 降到约 4.4。实际数值需在
+梯度隔离复训后按验证集曲线再定终值。

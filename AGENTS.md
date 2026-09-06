@@ -32,8 +32,10 @@
   `context_tokens=320`、`layers=5`(shared 3 + actor 2)/`critic_layers=1`);
   信念网络五头监督与 PPO/SFT 联合训练,标签只进训练不进推理;MJAI 事件仅用于
   同步/生命周期/动作执行,不再作为模型输入。信念分支为 1 层与 Critic 同构的
-  backbone(完整 shared_hidden + 每玩家 3 查询共 9 个)+ 五头逐查询平均 +
-  逐动作信念读出(SFT detach/PPO 不 detach),30 个信念 token/输入契约不变。
+  backbone（完整 shared_hidden + 每玩家 3 查询共 9 个）+ 五头逐查询平均 +
+  逐动作信念读出（SFT/PPO 恒 detach），30 个信念 token/输入契约不变。
+  **信念网络仅由五头监督标签更新；token_matrix 仅由策略梯度更新；五头监督
+  以 belief_public_grad_scale=0.25 回传三层共享层，SFT 与 PPO 一致。**
 - V19 Actor 的公开信息边界与 Critic 的私有信息边界属于协议契约:任何扩大 Actor
   可见信息、改变 Critic 私有输入或恢复 Q scorer/Q-boosting 的变更,必须先以显式
   规范文档登记并同步协议文档,不得直接修改代码。
