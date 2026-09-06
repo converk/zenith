@@ -24,7 +24,7 @@ def test_v19_config_contains_belief_keys() -> None:
         "belief_head_weight_loss": 1.0,
         "belief_wait_danger_weight": 0.05,
         "belief_readout_enabled": True,
-        "belief_readout_detach": False,
+        "belief_readout_detach": True,
         "belief_wait_tenpai_weight": 1.0,
         "belief_wait_tile_weight": 1.0,
         "belief_danger_pos_weight": 5.0,

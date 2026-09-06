@@ -132,7 +132,7 @@ def test_belief_readout_settings_are_forwarded(monkeypatch) -> None:
     kwargs = dict(_learner_kwargs())
     kwargs.update({
         "belief_readout_enabled": True,
-        "belief_readout_detach": False,
+        "belief_readout_detach": True,
     })
     learner = PPOLearner("v19", "cpu", **kwargs)
     captured: dict[str, object] = {}
@@ -149,7 +149,7 @@ def test_belief_readout_settings_are_forwarded(monkeypatch) -> None:
     buffer = RolloutBuffer([_transition(rng, row) for row in range(6)])
     learner.update(buffer, shuffle_seed=2)
     assert captured["enabled"] is True
-    assert captured["detach"] is False
+    assert captured["detach"] is True
 
 
 def test_belief_public_grad_scale_is_forwarded(monkeypatch) -> None:

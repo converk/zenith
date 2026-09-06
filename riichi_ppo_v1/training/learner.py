@@ -656,13 +656,14 @@ class PPOLearner:
         )
         if self.belief_wait_danger_weight < 0.0:
             raise ValueError("belief_wait_danger_weight must be non-negative")
-        # v19 60%：逐动作信念读出的训练开关与 detach 语义；PPO 阶段允许策略
-        # 塑形信念（detach=false）。
+        # v19 60%：逐动作信念读出的训练开关与 detach 语义；SFT 与 PPO 均
+        # 恒 detach 特征，读出投影只由 actor 损失训练，策略梯度不得塑形
+        # 信念网络（监督单源）。
         self.belief_readout_enabled = bool(
             hyperparameters.get("belief_readout_enabled", True)
         )
         self.belief_readout_detach = bool(
-            hyperparameters.get("belief_readout_detach", False)
+            hyperparameters.get("belief_readout_detach", True)
         )
         # 条件/加权损失超参（实施方案 §4.1）。
         self.belief_wait_tenpai_weight = float(

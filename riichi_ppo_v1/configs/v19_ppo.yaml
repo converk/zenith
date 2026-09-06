@@ -103,9 +103,10 @@ belief_head_weight_danger: 1.0
 belief_head_weight_loss: 1.0
 belief_wait_danger_weight: 0.05
 belief_sft_coef: 1.0
-# 逐动作信念读出：PPO 阶段开启且不 detach（策略梯度可塑形信念头）。
+# 逐动作信念读出：SFT/PPO 均恒 detach 特征；读出投影只由 actor 损失训练，
+# 策略梯度不得塑形信念网络（监督单源，见梯度隔离实施方案）。
 belief_readout_enabled: true
-belief_readout_detach: false
+belief_readout_detach: true
 # 条件/加权损失（与 SFT 同构）。
 belief_wait_tenpai_weight: 1.0
 belief_wait_tile_weight: 1.0

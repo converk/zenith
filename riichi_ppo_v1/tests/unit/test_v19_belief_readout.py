@@ -70,7 +70,7 @@ def test_detach_true_blocks_belief_gradients_but_updates_projection() -> None:
 
 
 def test_detach_false_allows_belief_gradients() -> None:
-    """detach=False：读出损失可回传信念头（PPO 阶段允许策略塑形信念）。"""
+    """detach=False：读出损失可回传信念头（模块级能力；当前 SFT/PPO 训练均恒 detach）。"""
     torch.manual_seed(0)
     network = BeliefNetwork()
     hidden = torch.randn(2, 3, 3, 256)
