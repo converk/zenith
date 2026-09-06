@@ -298,9 +298,39 @@ danger 0.40、loss 0.013，五头贡献同量级；wait 头从约 8.1 降到约 
 
 关键决策/预期：
 - 训练 loss 中 wait_tile 贡献将从约 1.41（0.25 × 5.63）降为 0；
-  wait_tenpai 以 0.8 权重保留（约 0.19 贡献），wait 头不再主导总损失。
+  wait_tenpai 以 0.8 权重保留（约 0.19 贡献，阶段 11 已上调至 1.5），
+  wait 头不再主导总损失。
 - 模型仍然消费 wait tile 概率（摘要/读出），但不再接受直接监督，后续需
   观察 wait_tile 指标是否漂移；如果下游策略因此受损，再评估是否移除
   tile 级下游特征（阶段 11 备选）。
 - 不改网络结构、不改输入协议；运行中的训练需停止后重跑或等本轮结束再应用。
+
+## 阶段 11：信念头按信息量二次调权（已完成，本次实施轮）
+
+> 用户决策（2026-09-06）：把优化空间更多给信息量大的头——听牌/危险/放铳
+> 损失加大占比；hand 逐格误差对决策影响较小，略微降权（不要少太多）。
+
+改动文件（摘要）：
+- `riichi_ppo_v1/configs/v19_sft.yaml`、`v19_ppo.yaml`、`training.yaml`：
+  五头权重改为 hand=0.8 / shanten=1.0 / wait=1.5 / danger=5.0 / loss=5.0。
+- `riichi_ppo_v1/sft/trainer.py`、`training/belief.py`、`training/learner.py`：
+  DEFAULT_CONFIG / 默认值同步。
+- 测试：`test_v19_ppo_config.py`、`test_v19_learner_belief_loss.py`、
+  `test_v19_belief_gradient_isolation.py` 期望值与合成 kwargs 同步。
+- 文档同步：`riichi_ppo_v1/docs/v19_sft.md`、训练分册 §4.1/§6、梯度隔离
+  实施方案 §7、60pct 实施方案注记、本进度文件。
+
+预期（以 step 84000 的原始损失估，wait_tile 已关闭）：
+| 头 | 原始验证/训练 loss | 新权重 | 预计贡献 |
+|---|---:|---:|---:|
+| hand | ≈0.702/0.704 | 0.8 | ≈0.56 |
+| shanten | ≈1.164/1.171 | 1.0 | ≈1.16 |
+| wait(tenpai) | ≈0.239 | 1.5 | ≈0.36 |
+| danger | ≈0.094/0.105 | 5.0 | ≈0.47 |
+| loss | ≈0.0036/0.0037 | 5.0 | ≈0.018 |
+
+hand 从 1.0 降到 0.8（-20%），wait/danger/loss 分别上调到 1.5/5.0/5.0；
+`belief_loss_total` 预计从（旧权重）约 2.35 升到约 2.57，仍远低于开启
+wait_tile 时的 ~3.6。运行中的训练需停止后重跑或从头/resume 应用。
+
 

@@ -171,11 +171,11 @@ def belief_losses(
         loss_positive_weight=loss_positive_weight,
     )
     weights = {
-        "hand": 1.0,
+        "hand": 0.8,
         "shanten": 1.0,
-        "wait": 0.8,
-        "danger": 3.0,
-        "loss": 3.0,
+        "wait": 1.5,
+        "danger": 5.0,
+        "loss": 5.0,
     }
     if head_weights:
         weights.update({key: float(value) for key, value in head_weights.items()})

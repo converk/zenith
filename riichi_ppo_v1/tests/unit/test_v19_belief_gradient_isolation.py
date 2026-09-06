@@ -104,8 +104,8 @@ def test_wait_tile_bce_disabled_by_default() -> None:
         "belief_loss": torch.rand(2, 102, dtype=torch.float32) * 24000.0,
     }
     parts = belief_losses(output, batch, head_weights={
-        "hand": 1.0, "shanten": 1.0, "wait": 0.8,
-        "danger": 3.0, "loss": 3.0,
+        "hand": 0.8, "shanten": 1.0, "wait": 1.5,
+        "danger": 5.0, "loss": 5.0,
     })
     # raw tile BCE 仍上报（便于监控），但不进入 wait_loss / belief_loss_total。
     assert parts["belief/wait_tile_loss"] > 0.0

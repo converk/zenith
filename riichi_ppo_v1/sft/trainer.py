@@ -85,11 +85,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # V19 信念监督联合（训练分册 §4.4/§6）：唯一现行配置为 v19_sft.yaml。
     # 五头权重为 2026-09-06 初始标定（见 PROGRESS.md 阶段 9）。
     "belief_sft_coef": 1.0,
-    "belief_head_weight_hand": 1.0,
+    "belief_head_weight_hand": 0.8,
     "belief_head_weight_shanten": 1.0,
-    "belief_head_weight_wait": 0.8,
-    "belief_head_weight_danger": 3.0,
-    "belief_head_weight_loss": 3.0,
+    "belief_head_weight_wait": 1.5,
+    "belief_head_weight_danger": 5.0,
+    "belief_head_weight_loss": 5.0,
     "belief_wait_danger_weight": 0.05,
     # 信念共享层梯度耦合（与 critic 同构，实施方案 §5.1；SFT 定版 0.25）。
     "belief_public_grad_scale": 0.25,
@@ -401,11 +401,11 @@ def _belief_losses(
     ).mean()
 
     weights = {
-        "hand": float(config.get("belief_head_weight_hand", 1.0)),
+        "hand": float(config.get("belief_head_weight_hand", 0.8)),
         "shanten": float(config.get("belief_head_weight_shanten", 1.0)),
-        "wait": float(config.get("belief_head_weight_wait", 0.8)),
-        "danger": float(config.get("belief_head_weight_danger", 3.0)),
-        "loss": float(config.get("belief_head_weight_loss", 3.0)),
+        "wait": float(config.get("belief_head_weight_wait", 1.5)),
+        "danger": float(config.get("belief_head_weight_danger", 5.0)),
+        "loss": float(config.get("belief_head_weight_loss", 5.0)),
     }
     weighted = (
         weights["hand"] * hand_loss

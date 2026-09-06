@@ -17,11 +17,11 @@ def test_v19_config_contains_belief_keys() -> None:
     config = _v19_config()
     expected = {
         "belief_public_grad_scale": 0.25,
-        "belief_head_weight_hand": 1.0,
+        "belief_head_weight_hand": 0.8,
         "belief_head_weight_shanten": 1.0,
-        "belief_head_weight_wait": 0.8,
-        "belief_head_weight_danger": 3.0,
-        "belief_head_weight_loss": 3.0,
+        "belief_head_weight_wait": 1.5,
+        "belief_head_weight_danger": 5.0,
+        "belief_head_weight_loss": 5.0,
         "belief_wait_danger_weight": 0.05,
         "belief_readout_enabled": True,
         "belief_readout_detach": True,
@@ -46,11 +46,11 @@ def test_v19_sft_config_initial_belief_head_weights() -> None:
     path = Path(__file__).resolve().parents[2] / "configs" / "v19_sft.yaml"
     config = load_config(str(path))
     expected = {
-        "belief_head_weight_hand": 1.0,
+        "belief_head_weight_hand": 0.8,
         "belief_head_weight_shanten": 1.0,
-        "belief_head_weight_wait": 0.8,
-        "belief_head_weight_danger": 3.0,
-        "belief_head_weight_loss": 3.0,
+        "belief_head_weight_wait": 1.5,
+        "belief_head_weight_danger": 5.0,
+        "belief_head_weight_loss": 5.0,
         "belief_wait_tenpai_weight": 1.0,
         "belief_wait_tile_weight": 0.0,
     }
