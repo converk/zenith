@@ -9,7 +9,7 @@ Actor 输入为完整状态快照序列（Shared 公共前缀 + 三个 Opponent 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import torch
@@ -17,7 +17,8 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from .belief_network import BeliefNetwork
+from .belief_network import BELIEF_PLAYERS, BELIEF_QUERIES_PER_PLAYER, BeliefNetwork
+from .belief_readout import BeliefActionReadout
 from .dense_embedding import StateTokenEmbedding
 from .encoding_protocol import (
     CONTEXT_TOKENS,
@@ -327,7 +328,15 @@ class KyokuTransformerActorCritic(nn.Module):
         self.public_backbone = Decoder(self.config, layers=self.config.shared_layers, final_norm=False)
         self.actor_backbone = Decoder(self.config, layers=self.config.layers - self.config.shared_layers)
         self.critic_backbone = Decoder(self.config, layers=self.config.critic_layers)
+        # 信念 backbone：与 Critic 同构（完整 shared_hidden 序列 + 9 个查询），
+        # 1 层、FFN 512（FFN 704 → 512 控制参数量，ModelConfig 不参与协议契约）。
+        belief_config = replace(self.config, ffn_dim=512)
+        self.belief_backbone = Decoder(belief_config, layers=1)
+        # 9 个查询 token（玩家主序：p0 的 q0/q1/q2, p1 的 q0/q1/q2, p2 的
+        # q0/q1/q2），初始化与 value_query 同法。
+        self.belief_query = nn.Parameter(torch.empty(3 * 3, self.config.d_model))
         self.belief_network = BeliefNetwork(self.config.d_model)
+        self.belief_readout = BeliefActionReadout(self.config.d_model)
         self.action_fusion = nn.Sequential(
             nn.Linear(2 * self.config.d_model, self.config.d_model),
             nn.SiLU(),
@@ -340,6 +349,7 @@ class KyokuTransformerActorCritic(nn.Module):
         )
         self.value_head = nn.Linear(self.config.d_model, 1)
         nn.init.normal_(self.value_query, std=self.config.d_model ** -0.5)
+        nn.init.normal_(self.belief_query, std=self.config.d_model ** -0.5)
 
     def forward_actor(
         self,
@@ -354,6 +364,8 @@ class KyokuTransformerActorCritic(nn.Module):
         kind_row_plan: dict[int, Any] | None = None,
         validate_structure: bool = True,
         belief_public_grad_scale: float = 1.0,
+        belief_readout_enabled: bool = True,
+        belief_readout_detach: bool = True,
     ) -> dict[str, Tensor]:
         """policy-only 前向(冻结 SFT reference 预计算的唯一消费入口)。
 
@@ -377,6 +389,8 @@ class KyokuTransformerActorCritic(nn.Module):
             kind_row_plan=kind_row_plan,
             validate_structure=validate_structure,
             belief_public_grad_scale=belief_public_grad_scale,
+            belief_readout_enabled=belief_readout_enabled,
+            belief_readout_detach=belief_readout_detach,
         )
 
     def forward(
@@ -396,6 +410,8 @@ class KyokuTransformerActorCritic(nn.Module):
         policy_only: bool = False,
         validate_structure: bool = True,
         belief_public_grad_scale: float = 1.0,
+        belief_readout_enabled: bool = True,
+        belief_readout_detach: bool = True,
         shared_capacity: int | None = None,
         critic_total_capacity: int | None = None,
         kind_row_plan: dict[int, Any] | None = None,
@@ -416,7 +432,8 @@ class KyokuTransformerActorCritic(nn.Module):
         输入的展平行号);传入时 token_embedding 走静态键表路径,免去
         argsort/tolist 同步;None 时保持旧路径。
 
-        ``belief_public_grad_scale`` 在 z_pool → encoder 边界实施与 critic
+        ``belief_public_grad_scale`` 在 shared_for_belief（完整 shared_hidden
+        序列）→ public backbone 边界实施与 critic
         相同的 detach+重标度 trick(0.0 完全 detach;1.0 原样;0.25 为训练分册
         定版耦合比),只缩放信念分支回传公共 backbone 的梯度,前向不变。
         """
@@ -463,7 +480,7 @@ class KyokuTransformerActorCritic(nn.Module):
             shared_tokens, shared_lengths, attention_mask=shared_mask_bool, valid=shared_valid,
         )
 
-        # —— 信念网络：从公共表示生成五头预测与注入 token ——
+        # —— 信念 backbone：与 Critic 同构（完整 shared_hidden + 9 个查询）——
         belief_grad_scale = float(belief_public_grad_scale)
         if not 0.0 <= belief_grad_scale <= 1.0:
             raise ValueError("belief_public_grad_scale must be in [0, 1]")
@@ -476,7 +493,27 @@ class KyokuTransformerActorCritic(nn.Module):
             shared_for_belief = detached_belief + belief_grad_scale * (
                 shared_hidden - detached_belief
             )
-        belief = self.belief_network(shared_for_belief)
+        belief_total_capacity = shared_capacity + 9
+        belief_total_lengths = shared_lengths + 9
+        belief_query = self.belief_query.to(
+            device=device, dtype=shared_for_belief.dtype,
+        ).expand(batch, 9, self.config.d_model)
+        belief_sequence = torch.cat([shared_for_belief, belief_query], dim=1)
+        belief_mask_bool, belief_valid = _bidirectional_layout(
+            belief_total_lengths, belief_total_capacity,
+        )
+        belief_hidden = self.belief_backbone(
+            belief_sequence, belief_total_lengths,
+            attention_mask=belief_mask_bool, valid=belief_valid,
+        )
+        # 读 9 个查询位置 → [B,9,d] → [B,3,3,d]（玩家主序 p0 q0/q1/q2, p1…）。
+        query_positions = shared_lengths[:, None] + torch.arange(9, device=device)[None]
+        query_rows = torch.arange(batch, device=device)[:, None].expand(batch, 9)
+        player_queries = belief_hidden[query_rows, query_positions]
+        player_query_hidden = player_queries.view(
+            batch, BELIEF_PLAYERS, BELIEF_QUERIES_PER_PLAYER, self.config.d_model,
+        )
+        belief = self.belief_network(player_query_hidden)
         belief_tokens = belief["belief_tokens"]
 
         # —— Actor 层：Shared 表示 + Analysis + Belief token + Action Query ——
@@ -577,6 +614,22 @@ class KyokuTransformerActorCritic(nn.Module):
         pair_hiddens = self.action_fusion(
             torch.cat((offense_hidden, defense_hidden), dim=-1)
         )
+        if belief_readout_enabled:
+            # 从原始 actor_factors 的 Query 尾行第 3 列提取 primary_tile_code
+            # （原序列不含信念 token，Query 尾行位置仍按 actor_lengths 计算）。
+            offense_cols_orig = (
+                actor_lengths[:, None]
+                - 2 * pair_counts[:, None]
+                + 2 * pair_index[None, :]
+            )
+            safe_orig_cols = offense_cols_orig.clamp(
+                0, max(int(actor_capacity) - 1, 0),
+            )
+            tile_codes = actor_factors[rows_matrix, safe_orig_cols, 3].long()
+            readout = self.belief_readout(
+                belief, tile_codes, detach=belief_readout_detach,
+            )
+            pair_hiddens = pair_hiddens + readout
         action_logits = self.policy_mlp(pair_hiddens).squeeze(-1).float()
         action_logits = torch.where(
             valid_pair, action_logits, action_logits.new_zeros(()),

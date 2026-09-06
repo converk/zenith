@@ -153,6 +153,93 @@ def test_belief_public_grad_scale_scales_encoder_gradient() -> None:
     assert norm_scaled == pytest.approx(0.25 * norm_full, rel=0.10, abs=1e-8)
 
 
+def test_belief_backbone_uses_full_shared_sequence_plus_nine_queries(monkeypatch) -> None:
+    """信念 backbone 输入 = 完整 shared_hidden + 9 个查询 token，末 9 行为查询。
+
+    与 Critic 同构：连接的是完整 shared_hidden 序列而非 mean-pool；9 个查询
+    按玩家主序展开（p0 q0/q1/q2, p1…, p2…），由 ``belief_query`` 广播到批次。
+    """
+    torch.manual_seed(2026)
+    model = KyokuTransformerActorCritic(_tiny_config())
+    captured: dict[str, torch.Tensor] = {}
+    original_backbone_forward = model.belief_backbone.forward
+
+    def wrapped_backbone(sequence, lengths, **kwargs):
+        captured["sequence"] = sequence
+        captured["lengths"] = lengths
+        return original_backbone_forward(sequence, lengths, **kwargs)
+
+    # 只替换 Decoder.forward 方法用于捕获输入，不改变参数/输出。
+    monkeypatch.setattr(model.belief_backbone, "forward", wrapped_backbone)
+    inputs = actor_inputs(batch=1, action_ids=(1, 7))
+    with torch.no_grad():
+        output = model(
+            actor_factors=inputs["actor_factors"],
+            actor_numeric=inputs["actor_numeric"],
+            actor_lengths=inputs["actor_lengths"],
+            query_action_ids=inputs["action_ids"],
+            query_pair_counts=inputs["query_pair_counts"],
+            legal_mask=inputs["legal_mask"],
+            policy_only=True,
+        )
+    sequence = captured["sequence"]
+    lengths = captured["lengths"]
+    # 查询在 shared 有效行之后追加 9 行；长度 = shared_lengths + 9。
+    assert sequence.shape[0] == 1
+    assert sequence.shape[1] == int(lengths[0])
+    assert lengths[0] >= 9
+    assert torch.equal(sequence[0, -9:], model.belief_query)
+    # 五头输出形状不变，且玩家×查询输入在内部已按查询平均。
+    assert output["belief_hand_logits"].shape == (1, 3, 34, 5)
+    assert output["belief_tokens"].shape == (1, 30, _tiny_config().d_model)
+
+
+def test_belief_readout_zero_init_matches_disabled_and_trains() -> None:
+    """零初始化下开启/关闭逐动作读出 logits 一致；投影非零后必须改变 logits。"""
+    torch.manual_seed(2026)
+    model = KyokuTransformerActorCritic(_tiny_config())
+    inputs = actor_inputs(batch=1, action_ids=(1, 7))
+    with torch.no_grad():
+        disabled = model(
+            actor_factors=inputs["actor_factors"],
+            actor_numeric=inputs["actor_numeric"],
+            actor_lengths=inputs["actor_lengths"],
+            query_action_ids=inputs["action_ids"],
+            query_pair_counts=inputs["query_pair_counts"],
+            legal_mask=inputs["legal_mask"],
+            policy_only=True,
+            belief_readout_enabled=False,
+        )["policy_logits"]
+        enabled = model(
+            actor_factors=inputs["actor_factors"],
+            actor_numeric=inputs["actor_numeric"],
+            actor_lengths=inputs["actor_lengths"],
+            query_action_ids=inputs["action_ids"],
+            query_pair_counts=inputs["query_pair_counts"],
+            legal_mask=inputs["legal_mask"],
+            policy_only=True,
+            belief_readout_enabled=True,
+            belief_readout_detach=True,
+        )["policy_logits"]
+    assert torch.equal(disabled, enabled)
+    # 训练一步后（非零投影）读出必须进入 logits。
+    with torch.no_grad():
+        model.belief_readout.proj.weight.fill_(0.01)
+        model.belief_readout.proj.bias.fill_(0.01)
+        trained = model(
+            actor_factors=inputs["actor_factors"],
+            actor_numeric=inputs["actor_numeric"],
+            actor_lengths=inputs["actor_lengths"],
+            query_action_ids=inputs["action_ids"],
+            query_pair_counts=inputs["query_pair_counts"],
+            legal_mask=inputs["legal_mask"],
+            policy_only=True,
+            belief_readout_enabled=True,
+            belief_readout_detach=True,
+        )["policy_logits"]
+    assert not torch.equal(trained, disabled)
+
+
 def test_v19_parameter_contract_range() -> None:
     """V19 全模型参数在 [7.0M, 7.2M]（设计估算 ~7.09M，实际嵌入增删浮动）。"""
     model = KyokuTransformerActorCritic()
