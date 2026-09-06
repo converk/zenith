@@ -349,13 +349,16 @@ wait_tile 时的 ~3.6。运行中的训练需停止后重跑或从头/resume 应
 预期：hand 贡献从约 0.56 降至约 0.42（原始 loss≈0.702 × 0.6）；
 信息量更大的 wait/danger/loss 相对占比进一步提升。
 
-## 阶段 13：resume 配置与稳定快照（已完成，本次实施轮）
+## 阶段 13：resume 配置与稳定快照（已完成，随后被用户撤销）
 
 > 用户决策（2026-09-06）：应用最新权重从既有训练继续。由于 SFT 只覆盖保存
 > `latest.pt`/`best.pt`，step 60000 快照已不存在，用户确认使用 step 84000
 > 的 `latest.pt` 继续。
 
-改动：
+> **撤销（2026-09-06）**：用户随后决定改为从头训练 2 epochs，resume 配置与
+> 未完成训练产物已删除（不归档），详见阶段 14。
+
+改动（已回滚）：
 - 复制当前 `checkpoints/train_riichi_v19/sft/latest.pt` 为稳定快照
   `checkpoints/train_riichi_v19/sft/resume_84000.pt`（防止后续验证点覆盖）。
 - 新增 `riichi_ppo_v1/configs/v19_sft_resume.yaml`：完整自包含副本，
@@ -368,6 +371,24 @@ wait_tile 时的 ~3.6。运行中的训练需停止后重跑或从头/resume 应
 
 注意：resume 前必须停止当前运行中的旧训练进程；后续验证点会继续覆盖
 `latest.pt`/`best.pt`，但 resume 配置固定指向 `resume_84000.pt`。
+
+## 阶段 14：决定从头训练 2 epochs，清理 resume/旧产物（已完成，本次实施轮）
+
+> 用户决策（2026-09-06）：不要 resume，改为从零开始训练 **2 epochs**；
+> 删除 resume 配置与未跑完的训练产物（不归档），重新启动。
+
+改动：
+- 删除 `riichi_ppo_v1/configs/v19_sft_resume.yaml` 及其
+  `test_v19_sft_resume_config_is_self_contained` 测试；`v19_sft.md` 恢复
+  "唯一现行自包含配置为 v19_sft.yaml"。
+- 停止旧 SFT 进程并删除 `checkpoints/train_riichi_v19/sft/`（含
+  latest/best/resume_84000/metrics/tensorboard）与 `logs/v19/sft_train_v19_1.log`。
+- `riichi_ppo_v1/configs/v19_sft.yaml`、`sft/trainer.py` DEFAULT_CONFIG：
+  `epochs: 1 → 2`；新增 `test_v19_sft_config_epochs_two` 锁定。
+- 预期总步数约 `2 × 137,605 ≈ 275,210` 步（batch=1024、双卡），验证/保存
+  节奏仍为每 3000 步。
+
+
 
 
 

@@ -21,7 +21,7 @@ rope_base: 10000.0
 eps: 0.000001
 policy_head_type: current_state_snapshot
 dataset: datasets/tenhou_sft_2024_2025_encoded_60pct_v19
-epochs: 1
+epochs: 2
 actor_only: true
 train_critic: false
 train_public_value: false

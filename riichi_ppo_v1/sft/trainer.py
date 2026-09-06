@@ -56,7 +56,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "policy_head_type": "current_state_snapshot",
     "dense_slot_dim": 32,
     "dense_fusion_dim": 512,
-    "epochs": 1,
+    "epochs": 2,
     "train_critic": False,
     "train_public_value": False,
     "batch_size": 512,
