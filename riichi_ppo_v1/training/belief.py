@@ -173,7 +173,7 @@ def belief_losses(
     weights = {
         "hand": 0.7,
         "shanten": 0.8,
-        "wait": 1.5,
+        "wait": 1.8,
         "danger": 5.0,
         "loss": 5.0,
     }

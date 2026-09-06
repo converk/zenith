@@ -87,7 +87,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "belief_sft_coef": 1.0,
     "belief_head_weight_hand": 0.7,
     "belief_head_weight_shanten": 0.8,
-    "belief_head_weight_wait": 1.5,
+    "belief_head_weight_wait": 1.8,
     "belief_head_weight_danger": 5.0,
     "belief_head_weight_loss": 5.0,
     "belief_wait_danger_weight": 0.05,
@@ -403,7 +403,7 @@ def _belief_losses(
     weights = {
         "hand": float(config.get("belief_head_weight_hand", 0.7)),
         "shanten": float(config.get("belief_head_weight_shanten", 0.8)),
-        "wait": float(config.get("belief_head_weight_wait", 1.5)),
+        "wait": float(config.get("belief_head_weight_wait", 1.8)),
         "danger": float(config.get("belief_head_weight_danger", 5.0)),
         "loss": float(config.get("belief_head_weight_loss", 5.0)),
     }

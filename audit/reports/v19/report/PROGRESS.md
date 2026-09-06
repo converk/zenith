@@ -402,6 +402,19 @@ wait_tile 时的 ~3.6。运行中的训练需停止后重跑或从头/resume 应
 预期：shanten 贡献从约 1.16 降至约 0.93，hand 从约 0.42 升至约 0.49；
 信息量权重结构仍保持 wait/danger/loss 高于 hand 的目标方向。
 
+## 阶段 16：wait 权重上调至 1.8（已完成，本次实施轮）
+
+> 用户决策（2026-09-06）：听牌/非听二判是决策核心，wait 权重 1.5 → 1.8。
+
+改动：
+- 五头权重调整为 hand=0.7 / shanten=0.8 / wait=1.8 / danger=5.0 / loss=5.0。
+- 同步 `v19_sft.yaml`、`v19_ppo.yaml`、`training.yaml`、`sft/trainer.py`、
+  `training/belief.py`、`training/learner.py` 与相关测试/文档。
+
+预期：wait(tenpai) 贡献从约 0.36 升至约 0.43，与 hand/danger 同量级，
+听牌信息继续强化。
+
+
 
 
 

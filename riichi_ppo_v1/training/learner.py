@@ -645,7 +645,7 @@ class PPOLearner:
         self.belief_head_weights = {
             "hand": float(hyperparameters.get("belief_head_weight_hand", 0.7)),
             "shanten": float(hyperparameters.get("belief_head_weight_shanten", 0.8)),
-            "wait": float(hyperparameters.get("belief_head_weight_wait", 1.5)),
+            "wait": float(hyperparameters.get("belief_head_weight_wait", 1.8)),
             "danger": float(hyperparameters.get("belief_head_weight_danger", 5.0)),
             "loss": float(hyperparameters.get("belief_head_weight_loss", 5.0)),
         }
