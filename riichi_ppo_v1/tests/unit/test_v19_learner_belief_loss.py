@@ -77,7 +77,7 @@ def _learner_kwargs() -> dict[str, object]:
         "critic_bootstrap_updates": 0,
         "critic_private_embedding_grad_scale": 0.25,
         "belief_public_grad_scale": 0.25,
-        "belief_head_weight_hand": 0.8,
+        "belief_head_weight_hand": 0.6,
         "belief_head_weight_shanten": 1.0,
         "belief_head_weight_wait": 1.5,
         "belief_head_weight_danger": 5.0,

@@ -333,4 +333,21 @@ hand 从 1.0 降到 0.8（-20%），wait/danger/loss 分别上调到 1.5/5.0/5.0
 `belief_loss_total` 预计从（旧权重）约 2.35 升到约 2.57，仍远低于开启
 wait_tile 时的 ~3.6。运行中的训练需停止后重跑或从头/resume 应用。
 
+## 阶段 12：hand 权重进一步下调至 0.6（已完成，本次实施轮）
+
+> 用户决策（2026-09-06）：hand 逐格手牌计数误差对最终决策影响较小，
+> 再降 0.2，权重 0.8 → 0.6；其余头不变。
+
+改动：
+- `riichi_ppo_v1/configs/v19_sft.yaml`、`v19_ppo.yaml`、`training.yaml`、
+  `sft/trainer.py`、`training/belief.py`、`training/learner.py`：
+  hand 默认/配置权重改为 **0.6**。
+- 测试与文档同步：`test_v19_ppo_config.py`、`test_v19_learner_belief_loss.py`、
+  `test_v19_belief_gradient_isolation.py`、`v19_sft.md`、训练分册 §6、
+  梯度隔离方案 §7、60pct 注记、本进度文件。
+
+预期：hand 贡献从约 0.56 降至约 0.42（原始 loss≈0.702 × 0.6）；
+信息量更大的 wait/danger/loss 相对占比进一步提升。
+
+
 

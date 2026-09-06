@@ -171,7 +171,7 @@ def belief_losses(
         loss_positive_weight=loss_positive_weight,
     )
     weights = {
-        "hand": 0.8,
+        "hand": 0.6,
         "shanten": 1.0,
         "wait": 1.5,
         "danger": 5.0,
