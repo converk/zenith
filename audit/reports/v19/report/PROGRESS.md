@@ -388,6 +388,21 @@ wait_tile 时的 ~3.6。运行中的训练需停止后重跑或从头/resume 应
 - 预期总步数约 `2 × 137,605 ≈ 275,210` 步（batch=1024、双卡），验证/保存
   节奏仍为每 3000 步。
 
+## 阶段 15：shanten/hand 再次微调（已完成，本次实施轮）
+
+> 用户决策（2026-09-06）：稍微减少 shanten、稍微增加 hand，避免 shanten
+> 一家独大，同时保留 hand 的基础校准信号。
+
+改动：
+- 五头权重调整为 hand=0.7 / shanten=0.8 / wait=1.5 / danger=5.0 / loss=5.0
+  （原 hand=0.6 / shanten=1.0）。
+- 同步 `v19_sft.yaml`、`v19_ppo.yaml`、`training.yaml`、`sft/trainer.py`、
+  `training/belief.py`、`training/learner.py` 与相关测试/文档。
+
+预期：shanten 贡献从约 1.16 降至约 0.93，hand 从约 0.42 升至约 0.49；
+信息量权重结构仍保持 wait/danger/loss 高于 hand 的目标方向。
+
+
 
 
 

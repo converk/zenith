@@ -24,8 +24,8 @@ V19 不保留旧格式适配层，旧读写路径已移除。
 接收 Actor 参数（token_embedding、public/actor backbone、行动作融合、策略头、
 信念 backbone/查询/读出与 `belief_network`）；Critic backbone/value 参数冻结且无梯度。
 SFT 目标为 `L_BC + belief_sft_coef·Σλ_k·L_k + λ_c·L_wait_danger`，默认
-`belief_sft_coef=1.0`、λ_k 为 hand=0.6 / shanten=1.0 / wait=1.5 /
-danger=5.0 / loss=5.0（2026-09-06 按信息量微调，见 PROGRESS.md 阶段 9/10/11/12）、
+`belief_sft_coef=1.0`、λ_k 为 hand=0.7 / shanten=0.8 / wait=1.5 /
+danger=5.0 / loss=5.0（2026-09-06 按信息量微调，见 PROGRESS.md 阶段 9/10/11/12/15）、
 `belief_wait_danger_weight=0.05`，Loss 目标按
 `min(raw, 24000)/24000` 归一化。V19 标准配置下信念损失为条件/加权式（wait 仅保留
 N/A 听牌二判，wait_tile BCE 已关闭 `belief_wait_tile_weight=0.0`、原始逐格 tile

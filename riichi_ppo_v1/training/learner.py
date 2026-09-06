@@ -643,8 +643,8 @@ class PPOLearner:
         if not 0.0 <= self.belief_public_grad_scale <= 1.0:
             raise ValueError("belief_public_grad_scale must be in [0, 1]")
         self.belief_head_weights = {
-            "hand": float(hyperparameters.get("belief_head_weight_hand", 0.6)),
-            "shanten": float(hyperparameters.get("belief_head_weight_shanten", 1.0)),
+            "hand": float(hyperparameters.get("belief_head_weight_hand", 0.7)),
+            "shanten": float(hyperparameters.get("belief_head_weight_shanten", 0.8)),
             "wait": float(hyperparameters.get("belief_head_weight_wait", 1.5)),
             "danger": float(hyperparameters.get("belief_head_weight_danger", 5.0)),
             "loss": float(hyperparameters.get("belief_head_weight_loss", 5.0)),
