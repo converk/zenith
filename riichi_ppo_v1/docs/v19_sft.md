@@ -1,11 +1,9 @@
 # V19 Actor-only SFT（当前局面快照 + 信念监督）
 
-V19 SFT 的入口为 `riichi-sft-precompute` 与 `riichi-sft-train`。**当前正式配置为
-`riichi_ppo_v1/configs/v19_sft_60pct.yaml`**（60% 重训，数据
-`datasets/tenhou_sft_2024_2025_encoded_60pct_v19`，已预处理完成）；历史
-`configs/v19_sft.yaml` 为 100% 全量配置，仅作冷存储参考。数据使用 2024–2025
-selection，输出格式必须是新建的 `datasets/tenhou_sft_2024_2025_encoded_60pct_v19`；
-不得覆盖归档旧版本数据。
+V19 SFT 的入口为 `riichi-sft-precompute` 与 `riichi-sft-train`。**唯一现行
+自包含配置为 `riichi_ppo_v1/configs/v19_sft_60pct.yaml`**（60% 重训，数据
+`datasets/tenhou_sft_2024_2025_encoded_60pct_v19`，已预处理完成）；不再保留
+100% 全量 SFT 配置文件。不得覆盖归档旧版本数据。
 
 ## 数据契约
 

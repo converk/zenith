@@ -82,7 +82,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # 训练前向跳过 GPU 侧重复结构校验（输入由 Rust 编码器 fail-closed 生成 +
     # SFT 契约校验覆盖），与 torch_compile 配合稳定编译。
     "validate_structure": False,
-    # V19 信念监督联合（训练分册 §4.4/§6）：缺省时向前兼容 v19_sft.yaml。
+    # V19 信念监督联合（训练分册 §4.4/§6）：唯一现行配置为 v19_sft_60pct.yaml。
     "belief_sft_coef": 1.0,
     "belief_head_weight_hand": 1.0,
     "belief_head_weight_shanten": 1.0,

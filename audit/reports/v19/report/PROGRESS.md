@@ -181,3 +181,7 @@ SFT `belief_readout_detach=true`、PPO `false`；SFT 训练步不走 CPU AUC（�
 测试：全量 `pytest riichi_ppo_v1/tests -q` **236 passed**；新读出动量单测覆盖
 detach/tile_code=0/零初始一致/训练后改变 logits；参数实测 7,112,252 在
 [7.0M, 7.2M] 契约内；SFT 2 步 CPU 集成跑通并输出新指标键。
+
+- 补充（用户要求）：只保留一份 60% SFT 配置文件，删除
+  `configs/v19_sft.yaml`（100%）与 `configs/sft.yaml`（默认 100%）；
+  唯一现行配置为 `configs/v19_sft_60pct.yaml`；相关测试/README/文档同步。

@@ -24,24 +24,20 @@ V19 SFT 参数拓扑为 `d_model=256`、16 Q heads、4 KV heads、`head_dim=16`�
 
 ## V19 SFT-ready 路径
 
-现行自包含配置是 `configs/v19_sft.yaml`。V19 SFT 目标为 Actor BC 与信念五头监督
-联合（`L_BC + belief_sft_coef·Σλ_k·L_k + λ_c·L_wait_danger`）：
+唯一现行 SFT 自包含配置是 `configs/v19_sft_60pct.yaml`（60% 重训，
+`datasets/tenhou_sft_2024_2025_encoded_60pct_v19` 已预处理完成，不再生成数据）。
+V19 SFT 目标为 Actor BC 与信念五头监督联合
+（`L_BC + belief_sft_coef·Σλ_k·L_k + λ_c·L_wait_danger`）：
 
 ```bash
-CUDA_DEVICE=0,1 conda run -n Mahjong-AI riichi-sft-precompute \
-  --source datasets/tenhou_sft_2024_2025 \
-  --output datasets/tenhou_sft_2024_2025_encoded_100pct_v19 \
-  --subset-denominator 1 --subset-remainders 0 --workers 16
-
 CUDA_DEVICE=0,1 conda run -n Mahjong-AI riichi-sft-train \
-  --config riichi_ppo_v1/configs/v19_sft.yaml
+  --config riichi_ppo_v1/configs/v19_sft_60pct.yaml
 ```
 
-数据生成 + 训练可一键执行（产物地址与校验见脚本头部注释）：
+训练可一键执行（产物地址与校验见脚本头部注释）：
 
 ```bash
-bash audit/reports/v19/scripts/run_v19_precompute_and_sft.sh            # 生成数据 + 训练
-bash audit/reports/v19/scripts/run_v19_precompute_and_sft.sh --skip-precompute  # 已有数据仅训练
+bash audit/reports/v19/scripts/run_v19_precompute_and_sft.sh --skip-precompute
 ```
 
 预计算 manifest 必须声明 `riichi-sft-encoded-v19`、protocol 19、冻结的 V19

@@ -83,11 +83,11 @@ def test_packaged_configs_are_current_and_neutral() -> None:
     assert training["policy_head_type"] == "current_state_snapshot"
     assert training["model_size"] == "v19"
     assert training["checkpoint_dir"] == "checkpoints/train_riichi_v19/ppo"
-    sft = load_sft_config(CONFIG_DIR / "sft.yaml")
+    sft = load_sft_config(CONFIG_DIR / "v19_sft_60pct.yaml")
     assert sft["policy_head_type"] == "current_state_snapshot"
     assert sft["model_size"] == "v19"
     assert sft["context_tokens"] == 320
-    assert sft["checkpoint_dir"] == "checkpoints/train_riichi_v19/sft"
+    assert sft["checkpoint_dir"] == "checkpoints/train_riichi_v19/sft_60pct"
     assert sft["belief_sft_coef"] == 1.0
     assert sft["belief_wait_danger_weight"] == 0.05
 
@@ -148,7 +148,7 @@ def test_sft_cadence_single_point() -> None:
         "validation_interval_steps",
         "checkpoint_interval_steps",
     }
-    for name in ("sft.yaml",):
+    for name in ("v19_sft_60pct.yaml",):
         config = _read_yaml(CONFIG_DIR / name)
         duplicated = cadence_keys & set(config)
         assert not duplicated, f"{name} 复制了节奏键: {sorted(duplicated)}"
