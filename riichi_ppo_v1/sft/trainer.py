@@ -79,6 +79,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tensorboard_dirname": "tensorboard",
     "resume": None,
     "init_model": None,
+    # 训练前向跳过 GPU 侧重复结构校验（输入由 Rust 编码器 fail-closed 生成 +
+    # SFT 契约校验覆盖），与 torch_compile 配合稳定编译。
+    "validate_structure": False,
     # V19 信念监督联合（训练分册 §4.4/§6）：缺省时向前兼容 v19_sft.yaml。
     "belief_sft_coef": 1.0,
     "belief_head_weight_hand": 1.0,
@@ -87,6 +90,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "belief_head_weight_danger": 1.0,
     "belief_head_weight_loss": 1.0,
     "belief_wait_danger_weight": 0.05,
+    # 信念共享层梯度耦合（与 critic 同构，实施方案 §5.1；SFT 定版 0.25）。
+    "belief_public_grad_scale": 0.25,
+    # 逐动作信念读出：SFT 阶段开启并 detach 特征（信念头只由标签校准）。
+    "belief_readout_enabled": True,
+    "belief_readout_detach": True,
+    # 条件/加权损失（实施方案 §4.1）。
+    "belief_wait_tenpai_weight": 1.0,
+    "belief_wait_tile_weight": 1.0,
+    "belief_danger_pos_weight": 5.0,
+    "belief_loss_positive_weight": 20.0,
 }
 
 # 节奏键单一来源(sft/contract.py 常量),实验配置出现这些键即拒绝。
@@ -203,6 +216,14 @@ def collate_samples(
             pair_counts_np,
             legal_np,
         )
+    # host 侧容量/类别行表预计算：透传给 forward 消除 GPU max().item() 与
+    # embedding argsort/tolist 同步，同时稳定 torch.compile（实施方案 §4.3）。
+    from ..model.dense_embedding import compute_kind_row_plan
+    from ..model.encoding_protocol import SEGMENT_SHARED
+
+    shared_per_row = (actor_factors_np[..., 0] == SEGMENT_SHARED).sum(axis=-1)
+    shared_capacity = int(shared_per_row.max(initial=0))
+    kind_row_plan = compute_kind_row_plan(actor_factors_np)
     actor_factors = torch.from_numpy(actor_factors_np).to(device, non_blocking=True)
     actor_numeric = torch.from_numpy(actor_numeric_np).to(device, non_blocking=True)
     actor_lengths = torch.from_numpy(actor_lengths_np).to(device, non_blocking=True)
@@ -230,6 +251,9 @@ def collate_samples(
         "belief_wait": belief_wait,
         "belief_danger": belief_danger,
         "belief_loss": belief_loss,
+        # host 侧非张量字段：_forward_actor 取出后传给模型 forward。
+        "shared_capacity": shared_capacity,
+        "kind_row_plan": kind_row_plan,
     }
 
 
@@ -260,9 +284,14 @@ def length_bucketed_batches(
         yield from drain(window)
 
 
-def _forward_actor(model: nn.Module, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+def _forward_actor(
+    model: nn.Module,
+    batch: dict[str, torch.Tensor],
+    config: dict[str, Any],
+) -> dict[str, torch.Tensor]:
     # 统一走 __call__/forward 分发,使 DistributedDataParallel 也能正确触发
-    # 梯度同步;统一走 forward 分发。
+    # 梯度同步;统一走 forward 分发。host 预计算的容量/行表在 collate 时已
+    # 放入 batch dict，此处取出透传（避免 GPU 同步；torch.compile 稳定）。
     return model(
         actor_factors=batch["actor_factors"],
         actor_numeric=batch["actor_numeric"],
@@ -271,6 +300,12 @@ def _forward_actor(model: nn.Module, batch: dict[str, torch.Tensor]) -> dict[str
         query_pair_counts=batch["pair_counts"],
         legal_mask=batch["legal_mask"],
         policy_only=True,
+        validate_structure=bool(config.get("validate_structure", False)),
+        belief_public_grad_scale=float(config.get("belief_public_grad_scale", 0.25)),
+        belief_readout_enabled=bool(config.get("belief_readout_enabled", True)),
+        belief_readout_detach=bool(config.get("belief_readout_detach", True)),
+        shared_capacity=batch.get("shared_capacity"),
+        kind_row_plan=batch.get("kind_row_plan"),
     )
 
 
@@ -307,9 +342,15 @@ def _belief_losses(
 
     五头逐格取均值（``reduction="mean"``）后乘各自 λ_k；Loss 目标先做
     ``min(raw, 24000) / 24000`` 归一化，与模型 sigmoid 预测同尺度。
+    v19 60% 起：wait 拆 N/A 二判 + 仅听牌行 34 牌、danger 正例加权、
+    loss 逐格正例加权 huber（实施方案 §4.1）。
     """
     _require_belief_outputs(output)
-    hand_labels = batch["belief_hand"].long()
+    hand_logits = output["belief_hand_logits"].float()
+    shanten_logits = output["belief_shanten_logits"].float()
+    wait_logits = output["belief_wait_logits"].float()
+    danger_logits = output["belief_danger_logits"].float()
+    hand_labels = batch["belief_hand"].long().view(-1, 3, 34)
     shanten_labels = batch["belief_shanten"].long()
     wait_labels = batch["belief_wait"].float().view(-1, 3, 35)
     danger_labels = batch["belief_danger"].float().view(-1, 3, 34)
@@ -317,22 +358,45 @@ def _belief_losses(
     loss_target = torch.clamp(loss_raw, max=24000.0) / 24000.0
 
     hand_loss = F.cross_entropy(
-        output["belief_hand_logits"].float().reshape(-1, 5), hand_labels.reshape(-1),
+        hand_logits.reshape(-1, 5), hand_labels.reshape(-1),
     )
     shanten_loss = F.cross_entropy(
-        output["belief_shanten_logits"].float().reshape(-1, 9), shanten_labels.reshape(-1),
+        shanten_logits.reshape(-1, 9), shanten_labels.reshape(-1),
     )
-    wait_loss = F.binary_cross_entropy_with_logits(
-        output["belief_wait_logits"].float(), wait_labels,
+    # wait：N/A 位二判（全样本）+ 34 牌逐格 BCE（仅听牌行）。
+    tenpai_mask = wait_labels[..., 34].eq(0.0)
+    wait_tenpai_loss = F.binary_cross_entropy_with_logits(
+        wait_logits[..., 34], wait_labels[..., 34],
     )
+    wait_tile_bce = F.binary_cross_entropy_with_logits(
+        wait_logits[..., :34], wait_labels[..., :34], reduction="none",
+    )
+    selected = tenpai_mask.unsqueeze(-1)
+    wait_tile_loss = (wait_tile_bce * selected).sum() / selected.sum().clamp_min(1)
+    wait_tenpai_weight = float(config.get("belief_wait_tenpai_weight", 1.0))
+    wait_tile_weight = float(config.get("belief_wait_tile_weight", 1.0))
+    wait_loss = wait_tenpai_weight * wait_tenpai_loss + wait_tile_weight * wait_tile_loss
+
+    # danger：正例加权 BCE（pos_weight=5.0）。
+    danger_pos_weight = float(config.get("belief_danger_pos_weight", 5.0))
     danger_loss = F.binary_cross_entropy_with_logits(
-        output["belief_danger_logits"].float(), danger_labels,
+        danger_logits,
+        danger_labels,
+        pos_weight=torch.full_like(danger_labels, danger_pos_weight),
     )
+
+    # loss：逐格加权 huber，(1 + 20·I(target>0))。
     loss_pred = output["belief_loss_pred"].float()
-    loss_huber = F.huber_loss(loss_pred, loss_target, reduction="mean")
-    wait_prob = torch.sigmoid(output["belief_wait_logits"].float())[:, :, :34]
-    danger_prob = torch.sigmoid(output["belief_danger_logits"].float())
-    wait_danger = torch.clamp(danger_prob - wait_prob * danger_labels, min=0.0).mean()
+    positive_weight = float(config.get("belief_loss_positive_weight", 20.0))
+    loss_huber = (
+        F.huber_loss(loss_pred, loss_target, reduction="none")
+        * (1.0 + positive_weight * (loss_target > 0.0).float())
+    ).mean()
+    wait_prob = torch.sigmoid(wait_logits)[:, :, :34]
+    danger_prob = torch.sigmoid(danger_logits)
+    wait_danger = torch.clamp(
+        danger_prob - wait_prob * danger_labels, min=0.0,
+    ).mean()
 
     weights = {
         "hand": float(config.get("belief_head_weight_hand", 1.0)),
@@ -354,6 +418,8 @@ def _belief_losses(
         "belief_hand_loss": hand_loss,
         "belief_shanten_loss": shanten_loss,
         "belief_wait_loss": wait_loss,
+        "belief_wait_tenpai_loss": wait_tenpai_loss,
+        "belief_wait_tile_loss": wait_tile_loss,
         "belief_danger_loss": danger_loss,
         "belief_loss_loss": loss_huber,
         "belief_wait_danger": wait_danger,
@@ -363,7 +429,10 @@ def _belief_losses(
 
 
 def _binary_auc(probabilities: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-    """手动 rank-based AUC（含平局平均秩；单类别时返回 0.5）。"""
+    """手动 rank-based AUC（含平局平均秩；单类别时返回 0.5）。
+
+    只在 SFT 验证 cadence 调用（性能红线：训练步内禁止 CPU AUC）。
+    """
     device = probabilities.device
     probs = probabilities.detach().float().reshape(-1).cpu().numpy()
     truth = labels.detach().float().reshape(-1).cpu().numpy()
@@ -393,12 +462,19 @@ def _binary_auc(probabilities: torch.Tensor, labels: torch.Tensor) -> torch.Tens
 def _belief_metrics(
     output: dict[str, torch.Tensor],
     batch: dict[str, torch.Tensor],
+    *,
+    include_auc: bool = False,
 ) -> dict[str, torch.Tensor]:
-    """SFT 训练/验证通用的五头信念指标（逐批均值）。"""
+    """SFT 信念指标。
+
+    训练步只返回 GPU 纯 torch 指标（acc/topk/mean/recall），绝不调用
+    ``_binary_auc``；``include_auc=True`` 时（仅验证 cadence）追加 AUC/条件
+    AUC/违反率等允许 CPU 同步的指标。
+    """
     _require_belief_outputs(output)
     hand_logits = output["belief_hand_logits"].float()
-    hand_labels = batch["belief_hand"].long()
-    hand_acc = (hand_logits.argmax(-1) == hand_labels.view(-1, 3, 34)).float().mean()
+    hand_labels = batch["belief_hand"].long().view(-1, 3, 34)
+    hand_acc = (hand_logits.argmax(-1) == hand_labels).float().mean()
 
     shanten_logits = output["belief_shanten_logits"].float()
     shanten_labels = batch["belief_shanten"].long()
@@ -409,23 +485,64 @@ def _belief_metrics(
     wait_probs = torch.sigmoid(wait_logits)
     top5 = wait_probs.topk(5, dim=-1).indices
     wait_topk = wait_labels.gather(-1, top5).float().mean()
+    tenpai_mask = wait_labels[..., 34].eq(0.0)
+    wait_tenpai_acc = (
+        (wait_probs[..., 34] >= 0.5).float() == wait_labels[..., 34]
+    ).float().mean()
+    top2 = wait_probs[..., :34].topk(2, dim=-1).indices
+    wait_correct2 = wait_labels[..., :34].gather(-1, top2).float()
+    wait_precision_at_2 = (
+        (wait_correct2 * tenpai_mask.unsqueeze(-1)).sum()
+        / (2 * tenpai_mask.sum()).clamp_min(1)
+    )
 
     danger_logits = output["belief_danger_logits"].float()
-    danger_auc = _binary_auc(
-        torch.sigmoid(danger_logits), batch["belief_danger"],
-    )
+    danger_labels = batch["belief_danger"].float().view(-1, 3, 34)
+    danger_probs = torch.sigmoid(danger_logits)
+    sorted_idx = danger_probs.topk(34, dim=-1).indices
+    sorted_correct = danger_labels.gather(-1, sorted_idx)
+    k_true = danger_labels.sum(-1, keepdim=True)
+    positions = torch.arange(
+        34, device=danger_probs.device, dtype=danger_probs.dtype,
+    ).view(1, 1, -1)
+    danger_recall_at_topk = (
+        (sorted_correct * (positions < k_true)).sum(-1, keepdim=True)
+        / k_true.clamp_min(1)
+    ).float().mean()
 
     loss_target = (
         torch.clamp(batch["belief_loss"].float(), max=24000.0) / 24000.0
     ).view(-1, 3, 34)
-    loss_mae = (output["belief_loss_pred"].float() - loss_target).abs().mean()
-    return {
+    loss_pred = output["belief_loss_pred"].float()
+    loss_mae = (loss_pred - loss_target).abs().mean()
+    loss_conditional_mae = (
+        (loss_pred - loss_target).abs() * danger_labels
+    ).sum() / danger_labels.sum().clamp_min(1)
+
+    result = {
         "belief_hand_acc": hand_acc,
         "belief_shanten_top1": top1,
         "belief_wait_topk": wait_topk,
-        "belief_danger_auc": danger_auc,
+        "belief_wait_tenpai_acc": wait_tenpai_acc,
+        "belief_wait_precision_at_2": wait_precision_at_2,
+        "belief_danger_recall_at_topk": danger_recall_at_topk,
         "belief_loss_mae": loss_mae,
+        "belief_loss_conditional_mae": loss_conditional_mae,
     }
+    if include_auc:
+        result["belief_danger_auc"] = _binary_auc(danger_probs, danger_labels)
+        # 条件 AUC：仅听牌行、34 牌（CPU 同步仅限验证 cadence）。
+        if bool(tenpai_mask.any()):
+            result["belief_wait_conditional_auc"] = _binary_auc(
+                wait_probs[..., :34][tenpai_mask],
+                wait_labels[..., :34][tenpai_mask],
+            )
+        else:
+            result["belief_wait_conditional_auc"] = wait_probs.new_tensor(0.5)
+        result["belief_wait_danger_violation"] = (
+            danger_probs > (wait_probs[..., :34] * danger_labels)
+        ).float().mean()
+    return result
 
 
 @torch.no_grad()
@@ -454,19 +571,13 @@ def evaluate(
         and device.type == "cuda" and torch.cuda.is_bf16_supported()
     )
     total = ce_sum = top1 = top3 = 0
-    belief_sums: dict[str, float] = {
-        "belief_hand_acc": 0.0,
-        "belief_shanten_top1": 0.0,
-        "belief_wait_topk": 0.0,
-        "belief_danger_auc": 0.0,
-        "belief_loss_mae": 0.0,
-    }
+    belief_sums: dict[str, float] = {}
     for rows in batches:
         batch = collate_samples(
             rows, device, validate_semantics=bool(config.get("validate_semantics", True)),
         )
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
-            output = _forward_actor(model, batch)
+            output = _forward_actor(model, batch, config)
         logits = output["policy_logits"].float()
         targets = batch["actions"]
         _assert_targets_legal(targets, batch["legal_mask"])
@@ -474,8 +585,14 @@ def evaluate(
         top = logits.topk(3, dim=-1).indices
         top1 += int((top[:, 0] == targets).sum())
         top3 += int((top == targets[:, None]).any(-1).sum())
-        for name, value in _belief_metrics(output, batch).items():
-            belief_sums[name] += float(value) * len(rows)
+        belief_metrics = _belief_metrics(output, batch, include_auc=True)
+        # 验证 cadence 追加 per-head loss（含条件/加权式）。
+        belief_metrics.update({
+            key: value for key, value in _belief_losses(output, batch, config).items()
+            if key.startswith("belief_")
+        })
+        for name, value in belief_metrics.items():
+            belief_sums[name] = belief_sums.get(name, 0.0) + float(value) * len(rows)
         total += len(rows)
     count = max(total, 1)
     result = {
@@ -660,7 +777,7 @@ def _train_worker_impl(
                 padded_tokens = len(rows) * max(sample.token_length for sample in rows)
                 optimizer.zero_grad(set_to_none=True)
                 with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
-                    model_output = _forward_actor(model, batch)
+                    model_output = _forward_actor(model, batch, config)
                     _assert_targets_legal(batch["actions"], batch["legal_mask"])
                     policy_ce = F.cross_entropy(model_output["policy_logits"].float(), batch["actions"])
                     belief_parts = _belief_losses(model_output, batch, config)
@@ -677,6 +794,12 @@ def _train_worker_impl(
                 steps_in_epoch += 1
                 if metric_window is not None:
                     total_lengths = batch["actor_lengths"]
+                    belief_metrics = _belief_metrics(model_output, batch)
+                    # 训练步 per-head loss 日志（GPU 标量，与指标同批累计）。
+                    belief_metrics.update({
+                        key: value for key, value in belief_parts.items()
+                        if key.startswith("belief_")
+                    })
                     metric_window.update(
                         logits=model_output["policy_logits"].detach(),
                         actions=batch["actions"],
@@ -687,7 +810,7 @@ def _train_worker_impl(
                         effective_tokens=effective_tokens,
                         padded_tokens=padded_tokens,
                         step_seconds=time.perf_counter() - step_started,
-                        belief_metrics=_belief_metrics(model_output, batch),
+                        belief_metrics=belief_metrics,
                     )
                 if global_step % int(config["log_interval_steps"]) == 0 and rank == 0:
                     print(f"epoch={epoch} step={global_step} loss={float(loss):.4f}", flush=True)

@@ -97,8 +97,14 @@ def test_belief_loss_forward_backward_finite_and_metrics() -> None:
     metrics = learner.update(buffer, shuffle_seed=7)
     for name in (
         "belief/total_loss", "belief/hand_accuracy", "belief/shanten_top1",
-        "belief/wait_auc", "belief/wait_precision_at_5", "belief/danger_auc",
-        "belief/loss_mae",
+        "belief/wait_auc", "belief/wait_conditional_auc",
+        "belief/wait_precision_at_5", "belief/wait_precision_at_2",
+        "belief/wait_tenpai_acc", "belief/danger_auc",
+        "belief/danger_recall_at_topk", "belief/loss_mae",
+        "belief/loss_conditional_mae", "belief/wait_danger_violation",
+        "belief/hand_loss", "belief/shanten_loss", "belief/wait_loss",
+        "belief/wait_tenpai_loss", "belief/wait_tile_loss",
+        "belief/danger_loss", "belief/loss_loss", "belief/wait_danger",
     ):
         assert name in metrics, name
         assert np.isfinite(metrics[name]), name
@@ -113,12 +119,37 @@ def test_belief_parameters_in_actor_group() -> None:
     belief_parameters = [
         parameter
         for name, parameter in learner.model.named_parameters()
-        if name.startswith("belief_network.")
+        if name.startswith(("belief_network.", "belief_backbone.", "belief_query", "belief_readout."))
     ]
     assert belief_parameters
     assert all(id(parameter) in actor_ids for parameter in belief_parameters)
     # 无独立 belief 学习率分支。
     assert not any(group.get("branch") == "belief" for group in learner.optimizer.param_groups)
+
+
+def test_belief_readout_settings_are_forwarded(monkeypatch) -> None:
+    """PPOLearner 把配置的 readout enabled/detach 透传给模型 forward。"""
+    kwargs = dict(_learner_kwargs())
+    kwargs.update({
+        "belief_readout_enabled": True,
+        "belief_readout_detach": False,
+    })
+    learner = PPOLearner("v19", "cpu", **kwargs)
+    captured: dict[str, object] = {}
+
+    original_forward = learner.model.forward
+
+    def wrapper(*args, **kwargs_):
+        captured["enabled"] = kwargs_.get("belief_readout_enabled")
+        captured["detach"] = kwargs_.get("belief_readout_detach")
+        return original_forward(*args, **kwargs_)
+
+    monkeypatch.setattr(learner.model, "forward", wrapper)
+    rng = np.random.default_rng(11)
+    buffer = RolloutBuffer([_transition(rng, row) for row in range(6)])
+    learner.update(buffer, shuffle_seed=2)
+    assert captured["enabled"] is True
+    assert captured["detach"] is False
 
 
 def test_belief_public_grad_scale_is_forwarded(monkeypatch) -> None:

@@ -38,8 +38,23 @@ SCALAR_TAGS = {
     "train/belief_hand_acc": "SFT/训练/信念手牌逐格精度 (belief_hand_acc)",
     "train/belief_shanten_top1": "SFT/训练/信念向听 Top-1 (belief_shanten_top1)",
     "train/belief_wait_topk": "SFT/训练/信念听牌 Top-5 (belief_wait_topk)",
+    "train/belief_wait_tenpai_acc": "SFT/训练/信念听牌二判精度 (belief_wait_tenpai_acc)",
+    "train/belief_wait_precision_at_2": "SFT/训练/信念听牌 Precision@2 (belief_wait_precision_at_2)",
     "train/belief_danger_auc": "SFT/训练/信念危险度 AUC (belief_danger_auc)",
+    "train/belief_danger_recall_at_topk": "SFT/训练/信念真值可荣牌 top-k 召回 (belief_danger_recall_at_topk)",
     "train/belief_loss_mae": "SFT/训练/信念打点 MAE (belief_loss_mae)",
+    "train/belief_loss_conditional_mae": "SFT/训练/信念可荣子集打点 MAE (belief_loss_conditional_mae)",
+    "train/belief_wait_conditional_auc": "SFT/训练/信念听牌行条件 AUC (belief_wait_conditional_auc)",
+    "train/belief_wait_danger_violation": "SFT/训练/信念 Wait≥Danger 违反率 (belief_wait_danger_violation)",
+    "train/belief_hand_loss": "SFT/训练/信念手牌损失 (belief_hand_loss)",
+    "train/belief_shanten_loss": "SFT/训练/信念向听损失 (belief_shanten_loss)",
+    "train/belief_wait_loss": "SFT/训练/信念听牌损失 (belief_wait_loss)",
+    "train/belief_wait_tenpai_loss": "SFT/训练/信念听牌二判损失 (belief_wait_tenpai_loss)",
+    "train/belief_wait_tile_loss": "SFT/训练/信念听牌牌种损失 (belief_wait_tile_loss)",
+    "train/belief_danger_loss": "SFT/训练/信念危险度损失 (belief_danger_loss)",
+    "train/belief_loss_loss": "SFT/训练/信念打点损失 (belief_loss_loss)",
+    "train/belief_wait_danger": "SFT/训练/信念 Wait-Danger 软约束 (belief_wait_danger)",
+    "train/belief_loss_weighted": "SFT/训练/信念加权损失 (belief_loss_weighted)",
     "data/legal_actions_mean": "SFT/数据/平均合法动作数 (legal_actions_mean)",
     "data/token_length_mean": "SFT/数据/平均序列长度 (token_length_mean)",
     "data/token_length_max": "SFT/数据/最大序列长度 (token_length_max)",
@@ -49,13 +64,27 @@ SCALAR_TAGS = {
     "performance/step_time_s": "SFT/性能/平均 Step 耗时·秒 (step_time_s)",
 }
 
-# 训练窗口里随 batch 加权累计的信念指标。
+# 训练窗口里随 batch 加权累计的信念指标（新增条件指标与 per-head loss）。
 BELIEF_METRIC_KEYS = (
     "belief_hand_acc",
     "belief_shanten_top1",
     "belief_wait_topk",
-    "belief_danger_auc",
+    "belief_wait_tenpai_acc",
+    "belief_wait_precision_at_2",
+    "belief_danger_recall_at_topk",
     "belief_loss_mae",
+    "belief_loss_conditional_mae",
+    "belief_wait_conditional_auc",
+    "belief_wait_danger_violation",
+    "belief_hand_loss",
+    "belief_shanten_loss",
+    "belief_wait_loss",
+    "belief_wait_tenpai_loss",
+    "belief_wait_tile_loss",
+    "belief_danger_loss",
+    "belief_loss_loss",
+    "belief_wait_danger",
+    "belief_loss_weighted",
 )
 
 

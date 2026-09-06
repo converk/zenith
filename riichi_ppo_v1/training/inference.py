@@ -616,6 +616,13 @@ if ray is not None:
                         critic_lengths=device_tensors["critic_lengths"],
                         # 推理路径信念是模型自身输出,不做公共层梯度缩放(1.0)。
                         belief_public_grad_scale=1.0,
+                        # 逐动作读出：推理与训练/评测一致（SFT/PPO 配置驱动）。
+                        belief_readout_enabled=bool(
+                            self.config.get("belief_readout_enabled", True)
+                        ),
+                        belief_readout_detach=bool(
+                            self.config.get("belief_readout_detach", True)
+                        ),
                         # 训练期 rollout 推理与 learner 共用同一配置开关:输入
                         # 由 Rust 编码器 fail-closed 生成,推理路径跳过 GPU 侧
                         # 重复校验。默认 True 保持历史行为(评测路径不受影响)。

@@ -90,6 +90,9 @@ class V19PolicyAdapter:
                 policy_only=True,
                 # 评测路径信念是模型自身输出,不做公共层梯度缩放(1.0)。
                 belief_public_grad_scale=1.0,
+                # 1v3 与训练/rollout 一致：逐动作读出开启（SFT/PPO 产品路径）。
+                belief_readout_enabled=True,
+                belief_readout_detach=True,
             )
 
     @torch.inference_mode()

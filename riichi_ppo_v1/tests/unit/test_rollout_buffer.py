@@ -70,6 +70,9 @@ def _learner_kwargs(**overrides: object) -> dict[str, object]:
         "learning_rate": 1e-4,
         "profile_enabled": False,
         "profile_cuda_sync": False,
+        # CPU 单测显式关闭 torch.compile：默认开启会在 CPU 上做长时间
+        # 编译（新信念 backbone/读出更大），不影响生产 CUDA 配置。
+        "torch_compile": False,
         "update_epochs": 1,
         "minibatch_size": 3,
         "ppo_clip": 0.2,

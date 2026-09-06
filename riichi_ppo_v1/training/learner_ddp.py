@@ -108,6 +108,9 @@ _RANK0_KEYS = {
     "system/belief_head_weight_shanten", "system/belief_head_weight_wait",
     "system/belief_head_weight_danger", "system/belief_head_weight_loss",
     "system/belief_wait_danger_weight",
+    "system/belief_readout_enabled", "system/belief_readout_detach",
+    "system/belief_wait_tenpai_weight", "system/belief_wait_tile_weight",
+    "system/belief_danger_pos_weight", "system/belief_loss_positive_weight",
     "training/critic_bootstrap", "training/policy_update",
 }
 

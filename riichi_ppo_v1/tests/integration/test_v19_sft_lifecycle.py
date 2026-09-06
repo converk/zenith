@@ -136,10 +136,21 @@ def test_small_sft_lifecycle(tmp_path: Path) -> None:
     assert math.isfinite(metrics["validation/policy_ce"])
     for key in (
         "train/belief_hand_acc", "train/belief_shanten_top1", "train/belief_wait_topk",
-        "train/belief_danger_auc", "train/belief_loss_mae",
+        "train/belief_wait_tenpai_acc", "train/belief_wait_precision_at_2",
+        "train/belief_danger_recall_at_topk", "train/belief_loss_mae",
+        "train/belief_loss_conditional_mae",
+        "train/belief_hand_loss", "train/belief_shanten_loss",
+        "train/belief_wait_loss", "train/belief_danger_loss", "train/belief_loss_loss",
         "validation/belief_hand_acc", "validation/belief_shanten_top1",
-        "validation/belief_wait_topk", "validation/belief_danger_auc",
-        "validation/belief_loss_mae",
+        "validation/belief_wait_topk", "validation/belief_wait_tenpai_acc",
+        "validation/belief_wait_precision_at_2",
+        "validation/belief_danger_recall_at_topk", "validation/belief_loss_mae",
+        "validation/belief_loss_conditional_mae",
+        "validation/belief_danger_auc", "validation/belief_wait_conditional_auc",
+        "validation/belief_wait_danger_violation",
+        "validation/belief_hand_loss", "validation/belief_shanten_loss",
+        "validation/belief_wait_loss", "validation/belief_danger_loss",
+        "validation/belief_loss_loss",
     ):
         assert key in metrics, key
         assert math.isfinite(float(metrics[key])), key

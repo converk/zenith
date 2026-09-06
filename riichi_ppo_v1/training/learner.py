@@ -36,7 +36,12 @@ from .rollout_buffer import RolloutBuffer
 # 独立 LR,信念分支与策略共享同一 actor 优化器组,仅 encoder 梯度由
 # belief_public_grad_scale 缩放)。
 ACTOR_ROOTS = {"actor_backbone", "action_fusion", "policy_mlp"}
-BELIEF_ROOTS = {"belief_network"}
+BELIEF_ROOTS = {
+    "belief_network",
+    "belief_backbone",
+    "belief_query",
+    "belief_readout",
+}
 CRITIC_ROOTS = {"critic_embedding", "critic_backbone", "value_head", "value_query"}
 SHARED_ROOTS = {"token_embedding", "public_backbone"}
 
@@ -651,6 +656,34 @@ class PPOLearner:
         )
         if self.belief_wait_danger_weight < 0.0:
             raise ValueError("belief_wait_danger_weight must be non-negative")
+        # v19 60%：逐动作信念读出的训练开关与 detach 语义；PPO 阶段允许策略
+        # 塑形信念（detach=false）。
+        self.belief_readout_enabled = bool(
+            hyperparameters.get("belief_readout_enabled", True)
+        )
+        self.belief_readout_detach = bool(
+            hyperparameters.get("belief_readout_detach", False)
+        )
+        # 条件/加权损失超参（实施方案 §4.1）。
+        self.belief_wait_tenpai_weight = float(
+            hyperparameters.get("belief_wait_tenpai_weight", 1.0)
+        )
+        self.belief_wait_tile_weight = float(
+            hyperparameters.get("belief_wait_tile_weight", 1.0)
+        )
+        self.belief_danger_pos_weight = float(
+            hyperparameters.get("belief_danger_pos_weight", 5.0)
+        )
+        self.belief_loss_positive_weight = float(
+            hyperparameters.get("belief_loss_positive_weight", 20.0)
+        )
+        if any(value < 0.0 for value in (
+            self.belief_wait_tenpai_weight,
+            self.belief_wait_tile_weight,
+            self.belief_danger_pos_weight,
+            self.belief_loss_positive_weight,
+        )):
+            raise ValueError("belief condition/weight loss keys must be non-negative")
         self.branch_max_grad_norms = {
             "actor": float(hyperparameters["actor_max_grad_norm"]),
             "shared": float(hyperparameters["shared_max_grad_norm"]),
@@ -788,6 +821,8 @@ class PPOLearner:
             critic_public_grad_scale=self.critic_public_grad_scale,
             critic_private_embedding_grad_scale=self.critic_private_embedding_grad_scale,
             belief_public_grad_scale=self.belief_public_grad_scale,
+            belief_readout_enabled=self.belief_readout_enabled,
+            belief_readout_detach=self.belief_readout_detach,
             validate_structure=self.update_validate_structure,
             shared_capacity=shared_capacity,
             critic_total_capacity=critic_total_capacity,
@@ -888,6 +923,8 @@ class PPOLearner:
                         shared_capacity=shared_capacity,
                         kind_row_plan=kind_row_plan,
                         validate_structure=self.update_validate_structure,
+                        belief_readout_enabled=self.belief_readout_enabled,
+                        belief_readout_detach=self.belief_readout_detach,
                     )["policy_logits"]
                 chunks.append(logits)
         # 排空生产者可能残留的哨兵/批次(主线程提前异常时避免挂起)。
@@ -1320,6 +1357,10 @@ class PPOLearner:
                                     batch,
                                     head_weights=self.belief_head_weights,
                                     wait_danger_weight=self.belief_wait_danger_weight,
+                                    wait_tenpai_weight=self.belief_wait_tenpai_weight,
+                                    wait_tile_weight=self.belief_wait_tile_weight,
+                                    danger_pos_weight=self.belief_danger_pos_weight,
+                                    loss_positive_weight=self.belief_loss_positive_weight,
                                 )
                                 belief_loss_total = belief_parts["belief_loss_total"]
                                 belief_metric_values = belief_metrics_per_sample(
@@ -1498,6 +1539,21 @@ class PPOLearner:
                                 metric_sample_sums[name].add_(detached)
                             else:
                                 metric_sample_sums[name] = detached.clone()
+                        # per-head loss 日志：把 belief_losses 返回的逐项损失按
+                        # 样本展开累加（DDP 聚合集合由 belief_metric_keys 注册）。
+                        for name, value in belief_parts.items():
+                            if not name.startswith("belief/"):
+                                continue
+                            expanded = (
+                                value.expand(len(indices))
+                                if value.dim() == 0
+                                else value
+                            )
+                            detached = expanded.detach().sum()
+                            if name in metric_sample_sums:
+                                metric_sample_sums[name].add_(detached)
+                            else:
+                                metric_sample_sums[name] = detached.clone()
                     metric_sample_count += len(indices)
                     if len(indices):
                         ratio_samples.append(ratio.detach())
@@ -1594,6 +1650,24 @@ class PPOLearner:
             ),
             "system/belief_wait_danger_weight": float(
                 self.belief_wait_danger_weight
+            ),
+            "system/belief_readout_enabled": float(
+                1.0 if self.belief_readout_enabled else 0.0
+            ),
+            "system/belief_readout_detach": float(
+                1.0 if self.belief_readout_detach else 0.0
+            ),
+            "system/belief_wait_tenpai_weight": float(
+                self.belief_wait_tenpai_weight
+            ),
+            "system/belief_wait_tile_weight": float(
+                self.belief_wait_tile_weight
+            ),
+            "system/belief_danger_pos_weight": float(
+                self.belief_danger_pos_weight
+            ),
+            "system/belief_loss_positive_weight": float(
+                self.belief_loss_positive_weight
             ),
             "training/critic_bootstrap": float(critic_bootstrap),
             "training/policy_update": float(policy_update_number),
