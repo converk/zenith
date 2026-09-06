@@ -86,7 +86,7 @@
   `report/`(实验报告与 `PROGRESS.md` 进度记录)、`scripts/`(运行与验证脚本);
   禁止随意命名或散落其他目录。
 - 现行原始数据集为 `datasets/tenhou_sft_2024_2025`;现行活跃编码数据集为
-  `datasets/tenhou_sft_2024_2025_encoded_60pct_v19`（用户已确认的 60% 重训输入,
+  `datasets/tenhou_sft_2024_2025_encoded_60pct_v19`（用户已确认的 V19 标准训练输入,
   已预处理完成,禁止重跑 precompute）。`datasets/tenhou_sft_2024_2025_encoded_100pct_v19`
   为全量版本备选/归档。归档 V16/V17/V18 编码数据与 V17 GRP 数据只允许只读统计,
   不得覆盖或作为活跃训练输入。

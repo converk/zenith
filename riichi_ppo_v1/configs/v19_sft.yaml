@@ -1,4 +1,4 @@
-# V19 60% 重训 SFT 自包含配置（用户已确认实施方案，2026-09-06）。
+# V19 标准 SFT 自包含配置（用户已确认，2026-09-06）。
 # 目标 = actor BC + 信念监督联合(L_BC + belief_sft_coef·Σλ_k·L_k + λ_c·L_wait_danger)
 # + 1 层信念 backbone(与 Critic 同构) + 逐动作信念读出(SFT detach=true)。
 # 输入协议 30 token/mask 不变；不运行 precompute，数据已预处理完成。
@@ -44,7 +44,7 @@ torch_compile: true
 validate_structure: false
 validation_max_samples: 0
 validation_samples_per_run: 100000
-checkpoint_dir: checkpoints/train_riichi_v19/sft_60pct
+checkpoint_dir: checkpoints/train_riichi_v19/sft
 tensorboard_enabled: true
 tensorboard_dirname: tensorboard
 resume: null
@@ -59,7 +59,7 @@ belief_head_weight_danger: 1.0
 belief_head_weight_loss: 1.0
 belief_wait_danger_weight: 0.05
 
-# 60% 方案新增：公共层梯度耦合 + 逐动作读出 + 条件/加权损失。
+# V19 标准新增：公共层梯度耦合 + 逐动作读出 + 条件/加权损失。
 belief_public_grad_scale: 0.25
 belief_readout_enabled: true
 belief_readout_detach: true

@@ -24,14 +24,14 @@ V19 SFT 参数拓扑为 `d_model=256`、16 Q heads、4 KV heads、`head_dim=16`�
 
 ## V19 SFT-ready 路径
 
-唯一现行 SFT 自包含配置是 `configs/v19_sft_60pct.yaml`（60% 重训，
+唯一现行 SFT 自包含配置是 `configs/v19_sft.yaml`（V19 标准 SFT，
 `datasets/tenhou_sft_2024_2025_encoded_60pct_v19` 已预处理完成，不再生成数据）。
 V19 SFT 目标为 Actor BC 与信念五头监督联合
 （`L_BC + belief_sft_coef·Σλ_k·L_k + λ_c·L_wait_danger`）：
 
 ```bash
 CUDA_DEVICE=0,1 conda run -n Mahjong-AI riichi-sft-train \
-  --config riichi_ppo_v1/configs/v19_sft_60pct.yaml
+  --config riichi_ppo_v1/configs/v19_sft.yaml
 ```
 
 训练可一键执行（产物地址与校验见脚本头部注释）：

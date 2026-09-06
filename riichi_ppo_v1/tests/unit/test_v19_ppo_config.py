@@ -35,10 +35,10 @@ def test_v19_config_contains_belief_keys() -> None:
         assert float(config[name]) == value, name
 
 
-def test_v19_config_init_model_points_to_60pct_sft() -> None:
-    """PPO init_model 必须指向 60% 重训 SFT 产物（用户确认决策，不启动）。"""
+def test_v19_config_init_model_points_to_standard_sft() -> None:
+    """PPO init_model 必须指向 V19 标准 SFT 产物（不启动）。"""
     config = _v19_config()
-    assert config["init_model"] == "checkpoints/train_riichi_v19/sft_60pct/best.pt"
+    assert config["init_model"] == "checkpoints/train_riichi_v19/sft/best.pt"
 
 
 def test_v19_config_topology() -> None:

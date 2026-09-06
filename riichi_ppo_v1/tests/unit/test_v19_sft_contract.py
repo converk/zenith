@@ -54,9 +54,9 @@ def test_belief_shape_contract() -> None:
     }
 
 
-def test_60pct_config_does_not_copy_cadence_constants() -> None:
-    """60% 配置不能复制 3000 步/96 半庄等 SFT 机制常量（sft/contract.py 单点）。"""
-    path = Path(__file__).resolve().parents[2] / "configs" / "v19_sft_60pct.yaml"
+def test_standard_sft_config_does_not_copy_cadence_constants() -> None:
+    """V19 标准 SFT 配置不能复制 3000 步/96 半庄等机制常量（sft/contract.py 单点）。"""
+    path = Path(__file__).resolve().parents[2] / "configs" / "v19_sft.yaml"
     config = load_config(path)
     assert "validation_interval_steps" not in config
     assert "checkpoint_interval_steps" not in config

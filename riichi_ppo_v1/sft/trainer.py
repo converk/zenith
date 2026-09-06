@@ -82,7 +82,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # 训练前向跳过 GPU 侧重复结构校验（输入由 Rust 编码器 fail-closed 生成 +
     # SFT 契约校验覆盖），与 torch_compile 配合稳定编译。
     "validate_structure": False,
-    # V19 信念监督联合（训练分册 §4.4/§6）：唯一现行配置为 v19_sft_60pct.yaml。
+    # V19 信念监督联合（训练分册 §4.4/§6）：唯一现行配置为 v19_sft.yaml。
     "belief_sft_coef": 1.0,
     "belief_head_weight_hand": 1.0,
     "belief_head_weight_shanten": 1.0,
@@ -342,7 +342,7 @@ def _belief_losses(
 
     五头逐格取均值（``reduction="mean"``）后乘各自 λ_k；Loss 目标先做
     ``min(raw, 24000) / 24000`` 归一化，与模型 sigmoid 预测同尺度。
-    v19 60% 起：wait 拆 N/A 二判 + 仅听牌行 34 牌、danger 正例加权、
+    V19 起：wait 拆 N/A 二判 + 仅听牌行 34 牌、danger 正例加权、
     loss 逐格正例加权 huber（实施方案 §4.1）。
     """
     _require_belief_outputs(output)

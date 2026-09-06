@@ -14,7 +14,7 @@ from riichi_ppo_v1.sft.train import load_config as load_sft_config
 from riichi_ppo_v1.training.train import cleanup_smoke_artifacts, load_config
 
 ROOT = Path(__file__).resolve().parents[2]
-CONFIG_NAMES = ("training.yaml", "monitoring.yaml", "v19_sft_60pct.yaml")
+CONFIG_NAMES = ("training.yaml", "monitoring.yaml", "v19_sft.yaml")
 
 
 def test_remaining_tools_are_importable_and_covered() -> None:
@@ -32,10 +32,10 @@ def test_remaining_configs_are_loadable() -> None:
     assert training["policy_head_type"] == "current_state_snapshot"
     assert training["model_size"] == "v19"
     assert training["checkpoint_dir"] == "checkpoints/train_riichi_v19/ppo"
-    sft = load_sft_config(ROOT / "configs" / "v19_sft_60pct.yaml")
+    sft = load_sft_config(ROOT / "configs" / "v19_sft.yaml")
     assert sft["policy_head_type"] == "current_state_snapshot"
     assert sft["model_size"] == "v19"
-    assert sft["checkpoint_dir"] == "checkpoints/train_riichi_v19/sft_60pct"
+    assert sft["checkpoint_dir"] == "checkpoints/train_riichi_v19/sft"
     for name in CONFIG_NAMES:
         assert (ROOT / "configs" / name).exists()
 
