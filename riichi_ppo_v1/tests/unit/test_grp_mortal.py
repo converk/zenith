@@ -22,6 +22,8 @@ from riichi_ppo_v1.model.grp import (
     GRP_UTILITY,
     GRPModel,
     expected_rank_utility,
+    expected_utility_from_logits,
+    true_expected_utility,
 )
 from riichi_ppo_v1.training.grp.prepare import (
     Boundary,
@@ -175,6 +177,92 @@ def test_offline_online_feature_parity() -> None:
     online = np.asarray(tracker._sequences[0], dtype=np.float32)
     assert online.shape == offline.shape
     assert np.array_equal(online, offline)
+
+
+class _LengthLogitsGRP:
+    """按序列长度返回固定 logits 的桩;calc_matrix 按真实现聚合。"""
+
+    def __init__(self, table: dict[int, torch.Tensor]) -> None:
+        self.table = table
+        perms = torch.tensor(list(permutations(range(4))))
+        self.perms_t = perms.transpose(0, 1)
+
+    def __call__(self, features: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+        return self.table[int(lengths[0])].unsqueeze(0)
+
+    def calc_matrix(self, logits: torch.Tensor) -> torch.Tensor:
+        probs = torch.softmax(logits, dim=-1)
+        matrix = torch.zeros((logits.shape[0], 4, 4))
+        for player in range(4):
+            for rank in range(4):
+                cond = self.perms_t[player] == rank
+                matrix[:, player, rank] = probs[:, cond].sum(-1)
+        return matrix
+
+
+def _temperature_logit_table() -> dict[int, torch.Tensor]:
+    """两段可区分的非均匀 logits(长度 1 → 首局边界,长度 2 → 第二局边界)。"""
+    generator = torch.Generator().manual_seed(23)
+    return {length: torch.randn(24, generator=generator) for length in (1, 2)}
+
+
+def _manual_expected_utility(logits: torch.Tensor, temperature: float) -> torch.Tensor:
+    """手工温度化期望 utility(独立于被测实现逐位推导)。"""
+    probs = torch.softmax(logits / temperature, dim=-1)
+    perms = torch.tensor(list(permutations(range(4))))
+    utility = torch.tensor([1.0, 1.0 / 3.0, -1.0 / 3.0, -1.0])
+    matrix = torch.zeros((4, 4))
+    for player in range(4):
+        for rank in range(4):
+            cond = perms.transpose(0, 1)[player] == rank
+            matrix[player, rank] = probs[cond].sum()
+    return matrix @ utility
+
+
+def test_grp_rollout_temperature_scales_expected_utility() -> None:
+    """温度锐化改变小局 δ,且与手工温度化计算逐位一致。"""
+    table = _temperature_logit_table()
+    boundaries = _boundaries()
+    rewards: dict[float, dict[int, float]] = {}
+    for temperature in (1.0, 0.3):
+        tracker = GrpRollout(
+            _LengthLogitsGRP(table), game_type=1, temperature=temperature,
+        )
+        tracker.start_match(0, boundaries[0])
+        rewards[temperature] = tracker.boundary_reward(0, boundaries[1])
+
+    assert rewards[1.0][0] != pytest.approx(rewards[0.3][0])
+
+    manual = (
+        _manual_expected_utility(table[2], 0.3)
+        - _manual_expected_utility(table[1], 0.3)
+    )
+    for seat in range(4):
+        assert rewards[0.3][seat] == pytest.approx(float(manual[seat]), abs=1e-6)
+
+
+def test_grp_rollout_default_temperature_is_one() -> None:
+    """缺省构造与显式 temperature=1.0 的奖励完全一致(向后兼容)。"""
+    table = _temperature_logit_table()
+    boundaries = _boundaries()
+    rewards = []
+    for tracker in (
+        GrpRollout(_LengthLogitsGRP(table), game_type=1),
+        GrpRollout(_LengthLogitsGRP(table), game_type=1, temperature=1.0),
+    ):
+        tracker.start_match(0, boundaries[0])
+        rewards.append(tracker.boundary_reward(0, boundaries[1]))
+    assert rewards[0] == rewards[1]
+
+
+def test_grp_rollout_rejects_nonpositive_temperature() -> None:
+    """非正温度必须 fail-closed,不允许静默退化为无标定。"""
+    for bad in (0.0, -1.0):
+        with pytest.raises(ValueError):
+            GrpRollout(
+                _LengthLogitsGRP(_temperature_logit_table()),
+                game_type=1, temperature=bad,
+            )
 
 
 def test_rank_by_player_follows_stable_sort() -> None:
@@ -514,3 +602,36 @@ def test_prepare_grp_dataset_merges_games_spanning_shards() -> None:
             assert offsets[pos + 1] - offsets[pos] == 3  # +0 在 shard0、+1/+2 在 shard1
         # train:gm-a(东) + spanning(东→南,半庄) + gm-b(东);validation:gm-c(东)。
         assert dataset["game_types"] == {"east": 3, "half": 1, "west": 0}
+
+
+def test_expected_utility_from_logits_matches_calc_matrix() -> None:
+    """softmax(logits) @ A 与 calc_matrix 后逐玩家取期望数学等价。"""
+    model = GRPModel()
+    generator = torch.Generator().manual_seed(7)
+    logits = torch.randn(6, GRP_NUM_CLASSES, generator=generator)
+    via_projection = expected_utility_from_logits(logits, model.perms)
+    via_matrix = expected_rank_utility(model.calc_matrix(logits))
+    torch.testing.assert_close(via_projection, via_matrix, rtol=1e-5, atol=1e-6)
+
+
+def test_true_expected_utility_matches_one_hot_expectation() -> None:
+    """真实排名的 utility 向量与 one-hot 排列经 calc_matrix 的期望一致。"""
+    rank_by_player = torch.tensor([[0, 1, 2, 3], [3, 2, 1, 0], [1, 0, 3, 2]])
+    eu_true = true_expected_utility(rank_by_player)
+    expected = torch.tensor([
+        [1.0, 1.0 / 3.0, -1.0 / 3.0, -1.0],
+        [-1.0, -1.0 / 3.0, 1.0 / 3.0, 1.0],
+        [1.0 / 3.0, 1.0, -1.0, -1.0 / 3.0],
+    ])
+    torch.testing.assert_close(eu_true, expected)
+
+
+def test_expected_utility_from_logits_gradient_flows() -> None:
+    """E[U] 辅助损失路径对 logits 可微,梯度有限。"""
+    model = GRPModel()
+    logits = torch.randn(2, GRP_NUM_CLASSES, requires_grad=True)
+    eu = expected_utility_from_logits(logits, model.perms)
+    assert eu.shape == (2, 4)
+    eu.sum().backward()
+    assert logits.grad is not None
+    assert torch.isfinite(logits.grad).all()

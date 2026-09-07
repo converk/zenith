@@ -75,6 +75,33 @@ def expected_rank_utility(matrix: Tensor) -> Tensor:
     return matrix @ utility
 
 
+def utility_projection(perms: Tensor) -> Tensor:
+    """排列→utility 投影 ``A[perm, player] = U(perm[player])``,形状 (24, 4)。
+
+    ``softmax(logits) @ A`` 与 ``calc_matrix`` 后逐玩家取期望数学等价,供
+    训练期 E[U] 辅助损失与验证期 E[U] 指标共用。纯函数实现,不新增
+    buffer/parameter(worker 以 strict=True 加载 checkpoint,模型 state_dict
+    必须保持不变)。
+    """
+    utility = perms.new_tensor(GRP_UTILITY, dtype=torch.float32)
+    return utility[perms]
+
+
+def expected_utility_from_logits(logits: Tensor, perms: Tensor) -> Tensor:
+    """24 类排列 logits [N,24] → 每玩家期望 utility [N,4](可微,训练用)。"""
+    projection = utility_projection(perms).to(device=logits.device, dtype=logits.dtype)
+    return torch.softmax(logits.float(), dim=-1) @ projection
+
+
+def true_expected_utility(rank_by_player: Tensor) -> Tensor:
+    """真实排名 [N,4](player → 顺位 0..3)→ 每玩家真实 utility [N,4]。
+
+    E[U] 辅助回归的目标向量;与 one-hot 排列经 ``calc_matrix`` 的期望一致。
+    """
+    utility = rank_by_player.new_tensor(GRP_UTILITY, dtype=torch.float32)
+    return utility[rank_by_player]
+
+
 class GRPModel(nn.Module):
     """Mortal 式 GRP:GRU(21→96, 2 层) + fc(192→192→24)。
 

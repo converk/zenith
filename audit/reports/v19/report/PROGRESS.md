@@ -552,3 +552,72 @@ wait_tile 时的 ~3.6。运行中的训练需停止后重跑或从头/resume 应
 - 分析报告：`audit/reports/v19/report/V19_SFT_fuzzy_训练检查.md`，趋势图与
   验证表在 `audit/reports/v19/eval/v19_sft_fuzzy_trends.png`、
   `v19_sft_fuzzy_validation_table.csv`。
+
+## 阶段 22：critic bootstrap 延长至 4 updates（已完成，本次实施轮）
+
+> 用户决策（2026-09-08）：belief bootstrap 监督方案搁置（非 bootstrap 期
+> 监督本就贯穿，空窗占比极小）；critic warm-up 2→4 updates。
+
+改动：
+- `riichi_ppo_v1/configs/v19_ppo.yaml`：`critic_bootstrap_updates: 2 → 4`，
+  注释记录依据。`training.yaml` 为旧中性默认，不同步（V19 以 v19_ppo.yaml
+  为自包含权威）；测试用合成超参不锁该值，无需改动。
+
+依据（V18 TB 复盘）：2 次 bootstrap 结束时 EV(λ) 仍为 -0.055（未到均值
+预测器），EV 转正发生在放开策略后的 u3–u6；V19 critic 输入从 future wall
+换成 privileged_hands 需重学，延长到 4 次让 EV 在静止目标分布上先转正再
+动策略。成本约 +27min（≈1% 总时长）。`critic_bootstrap_learning_rate`
+维持 2e-5 不变（备选杠杆，本次不动）。
+
+测试：`test_v19_ppo_config.py` 7 passed。
+
+## GRP 重训实验：E[U] 辅助回归损失（阴性结果，2026-09-08）
+
+- 动机：PPO 奖励直接消费 GRP 的期望 utility E[U]，而排列 CE 只监督分类；
+  实验验证 "CE + β·MSE(E[U], U_true)"（β=1.0）能否压低 E[U] 误差。
+- 代码：`model/grp.py` 新增纯函数 `utility_projection`/`expected_utility_from_logits`/
+  `true_expected_utility`（不进 state_dict，worker strict 加载兼容）；
+  `training/grp/train.py` 损失项 + `validation/eu_mae` 指标 + 训练结束重载
+  CE 最优权重再冻结（修复无条件覆盖 bug，本次运行实际触发：
+  `reload_best_step: 55600`）。测试 `test_grp_train.py`（4）/ `test_grp_mortal.py`（+3），
+  全仓 255 passed。
+- 配置：`configs/v19_grp.yaml`（eu_loss_coef=1.0，batch 2048，30 epochs，
+  数据集 `tenhou_grp_2024_2025_v18` 全量 3,807,907 train / 38,477 validation 样本，
+  与 V18 同数据同 seed，唯一变量为损失项）。
+- 结果：best val loss **2.4871 @ step 55,600**，eu_mae **0.4928**；
+  V18 基线（纯 CE）：loss 2.4861 / eu_mae 0.4928。**无可测差异（阴性）**。
+  尾部斜率：最后 1.2 万步 eu_mae 0.4941→0.4927（每 2000 步约 -0.0002 且减速）；
+  两次独立训练（不同损失）收敛到同一平台，判定为 21 维边界特征的信息上限，
+  非优化不足或容量不足。
+- 决策：`v19_ppo.yaml` 的 `grp_checkpoint` **维持指向 V18 checkpoint 不变**
+  （两者统计等价，切换属无证据变量变更）；V19 GRP 产物
+  （`checkpoints/train_riichi_v19/grp/best.pt`）保留作实验证据，不投入训练。
+- 产物：`logs/v19/grp_train.log`；中断首跑残骸归档于
+  `checkpoints/train_riichi_v19/archive_20260908_grp_killed_first_run/` 与
+  `logs/v19/archive/grp_train_20260908_killed_first_run.log`。
+
+### GRP 温度标定实验（2026-09-08，零训练成本）
+
+- 发现：CE 训练的 24 类分布对 E[U] 而言**系统性欠置信**；对 logits 做温度锐化
+  可降低 eu_mae。验证集折半防过拟合（标定折拟合 T、独立折评估）：
+  **最优 T=0.3，eu_mae 0.4928 → 0.4800（-2.6%，零重训）**；
+  T 过低（0.1）回升至 0.4879，存在内部最优。
+- 证据脚本：`audit/reports/v19/scripts/grp_temperature_calib.py`（V18 checkpoint）。
+- 状态：**未落地**。落地需 GrpRollout 推理时应用温度（worker + checkpoint
+  model_config 记录 T + 测试），属推理契约微变更；待与 PPO 启动统筹决定。
+
+### GRP 温度标定落地 + 启用 V19 重训 checkpoint（2026-09-08，决策更新）
+
+- 温度标定已落地：`GrpRollout` 新增 `temperature` 推理参数（logits/T 后
+  softmax，默认 1.0 向后兼容，非正值 fail-closed）；worker 从 PPO 配置
+  `grp_temperature` 读取。测试 +3（温度化 δ 与手工推导逐位一致、缺省行为
+  不变、非法值报错），全仓 258 passed。
+- **决策变更**：`grp_checkpoint` 由 "维持 V18" 改为启用 V19 重训 checkpoint
+  （`checkpoints/train_riichi_v19/grp/best.pt`）——两 checkpoint 验证集指标
+  与温度标定曲线均逐位等价（测试折 eu_mae 0.4748 @ T=0.3），经维护者确认
+  启用新产物。V18 checkpoint 原位保留作回退。
+- 标定脚本参数化：`grp_temperature_calib.py [checkpoint]`（可对任意
+  checkpoint 重标定）；V18/V19 最优 T 同为 0.3（测试折 0.4920→0.4748，
+  约 -3.5%）。
+- `v19_ppo.yaml` 同步：`grp_checkpoint` → V19、新增 `grp_temperature: 0.3`
+  （含重标定提醒注释）。

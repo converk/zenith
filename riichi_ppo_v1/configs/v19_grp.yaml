@@ -1,0 +1,21 @@
+# V19 GRP 重训配置:全量数据 + E[U] 辅助回归。
+# 自包含配置,不与其他配置叠加;数据集沿用 V18 全量 GRP 数据
+# (datasets/tenhou_grp_2024_2025_v18,denominator=1,只读)。
+# 相比 V18 训练(2026-08-26,batch 2048 / 30 epochs)的唯一变化:
+#   损失 = 排列 CE + eu_loss_coef × MSE(E[U](logits), 真实排名 utility);
+#   验证新增 validation/eu_mae(每玩家 E[U] 平均绝对误差,奖励质量直接度量);
+#   训练结束重载 CE 最优权重后冻结落盘(修复无条件覆盖 bug)。
+# checkpoint 选择仍以 CE 为准;V18 基线:loss=2.4861 / eu_mae=0.4928
+# (audit/reports/v19/scripts/grp_baseline_eu_mae.py,38477 验证样本)。
+seed: 1
+device: cuda
+epochs: 30
+batch_size: 2048
+learning_rate: 1.0e-5
+weight_decay: 0.0
+max_grad_norm: 1.0
+eu_loss_coef: 1.0
+shuffle_buffer_samples: 65536
+log_interval_steps: 100
+val_interval_steps: 200
+checkpoint_dir: checkpoints/train_riichi_v19/grp

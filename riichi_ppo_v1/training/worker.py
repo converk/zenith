@@ -229,15 +229,24 @@ class GrpRollout:
     每环境维护 1 条 21 维全局特征前缀序列与累计计数(各玩家和了/放铳/听牌流局
     次数);边界行由 ``feature_row`` 逐边界生成,与离线数据构造逐位一致;局风
     类型由 ``game_mode`` 经 ``game_type_from_mode`` 映射,每环境固定。每个非
-    终局边界对整条序列执行 1 次 GRU 前向(输出 24 类 logits),经 calc_matrix
-    得到 4 玩家期望 utility 并计算本小局 δ;终局(半庄结束)使用真实最终排名
-    utility。动作数量不影响 GRP 调用次数。reward 为纯 GRP delta,无点差分量、
-    无 σ 归一化。
+    终局边界对整条序列执行 1 次 GRU 前向(输出 24 类 logits),先除以
+    ``temperature`` 再经 calc_matrix 得到 4 玩家期望 utility 并计算本小局 δ;
+    终局(半庄结束)使用真实最终排名 utility。温度为推理标定参数(CE 训练
+  分布对 E[U] 欠置信),由 PPO 配置 ``grp_temperature`` 提供,默认 1.0 = 不
+  标定;更换 checkpoint 后须重新标定。动作数量不影响 GRP 调用次数。reward
+    为纯 GRP delta,无点差分量、无 σ 归一化。
     """
 
-    def __init__(self, model: Any, game_type: int) -> None:
+    def __init__(self, model: Any, game_type: int, temperature: float = 1.0) -> None:
         self.model = model
         self.game_type = int(game_type)
+        # 温度标定(标定脚本 audit/reports/v19/scripts/grp_temperature_calib.py:
+        # V18 checkpoint 折半标定 T=0.3,eu_mae 0.4928→0.4800);默认 1.0 = 原样。
+        self.temperature = float(temperature)
+        if self.temperature <= 0.0:
+            raise ValueError(
+                f"GRP temperature must be positive, got {temperature}"
+            )
         self.calls = 0
         # env -> 21 维特征前缀序列(行按边界追加)。
         self._sequences: dict[int, np.ndarray] = {}
@@ -256,7 +265,8 @@ class GrpRollout:
                 torch.as_tensor([len(sequence)]),
             )
         self.calls += 1
-        matrix = self.model.calc_matrix(logits[0:1])[0]  # (4,4) 玩家→排名概率
+        scaled = logits[0:1] / self.temperature  # 温度锐化(1.0 = 原样)
+        matrix = self.model.calc_matrix(scaled)[0]  # (4,4) 玩家→排名概率
         # 排名 utility 收敛为 grp/reward.RANK_UTILITY 单一来源(与离线一致)。
         return matrix @ logits.new_tensor(RANK_UTILITY)
 
@@ -452,7 +462,9 @@ if ray is not None:
             grp_model.load_state_dict(grp_payload["model"], strict=True)
             grp_model.freeze()  # PPO 不更新 GRP
             self.grp = GrpRollout(
-                grp_model, game_type_from_mode(str(config["game_mode"]))
+                grp_model,
+                game_type_from_mode(str(config["game_mode"])),
+                temperature=float(config.get("grp_temperature", 1.0)),
             )
             for env_index in range(self.num_envs):
                 self.grp.start_match(

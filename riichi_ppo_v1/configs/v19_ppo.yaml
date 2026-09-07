@@ -21,7 +21,15 @@ game_mode: 4p-red-half
 # V19 前置产物:SFT 初始化/参考策略与冻结 GRP reward。
 # init_model 指向 V19 标准 SFT 产物（不启动，仅准备配置）。
 init_model: checkpoints/train_riichi_v19/sft/best.pt
-grp_checkpoint: checkpoints/train_riichi_v18/grp/best.pt
+# V19 重训 GRP(CE + E[U] 辅助损失,与 V18 全量同数据同 seed);验证集指标与
+# V18 等价(loss 2.4871 / eu_mae 0.4928),经维护者确认启用。
+grp_checkpoint: checkpoints/train_riichi_v19/grp/best.pt
+# GRP 推理温度标定:CE 训练分布对 E[U] 欠置信,推理时 logits/T 锐化。
+# T=0.3 由验证集折半标定(V18/V19 两 checkpoint 标定曲线一致,测试折
+# eu_mae 0.4920→0.4748,约 -3.5%),脚本
+# audit/reports/v19/scripts/grp_temperature_calib.py;更换 grp_checkpoint
+# 后须重新标定并同步本值。
+grp_temperature: 0.3
 
 # Rollout 与推理拓扑。
 num_workers: 12
@@ -88,7 +96,11 @@ adam_epsilon: 0.00001
 weight_decay: 0.0
 
 # 稳定性:分支裁剪、critic 公共/私有 embedding 梯度隔离、old-policy KL guardrail。
-critic_bootstrap_updates: 2
+# critic_bootstrap_updates 2→4(2026-09-08):V18 证据显示 2 次 bootstrap 结束时
+# EV(λ) 仍为 -0.055(未到均值预测器),转正发生在放开策略之后;V19 critic 输入
+# 从 future wall 换成 privileged_hands 需重学,延长到 4 次让 EV 在静止目标
+# 分布上先转正再动策略。成本约 +27min(≈1% 总时长)。
+critic_bootstrap_updates: 4
 max_grad_norm: 0.5
 actor_max_grad_norm: 0.5
 shared_max_grad_norm: 0.5
