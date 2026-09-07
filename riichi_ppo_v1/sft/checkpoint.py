@@ -109,7 +109,11 @@ def checkpoint_payload(
     metrics: dict[str, float],
     rank_rng_states: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    # 解包顺序与包装顺序相反:最外层 DDP(module),内层 compile(_orig_mod);
+    # 只解 DDP 会让 state_dict 键带上 _orig_mod. 前缀,破坏与 eager 一致的
+    # checkpoint 键契约(V19 SFT fuzzy 运行踩坑)。
     module = getattr(model, "module", model)
+    module = getattr(module, "_orig_mod", module)
     return {
         "sft_contract_version": SFT_CONTRACT_VERSION,
         "data_plan_version": DATA_PLAN_VERSION,

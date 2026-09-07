@@ -27,8 +27,9 @@ from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
+from ..model.checkpoint import strip_compile_prefix
 from ..model.schema import TOKEN_SCHEMA_VERSION
-from .belief import belief_metrics_per_sample, belief_losses
+from .belief import belief_losses, belief_metrics_per_sample
 from .profiling import StageProfiler
 from .rollout_buffer import RolloutBuffer
 
@@ -1954,6 +1955,10 @@ class PPOLearner:
             raise RuntimeError(
                 "V19 SFT checkpoint model_config differs from the active PPO topology"
             )
-        self._state_dict_source().load_state_dict(payload["model"], strict=True)
+        # SFT fuzzy 运行的 best.pt 以 compile 包装保存(键带 _orig_mod. 前缀),
+        # 加载端统一剥离以兼容;新 SFT 保存端已修复不再产生前缀。
+        self._state_dict_source().load_state_dict(
+            strip_compile_prefix(payload["model"]), strict=True,
+        )
         self._build_reference_model(self._state_dict_source().state_dict())
         self.iteration = 0

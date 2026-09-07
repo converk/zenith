@@ -27,12 +27,13 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import yaml
-from torch import nn
+from torch import Tensor, nn
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.tensorboard import SummaryWriter
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
+from ..model.checkpoint import strip_compile_prefix
 from ..model.schema import NUM_ACTIONS
 from .actor_bc import actor_parameters, freeze_critic
 from .checkpoint import checkpoint_payload, load_exact_resume
@@ -459,7 +460,6 @@ def _binary_auc(probabilities: torch.Tensor, labels: torch.Tensor) -> torch.Tens
 
     只在 SFT 验证 cadence 调用（性能红线：训练步内禁止 CPU AUC）。
     """
-    device = probabilities.device
     probs = probabilities.detach().float().reshape(-1).cpu().numpy()
     truth = labels.detach().float().reshape(-1).cpu().numpy()
     total = int(truth.shape[0])
@@ -678,7 +678,7 @@ def _train_worker_impl(
     if config.get("init_model"):
         initialized = torch.load(str(config["init_model"]), map_location="cpu")
         payload = initialized.get("model", initialized)
-        model.load_state_dict(payload, strict=True)
+        model.load_state_dict(strip_compile_prefix(payload), strict=True)
         del initialized
     freeze_critic(model)
     # 可选的 torch.compile 快速路径：在 DDP 包装前编译原始模块
@@ -724,7 +724,11 @@ def _train_worker_impl(
             dataset_manifest_hash=manifest_hash, world_size=world_size,
             trainable_scope="full_actor",
         )
-        model.load_state_dict(payload["model"])
+        # resume 时 model 已被 compile 包装:加载到解包后的模块,键不带前缀;
+        # strip 兼容旧版带 _orig_mod. 前缀的 checkpoint。
+        getattr(model, "_orig_mod", model).load_state_dict(
+            strip_compile_prefix(payload["model"]),
+        )
         optimizer.load_state_dict(payload["optimizer"])
         scheduler.load_state_dict(payload["scheduler"])
         start_epoch = int(payload["data_cursor"]["epoch"])

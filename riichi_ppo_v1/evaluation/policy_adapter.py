@@ -11,6 +11,7 @@ import torch
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
 from ..model.bridge import BatchedStateBridge, Decision
+from ..model.checkpoint import strip_compile_prefix
 
 
 @dataclass(frozen=True)
@@ -129,7 +130,7 @@ def load_policy_adapter(
         raise RuntimeError("policy checkpoint is missing model weights")
     model = KyokuTransformerActorCritic(config)
     try:
-        model.load_state_dict(state, strict=True)
+        model.load_state_dict(strip_compile_prefix(state), strict=True)
     except RuntimeError as exc:
         raise RuntimeError("policy checkpoint tensors do not match model_config") from exc
     device_obj = torch.device(device)

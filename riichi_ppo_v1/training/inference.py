@@ -20,6 +20,7 @@ except ImportError:
     ray = None
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
+from ..model.checkpoint import strip_compile_prefix
 from ..model.dense_embedding import compute_kind_row_plan
 from ..model.encoding_protocol import CONTEXT_TOKENS, TOKEN_NUMERIC_WIDTH, TOKEN_ROW_WIDTH
 from ..model.schema import NUM_ACTIONS
@@ -310,7 +311,9 @@ if ray is not None:
                 path = Path(self.config["init_model"])
                 payload = torch.load(path, map_location="cpu", weights_only=False)
                 model = KyokuTransformerActorCritic(self.model_config).to(self.device)
-                model.load_state_dict(payload["model"], strict=True)
+                model.load_state_dict(
+                    strip_compile_prefix(payload["model"]), strict=True,
+                )
                 model.eval()
                 model.requires_grad_(False)
                 self.sft_model = model
