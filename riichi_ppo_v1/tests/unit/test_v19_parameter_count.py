@@ -7,7 +7,7 @@ from riichi_ppo_v1.model.parameter_count import assert_v19_parameter_contract
 def test_parameter_contract() -> None:
     model = KyokuTransformerActorCritic()
     report = assert_v19_parameter_contract(model)
-    assert 7_000_000 <= report["total"] <= 7_200_000
+    assert 6_600_000 <= report["total"] <= 7_200_000
     assert report["state_key_count"] > 0
     assert set(report["by_group"]) == {"embedding", "shared", "actor", "critic", "head"}
     assert report["by_group"]["embedding"] > 0

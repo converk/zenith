@@ -71,7 +71,7 @@ def test_forward_runs_and_belief_tokens_stay_internal() -> None:
         "belief_danger_logits", "belief_loss_pred", "belief_tokens",
     ):
         assert key in output and key in policy_only
-    assert output["belief_hand_logits"].shape == (2, 3, 34, 5)
+    assert output["belief_hand_logits"].shape == (2, 3, 16, 3)
     assert output["belief_tokens"].shape == (2, 30, 256)
     # 信念是模型内部产物：传入 factors 不含 BELIEF 段/类，输出也没有 factor 张量。
     assert not (inputs["actor_factors"][..., 0] == SEGMENT_BELIEF).any()
@@ -189,8 +189,8 @@ def test_belief_backbone_uses_full_shared_sequence_plus_nine_queries(monkeypatch
     assert sequence.shape[1] == int(lengths[0])
     assert lengths[0] >= 9
     assert torch.equal(sequence[0, -9:], model.belief_query)
-    # 五头输出形状不变，且玩家×查询输入在内部已按查询平均。
-    assert output["belief_hand_logits"].shape == (1, 3, 34, 5)
+    # 五头输出形状与模糊化协议一致，且玩家×查询输入在内部已按查询平均。
+    assert output["belief_hand_logits"].shape == (1, 3, 16, 3)
     assert output["belief_tokens"].shape == (1, 30, _tiny_config().d_model)
 
 
@@ -241,10 +241,10 @@ def test_belief_readout_zero_init_matches_disabled_and_trains() -> None:
 
 
 def test_v19_parameter_contract_range() -> None:
-    """V19 全模型参数在 [7.0M, 7.2M]（设计估算 ~7.09M，实际嵌入增删浮动）。"""
+    """V19 全模型参数在 [6.6M, 7.2M]（模糊化后 ~6.684M，上界仍 7.2M）。"""
     model = KyokuTransformerActorCritic()
     total = sum(parameter.numel() for parameter in model.parameters())
-    assert 7_000_000 <= total <= 7_200_000
+    assert 6_600_000 <= total <= 7_200_000
     report = assert_v19_parameter_contract(model)
     assert report["total"] == total
     assert not report["forbidden_q_keys"]

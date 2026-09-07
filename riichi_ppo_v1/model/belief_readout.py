@@ -1,14 +1,18 @@
 """V19 逐动作信念读出（BeliefActionReadout）。
 
-信念网络输出三家摘要（28 个信念 token 是全局信息），而策略需要知道
+信念网络输出三家摘要（30 个信念 token 是全局信息），而策略需要知道
 「当前合法动作对应的牌」在信念中的含义。本模块把每个合法动作的
-``primary_tile_code`` 对应的信念特征（危险度/打点/听牌/向听等）投影成
-``d_model`` 向量，加到 ``pair_hiddens`` 上，使策略头能够逐动作读取信念。
+``primary_tile_code`` 对应的信念特征（危险度/打点/听牌/向听/待牌宽度等）
+投影成 ``d_model`` 向量，加到 ``pair_hiddens`` 上，使策略头能够逐动作读取
+信念。
 
-设计要点（实施方案 §3.2）：
+设计要点（实施方案 §3.2 + 2026-09-07 模糊化）：
 - 特征维度 21：3 家 × (danger[tile], loss[tile], tenpai_prob, shanten_expected,
-  max_danger, max_loss, wait[tile])；
-- ``tile_code==0`` 的动作（pass/无牌类）保留全局项、置零逐牌项；
+  max_danger, max_loss, wait_width_expected)；
+- Wait 头已模糊化为「听牌 + 宽度桶」，因此逐动作不再有 wait[tile] 逐牌项，
+  改用**每家全局待牌宽度期望**（粗粒度听牌质量）；
+- ``tile_code==0`` 的动作（pass/无牌类）保留全局项、置零逐牌项（仅逐牌
+  danger/loss 两项）；
 - 投影矩阵**零初始化**：未训练时读出是 no-op，不影响策略；
 - 本模块**不接受任何监督损失**，只由 actor 的 BC/PPO 损失训练；
 - ``detach=True`` 时仅 detach 特征张量（阻止 actor 损失修改信念头/共享层），
@@ -22,9 +26,10 @@ from torch import Tensor, nn
 
 # 三家对手（相对观察者）：0=下家、1=对面、2=上家（与 belief_labels 顺序一致）。
 BELIEF_PLAYERS = 3
-# 牌种数（34）与听牌 N/A 位。
+# 牌种数（34）。
 TILE_KINDS = 34
-WAIT_N_A_INDEX = 34
+# 待牌宽度桶类别数（0=非听, 1=1面, 2=2面, 3=3-5面, 4=≥6面）。
+WAIT_CLASSES = 5
 # 逐动作读出特征维度 = 3 家 × 7 项。
 FEATURE_DIM = 3 * 7
 # 向听类别数（0..8），与 belief_network.SHANTEN_CLASSES 同步。
@@ -45,11 +50,11 @@ class BeliefActionReadout(nn.Module):
         nn.init.zeros_(self.proj.weight)
         nn.init.zeros_(self.proj.bias)
         # [1,1,21] 布尔掩码：标记哪些特征是「逐牌」项（tile_code=0 时置零）。
-        # 顺序：danger(3) + loss(3) + tenpai(3) + shanten(3) + max_danger(3)
-        # + max_loss(3) + wait(3)；逐牌项为前 3、次 3 与最后 3。
+        # 顺序：danger_tile(3) + loss_tile(3) + tenpai(3) + shanten(3)
+        # + max_danger(3) + max_loss(3) + wait_width(3)；
+        # 模糊化后逐牌项只剩前 6 维（danger/loss），wait 宽度是全局项。
         tile_column_mask = torch.zeros(1, 1, self.feature_dim, dtype=torch.bool)
         tile_column_mask[..., :6] = True
-        tile_column_mask[..., -3:] = True
         self.register_buffer("tile_column_mask", tile_column_mask)
 
     def forward(
@@ -73,33 +78,39 @@ class BeliefActionReadout(nn.Module):
 
         danger_prob = torch.sigmoid(belief["belief_danger_logits"].float())
         loss_pred = belief["belief_loss_pred"].float()
-        wait_prob = torch.sigmoid(belief["belief_wait_logits"].float())
+        wait_prob = torch.softmax(belief["belief_wait_logits"].float(), dim=-1)
         shanten_prob = torch.softmax(
             belief["belief_shanten_logits"].float(), dim=-1,
         )
-        # 向听期望 = Σ k·P(k)；听牌概率 = 1 - P(N/A)。
+        # 向听期望 = Σ k·P(k)；听牌概率 = 1 - P(非听桶 0)。
         shanten_expected = (
             shanten_prob
             * torch.arange(SHANTEN_KLASSES, device=device, dtype=shanten_prob.dtype)
             .view(1, 1, SHANTEN_KLASSES)
         ).sum(dim=-1)
-        tenpai_prob = 1.0 - wait_prob[..., WAIT_N_A_INDEX]
+        tenpai_prob = 1.0 - wait_prob[..., 0]
+        # 待牌宽度期望（桶序数加权；0=非听, 1=1面, …, 4=≥6面）。
+        wait_width = (
+            wait_prob
+            * torch.arange(WAIT_CLASSES, device=device, dtype=wait_prob.dtype)
+            .view(1, 1, WAIT_CLASSES)
+        ).sum(dim=-1)
         max_danger = danger_prob.max(dim=-1).values
         max_loss = loss_pred.max(dim=-1).values
 
-        # 逐牌 gather：输入 [B,3,34] / [B,3,35] → [B,Q,3]（玩家序不变）。
+        # 逐牌 gather：输入 [B,3,34] → [B,Q,3]（玩家序不变）。
         player_tiles = clamped[:, None, :].expand(batch, BELIEF_PLAYERS, queries)
         danger_tile = danger_prob.gather(-1, player_tiles).transpose(1, 2)
         loss_tile = loss_pred.gather(-1, player_tiles).transpose(1, 2)
-        wait_tile = wait_prob[..., :TILE_KINDS].gather(-1, player_tiles).transpose(1, 2)
         # 全局项按玩家广播到每个动作。
         tenpai = tenpai_prob[:, None, :].expand(batch, queries, BELIEF_PLAYERS)
         shanten = shanten_expected[:, None, :].expand(batch, queries, BELIEF_PLAYERS)
         max_danger_b = max_danger[:, None, :].expand(batch, queries, BELIEF_PLAYERS)
         max_loss_b = max_loss[:, None, :].expand(batch, queries, BELIEF_PLAYERS)
+        wait_width_b = wait_width[:, None, :].expand(batch, queries, BELIEF_PLAYERS)
 
         features = torch.cat(
-            [danger_tile, loss_tile, tenpai, shanten, max_danger_b, max_loss_b, wait_tile],
+            [danger_tile, loss_tile, tenpai, shanten, max_danger_b, max_loss_b, wait_width_b],
             dim=-1,
         )
         # tile_code==0：逐牌项置零，全局项保留。

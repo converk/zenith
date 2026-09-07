@@ -27,17 +27,19 @@ from ..model.encoding_protocol import (
 )
 from ..model.schema import NUM_ACTIONS, TID_COUNT, TILE_KINDS
 
-SFT_CONTRACT_VERSION = "riichi-sft-v19-2"
+SFT_CONTRACT_VERSION = "riichi-sft-v19-3-fuzzy"
 RUNTIME_CONTRACT_ID = "riichi-runtime-v19-1"
 DATA_PLAN_VERSION = 3
 DATA_CURSOR_VERSION = 1
 TRAINING_MODES = frozenset({"actor_only", "actor_public_value", "joint_actor_critic"})
 
-# V19 信念五头标签的逐样本固定形状（标签只进训练，不进推理）。
+# V19 信念五头标签的逐样本固定形状（2026-09-07 模糊化；标签只进训练，
+# 不进推理）。
+# Hand：[3,16] 花色×段位 16 组 × {0,1,≥2} 桶；Wait：[3] 每家听牌+宽度桶类别。
 BELIEF_LABEL_SHAPES: dict[str, list[int]] = {
-    "hand": [102],
+    "hand": [48],
     "shanten": [3],
-    "wait": [105],
+    "wait": [3],
     "danger": [102],
     "loss": [102],
 }

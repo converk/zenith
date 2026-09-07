@@ -36,9 +36,9 @@ class Transition:
     critic_length: int = 0
     # V19 信念五头监督标签(决策时刻反事实;None 表示该行不参与信念监督,
     # 生产 rollout 的 current 决策始终带标签)。
-    belief_hand: np.ndarray | None = None  # [102] uint8
+    belief_hand: np.ndarray | None = None  # [48] uint8（16 组计数桶）
     belief_shanten: np.ndarray | None = None  # [3] uint8
-    belief_wait: np.ndarray | None = None  # [105] uint8
+    belief_wait: np.ndarray | None = None  # [3] uint8（每家宽度桶类别）
     belief_danger: np.ndarray | None = None  # [102] uint8
     belief_loss: np.ndarray | None = None  # [102] float32(原始点数)
 

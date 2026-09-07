@@ -46,9 +46,9 @@ def test_contract_hash_is_stable_sha256() -> None:
 
 def test_belief_shape_contract() -> None:
     assert BELIEF_LABEL_SHAPES == {
-        "hand": [102],
+        "hand": [48],
         "shanten": [3],
-        "wait": [105],
+        "wait": [3],
         "danger": [102],
         "loss": [102],
     }
@@ -79,7 +79,7 @@ def test_manifest_fail_closed() -> None:
         {"actor_only": False},
         {"belief_labels": False},
         {"belief_labels": "yes"},
-        {"belief_shape": {"hand": [102], "shanten": [3], "wait": [105],
+        {"belief_shape": {"hand": [48], "shanten": [3], "wait": [3],
                           "danger": [102], "loss": [101]}},
         {"belief_shape": None},
         {"subset_denominator": 0},

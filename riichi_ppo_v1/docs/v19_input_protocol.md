@@ -106,9 +106,9 @@ ACTION_OFFENSE_QUERY / ACTION_DEFENSE_QUERY ×(2 per action)   # action_id 升�
 固定拓扑：`d_model=256`、16 Q heads / 4 KV heads（GQA）、`head_dim=16`、`ffn_dim=704`、
 3 Shared + 2 Actor + 1 Critic 层（总 block 数 6 不变），`dense_slot_dim=32`、
 `dense_fusion_dim=512`，`context_tokens=320`；信念分支为 1 层 FFN=512 backbone
-（完整 shared_hidden + 每玩家 3 查询共 9 个）+ 五头逐查询平均 + 282→2560 三家共享
+（完整 shared_hidden + 每玩家 3 查询共 9 个）+ 五头逐查询平均 + 130→2560 三家共享
 转换矩阵 + 逐动作信念读出（零初始化）。RMSNorm/RoPE/gated FFN。密集类别使用槽位独立
-embedding 表 + 共享输入投影（512）+ 共享 gated MLP；总参数约 7.11M。无 MHA 双分支、
+embedding 表 + 共享输入投影（512）+ 共享 gated MLP；总参数约 6.68M。无 MHA 双分支、
 无 Q scorer/Q boost。checkpoint 只接受 V19 `current_state_snapshot` 配置与精确 state keys。
 
 encoded manifest format 为 `riichi-sft-encoded-v19`，含 `state_protocol=

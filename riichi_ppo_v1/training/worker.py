@@ -586,7 +586,7 @@ if ray is not None:
                 "critic_factors": batch.critic_factors,
                 "critic_lengths": batch.critic_lengths,
                 # V19 信念标签数组与 prepared 等长,供 _model_actions 按行拆装。
-                "belief_hand": np.asarray(belief_labels.hand_counts, dtype=np.uint8),
+                "belief_hand": np.asarray(belief_labels.hand, dtype=np.uint8),
                 "belief_shanten": np.asarray(belief_labels.shanten, dtype=np.uint8),
                 "belief_wait": np.asarray(belief_labels.wait, dtype=np.uint8),
                 "belief_danger": np.asarray(belief_labels.danger, dtype=np.uint8),

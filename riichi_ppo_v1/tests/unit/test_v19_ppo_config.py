@@ -13,26 +13,25 @@ def _v19_config() -> dict:
 
 
 def test_v19_config_contains_belief_keys() -> None:
-    """v19_ppo.yaml 必须携带训练分册 §6 的全部信念键。"""
+    """v19_ppo.yaml 必须携带训练分册 §6 的全部信念键（模糊化均衡版）。"""
     config = _v19_config()
     expected = {
         "belief_public_grad_scale": 0.25,
-        "belief_head_weight_hand": 0.7,
-        "belief_head_weight_shanten": 0.8,
-        "belief_head_weight_wait": 1.8,
-        "belief_head_weight_danger": 5.0,
-        "belief_head_weight_loss": 5.0,
-        "belief_wait_danger_weight": 0.05,
+        "belief_head_weight_hand": 1.0,
+        "belief_head_weight_shanten": 1.0,
+        "belief_head_weight_wait": 1.0,
+        "belief_head_weight_danger": 1.0,
+        "belief_head_weight_loss": 1.0,
         "belief_readout_enabled": True,
         "belief_readout_detach": True,
-        "belief_wait_tenpai_weight": 1.0,
-        "belief_wait_tile_weight": 0.0,
         "belief_danger_pos_weight": 5.0,
         "belief_loss_positive_weight": 20.0,
     }
     for name, value in expected.items():
         assert name in config, f"v19_ppo.yaml 缺少信念键 {name}"
         assert float(config[name]) == value, name
+    assert "belief_wait_danger_weight" not in config
+    assert "belief_wait_tile_weight" not in config
 
 
 def test_v19_config_init_model_points_to_standard_sft() -> None:
@@ -42,28 +41,30 @@ def test_v19_config_init_model_points_to_standard_sft() -> None:
 
 
 def test_v19_sft_config_initial_belief_head_weights() -> None:
-    """v19_sft.yaml 五头权重与 wait_tile 关闭必须与现行决策一致。"""
+    """v19_sft.yaml 五头权重必须为归一化均衡值（λ=1.0）。"""
     path = Path(__file__).resolve().parents[2] / "configs" / "v19_sft.yaml"
     config = load_config(str(path))
     expected = {
-        "belief_head_weight_hand": 0.7,
-        "belief_head_weight_shanten": 0.8,
-        "belief_head_weight_wait": 1.8,
-        "belief_head_weight_danger": 5.0,
-        "belief_head_weight_loss": 5.0,
-        "belief_wait_tenpai_weight": 1.0,
-        "belief_wait_tile_weight": 0.0,
+        "belief_head_weight_hand": 1.0,
+        "belief_head_weight_shanten": 1.0,
+        "belief_head_weight_wait": 1.0,
+        "belief_head_weight_danger": 1.0,
+        "belief_head_weight_loss": 1.0,
     }
     for name, value in expected.items():
         assert name in config, f"v19_sft.yaml 缺少信念权重键 {name}"
         assert float(config[name]) == value, name
+    assert "belief_wait_tenpai_weight" not in config
+    assert "belief_wait_tile_weight" not in config
 
 
-def test_v19_sft_config_epochs_two() -> None:
-    """v19_sft.yaml 必须使用 2 epochs（用户 2026-09-06 决定）。"""
+def test_v19_sft_config_epochs_one_and_log_interval() -> None:
+    """v19_sft.yaml 必须使用 1 epoch（用户 2026-09-07 决定），日志每 10 步。"""
     path = Path(__file__).resolve().parents[2] / "configs" / "v19_sft.yaml"
     config = load_config(str(path))
-    assert int(config["epochs"]) == 2
+    assert int(config["epochs"]) == 1
+    assert int(config["batch_size"]) == 6000
+    assert int(config["log_interval_steps"]) == 10
 
 
 

@@ -414,10 +414,49 @@ wait_tile 时的 ~3.6。运行中的训练需停止后重跑或从头/resume 应
 预期：wait(tenpai) 贡献从约 0.36 升至约 0.43，与 hand/danger 同量级，
 听牌信息继续强化。
 
+## 阶段 17：V19 SFT 2 epochs 训练完成与指标检查（已完成，本次轮）
 
+> 用户要求检查已结束的 SFT 的运行指标、评测数据与损失趋势，尤其关注信念头。
 
+- 实际运行：275,210 步（2 epochs × 137,605），耗时 36,597.5 s，92 个验证点；
+  产物 `best.pt`（step 270000）与 `latest.pt`（step 275210）；
+  检查点内嵌 `sft_config.epochs=2`，与本次运行一致。
+- 策略 BC：val policy CE 0.7435→0.4489、top1 0.7310→0.8253、top3
+  0.9420→0.9821；train–val 差距 ~0.004 CE，无明显过拟合；150k 步后进入平台期。
+- 信念五头：shanten top1 0.459→0.483（基线 0.303）、wait_tenpai_acc
+  0.883→0.894（基线 0.849）、danger AUC 0.871→0.929、loss MAE 0.0303→0.0195；
+  hand_acc 0.710→0.713（基线 0.710）。
+- 待关注：wait tile 级指标接近随机（precision@2=0.064、condition AUC=0.561）
+  与 `belief_wait_tile_weight=0.0` 一致；`wait_danger_violation≈0.993` 的当前
+  实现几乎恒为 1，建议修正统计口径；`audit/reports/v19/eval/` 尚无 96 半庄
+  最终评测产物。
+- 分析报告：`audit/reports/v19/report/V19_SFT_2ep_训练检查.md`，图表与全量
+  验证表在 `audit/reports/v19/eval/`。
 
+## 阶段 18：信念头模糊化重设计 + 配置/脚本/归档（已完成，本次实施轮）
 
+> 用户决策（2026-09-07）：保留五头与每玩家 3 查询 token；Hand 模糊化为
+> 花色×段位 16 组 × {0,1,≥2} 桶；Wait 模糊化为听牌 + 宽度桶 5 类；
+> Shanten/Danger/Loss 保留；五头损失贡献均衡；SFT 改 1 epoch / batch=6000 /
+> 每 10 步打点；重标数据集或写一体化脚本；归档旧 SFT。
 
+- 设计文档：`audit/reports/v19/design/V19_信念头模糊化_设计方案.md`；
+  文档 `riichi_ppo_v1/docs/v19_sft.md`、`v19_input_protocol.md` 同步。
+- 代码：belief_labels（Rust 精确→模糊映射）、belief_network（16×3 / 5 类，
+  摘要 130 维）、belief_readout（wait 改为全局宽度）、sft/contract
+  （`riichi-sft-v19-3-fuzzy`，shapes 48/3/3/102/102）、sft/trainer/tensorboard、
+  training/belief/worker/rollout_buffer/learner/train/tensorboard、
+  evaluation 1v3；模型参数 ~6.68M（token_matrix 282→130，上界仍 7.2M）。
+- 五头均衡：每头原始损失除以标签分布基线（熵/最优常数 BCE/正例中位偏差），
+  λ 默认 1.0；原始与归一化 loss 均上报。
+- 配置：`v19_sft.yaml`（epochs=1、batch_size=6000、log_interval_steps=10、
+  数据指针 fuzzy 集、五头 λ=1.0）、`v19_ppo.yaml`、`training.yaml` 同步。
+- 脚本（未运行，等待用户执行）：`riichi_ppo_v1/sft/relabel.py` +
+  `audit/reports/v19/scripts/run_v19_sft_fuzzy.sh`（直接调用环境解释器，
+  不使用 conda run；支持 `--dry-run` / `--force`）。
+- 测试：相关单测 56 passed + 集成/产物 11 passed；全量 unit 209 passed
+  （parameter 区间更新后补跑通过）。
+- 归档：`checkpoints/train_riichi_v19/archive_20260907_sft_2ep/`（best/latest/
+  metrics/tensorboard）+ `logs/v19/archive_20260907_sft_2ep/sft_train_v19_2ep.log`。
 
 

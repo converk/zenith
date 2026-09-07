@@ -5,11 +5,12 @@
 「头 + 摘要 + token」：
 - 输入 ``player_query_hidden [B,3,3,256]``（玩家 × 3 查询 × d_model）；
 - 五个共享逐家小头（256 → 各头输出维度）对**每个查询分别应用**，再按
-  查询维取平均 logits，输出形状与定稿协议完全一致：
-  ``belief_hand_logits [B,3,34,5]``、``belief_shanten_logits [B,3,9]``、
-  ``belief_wait_logits [B,3,35]``、``belief_danger_logits [B,3,34]``、
+  查询维取平均 logits，输出形状与模糊化协议完全一致：
+  ``belief_hand_logits [B,3,16,3]``（花色×段位 16 组 × 计数桶）、
+  ``belief_shanten_logits [B,3,9]``、``belief_wait_logits [B,3,5]``
+  （听牌 + 宽度桶）、``belief_danger_logits [B,3,34]``、
   ``belief_loss_pred [B,3,34]``；
-- 三家共享同一个线性转换矩阵（282 → 10×d_model），把每家的信念摘要压成
+- 三家共享同一个线性转换矩阵（130 → 10×d_model），把每家的信念摘要压成
   10 个 256 维 token，作为模型内部产物注入 Actor 尾段（不进 Rust 编码器）。
 
 信念 token 是策略的一部分：训练/推理同一条前向路径，不依赖外部标签。
@@ -28,19 +29,19 @@ from torch import Tensor, nn
 BELIEF_PLAYERS = 3
 # 每玩家查询 token 数（v19 60% 定版：3 个查询）。
 BELIEF_QUERIES_PER_PLAYER = 3
-# 牌种数（34）与逐牌种计数上限（0..4）。
-HAND_TILE_KINDS = 34
-HAND_COUNT_CLASSES = 5
+# Hand 模糊化：花色×段位 16 组 × 计数桶 {0,1,≥2}。
+HAND_GROUPS = 16
+HAND_COUNT_CLASSES = 3
 # 向听类别：0..8（0 = 听牌）。
 SHANTEN_CLASSES = 9
-# 听牌牌种：34 种 + 第 35 位 N/A（非听牌）。
-WAIT_CLASSES = 35
+# Wait 模糊化：听牌 + 待牌宽度桶 {非听,1,2,3-5,≥6}。
+WAIT_CLASSES = 5
 # 危险度/打点均为 34 种牌。
 DANGER_CLASSES = 34
 LOSS_CLASSES = 34
-# 信念摘要维度 = 170（手牌软概率分布）+ 9（向听）+ 35（听牌）+ 34（危险度）
-# + 34（归一化打点）= 282。
-SUMMARY_DIM = HAND_TILE_KINDS * HAND_COUNT_CLASSES + SHANTEN_CLASSES + WAIT_CLASSES + DANGER_CLASSES + LOSS_CLASSES
+# 信念摘要维度 = 48（手牌 16 组 × 3 桶）+ 9（向听）+ 5（听牌宽度）
+# + 34（危险度）+ 34（归一化打点）= 130。
+SUMMARY_DIM = HAND_GROUPS * HAND_COUNT_CLASSES + SHANTEN_CLASSES + WAIT_CLASSES + DANGER_CLASSES + LOSS_CLASSES
 # 每玩家信念 token 数（定版 10/家，不做消融）。
 DEFAULT_TOKEN_COUNT = 10
 
@@ -49,14 +50,14 @@ class BeliefNetwork(nn.Module):
     """V19 信念网络：player query 特征 → 五头预测 → 三家各 10 token。
 
     ``forward`` 返回：
-    - ``belief_hand_logits``    [B,3,34,5]：逐格计数 softmax 输入的 logits；
-    - ``belief_shanten_logits`` [B,3,9]：逐家向听 softmax 输入的 logits；
-    - ``belief_wait_logits``    [B,3,35]：逐格听牌 sigmoid BCE 的 logits；
-    - ``belief_danger_logits``  [B,3,34]：逐格危险度 sigmoid BCE 的 logits；
+    - ``belief_hand_logits``    [B,3,16,3]：16 组计数桶 softmax logits；
+    - ``belief_shanten_logits`` [B,3,9]：逐家向听 softmax logits；
+    - ``belief_wait_logits``    [B,3,5]：听牌+宽度桶 softmax logits；
+    - ``belief_danger_logits``  [B,3,34]：逐格危险度 sigmoid BCE logits；
     - ``belief_loss_pred``      [B,3,34]：sigmoid 归一化回归预测（点数/24000
       clip 到 [0,1] 的目标）；
-    - ``belief_summary``        [B,3,282]：三家共享同一拼接顺序的摘要
-      （softmax(hand) + softmax(shanten) + sigmoid(wait) + sigmoid(danger)
+    - ``belief_summary``        [B,3,130]：三家共享同一拼接顺序的摘要
+      （softmax(hand) + softmax(shanten) + softmax(wait) + sigmoid(danger)
       + loss_pred）；
     - ``belief_tokens``         [B,30,d]：三家 ×10 的注入 token，玩家主序
       [rel0 的 10 token, rel1 的 10, rel2 的 10]；由共享转换矩阵生成。
@@ -73,12 +74,12 @@ class BeliefNetwork(nn.Module):
         if self.token_count < 1:
             raise ValueError("token_count must be positive")
         # 五个共享逐家小头：每个头输出单家单查询的 logits 宽度。
-        self.hand_head = nn.Linear(self.d_model, HAND_TILE_KINDS * HAND_COUNT_CLASSES)
+        self.hand_head = nn.Linear(self.d_model, HAND_GROUPS * HAND_COUNT_CLASSES)
         self.shanten_head = nn.Linear(self.d_model, SHANTEN_CLASSES)
         self.wait_head = nn.Linear(self.d_model, WAIT_CLASSES)
         self.danger_head = nn.Linear(self.d_model, DANGER_CLASSES)
         self.loss_head = nn.Linear(self.d_model, LOSS_CLASSES)
-        # 共享转换矩阵：每家 282 维摘要 → 10×d_model token（三家共用同一矩阵）。
+        # 共享转换矩阵：每家 130 维摘要 → 10×d_model token（三家共用同一矩阵）。
         self.token_matrix = nn.Linear(SUMMARY_DIM, self.token_count * self.d_model)
 
     def forward(self, player_query_hidden: Tensor) -> dict[str, Tensor]:
@@ -99,7 +100,7 @@ class BeliefNetwork(nn.Module):
         # 各头输出 [B*9, out] → [B,3,3,out...]，再按查询维平均 logits。
         hand_logits = self.hand_head(flat).view(
             batch, BELIEF_PLAYERS, BELIEF_QUERIES_PER_PLAYER,
-            HAND_TILE_KINDS, HAND_COUNT_CLASSES,
+            HAND_GROUPS, HAND_COUNT_CLASSES,
         ).mean(dim=2)
         shanten_logits = self.shanten_head(flat).view(
             batch, BELIEF_PLAYERS, BELIEF_QUERIES_PER_PLAYER, SHANTEN_CLASSES,
@@ -118,18 +119,18 @@ class BeliefNetwork(nn.Module):
         loss_pred = torch.sigmoid(loss_logits)
 
         # 三家共享同一摘要拼接顺序：
-        # softmax(hand) 展平 170 维 + softmax(shanten) 9 维 + sigmoid(wait)
-        # 35 维 + sigmoid(danger) 34 维 + loss_pred 34 维 = 282 维。
+        # softmax(hand) 展平 48 维 + softmax(shanten) 9 维 + softmax(wait)
+        # 5 维 + sigmoid(danger) 34 维 + loss_pred 34 维 = 130 维。
         hand_feature = torch.softmax(hand_logits, dim=-1).reshape(batch, BELIEF_PLAYERS, -1)
         shanten_feature = torch.softmax(shanten_logits, dim=-1)
-        wait_feature = torch.sigmoid(wait_logits)
+        wait_feature = torch.softmax(wait_logits, dim=-1)
         danger_feature = torch.sigmoid(danger_logits)
         summary = torch.cat(
             [hand_feature, shanten_feature, wait_feature, danger_feature, loss_pred],
             dim=-1,
-        )  # [B,3,282]
+        )  # [B,3,130]
 
-        # 共享转换矩阵按家应用：每家 282 维 → token_count×d，再 reshape 为
+        # 共享转换矩阵按家应用：每家 130 维 → token_count×d，再 reshape 为
         # [B, 3×token_count, d]（玩家主序：rel0 的 10 token、rel1、rel2）。
         # 梯度隔离：token_matrix 是「信念 → 策略 token」的接口，只由
         # actor/policy 梯度更新；因此输入摘要必须先 detach，策略/BC 损失

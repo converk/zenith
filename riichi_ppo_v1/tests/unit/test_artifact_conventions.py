@@ -85,7 +85,8 @@ def test_packaged_configs_are_current_and_neutral() -> None:
     assert sft["context_tokens"] == 320
     assert sft["checkpoint_dir"] == "checkpoints/train_riichi_v19/sft"
     assert sft["belief_sft_coef"] == 1.0
-    assert sft["belief_wait_danger_weight"] == 0.05
+    assert float(sft["belief_head_weight_hand"]) == 1.0
+    assert "belief_wait_danger_weight" not in sft
 
 
 def test_current_datasets_present() -> None:

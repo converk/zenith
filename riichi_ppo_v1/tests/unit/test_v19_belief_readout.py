@@ -18,9 +18,9 @@ def _fake_belief(batch: int = 2, queries: int = 4) -> dict[str, torch.Tensor]:
     """构造数值可控的信念输出（不需要真实前向）。"""
     device = torch.device("cpu")
     return {
-        "belief_hand_logits": torch.zeros(batch, BELIEF_PLAYERS, 34, 5, device=device),
+        "belief_hand_logits": torch.zeros(batch, BELIEF_PLAYERS, 16, 3, device=device),
         "belief_shanten_logits": torch.zeros(batch, BELIEF_PLAYERS, 9, device=device),
-        "belief_wait_logits": torch.zeros(batch, BELIEF_PLAYERS, 35, device=device),
+        "belief_wait_logits": torch.zeros(batch, BELIEF_PLAYERS, 5, device=device),
         "belief_danger_logits": torch.zeros(batch, BELIEF_PLAYERS, 34, device=device),
         "belief_loss_pred": torch.zeros(batch, BELIEF_PLAYERS, 34, device=device),
     }
@@ -94,23 +94,23 @@ def test_tile_code_zero_keeps_global_and_zeroes_tile_features() -> None:
     readout = BeliefActionReadout(256)
     batch, queries = 1, 2
     belief = _fake_belief(batch, queries)
-    # 让 danger/wait 的逐牌 sigmoid 都为 1（logits 很大），loss 也为 1。
+    # 让 danger/loss 的逐牌特征都为 1（危险 logits 很大、loss 全 1）。
     belief["belief_danger_logits"] = torch.full((batch, BELIEF_PLAYERS, 34), 20.0)
-    belief["belief_wait_logits"] = torch.full((batch, BELIEF_PLAYERS, 35), 20.0)
+    belief["belief_wait_logits"] = torch.full((batch, BELIEF_PLAYERS, 5), 20.0)
     belief["belief_loss_pred"] = torch.ones(batch, BELIEF_PLAYERS, 34)
     tile_codes = torch.tensor([[0, 1]])
     with torch.no_grad():
-        # 只读取逐牌特征列（前 3+次 3+最后 3），全局列权重为零。
+        # 只读取逐牌特征列（前 3 danger + 次 3 loss），全局列权重为零。
         mask = torch.cat([
-            torch.ones(3), torch.ones(3), torch.zeros(3),
-            torch.zeros(3), torch.zeros(3), torch.zeros(3), torch.ones(3),
+            torch.ones(3), torch.ones(3), torch.zeros(15),
         ])[None, :]
         readout.proj.weight.zero_()
         readout.proj.weight[0] = mask
         readout.proj.bias.zero_()
         output = readout(belief, tile_codes, detach=True)
     assert float(output[0, 0, 0]) == 0.0
-    assert abs(float(output[0, 1, 0]) - 9.0) < 1e-6
+    # 逐牌项只剩 danger(3) + loss(3)：tile_code=1 时 6 项全为 1。
+    assert abs(float(output[0, 1, 0]) - 6.0) < 1e-6
 
 
 def test_readout_changes_logits_after_training() -> None:

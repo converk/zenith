@@ -38,8 +38,8 @@ _ACTOR_W = TOKEN_ROW_WIDTH
 _NUMERIC_W = TOKEN_NUMERIC_WIDTH
 _CRITIC_W = TOKEN_ROW_WIDTH
 
-# 信念五头固定字段(每行):hand [102] uint8、shanten [3] uint8、
-# wait [105] uint8、danger [102] uint8、loss [102] float32。
+# 信念五头固定字段(每行):hand [48] uint8(16 组×3 桶)、shanten [3] uint8、
+# wait [3] uint8(每家宽度桶类别)、danger [102] uint8、loss [102] float32。
 # 设计文档 §3 紧凑存储:先以 float32 求正确,缓冲有压力再换 float16。
 _BELIEF_FIXED_SHAPES = {
     "belief_hand": (HAND_LEN, np.uint8),

@@ -88,10 +88,11 @@
   `report/`(实验报告与 `PROGRESS.md` 进度记录)、`scripts/`(运行与验证脚本);
   禁止随意命名或散落其他目录。
 - 现行原始数据集为 `datasets/tenhou_sft_2024_2025`;现行活跃编码数据集为
-  `datasets/tenhou_sft_2024_2025_encoded_60pct_v19`（用户已确认的 V19 标准训练输入,
-  已预处理完成,禁止重跑 precompute）。`datasets/tenhou_sft_2024_2025_encoded_100pct_v19`
-  为全量版本备选/归档。历史代次编码数据与 GRP 数据只允许只读统计,不得覆盖或
-  作为活跃训练输入。
+  `datasets/tenhou_sft_2024_2025_encoded_60pct_v19_fuzzy`（2026-09-07 信念头
+  模糊化标准训练输入，由旧精确标签数据集**只重标不重编码**生成；禁止重跑
+  precompute）。旧精确数据集 `..._encoded_60pct_v19` 与
+  `datasets/tenhou_sft_2024_2025_encoded_100pct_v19` 作为备选/归档。历史代次
+  编码数据与 GRP 数据只允许只读统计,不得覆盖或作为活跃训练输入。
 - 文件名必须自描述,能从名称看出职责与版本;CLI 默认路径与 README/docs 必须与
   实际产物路径一致。
 

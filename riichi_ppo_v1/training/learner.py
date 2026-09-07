@@ -635,27 +635,22 @@ class PPOLearner:
         )
         if not 0.0 <= self.critic_private_embedding_grad_scale <= 1.0:
             raise ValueError("critic_private_embedding_grad_scale must be in [0, 1]")
-        # V19 信念监督(D15/D16/D30):grad scale 与 critic 同构,五头 λ 均非负,
-        # Wait-Danger 软约束小权重。信念参数进 actor 优化器组,不加独立 LR。
+        # V19 信念监督(D15/D16/D30):grad scale 与 critic 同构,五头 λ 均非负。
+        # 2026-09-07 模糊化:每头原始损失按标签分布基线归一化,λ 默认 1.0 即均衡。
         self.belief_public_grad_scale = float(
             hyperparameters.get("belief_public_grad_scale", 1.0)
         )
         if not 0.0 <= self.belief_public_grad_scale <= 1.0:
             raise ValueError("belief_public_grad_scale must be in [0, 1]")
         self.belief_head_weights = {
-            "hand": float(hyperparameters.get("belief_head_weight_hand", 0.7)),
-            "shanten": float(hyperparameters.get("belief_head_weight_shanten", 0.8)),
-            "wait": float(hyperparameters.get("belief_head_weight_wait", 1.8)),
-            "danger": float(hyperparameters.get("belief_head_weight_danger", 5.0)),
-            "loss": float(hyperparameters.get("belief_head_weight_loss", 5.0)),
+            "hand": float(hyperparameters.get("belief_head_weight_hand", 1.0)),
+            "shanten": float(hyperparameters.get("belief_head_weight_shanten", 1.0)),
+            "wait": float(hyperparameters.get("belief_head_weight_wait", 1.0)),
+            "danger": float(hyperparameters.get("belief_head_weight_danger", 1.0)),
+            "loss": float(hyperparameters.get("belief_head_weight_loss", 1.0)),
         }
         if any(value < 0.0 for value in self.belief_head_weights.values()):
             raise ValueError("belief_head_weight_* must be non-negative")
-        self.belief_wait_danger_weight = float(
-            hyperparameters.get("belief_wait_danger_weight", 0.0)
-        )
-        if self.belief_wait_danger_weight < 0.0:
-            raise ValueError("belief_wait_danger_weight must be non-negative")
         # v19 60%：逐动作信念读出的训练开关与 detach 语义；SFT 与 PPO 均
         # 恒 detach 特征，读出投影只由 actor 损失训练，策略梯度不得塑形
         # 信念网络（监督单源）。
@@ -665,14 +660,7 @@ class PPOLearner:
         self.belief_readout_detach = bool(
             hyperparameters.get("belief_readout_detach", True)
         )
-        # 条件/加权损失超参（实施方案 §4.1）；wait_tile BCE 默认关闭
-        # （2026-09-06 决策：未知局面逐牌等待过于随机，保留 tenpai 二判）。
-        self.belief_wait_tenpai_weight = float(
-            hyperparameters.get("belief_wait_tenpai_weight", 1.0)
-        )
-        self.belief_wait_tile_weight = float(
-            hyperparameters.get("belief_wait_tile_weight", 0.0)
-        )
+        # 条件/加权损失超参（实施方案 §4.1 模糊化适配）。
         self.belief_danger_pos_weight = float(
             hyperparameters.get("belief_danger_pos_weight", 5.0)
         )
@@ -680,8 +668,6 @@ class PPOLearner:
             hyperparameters.get("belief_loss_positive_weight", 20.0)
         )
         if any(value < 0.0 for value in (
-            self.belief_wait_tenpai_weight,
-            self.belief_wait_tile_weight,
             self.belief_danger_pos_weight,
             self.belief_loss_positive_weight,
         )):
@@ -1358,9 +1344,6 @@ class PPOLearner:
                                     output,
                                     batch,
                                     head_weights=self.belief_head_weights,
-                                    wait_danger_weight=self.belief_wait_danger_weight,
-                                    wait_tenpai_weight=self.belief_wait_tenpai_weight,
-                                    wait_tile_weight=self.belief_wait_tile_weight,
                                     danger_pos_weight=self.belief_danger_pos_weight,
                                     loss_positive_weight=self.belief_loss_positive_weight,
                                 )
@@ -1650,20 +1633,11 @@ class PPOLearner:
             "system/belief_head_weight_loss": float(
                 self.belief_head_weights["loss"]
             ),
-            "system/belief_wait_danger_weight": float(
-                self.belief_wait_danger_weight
-            ),
             "system/belief_readout_enabled": float(
                 1.0 if self.belief_readout_enabled else 0.0
             ),
             "system/belief_readout_detach": float(
                 1.0 if self.belief_readout_detach else 0.0
-            ),
-            "system/belief_wait_tenpai_weight": float(
-                self.belief_wait_tenpai_weight
-            ),
-            "system/belief_wait_tile_weight": float(
-                self.belief_wait_tile_weight
             ),
             "system/belief_danger_pos_weight": float(
                 self.belief_danger_pos_weight

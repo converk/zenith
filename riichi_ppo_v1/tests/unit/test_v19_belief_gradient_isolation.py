@@ -92,26 +92,22 @@ def test_policy_loss_updates_token_matrix_but_not_belief_network() -> None:
     assert _belief_heads_have_no_grad(model)
 
 
-def test_wait_tile_bce_disabled_by_default() -> None:
-    """默认 belief_losses 关闭 wait_tile BCE：wait_loss 仅剩 tenpai 二判。"""
+def test_fuzzy_wait_loss_is_categorical() -> None:
+    """模糊化后 wait 为 5 类宽度桶 CE，不再有 tile BCE 分项与 Wait-Danger。"""
     model, inputs = _model_and_inputs()
     output = _forward_policy_only(model, inputs)
     batch = {
-        "belief_hand": torch.randint(0, 5, (2, 102), dtype=torch.long),
+        "belief_hand": torch.randint(0, 3, (2, 48), dtype=torch.long),
         "belief_shanten": torch.randint(0, 9, (2, 3), dtype=torch.long),
-        "belief_wait": torch.randint(0, 2, (2, 105), dtype=torch.float32),
+        "belief_wait": torch.randint(0, 5, (2, 3), dtype=torch.long),
         "belief_danger": torch.randint(0, 2, (2, 102), dtype=torch.float32),
         "belief_loss": torch.rand(2, 102, dtype=torch.float32) * 24000.0,
     }
-    parts = belief_losses(output, batch, head_weights={
-        "hand": 0.7, "shanten": 0.8, "wait": 1.8,
-        "danger": 5.0, "loss": 5.0,
-    })
-    # raw tile BCE 仍上报（便于监控），但不进入 wait_loss / belief_loss_total。
-    assert parts["belief/wait_tile_loss"] > 0.0
-    torch.testing.assert_close(
-        parts["belief/wait_loss"], parts["belief/wait_tenpai_loss"],
-    )
+    parts = belief_losses(output, batch)
+    # 不存在旧 tile BCE / wait_danger 键。
+    assert "belief/wait_tile_loss" not in parts
+    assert "belief/wait_danger" not in parts
+    assert "belief/wait_loss_norm" in parts
 
 
 def test_supervised_loss_updates_belief_network_only_path() -> None:
@@ -119,9 +115,9 @@ def test_supervised_loss_updates_belief_network_only_path() -> None:
     model, inputs = _model_and_inputs()
     output = _forward_policy_only(model, inputs, belief_readout_detach=True)
     batch = {
-        "belief_hand": torch.randint(0, 5, (2, 102), dtype=torch.long),
+        "belief_hand": torch.randint(0, 3, (2, 48), dtype=torch.long),
         "belief_shanten": torch.randint(0, 9, (2, 3), dtype=torch.long),
-        "belief_wait": torch.randint(0, 2, (2, 105), dtype=torch.float32),
+        "belief_wait": torch.randint(0, 5, (2, 3), dtype=torch.long),
         "belief_danger": torch.randint(0, 2, (2, 102), dtype=torch.float32),
         "belief_loss": torch.rand(2, 102, dtype=torch.float32) * 24000.0,
     }
@@ -135,7 +131,6 @@ def test_supervised_loss_updates_belief_network_only_path() -> None:
             "danger": 1.0,
             "loss": 1.0,
         },
-        wait_danger_weight=0.0,
     )
     parts["belief_loss_total"].backward()
 

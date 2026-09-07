@@ -1,7 +1,8 @@
 # V19 标准 SFT 自包含配置（用户已确认，2026-09-06）。
-# 目标 = actor BC + 信念监督联合(L_BC + belief_sft_coef·Σλ_k·L_k + λ_c·L_wait_danger)
+# 目标 = actor BC + 模糊化信念监督联合(L_BC + belief_sft_coef·Σλ_k·L_k_norm)
 # + 1 层信念 backbone(与 Critic 同构) + 逐动作信念读出(SFT detach=true)。
-# 输入协议 30 token/mask 不变；不运行 precompute，数据已预处理完成。
+# 输入协议 30 token/mask 不变；数据为旧精确数据集只重标生成的 fuzzy 集，
+# 不运行 precompute。2026-09-07：epochs=1、batch=6000、日志每 10 步。
 seed: 1
 device: cuda
 learner_gpus: 2
@@ -20,12 +21,12 @@ context_tokens: 320
 rope_base: 10000.0
 eps: 0.000001
 policy_head_type: current_state_snapshot
-dataset: datasets/tenhou_sft_2024_2025_encoded_60pct_v19
-epochs: 2
+dataset: datasets/tenhou_sft_2024_2025_encoded_60pct_v19_fuzzy
+epochs: 1
 actor_only: true
 train_critic: false
 train_public_value: false
-batch_size: 1024
+batch_size: 6000
 learning_rate: 0.00015
 min_learning_rate: 0.00002
 warmup_fraction: 0.02
@@ -36,7 +37,7 @@ adam_epsilon: 0.00000001
 max_grad_norm: 1.0
 inference_dtype: bf16
 length_bucket_window_batches: 32
-log_interval_steps: 100
+log_interval_steps: 10
 validate_semantics: false
 # 训练开关：compile 首次编译约 1-2 分钟属正常；验证结构校验交给 Rust 编码器
 # + SFT 契约 + 单测，重复 forward 校验反而拖慢与破坏编译。
@@ -50,25 +51,20 @@ tensorboard_dirname: tensorboard
 resume: null
 init_model: null
 
-# V19 信念监督键(训练分册 §6;SFT 阶段 belief_sft_coef=1.0)。
-# 五头权重：2026-09-06 标定；wait_tile BCE 关闭后按信息量微调——听牌/危险/
-# 放铳损失加大，hand 略降（见 PROGRESS.md 阶段 10/11）。
+# V19 信念监督键（2026-09-07 模糊化；五头原始损失按标签分布基线归一化，
+# λ 默认 1.0 即贡献均衡，见 PROGRESS.md 阶段 18）。
 belief_sft_coef: 1.0
-belief_head_weight_hand: 0.7
-belief_head_weight_shanten: 0.8
-belief_head_weight_wait: 1.8
-belief_head_weight_danger: 5.0
-belief_head_weight_loss: 5.0
-belief_wait_danger_weight: 0.05
+belief_head_weight_hand: 1.0
+belief_head_weight_shanten: 1.0
+belief_head_weight_wait: 1.0
+belief_head_weight_danger: 1.0
+belief_head_weight_loss: 1.0
 
 # V19 标准新增：公共层梯度耦合 + 逐动作读出 + 条件/加权损失。
-# wait_tile BCE 关闭（2026-09-06 决策）：未知局面的逐牌等待概率过于随机、
-# 难以监督且长期主导损失；保留 wait_tenpai（听牌/非听）二判与 wait_danger。
+# Wait 已模糊化为听牌+宽度桶；Danger/Loss 保持逐牌精确语义。
 belief_public_grad_scale: 0.25
 belief_readout_enabled: true
 belief_readout_detach: true
-belief_wait_tenpai_weight: 1.0
-belief_wait_tile_weight: 0.0
 belief_danger_pos_weight: 5.0
 belief_loss_positive_weight: 20.0
 

@@ -24,13 +24,13 @@ V19 SFT 参数拓扑为 `d_model=256`、16 Q heads、4 KV heads、`head_dim=16`�
 ## V19 SFT-ready 路径
 
 唯一现行 SFT 自包含配置是 `configs/v19_sft.yaml`（
-`datasets/tenhou_sft_2024_2025_encoded_60pct_v19` 已预处理完成，不再生成数据）。
-V19 SFT 目标为 Actor BC 与信念五头监督联合
-（`L_BC + belief_sft_coef·Σλ_k·L_k + λ_c·L_wait_danger`）：
+`datasets/tenhou_sft_2024_2025_encoded_60pct_v19_fuzzy`，由旧精确数据集只重标
+信念标签生成，不重编码）。V19 SFT 目标为 Actor BC 与模糊化信念五头监督联合
+（`L_BC + belief_sft_coef·Σλ_k·L_k_norm`，五头按标签基线归一化均衡）：
 
 ```bash
-CUDA_DEVICE=0,1 conda run -n Mahjong-AI riichi-sft-train \
-  --config riichi_ppo_v1/configs/v19_sft.yaml
+CUDA_DEVICE=0,1 /mnt/disk1/hubowen/miniconda3/envs/Mahjong-AI/bin/python -m \
+  riichi_ppo_v1.sft.train --config riichi_ppo_v1/configs/v19_sft.yaml
 ```
 
 训练产物地址以 `v19_sft.yaml` 中的 `dataset`/`checkpoint_dir` 为准（已预处理数据，

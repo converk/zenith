@@ -32,10 +32,10 @@ class EncodedSample:
     game_id: str
     kyoku_index: int
     seat: int
-    # 信念五头监督标签（Rust 上帝视角生成；只进训练，不进推理）。
-    belief_hand: np.ndarray  # [102] uint8
+    # 信念五头监督标签（Rust 上帝视角精确标签在 Python 边界模糊化；只进训练，不进推理）。
+    belief_hand: np.ndarray  # [48] uint8：16 组 × {0,1,≥2}
     belief_shanten: np.ndarray  # [3] uint8
-    belief_wait: np.ndarray  # [105] uint8
+    belief_wait: np.ndarray  # [3] uint8：每家 1 个宽度桶类别
     belief_danger: np.ndarray  # [102] uint8
     belief_loss: np.ndarray  # [102] float32（原始点数，trainer 内归一化）
     decision_index: int = 0
@@ -173,7 +173,7 @@ def encode_kyoku(
                 encoded.action_ids[row, :count].copy(),
                 encoded.legal_mask[row].copy(),
                 target_actions[row],
-                beliefs.hand_counts[row].copy(),
+                beliefs.hand[row].copy(),
                 beliefs.shanten[row].copy(),
                 beliefs.wait[row].copy(),
                 beliefs.danger[row].copy(),

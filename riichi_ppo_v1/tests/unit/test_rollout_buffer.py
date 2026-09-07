@@ -50,11 +50,11 @@ def _random_transition(rng: np.random.Generator) -> Transition:
         advantage=float(np.float32(rng.random())),
         critic_factors=critic["critic_factors"][0, :critic_length].numpy().astype(np.uint8),
         critic_length=critic_length,
-        # V19 合成信念标签:形状与 Rust 标签协议一致,便于 collate/learner
-        # 全链路测试;hand 计数 0..4、shanten 0..8、wait/danger 0/1。
-        belief_hand=rng.integers(0, 5, size=102, dtype=np.uint8),
+        # V19 模糊化合成信念标签:hand 0..2(48)、shanten 0..8(3)、
+        # wait 0..4(15)、danger 0/1(102)。
+        belief_hand=rng.integers(0, 3, size=48, dtype=np.uint8),
         belief_shanten=rng.integers(0, 9, size=3, dtype=np.uint8),
-        belief_wait=rng.integers(0, 2, size=105, dtype=np.uint8),
+        belief_wait=rng.integers(0, 5, size=3, dtype=np.uint8),
         belief_danger=rng.integers(0, 2, size=102, dtype=np.uint8),
         belief_loss=(rng.random(102) * 24000.0).astype(np.float32),
     )
@@ -167,9 +167,9 @@ def test_collate_belief_fixed_fields_shapes_and_values() -> None:
     buffer = RolloutBuffer(transitions)
     indices = np.arange(5)
     batch = buffer.collate(indices)
-    assert batch["belief_hand"].shape == (5, 102)
+    assert batch["belief_hand"].shape == (5, 48)
     assert batch["belief_shanten"].shape == (5, 3)
-    assert batch["belief_wait"].shape == (5, 105)
+    assert batch["belief_wait"].shape == (5, 3)
     assert batch["belief_danger"].shape == (5, 102)
     assert batch["belief_loss"].shape == (5, 102)
     assert batch["belief_loss"].dtype == torch.float32

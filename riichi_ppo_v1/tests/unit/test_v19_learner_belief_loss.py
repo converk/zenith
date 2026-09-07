@@ -34,11 +34,11 @@ def _transition(rng: np.random.Generator, row: int) -> Transition:
         advantage=float(np.float32(rng.random())),
         critic_factors=critic["critic_factors"][0, :critic_length].numpy().astype(np.uint8),
         critic_length=critic_length,
-        # 合法合成信念标签:hand 0..4、shanten 0..8、wait/danger 0/1、
-        # loss 用 0..24000 的原始点数(训练侧归一化)。
-        belief_hand=rng.integers(0, 5, size=102, dtype=np.uint8),
+        # 模糊化合成信念标签:hand 0..2(16 组×3 桶)、shanten 0..8、
+        # wait 0..4(听牌+宽度桶)、danger 0/1、loss 0..24000。
+        belief_hand=rng.integers(0, 3, size=48, dtype=np.uint8),
         belief_shanten=rng.integers(0, 9, size=3, dtype=np.uint8),
-        belief_wait=rng.integers(0, 2, size=105, dtype=np.uint8),
+        belief_wait=rng.integers(0, 5, size=3, dtype=np.uint8),
         belief_danger=rng.integers(0, 2, size=102, dtype=np.uint8),
         belief_loss=(rng.random(102) * 24000.0).astype(np.float32),
     )
@@ -77,12 +77,11 @@ def _learner_kwargs() -> dict[str, object]:
         "critic_bootstrap_updates": 0,
         "critic_private_embedding_grad_scale": 0.25,
         "belief_public_grad_scale": 0.25,
-        "belief_head_weight_hand": 0.7,
-        "belief_head_weight_shanten": 0.8,
-        "belief_head_weight_wait": 1.8,
-        "belief_head_weight_danger": 5.0,
-        "belief_head_weight_loss": 5.0,
-        "belief_wait_danger_weight": 0.05,
+        "belief_head_weight_hand": 1.0,
+        "belief_head_weight_shanten": 1.0,
+        "belief_head_weight_wait": 1.0,
+        "belief_head_weight_danger": 1.0,
+        "belief_head_weight_loss": 1.0,
         "bucket_window_multiplier": 8,
     }
 
@@ -97,14 +96,15 @@ def test_belief_loss_forward_backward_finite_and_metrics() -> None:
     metrics = learner.update(buffer, shuffle_seed=7)
     for name in (
         "belief/total_loss", "belief/hand_accuracy", "belief/shanten_top1",
-        "belief/wait_auc", "belief/wait_conditional_auc",
-        "belief/wait_precision_at_5", "belief/wait_precision_at_2",
-        "belief/wait_tenpai_acc", "belief/danger_auc",
+        "belief/wait_top1", "belief/wait_tenpai_acc",
+        "belief/wait_width_mae", "belief/danger_auc",
         "belief/danger_recall_at_topk", "belief/loss_mae",
-        "belief/loss_conditional_mae", "belief/wait_danger_violation",
+        "belief/loss_conditional_mae",
         "belief/hand_loss", "belief/shanten_loss", "belief/wait_loss",
-        "belief/wait_tenpai_loss", "belief/wait_tile_loss",
-        "belief/danger_loss", "belief/loss_loss", "belief/wait_danger",
+        "belief/danger_loss", "belief/loss_loss",
+        "belief/hand_loss_norm", "belief/shanten_loss_norm",
+        "belief/wait_loss_norm", "belief/danger_loss_norm",
+        "belief/loss_loss_norm",
     ):
         assert name in metrics, name
         assert np.isfinite(metrics[name]), name

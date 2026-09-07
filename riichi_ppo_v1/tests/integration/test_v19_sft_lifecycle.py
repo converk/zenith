@@ -85,7 +85,6 @@ def _train_config(encoded: Path, output: Path) -> dict[str, object]:
         "belief_head_weight_wait": 1.0,
         "belief_head_weight_danger": 1.0,
         "belief_head_weight_loss": 1.0,
-        "belief_wait_danger_weight": 0.05,
         "dataset": str(encoded),
         "checkpoint_dir": str(output),
     }
@@ -99,7 +98,7 @@ def test_small_sft_lifecycle(tmp_path: Path) -> None:
     assert manifest["format"] == "riichi-sft-encoded-v19"
     assert manifest["belief_labels"] is True
     assert manifest["belief_shape"] == {
-        "hand": [102], "shanten": [3], "wait": [105], "danger": [102], "loss": [102],
+        "hand": [48], "shanten": [3], "wait": [3], "danger": [102], "loss": [102],
     }
     assert manifest["counts"]["train_kyokus"] == 1
     assert manifest["counts"]["train_decisions"] > 0
@@ -107,9 +106,9 @@ def test_small_sft_lifecycle(tmp_path: Path) -> None:
     samples = list(iter_split_samples(output, "train", seed=0, shuffle=False, include_critic=False))
     assert samples
     for sample in samples[:8]:
-        assert sample.belief_hand.shape == (102,)
+        assert sample.belief_hand.shape == (48,)
         assert sample.belief_shanten.shape == (3,)
-        assert sample.belief_wait.shape == (105,)
+        assert sample.belief_wait.shape == (3,)
         assert sample.belief_danger.shape == (102,)
         assert sample.belief_loss.shape == (102,)
         assert torch.isfinite(torch.as_tensor(sample.belief_loss)).all()
@@ -135,22 +134,27 @@ def test_small_sft_lifecycle(tmp_path: Path) -> None:
     metrics = json.loads((train_dir / "metrics.json").read_text(encoding="utf-8"))
     assert math.isfinite(metrics["validation/policy_ce"])
     for key in (
-        "train/belief_hand_acc", "train/belief_shanten_top1", "train/belief_wait_topk",
-        "train/belief_wait_tenpai_acc", "train/belief_wait_precision_at_2",
+        "train/belief_hand_acc", "train/belief_shanten_top1", "train/belief_wait_top1",
+        "train/belief_wait_tenpai_acc", "train/belief_wait_width_mae",
         "train/belief_danger_recall_at_topk", "train/belief_loss_mae",
         "train/belief_loss_conditional_mae",
         "train/belief_hand_loss", "train/belief_shanten_loss",
         "train/belief_wait_loss", "train/belief_danger_loss", "train/belief_loss_loss",
+        "train/belief_hand_loss_norm", "train/belief_shanten_loss_norm",
+        "train/belief_wait_loss_norm", "train/belief_danger_loss_norm",
+        "train/belief_loss_loss_norm",
         "validation/belief_hand_acc", "validation/belief_shanten_top1",
-        "validation/belief_wait_topk", "validation/belief_wait_tenpai_acc",
-        "validation/belief_wait_precision_at_2",
+        "validation/belief_wait_top1", "validation/belief_wait_tenpai_acc",
+        "validation/belief_wait_width_mae",
         "validation/belief_danger_recall_at_topk", "validation/belief_loss_mae",
         "validation/belief_loss_conditional_mae",
-        "validation/belief_danger_auc", "validation/belief_wait_conditional_auc",
-        "validation/belief_wait_danger_violation",
+        "validation/belief_danger_auc",
         "validation/belief_hand_loss", "validation/belief_shanten_loss",
         "validation/belief_wait_loss", "validation/belief_danger_loss",
         "validation/belief_loss_loss",
+        "validation/belief_hand_loss_norm", "validation/belief_shanten_loss_norm",
+        "validation/belief_wait_loss_norm", "validation/belief_danger_loss_norm",
+        "validation/belief_loss_loss_norm",
     ):
         assert key in metrics, key
         assert math.isfinite(float(metrics[key])), key
