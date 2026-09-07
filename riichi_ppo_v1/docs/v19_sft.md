@@ -54,7 +54,7 @@ SFT 目标为 `L_BC + belief_sft_coef·Σλ_k·L_k_norm`，默认 `belief_sft_co
 标签更新，共享层仅按 `belief_public_grad_scale=0.25` 接收监督梯度。
 
 `torch_compile: true`、`validate_structure: false` 一起开启；首次编译约 1–2 分钟
-属正常。固定验证与 checkpoint 间隔为 3000 steps，最终评估为 96 半庄，不能在实验配置里覆盖。
+属正常。固定验证与 checkpoint 间隔为 1000 steps（2026-09-07 用户调整为 1000），最终评估为 96 半庄，不能在实验配置里覆盖。
 正式运行前先执行：
 
 ```bash

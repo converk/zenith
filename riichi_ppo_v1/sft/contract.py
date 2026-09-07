@@ -45,9 +45,9 @@ BELIEF_LABEL_SHAPES: dict[str, list[int]] = {
 }
 
 # 固定 SFT 节奏(见 AGENTS.md「评测与验证机制」):验证、checkpoint 保存每
-# 3000 steps 一次,最终评估保持 96 半庄。参数只在代码中定义一处,禁止在实验
+# 1000 steps 一次,最终评估保持 96 半庄。参数只在代码中定义一处,禁止在实验
 # 配置里复制。
-SFT_CADENCE_STEPS = 3000
+SFT_CADENCE_STEPS = 1000
 SFT_FINAL_EVAL_HANCHAN_COUNT = 96
 
 # V19 当前局面输入契约的规范化载荷：协议版本、格式、token 行宽/数值宽、

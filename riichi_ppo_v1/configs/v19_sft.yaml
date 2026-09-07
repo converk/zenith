@@ -68,4 +68,4 @@ belief_readout_detach: true
 belief_danger_pos_weight: 5.0
 belief_loss_positive_weight: 20.0
 
-# 机制常量（3000 steps / 96 hanchan）仍只在 sft/contract.py 定义，禁止复制。
+# 机制常量（1000 steps / 96 hanchan）仍只在 sft/contract.py 定义，禁止复制。

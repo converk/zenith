@@ -119,7 +119,7 @@
   5 进程),每 5 updates 一次;对手模型、种子基数、设备与输出目录由版本配置
   提供,不得硬编码具体版本;输出到 `audit/reports/<版本号>/eval`,进度与失败
   记录写 `audit/reports/<版本号>/report/PROGRESS.md`。
-- SFT 的验证与 checkpoint 保存统一固定为每 3000 steps 一次,最终评估规模为
+- SFT 的验证与 checkpoint 保存统一固定为每 1000 steps 一次,最终评估规模为
   96 hanchan。
 - 上述机制常量(进程数、单进程半庄数、间隔、SFT 节奏)的任何改动,必须先更新
   本文件的机制描述与 `mechanism.py`/`contract.py` 的文档说明,再改代码;禁止在

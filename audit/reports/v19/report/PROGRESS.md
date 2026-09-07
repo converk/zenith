@@ -461,4 +461,15 @@ wait_tile 时的 ~3.6。运行中的训练需停止后重跑或从头/resume 应
 - 归档：`checkpoints/train_riichi_v19/archive_20260907_sft_2ep/`（best/latest/
   metrics/tensorboard）+ `logs/v19/archive_20260907_sft_2ep/sft_train_v19_2ep.log`。
 
+## 阶段 19：SFT 评测间隔调整为 1000 steps（已完成，本次轮）
+
+> 用户决策（2026-09-07）：fuzzy SFT 的验证/checkpoint 间隔从 3000 改为 1000；
+> 终止并直接删除上一次 fuzzy 运行产物（不计归档）。
+
+- `riichi_ppo_v1/sft/contract.py`：`SFT_CADENCE_STEPS = 3000 → 1000`。
+- 同步：`AGENTS.md`、`riichi_ppo_v1/docs/v19_sft.md`、`configs/v19_sft.yaml`
+  注释、训练分册设计文档、`test_artifact_conventions.py`。
+- 删除活动产物：`checkpoints/train_riichi_v19/sft/`（本次运行仅 tensorboard）、
+  `logs/v19/sft_train_v19_fuzzy.log`；fuzzy 数据集与旧 SFT 归档保留。
+
 
