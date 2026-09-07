@@ -11,7 +11,7 @@
 # 会吞/阻塞终端输出）。可用 PYTHON 环境变量覆盖解释器路径。
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 cd "$ROOT"
 
 PYTHON="${PYTHON:-/mnt/disk1/hubowen/miniconda3/envs/Mahjong-AI/bin/python}"

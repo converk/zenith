@@ -6,7 +6,7 @@
 #        RiichiEnv 扩展已安装 V19（ENCODING_PROTOCOL_VERSION=19）。
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 PYTHON="${PYTHON:-python}"
 FORCE=false
 SMOKE=false
