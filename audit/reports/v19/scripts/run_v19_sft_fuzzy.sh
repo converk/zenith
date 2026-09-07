@@ -41,6 +41,10 @@ run() {
 
 mkdir -p "$LOG_DIR"
 
+# 大 batch（双卡各 3000）+ torch.compile 在 L20 上接近 44GB 显存上限；
+# expandable_segments 可缓解碎片化导致的 CUDA OOM。
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+
 echo "[v19-fuzzy] 1/2 relabel belief labels (no re-encoding): $OLD_DATA -> $NEW_DATA"
 if $FORCE; then
   run rm -rf "$NEW_DATA"
