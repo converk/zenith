@@ -3,7 +3,7 @@
 V19 SFT 的入口为 `riichi-sft-precompute` 与 `riichi-sft-train`。**唯一现行
 自包含配置为 `riichi_ppo_v1/configs/v19_sft.yaml`**（V19 标准 SFT，数据
 `datasets/tenhou_sft_2024_2025_encoded_60pct_v19_fuzzy`，模糊标签由旧精确
-数据集重标生成，`epochs=1`、`batch_size=6000`、`log_interval_steps=10`）；
+数据集重标生成，`epochs=1`、`batch_size=4096`、`log_interval_steps=10`）；
 不再保留其他 SFT 配置文件。不得覆盖归档旧版本数据。
 
 ## 数据契约

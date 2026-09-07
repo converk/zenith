@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # V19 模糊信念 SFT 一体化脚本（2026-09-07）：① 只重标信念标签（不重编码）
-# → ② 用新配置跑 1 epoch / batch=6000 / 每 10 step 打点。
+# → ② 用新配置跑 1 epoch / batch=4096 / 每 10 step 打点（双卡各 2048）。
 #
 # 用法:
 #   bash audit/reports/v19/scripts/run_v19_sft_fuzzy.sh            # 直接执行

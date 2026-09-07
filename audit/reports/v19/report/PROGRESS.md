@@ -437,8 +437,9 @@ wait_tile 时的 ~3.6。运行中的训练需停止后重跑或从头/resume 应
 
 > 用户决策（2026-09-07）：保留五头与每玩家 3 查询 token；Hand 模糊化为
 > 花色×段位 16 组 × {0,1,≥2} 桶；Wait 模糊化为听牌 + 宽度桶 5 类；
-> Shanten/Danger/Loss 保留；五头损失贡献均衡；SFT 改 1 epoch / batch=6000 /
-> 每 10 步打点；重标数据集或写一体化脚本；归档旧 SFT。
+> Shanten/Danger/Loss 保留；五头损失贡献均衡；SFT 改 1 epoch / batch=4096
+> （6000 双卡 OOM 后回调，见本阶段未注）/ 每 10 步打点；重标数据集或写
+> 一体化脚本；归档旧 SFT。
 
 - 设计文档：`audit/reports/v19/design/V19_信念头模糊化_设计方案.md`；
   文档 `riichi_ppo_v1/docs/v19_sft.md`、`v19_input_protocol.md` 同步。
@@ -449,8 +450,9 @@ wait_tile 时的 ~3.6。运行中的训练需停止后重跑或从头/resume 应
   evaluation 1v3；模型参数 ~6.68M（token_matrix 282→130，上界仍 7.2M）。
 - 五头均衡：每头原始损失除以标签分布基线（熵/最优常数 BCE/正例中位偏差），
   λ 默认 1.0；原始与归一化 loss 均上报。
-- 配置：`v19_sft.yaml`（epochs=1、batch_size=6000、log_interval_steps=10、
+- 配置：`v19_sft.yaml`（epochs=1、batch_size=4096、log_interval_steps=10、
   数据指针 fuzzy 集、五头 λ=1.0）、`v19_ppo.yaml`、`training.yaml` 同步。
+  （注：6000 首次实跑在 step~470 OOM，用户决定调回 4096。）
 - 脚本（未运行，等待用户执行）：`riichi_ppo_v1/sft/relabel.py` +
   `audit/reports/v19/scripts/run_v19_sft_fuzzy.sh`（直接调用环境解释器，
   不使用 conda run；支持 `--dry-run` / `--force`）。

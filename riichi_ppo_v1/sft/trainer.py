@@ -59,7 +59,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "epochs": 1,
     "train_critic": False,
     "train_public_value": False,
-    "batch_size": 6000,
+    "batch_size": 4096,
     "learning_rate": 1.5e-4,
     "min_learning_rate": 2e-5,
     "warmup_fraction": 0.02,
