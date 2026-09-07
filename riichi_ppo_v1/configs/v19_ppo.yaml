@@ -4,7 +4,7 @@
 # 探索保持方案(entropy 三锚上调 + 0.25 熵地板屏障 + 逐损失项梯度归因)。
 # updates 150→200:V18 后期 EV(λ) 与 value_loss 仍在改善,延长总 updates
 # 让 critic 继续收敛;games_per_update 维持 2048,LR 维持 9e-5 不变。
-seed: 20260828
+seed: 20260908  # 2026-09-08 重置(原 20260828)
 device: cuda
 learner_gpus: 2
 iterations: 200
@@ -146,8 +146,10 @@ opponent_mix:
 eval1v3_enabled: true
 eval1v3_model_b: checkpoints/train_riichi_v19/sft/best.pt
 eval1v3_hanchans_per_process: 600
-eval1v3_seed_base: 20260829
-eval1v3_devices: ["0", "1"]
+eval1v3_seed_base: 10260908  # 2026-09-08 重置(原 20260829)
+# 1v3 评测设备:项目 CUDA_DEVICE 编号(2→物理GPU3,3→物理GPU4);
+# 分片子进程按 CUDA_DEVICE 重新映射,双卡各 5 进程不变。
+eval1v3_devices: ["2", "3"]
 eval1v3_parallel_hanchans: 300
 eval1v3_output_dir: audit/reports/v19/eval
 

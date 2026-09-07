@@ -621,3 +621,30 @@ wait_tile 时的 ~3.6。运行中的训练需停止后重跑或从头/resume 应
   约 -3.5%）。
 - `v19_ppo.yaml` 同步：`grp_checkpoint` → V19、新增 `grp_temperature: 0.3`
   （含重标定提醒注释）。
+
+### PPO 训练/评测设备迁移（2026-09-08）
+
+- 1v3 评测设备 `eval1v3_devices` 改为 `["2", "3"]`（项目 CUDA_DEVICE 编号，
+  对应物理 GPU 3/4；分片子进程按 CUDA_DEVICE 重新映射，双卡各 5 进程结构
+  不变）。训练启动以 `CUDA_DEVICE=2,3` 拉起（train.py 映射为
+  CUDA_VISIBLE_DEVICES，learner 仍见 2 卡）。
+
+## 事故修复：SFT checkpoint 带 `_orig_mod.` 键前缀导致 PPO 启动失败（2026-09-08）
+
+- 现象：V19 PPO 首次启动在 learner 加载 `init_model` 时 strict 校验失败，
+  SFT `best.pt` 全部 238 个键带 `_orig_mod.` 前缀（torch.compile 包装产物）。
+- 根因：`sft/checkpoint.py::checkpoint_payload` 只解包 DDP(`module`)未解包
+  compile(`_orig_mod`)；V19 SFT fuzzy 运行开启 `torch_compile: true`，
+  保存了包装后的键（V18 SFT 未开 compile 故键干净）。
+- 修复：
+  - 保存端（根因）：`checkpoint_payload` 解包顺序 DDP → compile，未来 SFT
+    保存的键与 eager 完全一致；
+  - 加载端（兼容既有工件，不改 checkpoint 文件）：新增
+    `model/checkpoint.py::strip_compile_prefix`，应用于 learner
+    `load_model_weights`、inference actor `_sft_model`、评测
+    `policy_adapter.load_policy_adapter`、SFT `init_model`/resume 路径
+    （resume 改为加载到解包后模块）。
+- 顺带修复 `sft/trainer.py` 存量 lint（`Tensor` 未导入 F821 ×6、未使用变量
+  F841 ×1）与 `learner.py` import 排序。
+- 验证：新增 `test_compile_prefix.py`（4 项）；全仓 262 passed、ruff 全过；
+  端到端验证 learner 与 1v3 评测两条加载路径 strict 加载 SFT best.pt 成功。
