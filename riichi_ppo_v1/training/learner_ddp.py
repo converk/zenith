@@ -74,7 +74,7 @@ def _enable_parent_death_signal() -> None:
 # 按 executed samples 加权平均的指标(每个 rank 处理样本数可能差一个 padding)。
 _SAMPLE_WEIGHTED_KEYS = {
     "loss", "policy_loss", "value_loss", "value_loss_raw", "value_prediction",
-    "entropy", "entropy_normalized",
+    "entropy", "entropy_normalized", "entropy_floor_deficit",
     "sft_reference_kl", "approx_kl", "clipfrac", "ratio",
     "update/executed_transition_tokens_mean",
     *belief_metric_keys(),
@@ -110,6 +110,13 @@ _RANK0_KEYS = {
     "system/belief_readout_enabled", "system/belief_readout_detach",
     "system/belief_danger_pos_weight", "system/belief_loss_positive_weight",
     "training/critic_bootstrap", "training/policy_update",
+    # 逐损失项梯度归因诊断:仅 rank 0 计算,直接取 rank 0。
+    "grad_term/policy/actor", "grad_term/policy/shared",
+    "grad_term/value/critic", "grad_term/value/shared",
+    "grad_term/entropy/actor", "grad_term/entropy/shared",
+    "grad_term/sft_kl/actor", "grad_term/sft_kl/shared",
+    "grad_term/belief/belief", "grad_term/belief/shared",
+    "grad_term/diagnostics_failed",
 }
 
 

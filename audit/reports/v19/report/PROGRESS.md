@@ -472,4 +472,83 @@ wait_tile 时的 ~3.6。运行中的训练需停止后重跑或从头/resume 应
 - 删除活动产物：`checkpoints/train_riichi_v19/sft/`（本次运行仅 tensorboard）、
   `logs/v19/sft_train_v19_fuzzy.log`；fuzzy 数据集与旧 SFT 归档保留。
 
+## 阶段 20：PPO 探索保持方案 + 训练时长 + 梯度归因诊断（已完成，本次轮）
 
+> 用户决策（2026-09-08，SFT 收尾期间，基于 V18 r5 完整曲线复盘）：
+> V19 PPO 以评估信念网络为首要目标，不追分。四项决定：
+> ① entropy 前期放缓下降 + 全程 raw 熵地板 0.25；② 学习率维持 9e-5
+> 不随 mb 1536→2048 上调；③ total_updates 150→200（games_per_update
+> 维持 2048）；④ 增加逐损失项梯度归因诊断。
+
+- **V18 证据基础**（TB `checkpoints/train_riichi_v18/ppo/tensorboard` +
+  r5 日志 + 30 次评测 CSV）：
+  - raw 熵 0.478(SFT init)→0.175(u150)，跌破 0.3 于 ~u73；
+  - H 0.30→0.24 锐化段（u70→u105）伴随最强增益（+4057→+5031 分差、
+    top2 0.588→0.6105）；H<0.24 后继续锐化无任何评测收益（纯研磨）；
+  - 平台期归因排除 SFT_KL 过度限制：sft_kl 系数衰减 5x、KL 距 SFT 持续
+    发散（0.21→0.27）、approx_kl ~1e-3 << target_kl 0.01、early_stop
+    全程 0 次；真实瓶颈是 GRP 信号噪声地板（EV(λ) 仅 ~0.20）+ 低探索
+    研磨，与用户熵地板想法互相印证；
+  - lr 9e-5 保持的依据：r5 中 lr 线性衰减 4x 期间 approx_kl 恒定 ~1e-3
+    （步长非 lr 瓶颈），6e-5→9e-5 轮间 A/B 无差异；1.4e-4 时代曾发
+    梯度上升事故（e00a5ef 下调）。
+- **熵方案**：三锚 0.014/0.006/0.002 → 0.018/0.010/0.004，
+  middle_fraction 0.33→0.5（前期/中段放缓下降）；新增熵地板屏障
+  `entropy_floor: 0.25` + `entropy_floor_coef: 0.02`——batch 均 raw 熵
+  跌破地板才施加推力，高于地板梯度恒为零（前期零干扰），只挡 V18 证实
+  无效的 <0.24 研磨段。
+- **200 updates**：V18 后期 EV(λ) 0.184→0.198 与 value_loss 仍在改善
+  （critic 未收敛）；延长总 updates 同时给 critic 更多数据与策略更多
+  改进步数，单 update 制度不变（games_per_update=2048、有效批 40960、
+  评测/存档节奏不变）。备选"增大 games_per_update"否决：同等墙钟下
+  减少策略改进步数、优势信噪比收益不明。
+- **逐损失项梯度归因诊断**（新代码）：每 10 个 policy update 在首个
+  minibatch 上用 `torch.autograd.grad` 对 policy/value/entropy(+地板)/
+  sft_kl/belief 各项单独回传，记录 项×参数根组（actor头/belief/shared/
+  critic）pre-clip 范数（TB `PPO/梯度归因/*`）。不写 param.grad、不触
+  DDP allreduce、图内 0.25 缩放如实捕获；失败打标记并本进程禁用（绝不
+  中断训练）。直接回答"谁在吃梯度预算"（V19 的 belief loss ~O(1) vs
+  策略项 ~1e-3，actor_grad_norm 从此由信念项主导，必须拆开看）。
+- **belief_sft_coef 接线**：PPO learner 原先直接 `loss + belief_loss_total`
+  （该键仅 SFT 消费）；现与 SFT 同构乘 `belief_sft_coef`（默认 1.0，
+  行为不变，键从此两侧生效）。belief 分支 100%/shared 0.25 的梯度语义
+  本就由 architecture.py 图内缩放保证（SFT/PPO 同路径，无改动）。
+- 改动文件：`training/learner.py`（entropy_floor_penalty、
+  loss_term_grad_norms、根组捕获、损失组装、诊断插桩、指标）、
+  `training/learner_ddp.py`（聚合键集合）、`training/tensorboard.py`
+  （12 个 curated 标签）、`configs/v19_ppo.yaml`（200 updates、熵方案、
+  地板、诊断键）、`tests/unit/test_v19_learner_entropy_floor.py`（新增 6
+  测）、`tests/unit/test_v19_ppo_config.py`（契约 +1）。
+- 测试：新增/相关 22 passed；全量 `riichi_ppo_v1/tests` 233 passed
+  2 skipped（CUDA 隐藏下运行，保护在跑 SFT；`test_learner_ddp.py` 需双卡
+  排除，其键集合改动为纯增量，静态验证）。
+
+
+
+
+## 阶段 21：fuzzy SFT（1 epoch）训练完成检查（已完成，本次轮）
+
+> 用户要求检查模糊化 SFT 的五头评测、训练结果与损失趋势，评估训练有效性。
+
+- 实际运行：34,402 步（1 epoch，batch=4096，lr=1.5e-4），耗时 17,365 s，
+  34 个验证点（每 1000 步）；产物 `best.pt`（step 33000，val loss 0.48322）
+  与 `latest.pt`（step 34402，0.48333），两者等价。
+- 策略 BC：val CE 0.736→0.483、top1 0.735→0.815、top3 0.943→0.978；
+  train–val 差 ~0.0025 无过拟合。同 epoch 对比旧精确版（batch=1024）各可比
+  指标低 0.3–2.2pp，属大 batch 优化器步数少 4× 的步数效应，非退化。
+- 信念五头（基线=fuzzy 验证集 97 shard 全量统计）：hand_acc 0.6654 超逐组
+  多数类基线 0.6207 达 +4.5pp（旧精确标签仅超全零 +0.26pp，模糊化解决
+  hand 头学不动问题）；shanten_top1 0.4755（基线 0.3028）；wait_tenpai_acc
+  0.8862（基线 0.8492）；danger_auc 0.9073（旧 2ep 0.9290）；loss 条件
+  MAE 0.0912 优于常数基线 0.1199 且好于旧 2ep 的 0.1292。
+- 澄清两点口径：① loss 头全局 MAE 0.2091 变大是监督范围改为"仅危险正例"
+  所致（安全格不再被压到 0），非退化；② loss_norm 1.31>1 是 Huber+21×
+  加权 vs 不加权 MAD 的口径产物，按条件 MAE 对照模型实优于常数。
+- 结论：训练有效；五头全部显著超基线，λ=1 归一化使五头贡献天然同量级
+  （0.66–1.31），阶段 18 均衡设计达成。
+- 遗留：96 半庄最终评测仍缺失（建议 PPO 前补跑）；danger_auc 距旧 2ep
+  尚差 2.2pp，若 PPO 重视信念面可评估 2 epochs 复跑（约 9.6h）；
+  `belief_loss_mae` 命名与 loss_norm 基线口径建议修正。
+- 分析报告：`audit/reports/v19/report/V19_SFT_fuzzy_训练检查.md`，趋势图与
+  验证表在 `audit/reports/v19/eval/v19_sft_fuzzy_trends.png`、
+  `v19_sft_fuzzy_validation_table.csv`。

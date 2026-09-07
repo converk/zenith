@@ -11,6 +11,7 @@ import gc
 import os
 import queue as _queue
 import random
+import sys
 import threading
 import time
 from contextlib import contextmanager, nullcontext
@@ -193,6 +194,45 @@ def clip_branch_grad_norms(
     return metrics
 
 
+def loss_term_grad_norms(
+    terms: dict[str, torch.Tensor],
+    root_parameters: dict[str, list[nn.Parameter]],
+) -> dict[str, float]:
+    """逐损失项单独回传,返回 grad_term/<项>/<组> 的 pre-clip 梯度范数。
+
+    用 torch.autograd.grad 计算:不写入 param.grad、不触发 DDP allreduce;
+    图内梯度缩放(critic/belief 公共回传 0.25)被如实捕获,数值即该项对
+    合并损失梯度的真实贡献。与参数无图连接的项(如 0 系数 KL)跳过。
+    每次回传 retain_graph=True,由调用方随后的真实 backward 统一释放;
+    结果为本 rank 局部值,仅供诊断归因。
+    """
+    flat: list[tuple[str, nn.Parameter]] = [
+        (group, parameter)
+        for group in ("actor", "belief", "shared", "critic")
+        for parameter in root_parameters[group]
+    ]
+    parameters = [parameter for _, parameter in flat]
+    metrics: dict[str, float] = {}
+    for term_name, term in terms.items():
+        if not term.requires_grad:
+            continue
+        gradients = torch.autograd.grad(
+            term, parameters, retain_graph=True, allow_unused=True,
+        )
+        squares: dict[str, torch.Tensor] = {}
+        for (group, _), gradient in zip(flat, gradients, strict=True):
+            if gradient is None:
+                continue
+            detached = gradient.detach().square().sum()
+            if group in squares:
+                squares[group] = squares[group] + detached
+            else:
+                squares[group] = detached
+        for group, value in squares.items():
+            metrics[f"grad_term/{term_name}/{group}"] = float(value.sqrt())
+    return metrics
+
+
 def accumulation_group_size(
     planned_minibatches: int,
     accumulation_steps: int,
@@ -345,6 +385,19 @@ def policy_entropy_values(
     legal_action_counts = legal_mask.sum(-1).float().clamp_min(2.0)
     normalized_entropy_values = entropy_values / legal_action_counts.log()
     return entropy_values, normalized_entropy_values
+
+
+def entropy_floor_penalty(
+    entropy_values: torch.Tensor,
+    floor: float,
+) -> torch.Tensor:
+    """熵地板屏障:返回 max(0, floor - batch 均 raw 熵) 的标量惩罚项。
+
+    高于地板时为常数 0(梯度严格为零,前期训练不受干扰),跌破地板后随
+    亏额线性增大,把策略熵往地板方向回推。作用于 batch 均值而非逐样本,
+    避免与必要的高确定度决策(和牌、唯一合理打点等)对抗。
+    """
+    return F.relu(float(floor) - entropy_values.mean())
 
 
 def transition_length_metrics(
@@ -542,16 +595,28 @@ class PPOLearner:
         parameter_groups: dict[str, list[nn.Parameter]] = {
             "shared": [], "actor": [], "critic": [],
         }
+        # 逐损失项梯度归因诊断用的参数根组:比优化器分支更细,把信念网络
+        # 从 actor 组中拆出;compile 包装前捕获,参数对象跨包装同引用。
+        root_parameters: dict[str, list[nn.Parameter]] = {
+            "shared": [], "actor": [], "belief": [], "critic": [],
+        }
         for name, parameter in self.model.named_parameters():
             root = name.split(".", 1)[0]
-            if root in ACTOR_ROOTS or root in BELIEF_ROOTS:
+            if root in ACTOR_ROOTS:
                 parameter_groups["actor"].append(parameter)
+                root_parameters["actor"].append(parameter)
+            elif root in BELIEF_ROOTS:
+                parameter_groups["actor"].append(parameter)
+                root_parameters["belief"].append(parameter)
             elif root in CRITIC_ROOTS:
                 parameter_groups["critic"].append(parameter)
+                root_parameters["critic"].append(parameter)
             elif root in SHARED_ROOTS:
                 parameter_groups["shared"].append(parameter)
+                root_parameters["shared"].append(parameter)
             else:
                 raise ValueError(f"unclassified optimizer parameter: {name}")
+        self._root_parameters = root_parameters
         self.optimizer = torch.optim.AdamW(
             [
                 {
@@ -689,6 +754,31 @@ class PPOLearner:
         )
         if self.gradient_accumulation_steps < 1:
             raise ValueError("gradient_accumulation_steps must be positive")
+        # 熵地板屏障(可选):batch 均 raw 熵跌破地板时以屏障系数施加推力,
+        # 高于地板梯度恒为零;floor<=0 关闭。作用于 raw 熵(与日志指标同单位)。
+        self.entropy_floor = float(hyperparameters.get("entropy_floor", 0.0))
+        self.entropy_floor_coef = float(
+            hyperparameters.get("entropy_floor_coef", 0.0)
+        )
+        if self.entropy_floor < 0.0 or self.entropy_floor_coef < 0.0:
+            raise ValueError("entropy_floor/entropy_floor_coef must be non-negative")
+        if self.entropy_floor > 0.0 and self.entropy_floor_coef <= 0.0:
+            raise ValueError(
+                "entropy_floor_coef must be positive when entropy_floor is set"
+            )
+        # 信念总损失系数:与 SFT 同构(L_BC + belief_sft_coef·Σλk·Lk),PPO
+        # 侧乘到 belief_loss_total 上;默认 1.0 与历史行为一致。
+        self.belief_sft_coef = float(hyperparameters.get("belief_sft_coef", 1.0))
+        if self.belief_sft_coef < 0.0:
+            raise ValueError("belief_sft_coef must be non-negative")
+        # 逐损失项梯度归因诊断:每 N 个 policy update 在首个 minibatch 上
+        # 单独回传各损失项,记录 项×参数根组 的 pre-clip 范数;0 关闭。
+        self.grad_term_diagnostics_interval = int(
+            hyperparameters.get("grad_term_diagnostics_interval_updates", 0)
+        )
+        if self.grad_term_diagnostics_interval < 0:
+            raise ValueError("grad_term_diagnostics_interval_updates must be non-negative")
+        self._grad_term_diagnostics_failed = False
 
     def release_cache(self) -> None:
         """评测前释放缓存显存:gc + ``empty_cache`` 归还未分配的缓存块。
@@ -1067,6 +1157,8 @@ class PPOLearner:
         metric_sample_sums: dict[str, torch.Tensor] = {}
         metric_sample_count = 0
         step_metric_totals: dict[str, torch.Tensor] = {}
+        # 逐损失项梯度归因诊断结果(rank 0 局部,update 级别一次)。
+        grad_term_metrics: dict[str, float] = {}
         ratio_samples: list[torch.Tensor] = []
         updates = 0
         optimizer_steps = 0
@@ -1360,6 +1452,7 @@ class PPOLearner:
                                 # 保持「只训 critic」的既有语义;指标仍上报)。
                                 entropy_loss_values = entropy_values
                                 loss = value_coef * value_loss_values_.mean()
+                                entropy_floor_deficit_values = None
                             else:
                                 entropy_loss_values = normalized_entropy_values
                                 loss = (
@@ -1369,8 +1462,62 @@ class PPOLearner:
                                     + sft_kl_coef * sft_reference_kl_values.mean()
                                 )
                                 if belief_loss_total is not None:
-                                    loss = loss + belief_loss_total
+                                    # 与 SFT 同构:belief_sft_coef 缩放信念监督
+                                    # 在总损失中的权重(默认 1.0,行为不变)。
+                                    loss = loss + self.belief_sft_coef * belief_loss_total
+                                # 熵地板屏障:batch 均 raw 熵跌破地板时施加额外
+                                # 推力,高于地板梯度恒为零(前期不受干扰)。
+                                if self.entropy_floor > 0.0:
+                                    entropy_floor_deficit_values = entropy_floor_penalty(
+                                        entropy_values, self.entropy_floor,
+                                    )
+                                    loss = (
+                                        loss
+                                        + self.entropy_floor_coef * entropy_floor_deficit_values
+                                    )
+                                else:
+                                    entropy_floor_deficit_values = None
                             evaluated_loss = loss
+                        if (
+                            not critic_bootstrap
+                            and updates == 0
+                            and self.rank in (None, 0)
+                            and self.grad_term_diagnostics_interval > 0
+                            and not self._grad_term_diagnostics_failed
+                            and (policy_update_number - 1) % self.grad_term_diagnostics_interval == 0
+                        ):
+                            # 逐损失项梯度归因诊断:首个 minibatch 上对每个损失项
+                            # 单独回传一次,记录该项对各参数根组的 pre-clip 范数;
+                            # 失败只打标记并本进程内禁用,绝不中断训练。
+                            with self._gpu_stage("update/grad_term_diagnostics"):
+                                grad_terms: dict[str, torch.Tensor] = {
+                                    "policy": policy_loss_values.mean(),
+                                    "value": value_coef * value_loss_values_.mean(),
+                                    "entropy": -entropy_coef * entropy_loss_values.mean(),
+                                    "sft_kl": sft_kl_coef * sft_reference_kl_values.mean(),
+                                }
+                                if entropy_floor_deficit_values is not None:
+                                    grad_terms["entropy"] = (
+                                        grad_terms["entropy"]
+                                        + self.entropy_floor_coef * entropy_floor_deficit_values
+                                    )
+                                if belief_loss_total is not None:
+                                    grad_terms["belief"] = (
+                                        self.belief_sft_coef * belief_loss_total
+                                    )
+                                try:
+                                    grad_term_metrics.update(
+                                        loss_term_grad_norms(
+                                            grad_terms, self._root_parameters,
+                                        )
+                                    )
+                                except Exception as exc:  # noqa: BLE001 - 诊断降级
+                                    self._grad_term_diagnostics_failed = True
+                                    grad_term_metrics["grad_term/diagnostics_failed"] = 1.0
+                                    print(
+                                        f"grad-term diagnostics failed and disabled: {exc!r}",
+                                        file=sys.stderr,
+                                    )
                         loss_is_finite = torch.isfinite(evaluated_loss)
 
                         def loss_detail() -> str:
@@ -1381,12 +1528,18 @@ class PPOLearner:
                                 if belief_loss_total is not None
                                 else ""
                             )
+                            floor_part = (
+                                f"entropy_floor_deficit={float(entropy_floor_deficit_values)} "
+                                if entropy_floor_deficit_values is not None
+                                else ""
+                            )
                             return (
                                 f"policy={float(policy_loss_values.mean())} "
                                 f"value={float(value_loss_values_.mean())} "
                                 f"entropy={float(entropy_values.mean())} "
                                 f"sft_kl={float(sft_reference_kl_values.mean())} "
                                 + belief_part
+                                + floor_part
                             )
 
                         if self.world_size == 1 and not loss_is_finite:
@@ -1486,8 +1639,13 @@ class PPOLearner:
                                     - entropy_coef * entropy_loss_values
                                     + sft_kl_coef * sft_reference_kl_values
                                     + (
-                                        belief_total_per_sample
+                                        self.belief_sft_coef * belief_total_per_sample
                                         if belief_total_per_sample is not None
+                                        else 0.0
+                                    )
+                                    + (
+                                        self.entropy_floor_coef * entropy_floor_deficit_values
+                                        if entropy_floor_deficit_values is not None
                                         else 0.0
                                     )
                                 )
@@ -1539,6 +1697,16 @@ class PPOLearner:
                                 metric_sample_sums[name].add_(detached)
                             else:
                                 metric_sample_sums[name] = detached.clone()
+                    if entropy_floor_deficit_values is not None:
+                        detached_floor = (
+                            entropy_floor_deficit_values.detach()
+                            .expand(len(indices))
+                            .sum()
+                        )
+                        if "entropy_floor_deficit" in metric_sample_sums:
+                            metric_sample_sums["entropy_floor_deficit"].add_(detached_floor)
+                        else:
+                            metric_sample_sums["entropy_floor_deficit"] = detached_floor.clone()
                     metric_sample_count += len(indices)
                     if len(indices):
                         ratio_samples.append(ratio.detach())
@@ -1663,6 +1831,8 @@ class PPOLearner:
             | {"transitions": float(count)}
             | length_metrics
         )
+        if grad_term_metrics:
+            result.update(grad_term_metrics)
         if ratio_samples:
             result["ratio_p95"] = float(
                 torch.quantile(torch.cat(ratio_samples), 0.95).item()

@@ -1,11 +1,14 @@
-# V19 PPO 稳定性训练正式配置:150 updates × 2048 完整半庄。
+# V19 PPO 稳定性训练正式配置:200 updates × 2048 完整半庄。
 # 自包含配置,不与 training.yaml 或其他历史配置叠加。
-# 超参沿用既有 PPO 基线(训练分册 D30),新增仅信念键(训练分册 §6)。
+# 超参沿用既有 PPO 基线(训练分册 D30),新增信念键(训练分册 §6)与
+# 探索保持方案(entropy 三锚上调 + 0.25 熵地板屏障 + 逐损失项梯度归因)。
+# updates 150→200:V18 后期 EV(λ) 与 value_loss 仍在改善,延长总 updates
+# 让 critic 继续收敛;games_per_update 维持 2048,LR 维持 9e-5 不变。
 seed: 20260828
 device: cuda
 learner_gpus: 2
-iterations: 150
-total_updates: 150
+iterations: 200
+total_updates: 200
 model_size: v19
 layers: 5
 shared_layers: 3
@@ -55,12 +58,19 @@ value_loss: huber
 value_target_normalization: batch_std
 value_target_std_floor: 0.01
 
-# 三点分段 entropy schedule。
+# 三点分段 entropy schedule。V19 探索保持:三锚较 V18(0.014/0.006/0.002)
+# 整体上调并延长中段(0.33→0.5),放缓前期熵下降——V18 实测 raw 熵自 SFT init
+# 0.478 一路降至 u150 0.175,前期过快收敛压缩了信念网络可见的局面多样性。
 entropy_loss_mode: normalized
-entropy_start: 0.014
-entropy_middle: 0.006
-entropy_end: 0.002
-entropy_middle_fraction: 0.33
+entropy_start: 0.018
+entropy_middle: 0.010
+entropy_end: 0.004
+entropy_middle_fraction: 0.5
+# 熵地板屏障:batch 均 raw 熵跌破 0.25 时以 0.02 系数施加屏障推力,高于地板
+# 梯度恒为零。V18 证据:H 0.30→0.24 的锐化段伴随最强增益(u70→u105 +974 分),
+# 跌破 0.24 后继续锐化无收益——地板取 0.25 只挡无效研磨,保留生产性锐化。
+entropy_floor: 0.25
+entropy_floor_coef: 0.02
 
 # 三分支独立学习率调度。
 learning_rate: 0.00009
@@ -101,6 +111,7 @@ belief_head_weight_shanten: 1.0
 belief_head_weight_wait: 1.0
 belief_head_weight_danger: 1.0
 belief_head_weight_loss: 1.0
+# 信念总损失系数:SFT/PPO 同构生效(PPO learner 用它缩放 belief_loss_total)。
 belief_sft_coef: 1.0
 # 逐动作信念读出：SFT/PPO 均恒 detach 特征；读出投影只由 actor 损失训练，
 # 策略梯度不得塑形信念网络（监督单源，见梯度隔离实施方案）。
@@ -129,3 +140,7 @@ eval1v3_parallel_hanchans: 300
 eval1v3_output_dir: audit/reports/v19/eval
 
 progress_update_interval_updates: 10
+# 逐损失项梯度归因诊断:每 10 个 policy update 记录 policy/value/entropy/
+# sft_kl/belief 各项对 actor头/belief/shared/critic 的 pre-clip 梯度范数
+# (TB: PPO/梯度归因/*),回答"谁在吃梯度预算";0 关闭。
+grad_term_diagnostics_interval_updates: 10

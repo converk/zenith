@@ -79,6 +79,22 @@ def test_v19_config_topology() -> None:
     assert config["policy_head_type"] == "current_state_snapshot"
 
 
+def test_v19_config_exploration_plan_and_diagnostics() -> None:
+    """V19 探索保持方案:熵三锚上调 + 0.25 地板屏障 + 梯度归因 + 200 updates。"""
+    config = _v19_config()
+    assert int(config["total_updates"]) == 200
+    assert int(config["iterations"]) == 200
+    assert float(config["entropy_start"]) == 0.018
+    assert float(config["entropy_middle"]) == 0.010
+    assert float(config["entropy_end"]) == 0.004
+    assert float(config["entropy_middle_fraction"]) == 0.5
+    assert float(config["entropy_floor"]) == 0.25
+    assert float(config["entropy_floor_coef"]) == 0.02
+    assert int(config["grad_term_diagnostics_interval_updates"]) == 10
+    # belief_sft_coef 在 SFT/PPO 两侧同构生效。
+    assert float(config["belief_sft_coef"]) == 1.0
+
+
 def test_v19_global_effective_minibatch_is_40960() -> None:
     """有效批 = per_gpu × learner_gpus × 梯度累积(既定基线,配置自包含)。"""
     config = _v19_config()
