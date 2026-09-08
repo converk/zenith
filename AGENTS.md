@@ -1,10 +1,11 @@
 # 项目事实
 
-- 默认使用 `CUDA_DEVICE=0,1` 和 `learner_gpus=2` 进行性能与训练测试;编号 `3`
-  对应物理 GPU 4。仅当显式要求单卡运行时才使用 `CUDA_DEVICE=0`。训练入口在
-  启动 PyTorch 或 Ray 前,会把 `CUDA_DEVICE` 映射为 CUDA 标准的
-  `CUDA_VISIBLE_DEVICES`。
-- `CUDA_DEVICE` 映射:`0`→物理 GPU 0,`1`→GPU 1,`2`→GPU 3,`3`→GPU 4。
+- 默认使用 `CUDA_DEVICE=0,1` 和 `learner_gpus=2` 进行性能与训练测试。仅当
+  显式要求单卡运行时才使用 `CUDA_DEVICE=0`。训练入口在启动 PyTorch 或 Ray
+  前,会把 `CUDA_DEVICE` 直接作为 `CUDA_VISIBLE_DEVICES` 传入(恒等映射,
+  2026-09-08 用户确认:2/3 即物理 GPU 2/3)。
+- `CUDA_DEVICE` 映射(恒等):`0`→物理 GPU 0,`1`→物理 GPU 1,`2`→物理
+  GPU 2,`3`→物理 GPU 3。
 - 所有 Python 命令与训练使用名为 `Mahjong-AI` 的 Conda 环境。
 - `RiichiEnv` 是本项目的训练环境;`RiichiEnv/riichienv-state-machine/` 是 MJAI
   协议状态转换与持久化子包,公开模块名保持 `riichi`,且不依赖 `riichienv`。
