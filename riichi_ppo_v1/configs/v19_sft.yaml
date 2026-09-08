@@ -62,10 +62,13 @@ init_model: null
 # V19 信念监督键（四头精简；四头原始损失按标签分布基线归一化，
 # λ 默认 1.0 即贡献均匀）。
 belief_sft_coef: 1.0
+# 头权重(2026-09-08 用户决策):防守信号优先——是否危险/是否听牌对决策
+# 更值钱,铳点量级是二阶信息;bucket 归一化损失天然偏高(正例子集 CE 加权),
+# 0.5 抵消其偏向。hand 保持满权重(唯一的「手牌构成」监督,表征学习主力)。
 belief_head_weight_hand: 1.0
-belief_head_weight_wait: 1.0
-belief_head_weight_danger: 1.0
-belief_head_weight_loss_bucket: 1.0
+belief_head_weight_wait: 1.5
+belief_head_weight_danger: 1.5
+belief_head_weight_loss_bucket: 0.5
 
 # 信念网络梯度隔离（残差式）：公共层梯度耦合置 0——信念监督只更新私有
 # 信念网络；逐动作读出开启并 detach（读出投影只由 BC 梯度训练）。

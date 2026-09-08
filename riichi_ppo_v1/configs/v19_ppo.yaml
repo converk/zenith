@@ -144,10 +144,13 @@ progress_update_interval_updates: 10
 # - 四头 λ 全 1.0：归一化后贡献同量级（基线含下限 0.05 + loss_bucket
 #   危险正例子集基线，2026-09-08 实测修正，见 training/belief.py）。
 belief_public_grad_scale: 0.0
+# 头权重(2026-09-08 用户决策):防守信号优先——是否危险/是否听牌对决策
+# 更值钱,铳点量级是二阶信息;bucket 归一化损失天然偏高(正例子集 CE 加权),
+# 0.5 抵消其偏向。hand 保持满权重(唯一的「手牌构成」监督,表征学习主力)。
 belief_head_weight_hand: 1.0
-belief_head_weight_wait: 1.0
-belief_head_weight_danger: 1.0
-belief_head_weight_loss_bucket: 1.0
+belief_head_weight_wait: 1.5
+belief_head_weight_danger: 1.5
+belief_head_weight_loss_bucket: 0.5
 # 信念总损失系数：SFT/PPO 同构生效（PPO learner 用它缩放 belief_loss_total）。
 belief_sft_coef: 1.0
 # 逐动作信念读出：SFT/PPO 均恒 detach 特征；读出投影只由 actor 损失训练，
