@@ -67,11 +67,11 @@ def test_v19_sft_config_initial_belief_head_weights() -> None:
 
 
 def test_v19_sft_config_epochs_one_and_log_interval() -> None:
-    """v19_sft.yaml 必须使用 1 epoch、batch=512（2026-09-08 沿用 V18 正式配置），日志每 100 步。"""
+    """v19_sft.yaml 必须使用 1 epoch、batch=2048（2026-09-08 用户决策，对齐 V18 训练批量），日志每 100 步。"""
     path = Path(__file__).resolve().parents[2] / "configs" / "v19_sft.yaml"
     config = load_config(str(path))
     assert int(config["epochs"]) == 1
-    assert int(config["batch_size"]) == 512
+    assert int(config["batch_size"]) == 2048
     assert int(config["log_interval_steps"]) == 100
 
 
