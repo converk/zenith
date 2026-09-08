@@ -55,9 +55,11 @@ bucket_window_multiplier: 8
 update_validate_structure: false
 
 # Tier 2 性能开关(既定基线)。
-torch_compile: true
+# torch_compile 关闭:消除 dynamo 重编译告警刷屏;代价是 update 阶段
+# ~10-25% 墙钟(无编译内核),需要时可重新开启。
+torch_compile: false
 rollout_update_overlap: true
-torch_compile_reference: true
+torch_compile_reference: false
 learner_shard_transport: shm
 
 # critic 侧降温、value target 归一化。
