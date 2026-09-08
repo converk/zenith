@@ -1,0 +1,89 @@
+# V19 标准 SFT 自包含配置（2026-09-08 从头重训版）。
+# 用户决策：训练超参数沿用 V18 SFT 正式配置（batch 512、log 100 步、
+# 单/双卡均不开 compile、验证抽样 150k），模型架构/数据/路径仍为 V19 自己的。
+# 信念监督为四头精简设计（2026-09-08）：
+# - belief_public_grad_scale=0：信念监督不更新公共权重（shared/backbone），
+#   只更新私有的信念网络（belief_query/backbone/四头）——残差式隔离，
+#   保证信念监督不会让策略变得更坏；
+# - 删除 shanten 头（是否听牌由 wait 头类别 0 精确提供）；
+# - 铳点损失改分桶分类（边界 1000/5000/9000/13000/17000，共 6 类）；
+# - 四头 λ 全 1.0：归一化后贡献同量级（基线含下限 0.05 + loss_bucket
+#   危险正例子集基线，2026-09-08 实测修正，见 training/belief.py）。
+# 数据仍为旧精确数据集只重标生成的 fuzzy 集（标签管线未变：shanten 标签
+# 继续生成但不再被模型消费）；不运行 precompute。
+seed: 1
+device: cuda
+learner_gpus: 2
+model_size: v19
+layers: 5
+shared_layers: 3
+critic_layers: 1
+d_model: 256
+query_heads: 16
+kv_heads: 4
+head_dim: 16
+ffn_dim: 704
+dense_slot_dim: 32
+dense_fusion_dim: 512
+context_tokens: 320
+rope_base: 10000.0
+eps: 0.000001
+policy_head_type: current_state_snapshot
+dataset: datasets/tenhou_sft_2024_2025_encoded_60pct_v19_fuzzy
+epochs: 1
+actor_only: true
+train_critic: false
+train_public_value: false
+batch_size: 2048
+learning_rate: 0.00015
+min_learning_rate: 0.00002
+warmup_fraction: 0.02
+weight_decay: 0.01
+adam_beta1: 0.9
+adam_beta2: 0.999
+adam_epsilon: 0.00000001
+max_grad_norm: 1.0
+inference_dtype: bf16
+length_bucket_window_batches: 32
+log_interval_steps: 100
+validate_semantics: false
+# torch_compile A/B 实测（2026-09-08）：V18 时代 DDP 双卡实测 8s/步而禁用；
+# V19 代码已变（validate_structure=false 快速路径、批 2048、模型改造），
+# 本配置从 step-13k checkpoint resume 并开启 compile，实测裁决：
+# 稳态步速（step 2500-4500 窗口）> 2.22 步/s(eager 基线)×1.15 则保留。
+torch_compile: true
+validate_structure: false
+validation_max_samples: 0
+validation_samples_per_run: 150000
+checkpoint_dir: checkpoints/train_riichi_v19/sft
+tensorboard_enabled: true
+tensorboard_dirname: tensorboard
+resume: checkpoints/train_riichi_v19/sft/latest.pt
+init_model: null
+
+# V19 信念监督键（四头精简；四头原始损失按标签分布基线归一化，
+# λ 默认 1.0 即贡献均匀）。
+belief_sft_coef: 1.0
+# 头权重(2026-09-08 用户决策):防守信号优先——wait/danger 领跑;
+# bucket 高于 hand(打点信息仍有价值)、低于 wait/danger;
+# hand 是唯一的「手牌构成」监督,保持基线权重。
+# 同时正例加权中性化(belief_loss_positive_weight: 0):×21 遗留加权在
+# 归一化路径上结构性放大 bucket 21 倍,是上次 run 贡献失衡(68%)的根因。
+belief_head_weight_hand: 1.0
+belief_head_weight_wait: 1.5
+belief_head_weight_danger: 1.5
+belief_head_weight_loss_bucket: 1.25
+
+# 信念网络梯度隔离（残差式）：公共层梯度耦合置 0——信念监督只更新私有
+# 信念网络；逐动作读出开启并 detach（读出投影只由 BC 梯度训练）。
+belief_public_grad_scale: 0.0
+belief_readout_enabled: true
+belief_readout_detach: true
+belief_danger_pos_weight: 5.0
+belief_loss_positive_weight: 0.0
+# P1 诊断：反事实「开闸②」梯度余弦节奏（rank 0 每 N 步一次 eager 测量前向，
+# 0 关闭）。测「若策略梯度进入信念私有头」与监督梯度的方向一致性，
+# 为是否开闸积累实证数据；纯测量，不影响训练梯度。
+grad_cosine_interval_steps: 500
+
+# 机制常量（1000 steps / 96 hanchan）仍只在 sft/contract.py 定义，禁止复制。
