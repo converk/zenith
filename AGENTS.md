@@ -121,6 +121,13 @@
   记录写 `audit/reports/<版本号>/report/PROGRESS.md`。
 - SFT 的验证与 checkpoint 保存统一固定为每 1000 steps 一次,最终评估规模为
   96 hanchan。
+- 跨代 2v2 SFT 对抗评测(一次性机制,2026-09-08 起用,用于不同架构代次间的
+  SFT 对比):每分片为一对锁步进程(V19 host + V18 工作副本 partner,仅交换
+  MJAI 动作串),10 个分片进程 × 每分片 600 = 6000 hanchan,双卡(或单卡
+  分波)各半;座位按全局半庄序号奇偶在 {0,2}/{1,3} 两组对家间轮换;种子基
+  随机生成并由 CLI 提供记录。机制常量单一来源在
+  `riichi_ppo_v1/evaluation/head_to_head_2v2_shards.py`;V18 侧运行时必须
+  来自独立工作副本的预编译扩展,禁止跨代互载 checkpoint。
 - 上述机制常量(进程数、单进程半庄数、间隔、SFT 节奏)的任何改动,必须先更新
   本文件的机制描述与 `mechanism.py`/`contract.py` 的文档说明,再改代码;禁止在
   单个实验配置里悄悄修改。
