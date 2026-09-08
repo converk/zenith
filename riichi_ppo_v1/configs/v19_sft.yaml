@@ -62,13 +62,15 @@ init_model: null
 # V19 信念监督键（四头精简；四头原始损失按标签分布基线归一化，
 # λ 默认 1.0 即贡献均匀）。
 belief_sft_coef: 1.0
-# 头权重(2026-09-08 用户决策):防守信号优先——是否危险/是否听牌对决策
-# 更值钱,铳点量级是二阶信息;bucket 归一化损失天然偏高(正例子集 CE 加权),
-# 0.5 抵消其偏向。hand 保持满权重(唯一的「手牌构成」监督,表征学习主力)。
+# 头权重(2026-09-08 用户决策):防守信号优先——wait/danger 领跑;
+# bucket 高于 hand(打点信息仍有价值)、低于 wait/danger;
+# hand 是唯一的「手牌构成」监督,保持基线权重。
+# 同时正例加权中性化(belief_loss_positive_weight: 0):×21 遗留加权在
+# 归一化路径上结构性放大 bucket 21 倍,是上次 run 贡献失衡(68%)的根因。
 belief_head_weight_hand: 1.0
 belief_head_weight_wait: 1.5
 belief_head_weight_danger: 1.5
-belief_head_weight_loss_bucket: 0.5
+belief_head_weight_loss_bucket: 1.25
 
 # 信念网络梯度隔离（残差式）：公共层梯度耦合置 0——信念监督只更新私有
 # 信念网络；逐动作读出开启并 detach（读出投影只由 BC 梯度训练）。
@@ -76,7 +78,7 @@ belief_public_grad_scale: 0.0
 belief_readout_enabled: true
 belief_readout_detach: true
 belief_danger_pos_weight: 5.0
-belief_loss_positive_weight: 20.0
+belief_loss_positive_weight: 0.0
 # P1 诊断：反事实「开闸②」梯度余弦节奏（rank 0 每 N 步一次 eager 测量前向，
 # 0 关闭）。测「若策略梯度进入信念私有头」与监督梯度的方向一致性，
 # 为是否开闸积累实证数据；纯测量，不影响训练梯度。

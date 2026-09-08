@@ -24,11 +24,11 @@ def test_v19_config_contains_belief_keys() -> None:
         "belief_head_weight_hand": 1.0,
         "belief_head_weight_wait": 1.5,
         "belief_head_weight_danger": 1.5,
-        "belief_head_weight_loss_bucket": 0.5,
+        "belief_head_weight_loss_bucket": 1.25,
         "belief_readout_enabled": True,
         "belief_readout_detach": True,
         "belief_danger_pos_weight": 5.0,
-        "belief_loss_positive_weight": 20.0,
+        "belief_loss_positive_weight": 0.0,
     }
     for name, value in expected.items():
         assert name in config, f"v19_ppo.yaml 缺少信念键 {name}"
@@ -54,7 +54,7 @@ def test_v19_sft_config_initial_belief_head_weights() -> None:
         "belief_head_weight_hand": 1.0,
         "belief_head_weight_wait": 1.5,
         "belief_head_weight_danger": 1.5,
-        "belief_head_weight_loss_bucket": 0.5,
+        "belief_head_weight_loss_bucket": 1.25,
     }
     for name, value in expected.items():
         assert name in config, f"v19_sft.yaml 缺少信念权重键 {name}"
