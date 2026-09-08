@@ -648,3 +648,47 @@ wait_tile 时的 ~3.6。运行中的训练需停止后重跑或从头/resume 应
   F841 ×1）与 `learner.py` import 排序。
 - 验证：新增 `test_compile_prefix.py`（4 项）；全仓 262 passed、ruff 全过；
   端到端验证 learner 与 1v3 评测两条加载路径 strict 加载 SFT best.pt 成功。
+
+## 重大事故修复：overlap 流水线未消费新 rollout 数据，训练原地打转（2026-09-08）
+
+- 现象：V19 PPO 前 4 个 update 的 rollout 数据逐位相同（transitions/kyokus/
+  games 及全部数据派生指标 16 位指纹一致：动作率、和率、点数差、λ-return、
+  token 数），而模型相关指标缓慢漂移（value_loss 0.358→0.311）——即每个
+  update 都在用 iteration 1 的同一份 buffer 反复训练。
+- 根因：`train.py` overlap 流水线的消费分支（`elif pipelined is not None`）
+  只从 `pipelined` 读取了计时标量，**从未执行**
+  `results = pipelined["results"]` 与 `actor_profiles = pipelined["actor_profiles"]`
+  ——收割分支存进 `pipelined` 的新 rollout 数据从未被消费，并在下一轮
+  收割时被覆盖丢弃。V18 无此问题（无 overlap 流水线，串行 collect 每轮
+  使用广播后的新权重采新数据）。
+- 修复：消费分支头部补上两行赋值。已验证 262 passed、ruff 全过。
+- 影响：修复前启动的训练（01:54 起）全部作废——actor 在 bootstrap/warmup
+  期 LR=0 冻结，learner 对 iteration 1 的 2081 局 buffer 反复过拟合，
+  策略未接受任何新数据。该运行已停止,需以修复后代码重启。
+- 教训：overlap 流水线为 V19 新增 Tier 2 路径，缺少覆盖「收割→消费」
+  数据接力的集成测试；后续应为 overlap 路径补一个 2-update 冒烟集成
+  测试（断言相邻 update 的 buffer 指纹不同）。
+
+## 2026-09-08 update=10
+
+- reward_mean=-1.1637e-09 value_loss=0.31777 entropy=0.49685 actor_grad_norm=0.86502 critic_grad_norm=1.3095 shared_grad_norm=0.19555
+- rollout_wall_s=706 update_wall_s=705.99 sps=2064.2 grp_calls=22810 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.2633 top2_rate=0.5198 mean_rank=2.459 point_diff_mean=+729.9 ci95=[219.7869444444445, 1217.5811111111109]
+
+## 2026-09-08 update=20
+
+- reward_mean=-1.2154e-09 value_loss=0.31603 entropy=0.47455 actor_grad_norm=0.80227 critic_grad_norm=0.94383 shared_grad_norm=0.18583
+- rollout_wall_s=668.36 update_wall_s=668.36 sps=2078.9 grp_calls=22523 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.2938 top2_rate=0.5427 mean_rank=2.390 point_diff_mean=+2189.3 ci95=[1691.9508333333333, 2706.818333333333]
+
+## 2026-09-08 update=30
+
+- reward_mean=-1.2167e-09 value_loss=0.31515 entropy=0.47104 actor_grad_norm=0.80318 critic_grad_norm=0.79746 shared_grad_norm=0.19183
+- rollout_wall_s=660.84 update_wall_s=660.83 sps=2076.7 grp_calls=22438 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3027 top2_rate=0.5522 mean_rank=2.362 point_diff_mean=+2807.2 ci95=[2308.0191666666665, 3301.4363888888893]
+
+## 2026-09-08 update=40
+
+- reward_mean=-1.1997e-09 value_loss=0.31023 entropy=0.4651 actor_grad_norm=0.76843 critic_grad_norm=0.38817 shared_grad_norm=0.19799
+- rollout_wall_s=652.58 update_wall_s=652.58 sps=2073.8 grp_calls=22336 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.2997 top2_rate=0.5550 mean_rank=2.360 point_diff_mean=+2815.7 ci95=[2315.009722222222, 3358.3319444444446]

@@ -597,6 +597,11 @@ def run(config: dict[str, Any]) -> None:
                 # 消费上一轮收割的 rollout(滞后一拍);计时与 profile 均为
                 # 该份数据收割时记录的实测值(本迭代的指标据此汇报,
                 # 描述的是「本轮 update 实际消费的那份数据」)。
+                # 必须把收割的 results/actor_profiles 装回同名变量:否则
+                # 本轮 update 会永远消费 iteration 1 的旧 buffer(收割的
+                # 新数据被下一轮收割覆盖丢弃),训练原地打转。
+                results = pipelined["results"]
+                actor_profiles = pipelined["actor_profiles"]
                 pipelined_begin_rollout_s = pipelined["begin_rollout_s"]
                 pipelined_rollout_wall_s = pipelined["rollout_wall_s"]
                 pipelined_result_get_s = pipelined["rollout_result_get_s"]
