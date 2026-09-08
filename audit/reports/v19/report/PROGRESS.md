@@ -741,3 +741,35 @@ wait_tile 时的 ~3.6。运行中的训练需停止后重跑或从头/resume 应
   - 吞吐:21.5 hanchan/s(单波 5 对约 4.6 分钟/600 半庄)。
 - 结论:V19 SFT 与 V18 SFT 在 2v2 对抗下基本持平;V19 未展现对 V18 的
   显著优势,后续可结合 1v3 口径与对局细节(立直/副露倾向差异)进一步分析。
+
+## 2026-09-08 update=60
+
+- reward_mean=-1.2077e-09 value_loss=0.30633 entropy=0.45828 actor_grad_norm=0.75685 critic_grad_norm=0.40227 shared_grad_norm=0.20693
+- rollout_wall_s=472.58 update_wall_s=472.58 sps=2843.2 grp_calls=22269 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.3027 top2_rate=0.5598 mean_rank=2.345 point_diff_mean=+2666.7 ci95=[2177.3319444444446, 3184.149722222222]
+
+## 2026-09-08 信念头四头精简 + V19 从头重训准备
+
+- 用户复盘 2v2 跨代评测（V19 SFT 无优势）后决策四点修正（设计记录见
+  `audit/reports/v19/design/V19_信念头四头精简_设计方案.md`）：
+  1. belief_public_grad_scale 0.25→0：信念监督不更新公共权重，只更新私有
+     信念网络（残差式隔离）；
+  2. 删除 shanten 头（是否听牌由 wait 头类别 0 精确提供）；
+  3. 铳点损失逐牌 Huber 回归改分桶分类 CE（边界 1000/5000/9000/13000/17000，
+     共 6 类；桶期望 belief_loss_expected 取代 belief_loss_pred）；
+  4. 四头 λ=1.0 归一化贡献均匀；danger/听牌保持不模糊高信息量语义。
+- 实现落点：model/belief_network（SUMMARY_DIM 130→121）、belief_readout
+  （特征 21→18）、training/belief、sft/trainer、learner/learner_ddp、
+  tensorboard（train+sft）、train.py 指标键、1v3 评测信念面；标签管线不变
+  （shanten 标签继续生成但不再被消费），数据集无需重编码重标。
+- 配置重写（从头重训版，超参沿用 V18）：v19_sft.yaml（batch 512/log 100/
+  无 compile/验证 150k）、v19_ppo.yaml（150 updates、熵三点 V18 原值、无
+  熵地板、critic_bootstrap 2、torch_compile 全开；init=SFT best、grp=V19
+  既有、checkpoint 路径不变）；belief_public_grad_scale=0、四头 λ=1.0。
+- 站点安装的陈旧编译扩展（riichi/_riichienv，9/6 构建）已用当前源码重建
+  并原子替换（旧版备份于 ~/zenith_eval_runtime/backup_stale_so_20260908/），
+  运行中训练不受影响（旧 inode 存活），新进程即用新扩展。
+- 测试：全单元 245 passed（含更新后的信念网络/读出/梯度隔离/learner 损失/
+  PPO 配置契约测试）+ SFT lifecycle 集成测试通过；已提交 1594204。
+- 运行命令（由维护者执行：先 ray stop + 归档旧 sft/ppo 产物，再依次启动）：
+  见下。
