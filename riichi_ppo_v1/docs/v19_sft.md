@@ -55,7 +55,12 @@ backbone 与 `belief_query` 只由四头监督标签更新，信念监督完全�
 权重（`belief_public_grad_scale=0`，残差式隔离）。
 
 `torch_compile: true`、`validate_structure: false` 一起开启；首次编译约 1–2 分钟
-属正常。固定验证与 checkpoint 间隔为 1000 steps（2026-09-07 用户调整为 1000），最终评估为 96 半庄，不能在实验配置里覆盖。
+属正常。**已知问题（2026-09-08）**：多卡（learner_gpus≥2）的 exact resume 当前
+不可用——`_save_checkpoint` 仅写 rank0 单份 RNG 状态，而 `load_exact_resume`
+要求 world_size 份，resume 会报 "malformed per-rank RNG state"。单卡不受
+影响；多卡中断后只能从头重训（模型无 dropout，数据顺序由 seed 决定，
+不 resume 只损失进度不影响正确性）。修复需在 cadence 处双 rank 收集 RNG
+状态（all_gather_object）后再保存，待训练结束后处理。固定验证与 checkpoint 间隔为 1000 steps（2026-09-07 用户调整为 1000），最终评估为 96 半庄，不能在实验配置里覆盖。
 正式运行前先执行：
 
 ```bash

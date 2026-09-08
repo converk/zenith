@@ -47,9 +47,10 @@ inference_dtype: bf16
 length_bucket_window_batches: 32
 log_interval_steps: 100
 validate_semantics: false
-# torch_compile 沿用 V18 SFT：DDP 双卡下 dynamo 图遍历严重退化（V18 实测
-# 8s/步），learner_gpus>=2 时禁止开启。
-torch_compile: false
+# torch_compile：V18 SFT 曾实测 DDP 双卡 8s/步而禁用；V19 于 2026-09-08
+# 起开启实测复核（torch 2.7.1 + validate_structure=false 快速路径 + 批 2048）。
+# 裁决标准：稳态步速低于 eager 基线(~2.8 步/s)则回退 false。
+torch_compile: true
 validate_structure: false
 validation_max_samples: 0
 validation_samples_per_run: 150000
