@@ -78,6 +78,15 @@ class HealthResponse(BaseModel):
     workers_alive: bool = True
 
 
+def _describe(reaction: dict[str, Any] | None) -> str:
+    """把 mjai 动作压成一行日志用的短标签。"""
+    if not reaction:
+        return "none"
+    kind = str(reaction.get("type", "none"))
+    pai = reaction.get("pai")
+    return f"{kind}:{pai}" if isinstance(pai, str) else kind
+
+
 def create_app(
     engine: AkagiDecisionEngine,
     *,
@@ -131,6 +140,12 @@ def create_app(
             try:
                 decision = engine.react(payload.events, payload.player_id)
             except AkagiProtocolError as exc:
+                LOGGER.warning(
+                    "react 拒绝 seat=%d events=%d: %s",
+                    payload.player_id,
+                    len(payload.events),
+                    exc,
+                )
                 _emit(
                     "akagi_protocol_error",
                     player_id=payload.player_id,
@@ -150,6 +165,13 @@ def create_app(
                 raise HTTPException(
                     status_code=500, detail=f"{type(exc).__name__}: {exc}"
                 ) from exc
+        LOGGER.info(
+            "react seat=%d events=%d -> %s (%.0f ms)",
+            payload.player_id,
+            len(payload.events),
+            _describe(decision.reaction),
+            decision.elapsed_ms,
+        )
         if decision.elapsed_ms > SLOW_DECISION_MS:
             LOGGER.warning(
                 "slow decision: %.1f ms (player_id=%d, events=%d)",
