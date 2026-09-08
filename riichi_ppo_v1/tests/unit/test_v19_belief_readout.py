@@ -19,15 +19,15 @@ def _fake_belief(batch: int = 2, queries: int = 4) -> dict[str, torch.Tensor]:
     device = torch.device("cpu")
     return {
         "belief_hand_logits": torch.zeros(batch, BELIEF_PLAYERS, 16, 3, device=device),
-        "belief_shanten_logits": torch.zeros(batch, BELIEF_PLAYERS, 9, device=device),
         "belief_wait_logits": torch.zeros(batch, BELIEF_PLAYERS, 5, device=device),
         "belief_danger_logits": torch.zeros(batch, BELIEF_PLAYERS, 34, device=device),
-        "belief_loss_pred": torch.zeros(batch, BELIEF_PLAYERS, 34, device=device),
+        "belief_loss_bucket_logits": torch.zeros(batch, BELIEF_PLAYERS, 34, 6, device=device),
+        "belief_loss_expected": torch.zeros(batch, BELIEF_PLAYERS, 34, device=device),
     }
 
 
 def test_feature_and_output_shapes() -> None:
-    """输出必须为 [B,Q,d_model]；投影为 21→d_model 的 Linear。"""
+    """输出必须为 [B,Q,d_model]；投影为 18→d_model 的 Linear。"""
     readout = BeliefActionReadout(256)
     belief = _fake_belief(batch=2, queries=4)
     tile_codes = torch.tensor([[0, 1, 5, 34], [7, 0, 12, 3]])
@@ -80,7 +80,7 @@ def test_detach_false_allows_belief_gradients() -> None:
     output = readout(belief, tile_codes, detach=False)
     output.sum().backward()
     assert readout.proj.weight.grad is not None
-    # wait/danger/loss/shanten 头参与特征构造，应获得梯度。
+    # wait/danger/loss 头参与特征构造，应获得梯度。
     grads = [
         name for name, parameter in network.named_parameters()
         if parameter.grad is not None
@@ -97,12 +97,12 @@ def test_tile_code_zero_keeps_global_and_zeroes_tile_features() -> None:
     # 让 danger/loss 的逐牌特征都为 1（危险 logits 很大、loss 全 1）。
     belief["belief_danger_logits"] = torch.full((batch, BELIEF_PLAYERS, 34), 20.0)
     belief["belief_wait_logits"] = torch.full((batch, BELIEF_PLAYERS, 5), 20.0)
-    belief["belief_loss_pred"] = torch.ones(batch, BELIEF_PLAYERS, 34)
+    belief["belief_loss_expected"] = torch.ones(batch, BELIEF_PLAYERS, 34)
     tile_codes = torch.tensor([[0, 1]])
     with torch.no_grad():
         # 只读取逐牌特征列（前 3 danger + 次 3 loss），全局列权重为零。
         mask = torch.cat([
-            torch.ones(3), torch.ones(3), torch.zeros(15),
+            torch.ones(3), torch.ones(3), torch.zeros(12),
         ])[None, :]
         readout.proj.weight.zero_()
         readout.proj.weight[0] = mask

@@ -1,6 +1,6 @@
 """V19 小规模 SFT 生命周期：replay→precompute→collate→信念联合训练→checkpoint。
 
-必须覆盖：encode_kyoku 产出信念五头标签、precompute 持久化/读取、2 步 CPU 单卡
+必须覆盖：encode_kyoku 产出信念标签（含保留的 shanten 字段）、precompute 持久化/读取、2 步 CPU 单卡
 训练（batch_size=8）产生有限且非 NaN 的 belief 曲线。
 """
 
@@ -81,10 +81,9 @@ def _train_config(encoded: Path, output: Path) -> dict[str, object]:
         "init_model": None,
         "belief_sft_coef": 1.0,
         "belief_head_weight_hand": 1.0,
-        "belief_head_weight_shanten": 1.0,
         "belief_head_weight_wait": 1.0,
         "belief_head_weight_danger": 1.0,
-        "belief_head_weight_loss": 1.0,
+        "belief_head_weight_loss_bucket": 1.0,
         "dataset": str(encoded),
         "checkpoint_dir": str(output),
     }
@@ -123,8 +122,9 @@ def test_small_sft_lifecycle(tmp_path: Path) -> None:
             policy_only=True,
         )
     for key in (
-        "belief_hand_logits", "belief_shanten_logits", "belief_wait_logits",
-        "belief_danger_logits", "belief_loss_pred",
+        "belief_hand_logits", "belief_wait_logits",
+        "belief_danger_logits", "belief_loss_bucket_logits",
+        "belief_loss_expected",
     ):
         assert torch.isfinite(output_forward[key].float()).all(), key
 
@@ -134,27 +134,23 @@ def test_small_sft_lifecycle(tmp_path: Path) -> None:
     metrics = json.loads((train_dir / "metrics.json").read_text(encoding="utf-8"))
     assert math.isfinite(metrics["validation/policy_ce"])
     for key in (
-        "train/belief_hand_acc", "train/belief_shanten_top1", "train/belief_wait_top1",
+        "train/belief_hand_acc", "train/belief_wait_top1",
         "train/belief_wait_tenpai_acc", "train/belief_wait_width_mae",
-        "train/belief_danger_recall_at_topk", "train/belief_loss_mae",
-        "train/belief_loss_conditional_mae",
-        "train/belief_hand_loss", "train/belief_shanten_loss",
-        "train/belief_wait_loss", "train/belief_danger_loss", "train/belief_loss_loss",
-        "train/belief_hand_loss_norm", "train/belief_shanten_loss_norm",
-        "train/belief_wait_loss_norm", "train/belief_danger_loss_norm",
-        "train/belief_loss_loss_norm",
-        "validation/belief_hand_acc", "validation/belief_shanten_top1",
-        "validation/belief_wait_top1", "validation/belief_wait_tenpai_acc",
-        "validation/belief_wait_width_mae",
-        "validation/belief_danger_recall_at_topk", "validation/belief_loss_mae",
-        "validation/belief_loss_conditional_mae",
+        "train/belief_danger_recall_at_topk", "train/belief_loss_bucket_accuracy",
+        "train/belief_loss_expected_mae",
+        "train/belief_hand_loss", "train/belief_wait_loss",
+        "train/belief_danger_loss", "train/belief_loss_bucket_loss",
+        "train/belief_hand_loss_norm", "train/belief_wait_loss_norm",
+        "train/belief_danger_loss_norm", "train/belief_loss_bucket_loss_norm",
+        "validation/belief_hand_acc", "validation/belief_wait_top1",
+        "validation/belief_wait_tenpai_acc", "validation/belief_wait_width_mae",
+        "validation/belief_danger_recall_at_topk", "validation/belief_loss_bucket_accuracy",
+        "validation/belief_loss_expected_mae",
         "validation/belief_danger_auc",
-        "validation/belief_hand_loss", "validation/belief_shanten_loss",
-        "validation/belief_wait_loss", "validation/belief_danger_loss",
-        "validation/belief_loss_loss",
-        "validation/belief_hand_loss_norm", "validation/belief_shanten_loss_norm",
-        "validation/belief_wait_loss_norm", "validation/belief_danger_loss_norm",
-        "validation/belief_loss_loss_norm",
+        "validation/belief_hand_loss", "validation/belief_wait_loss",
+        "validation/belief_danger_loss", "validation/belief_loss_bucket_loss",
+        "validation/belief_hand_loss_norm", "validation/belief_wait_loss_norm",
+        "validation/belief_danger_loss_norm", "validation/belief_loss_bucket_loss_norm",
     ):
         assert key in metrics, key
         assert math.isfinite(float(metrics[key])), key

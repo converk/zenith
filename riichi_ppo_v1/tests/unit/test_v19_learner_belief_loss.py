@@ -78,10 +78,9 @@ def _learner_kwargs() -> dict[str, object]:
         "critic_private_embedding_grad_scale": 0.25,
         "belief_public_grad_scale": 0.25,
         "belief_head_weight_hand": 1.0,
-        "belief_head_weight_shanten": 1.0,
         "belief_head_weight_wait": 1.0,
         "belief_head_weight_danger": 1.0,
-        "belief_head_weight_loss": 1.0,
+        "belief_head_weight_loss_bucket": 1.0,
         "bucket_window_multiplier": 8,
     }
 
@@ -95,16 +94,15 @@ def test_belief_loss_forward_backward_finite_and_metrics() -> None:
     learner = PPOLearner("v19", "cpu", **_learner_kwargs())
     metrics = learner.update(buffer, shuffle_seed=7)
     for name in (
-        "belief/total_loss", "belief/hand_accuracy", "belief/shanten_top1",
+        "belief/total_loss", "belief/hand_accuracy",
         "belief/wait_top1", "belief/wait_tenpai_acc",
         "belief/wait_width_mae", "belief/danger_auc",
-        "belief/danger_recall_at_topk", "belief/loss_mae",
-        "belief/loss_conditional_mae",
-        "belief/hand_loss", "belief/shanten_loss", "belief/wait_loss",
-        "belief/danger_loss", "belief/loss_loss",
-        "belief/hand_loss_norm", "belief/shanten_loss_norm",
-        "belief/wait_loss_norm", "belief/danger_loss_norm",
-        "belief/loss_loss_norm",
+        "belief/danger_recall_at_topk", "belief/loss_bucket_accuracy",
+        "belief/loss_expected_mae",
+        "belief/hand_loss", "belief/wait_loss",
+        "belief/danger_loss", "belief/loss_bucket_loss",
+        "belief/hand_loss_norm", "belief/wait_loss_norm",
+        "belief/danger_loss_norm", "belief/loss_bucket_loss_norm",
     ):
         assert name in metrics, name
         assert np.isfinite(metrics[name]), name

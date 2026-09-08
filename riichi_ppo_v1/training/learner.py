@@ -701,7 +701,7 @@ class PPOLearner:
         )
         if not 0.0 <= self.critic_private_embedding_grad_scale <= 1.0:
             raise ValueError("critic_private_embedding_grad_scale must be in [0, 1]")
-        # V19 信念监督(D15/D16/D30):grad scale 与 critic 同构,五头 λ 均非负。
+        # V19 信念监督(D15/D16/D30):grad scale 与 critic 同构,四头 λ 均非负。
         # 2026-09-07 模糊化:每头原始损失按标签分布基线归一化,λ 默认 1.0 即均衡。
         self.belief_public_grad_scale = float(
             hyperparameters.get("belief_public_grad_scale", 1.0)
@@ -710,10 +710,11 @@ class PPOLearner:
             raise ValueError("belief_public_grad_scale must be in [0, 1]")
         self.belief_head_weights = {
             "hand": float(hyperparameters.get("belief_head_weight_hand", 1.0)),
-            "shanten": float(hyperparameters.get("belief_head_weight_shanten", 1.0)),
             "wait": float(hyperparameters.get("belief_head_weight_wait", 1.0)),
             "danger": float(hyperparameters.get("belief_head_weight_danger", 1.0)),
-            "loss": float(hyperparameters.get("belief_head_weight_loss", 1.0)),
+            "loss_bucket": float(
+                hyperparameters.get("belief_head_weight_loss_bucket", 1.0)
+            ),
         }
         if any(value < 0.0 for value in self.belief_head_weights.values()):
             raise ValueError("belief_head_weight_* must be non-negative")
@@ -1790,8 +1791,8 @@ class PPOLearner:
             "system/belief_head_weight_hand": float(
                 self.belief_head_weights["hand"]
             ),
-            "system/belief_head_weight_shanten": float(
-                self.belief_head_weights["shanten"]
+            "system/belief_head_weight_loss_bucket": float(
+                self.belief_head_weights["loss_bucket"]
             ),
             "system/belief_head_weight_wait": float(
                 self.belief_head_weights["wait"]
@@ -1799,9 +1800,7 @@ class PPOLearner:
             "system/belief_head_weight_danger": float(
                 self.belief_head_weights["danger"]
             ),
-            "system/belief_head_weight_loss": float(
-                self.belief_head_weights["loss"]
-            ),
+
             "system/belief_readout_enabled": float(
                 1.0 if self.belief_readout_enabled else 0.0
             ),

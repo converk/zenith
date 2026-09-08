@@ -13,15 +13,18 @@ def _v19_config() -> dict:
 
 
 def test_v19_config_contains_belief_keys() -> None:
-    """v19_ppo.yaml 必须携带训练分册 §6 的全部信念键（模糊化均衡版）。"""
+    """v19_ppo.yaml 必须携带训练分册 §6 的全部信念键（2026-09-08 四头精简版）。
+
+    信念头精简为四头（hand/wait/danger/loss_bucket）：shanten 头已删除；
+    belief_public_grad_scale=0（残差式隔离——信念监督不更新公共权重）。
+    """
     config = _v19_config()
     expected = {
-        "belief_public_grad_scale": 0.25,
+        "belief_public_grad_scale": 0.0,
         "belief_head_weight_hand": 1.0,
-        "belief_head_weight_shanten": 1.0,
         "belief_head_weight_wait": 1.0,
         "belief_head_weight_danger": 1.0,
-        "belief_head_weight_loss": 1.0,
+        "belief_head_weight_loss_bucket": 1.0,
         "belief_readout_enabled": True,
         "belief_readout_detach": True,
         "belief_danger_pos_weight": 5.0,
@@ -30,6 +33,9 @@ def test_v19_config_contains_belief_keys() -> None:
     for name, value in expected.items():
         assert name in config, f"v19_ppo.yaml 缺少信念键 {name}"
         assert float(config[name]) == value, name
+    # shanten 头已删除：旧五头权重键不得再出现。
+    assert "belief_head_weight_shanten" not in config
+    assert "belief_head_weight_loss" not in config
     assert "belief_wait_danger_weight" not in config
     assert "belief_wait_tile_weight" not in config
 
@@ -41,30 +47,32 @@ def test_v19_config_init_model_points_to_standard_sft() -> None:
 
 
 def test_v19_sft_config_initial_belief_head_weights() -> None:
-    """v19_sft.yaml 五头权重必须为归一化均衡值（λ=1.0）。"""
+    """v19_sft.yaml 四头权重必须为归一化均衡值（λ=1.0，2026-09-08 四头精简）。"""
     path = Path(__file__).resolve().parents[2] / "configs" / "v19_sft.yaml"
     config = load_config(str(path))
     expected = {
         "belief_head_weight_hand": 1.0,
-        "belief_head_weight_shanten": 1.0,
         "belief_head_weight_wait": 1.0,
         "belief_head_weight_danger": 1.0,
-        "belief_head_weight_loss": 1.0,
+        "belief_head_weight_loss_bucket": 1.0,
     }
     for name, value in expected.items():
         assert name in config, f"v19_sft.yaml 缺少信念权重键 {name}"
         assert float(config[name]) == value, name
+    # shanten 头已删除：旧五头权重键不得再出现。
+    assert "belief_head_weight_shanten" not in config
+    assert "belief_head_weight_loss" not in config
     assert "belief_wait_tenpai_weight" not in config
     assert "belief_wait_tile_weight" not in config
 
 
 def test_v19_sft_config_epochs_one_and_log_interval() -> None:
-    """v19_sft.yaml 必须使用 1 epoch、batch=4096（用户 2026-09-07 决定），日志每 10 步。"""
+    """v19_sft.yaml 必须使用 1 epoch、batch=512（2026-09-08 沿用 V18 正式配置），日志每 100 步。"""
     path = Path(__file__).resolve().parents[2] / "configs" / "v19_sft.yaml"
     config = load_config(str(path))
     assert int(config["epochs"]) == 1
-    assert int(config["batch_size"]) == 4096
-    assert int(config["log_interval_steps"]) == 10
+    assert int(config["batch_size"]) == 512
+    assert int(config["log_interval_steps"]) == 100
 
 
 
@@ -80,16 +88,17 @@ def test_v19_config_topology() -> None:
 
 
 def test_v19_config_exploration_plan_and_diagnostics() -> None:
-    """V19 探索保持方案:熵三锚上调 + 0.25 地板屏障 + 梯度归因 + 200 updates。"""
+    """V19 从头重训方案（2026-09-08）:熵三锚回 V18 + 删除熵地板 + 梯度归因 + 150 updates。"""
     config = _v19_config()
-    assert int(config["total_updates"]) == 200
-    assert int(config["iterations"]) == 200
-    assert float(config["entropy_start"]) == 0.018
-    assert float(config["entropy_middle"]) == 0.010
-    assert float(config["entropy_end"]) == 0.004
-    assert float(config["entropy_middle_fraction"]) == 0.5
-    assert float(config["entropy_floor"]) == 0.25
-    assert float(config["entropy_floor_coef"]) == 0.02
+    assert int(config["total_updates"]) == 150
+    assert int(config["iterations"]) == 150
+    assert float(config["entropy_start"]) == 0.014
+    assert float(config["entropy_middle"]) == 0.006
+    assert float(config["entropy_end"]) == 0.002
+    assert float(config["entropy_middle_fraction"]) == 0.33
+    # 熵地板屏障已删除（用户 2026-09-08 决策）。
+    assert "entropy_floor" not in config
+    assert "entropy_floor_coef" not in config
     assert int(config["grad_term_diagnostics_interval_updates"]) == 10
     # belief_sft_coef 在 SFT/PPO 两侧同构生效。
     assert float(config["belief_sft_coef"]) == 1.0

@@ -105,7 +105,7 @@ _RANK0_KEYS = {
     "system/critic_learning_rate", "system/entropy_coef", "system/sft_kl_coef",
     "system/critic_public_grad_scale", "system/critic_private_embedding_grad_scale",
     "system/belief_public_grad_scale", "system/belief_head_weight_hand",
-    "system/belief_head_weight_shanten", "system/belief_head_weight_wait",
+    "system/belief_head_weight_loss_bucket", "system/belief_head_weight_wait",
     "system/belief_head_weight_danger", "system/belief_head_weight_loss",
     "system/belief_readout_enabled", "system/belief_readout_detach",
     "system/belief_danger_pos_weight", "system/belief_loss_positive_weight",

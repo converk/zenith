@@ -33,6 +33,12 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.tensorboard import SummaryWriter
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
+from ..model.belief_network import (
+    LOSS_BUCKET_CLASSES,
+    LOSS_NORM_MAX,
+    loss_bucket_centers,
+    loss_bucket_targets,
+)
 from ..model.checkpoint import strip_compile_prefix
 from ..model.schema import NUM_ACTIONS
 from .actor_bc import actor_parameters, freeze_critic
@@ -87,12 +93,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # 2026-09-07 模糊化：五头损失按标签熵/基线归一化，λ_k 默认 1.0 即均衡。
     "belief_sft_coef": 1.0,
     "belief_head_weight_hand": 1.0,
-    "belief_head_weight_shanten": 1.0,
     "belief_head_weight_wait": 1.0,
     "belief_head_weight_danger": 1.0,
-    "belief_head_weight_loss": 1.0,
-    # 信念共享层梯度耦合（与 critic 同构，实施方案 §5.1；SFT 定版 0.25）。
-    "belief_public_grad_scale": 0.25,
+    "belief_head_weight_loss_bucket": 1.0,
+    # 信念共享层梯度耦合（与 critic 同构，实施方案 §5.1）。
+    # 2026-09-08 用户决策置 0：信念监督不再更新公共权重，只更新私有的
+    # 信念网络（backbone/query/头），公共主干只由 BC 梯度塑造（残差式隔离）。
+    "belief_public_grad_scale": 0.0,
     # 逐动作信念读出：SFT 阶段开启并 detach 特征（信念头只由标签校准）。
     "belief_readout_enabled": True,
     "belief_readout_detach": True,
@@ -316,10 +323,9 @@ def _assert_targets_legal(actions: torch.Tensor, legal_mask: torch.Tensor) -> No
 
 _BELIEF_OUTPUT_KEYS = (
     "belief_hand_logits",
-    "belief_shanten_logits",
     "belief_wait_logits",
     "belief_danger_logits",
-    "belief_loss_pred",
+    "belief_loss_bucket_logits",
 )
 
 
@@ -349,45 +355,34 @@ def _weighted_bce_constant_baseline(positive_fraction: Tensor, pos_weight: float
     return baseline.clamp_min(1e-6)
 
 
-def _loss_positive_baseline(target: Tensor, mask: Tensor) -> Tensor:
-    """Loss 头仅在危险正例子集上监督；基线 = 该子集中位数 Huber 偏差。"""
-    positives = target[mask]
-    if positives.numel() == 0:
-        return target.new_tensor(1.0)
-    median = positives.median()
-    return (positives - median).abs().mean().clamp_min(1e-4)
-
-
 def _belief_losses(
     output: dict[str, torch.Tensor],
     batch: dict[str, torch.Tensor],
     config: dict[str, Any],
 ) -> dict[str, torch.Tensor]:
-    """V19 模糊化信念联合损失：五头监督（均为逐头均值后的归一化损失）。
+    """V19 模糊化信念联合损失：四头监督（均为逐头均值后的归一化损失）。
 
-    2026-09-07 设计：Hand = 16 组计数桶 CE、Wait = 听牌+宽度桶 CE、
-    Shanten 不变 CE、Danger 正例加权 BCE、Loss 只在危险正例子集上加权
-    Huber。每头原始损失除以**标签分布基线**（熵 / 最优常数 BCE / 正例
-    中位偏差），因此 λ_k=1.0 时五头贡献天然同量级；`belief_head_weight_*`
-    仍可进一步微调。Loss 目标先做 ``min(raw, 24000)/24000`` 归一化。
+    2026-09-08 设计（用户决策）：Hand = 16 组计数桶 CE、Wait = 听牌+宽度桶
+    CE（类别 0 = 非听，即是否听牌的精确信号）、Danger 正例加权 BCE、
+    Loss = 铳点损失**分桶分类 CE**（边界 1000/5000/9000/13000/17000，共
+    6 类，仅在危险正例子集上加权 (1 + pos_weight·I(raw>0))——精确预测
+    铳点压力过大，分桶后 4000 与 6000 同档，损失贡献不放大细粒度差异）。
+    每头原始损失除以**标签分布基线**（熵 / 最优常数 BCE），因此 λ_k=1.0
+    时四头贡献天然同量级；`belief_head_weight_*` 仍可进一步微调。
     """
     _require_belief_outputs(output)
     hand_logits = output["belief_hand_logits"].float()
-    shanten_logits = output["belief_shanten_logits"].float()
     wait_logits = output["belief_wait_logits"].float()
     danger_logits = output["belief_danger_logits"].float()
+    bucket_logits = output["belief_loss_bucket_logits"].float()
     hand_labels = batch["belief_hand"].long().view(-1, 3, 16)
-    shanten_labels = batch["belief_shanten"].long()
     wait_labels = batch["belief_wait"].long().view(-1, 3)
     danger_labels = batch["belief_danger"].float().view(-1, 3, 34)
     loss_raw = batch["belief_loss"].float().view(-1, 3, 34)
-    loss_target = torch.clamp(loss_raw, max=24000.0) / 24000.0
+    bucket_labels = loss_bucket_targets(loss_raw)
 
     hand_loss = F.cross_entropy(
         hand_logits.reshape(-1, 3), hand_labels.reshape(-1),
-    )
-    shanten_loss = F.cross_entropy(
-        shanten_logits.reshape(-1, 9), shanten_labels.reshape(-1),
     )
     wait_loss = F.cross_entropy(
         wait_logits.reshape(-1, 5), wait_labels.reshape(-1),
@@ -401,55 +396,53 @@ def _belief_losses(
         pos_weight=torch.full_like(danger_labels, danger_pos_weight),
     )
 
-    # loss：仅在危险正例子集上加权 huber，(1 + 20·I(target>0))。
-    loss_pred = output["belief_loss_pred"].float()
+    # loss：铳点分桶 CE，仅在危险正例子集上加权 (1 + w·I(raw>0))。
     positive_weight = float(config.get("belief_loss_positive_weight", 20.0))
-    loss_huber_none = (
-        F.huber_loss(loss_pred, loss_target, reduction="none")
-        * (1.0 + positive_weight * (loss_target > 0.0).float())
+    loss_ce_none = (
+        F.cross_entropy(
+            bucket_logits.reshape(-1, LOSS_BUCKET_CLASSES),
+            bucket_labels.reshape(-1),
+            reduction="none",
+        ).view(danger_labels.shape)
+        * (1.0 + positive_weight * (loss_raw > 0.0).float())
     )
     pos_mask = danger_labels > 0.0
     if bool(pos_mask.any()):
-        loss_huber = (loss_huber_none * pos_mask).sum() / pos_mask.sum()
+        loss_bucket = (loss_ce_none * pos_mask).sum() / pos_mask.sum()
     else:
-        loss_huber = loss_huber_none.mean()
+        loss_bucket = loss_ce_none.mean()
 
     # 每头标签分布基线（保证 λ=1 时贡献均衡）。
     hand_scale = _label_entropy(hand_labels, 3)
-    shanten_scale = _label_entropy(shanten_labels, 9)
     wait_scale = _label_entropy(wait_labels, 5)
     danger_scale = _weighted_bce_constant_baseline(
         danger_labels.float().mean(), danger_pos_weight,
     )
-    loss_scale = _loss_positive_baseline(loss_target, pos_mask)
+    loss_scale = _label_entropy(bucket_labels, LOSS_BUCKET_CLASSES)
 
     normalized = {
         "hand": hand_loss / hand_scale,
-        "shanten": shanten_loss / shanten_scale,
         "wait": wait_loss / wait_scale,
         "danger": danger_loss / danger_scale,
-        "loss": loss_huber / loss_scale,
+        "loss_bucket": loss_bucket / loss_scale,
     }
     weights = {
         "hand": float(config.get("belief_head_weight_hand", 1.0)),
-        "shanten": float(config.get("belief_head_weight_shanten", 1.0)),
         "wait": float(config.get("belief_head_weight_wait", 1.0)),
         "danger": float(config.get("belief_head_weight_danger", 1.0)),
-        "loss": float(config.get("belief_head_weight_loss", 1.0)),
+        "loss_bucket": float(config.get("belief_head_weight_loss_bucket", 1.0)),
     }
     weighted = sum(weights[key] * normalized[key] for key in weights)
     coef = float(config.get("belief_sft_coef", 1.0))
     return {
         "belief_hand_loss": hand_loss,
-        "belief_shanten_loss": shanten_loss,
         "belief_wait_loss": wait_loss,
         "belief_danger_loss": danger_loss,
-        "belief_loss_loss": loss_huber,
+        "belief_loss_bucket_loss": loss_bucket,
         "belief_hand_loss_norm": normalized["hand"],
-        "belief_shanten_loss_norm": normalized["shanten"],
         "belief_wait_loss_norm": normalized["wait"],
         "belief_danger_loss_norm": normalized["danger"],
-        "belief_loss_loss_norm": normalized["loss"],
+        "belief_loss_bucket_loss_norm": normalized["loss_bucket"],
         "belief_loss_weighted": weighted,
         "belief_loss_total": coef * weighted,
     }
@@ -502,10 +495,6 @@ def _belief_metrics(
     hand_labels = batch["belief_hand"].long().view(-1, 3, 16)
     hand_acc = (hand_logits.argmax(-1) == hand_labels).float().mean()
 
-    shanten_logits = output["belief_shanten_logits"].float()
-    shanten_labels = batch["belief_shanten"].long()
-    shanten_top1 = (shanten_logits.argmax(-1) == shanten_labels).float().mean()
-
     wait_logits = output["belief_wait_logits"].float()
     wait_labels = batch["belief_wait"].long().view(-1, 3)
     wait_top1 = (wait_logits.argmax(-1) == wait_labels).float().mean()
@@ -532,24 +521,29 @@ def _belief_metrics(
         / k_true.clamp_min(1)
     ).float().mean()
 
+    # 铳点分桶：逐格 top-1 命中率 + 桶期望（可解释粗粒度 MAE，归一化单位）。
+    bucket_logits = output["belief_loss_bucket_logits"].float()
+    loss_raw = batch["belief_loss"].float().view(-1, 3, 34)
+    bucket_labels = loss_bucket_targets(loss_raw)
+    loss_bucket_accuracy = (
+        (bucket_logits.argmax(-1) == bucket_labels).float().mean()
+    )
+    loss_prob = torch.softmax(bucket_logits, dim=-1)
+    centers = loss_bucket_centers(bucket_logits.device).view(1, 1, 1, LOSS_BUCKET_CLASSES)
+    loss_expected = (loss_prob * centers).sum(dim=-1)
     loss_target = (
-        torch.clamp(batch["belief_loss"].float(), max=24000.0) / 24000.0
-    ).view(-1, 3, 34)
-    loss_pred = output["belief_loss_pred"].float()
-    loss_mae = (loss_pred - loss_target).abs().mean()
-    loss_conditional_mae = (
-        (loss_pred - loss_target).abs() * danger_labels
-    ).sum() / danger_labels.sum().clamp_min(1)
+        torch.clamp(loss_raw, max=LOSS_NORM_MAX) / LOSS_NORM_MAX
+    )
+    loss_expected_mae = (loss_expected - loss_target).abs().mean()
 
     result = {
         "belief_hand_acc": hand_acc,
-        "belief_shanten_top1": shanten_top1,
         "belief_wait_top1": wait_top1,
         "belief_wait_tenpai_acc": wait_tenpai_acc,
         "belief_wait_width_mae": wait_width_mae,
         "belief_danger_recall_at_topk": danger_recall_at_topk,
-        "belief_loss_mae": loss_mae,
-        "belief_loss_conditional_mae": loss_conditional_mae,
+        "belief_loss_bucket_accuracy": loss_bucket_accuracy,
+        "belief_loss_expected_mae": loss_expected_mae,
     }
     if include_auc:
         result["belief_danger_auc"] = _binary_auc(danger_probs, danger_labels)

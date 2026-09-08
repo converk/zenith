@@ -72,7 +72,6 @@ def _greedy_actions(
         )
         device_tensors = {
             "belief_hand": torch.as_tensor(labels.hand, device=logits.device),
-            "belief_shanten": torch.as_tensor(labels.shanten, device=logits.device),
             "belief_wait": torch.as_tensor(labels.wait, device=logits.device),
             "belief_danger": torch.as_tensor(labels.danger, device=logits.device),
             "belief_loss": torch.as_tensor(labels.loss, device=logits.device),

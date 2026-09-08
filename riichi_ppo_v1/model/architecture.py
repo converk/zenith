@@ -653,10 +653,10 @@ class KyokuTransformerActorCritic(nn.Module):
             "raw_policy_logits": raw,
             "policy_logits": logits,
             "belief_hand_logits": belief["belief_hand_logits"],
-            "belief_shanten_logits": belief["belief_shanten_logits"],
             "belief_wait_logits": belief["belief_wait_logits"],
             "belief_danger_logits": belief["belief_danger_logits"],
-            "belief_loss_pred": belief["belief_loss_pred"],
+            "belief_loss_bucket_logits": belief["belief_loss_bucket_logits"],
+            "belief_loss_expected": belief["belief_loss_expected"],
             "belief_tokens": belief_tokens,
         }
         if policy_only:

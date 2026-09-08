@@ -1,14 +1,16 @@
-# V19 PPO 稳定性训练正式配置:200 updates × 2048 完整半庄。
-# 自包含配置,不与 training.yaml 或其他历史配置叠加。
-# 超参沿用既有 PPO 基线(训练分册 D30),新增信念键(训练分册 §6)与
-# 探索保持方案(entropy 三锚上调 + 0.25 熵地板屏障 + 逐损失项梯度归因)。
-# updates 150→200:V18 后期 EV(λ) 与 value_loss 仍在改善,延长总 updates
-# 让 critic 继续收敛;games_per_update 维持 2048,LR 维持 9e-5 不变。
-seed: 20260908  # 2026-09-08 重置(原 20260828)
+# V19 PPO 从头重训配置（2026-09-08，用户决策：超参数沿用 V18 正式配置，
+# 除 minibatch 外全部对齐 V18；模型架构/数据/路径仍为 V19 自己的）。
+# 与旧 v19_ppo.yaml（u45 resume + 熵地板方案）的差异：
+# - 熵三点调度回到 V18（0.014/0.006/0.002 @0.33），删除熵地板屏障；
+# - iterations 200→150、critic_bootstrap_updates 4→2、torch_compile 开回；
+# - 信念键改为四头精简设计：belief_public_grad_scale=0（信念监督不更新
+#   公共权重，只更新私有信念网络）、删除 shanten 头、铳点损失分桶分类。
+# 自包含配置，不与 training.yaml 或其他历史配置叠加。
+seed: 20260908
 device: cuda
 learner_gpus: 2
-iterations: 200
-total_updates: 200
+iterations: 150
+total_updates: 150
 model_size: v19
 layers: 5
 shared_layers: 3
@@ -18,17 +20,13 @@ critic_layers: 1
 inference_dtype: bf16
 game_mode: 4p-red-half
 
-# V19 前置产物:SFT 初始化/参考策略与冻结 GRP reward。
-# init_model 指向 V19 标准 SFT 产物（不启动，仅准备配置）。
+# V19 前置产物：SFT 初始化/参考策略与冻结 GRP reward。
+# init_model 指向从头重训的 V19 SFT 产物（先跑 SFT，完成后启动本配置）。
 init_model: checkpoints/train_riichi_v19/sft/best.pt
-# V19 重训 GRP(CE + E[U] 辅助损失,与 V18 全量同数据同 seed);验证集指标与
-# V18 等价(loss 2.4871 / eu_mae 0.4928),经维护者确认启用。
 grp_checkpoint: checkpoints/train_riichi_v19/grp/best.pt
-# GRP 推理温度标定:CE 训练分布对 E[U] 欠置信,推理时 logits/T 锐化。
-# T=0.3 由验证集折半标定(V18/V19 两 checkpoint 标定曲线一致,测试折
-# eu_mae 0.4920→0.4748,约 -3.5%),脚本
-# audit/reports/v19/scripts/grp_temperature_calib.py;更换 grp_checkpoint
-# 后须重新标定并同步本值。
+# GRP 推理温度标定：CE 训练分布对 E[U] 欠置信，推理时 logits/T 锐化。
+# T=0.3 由验证集折半标定（脚本 audit/reports/v19/scripts/grp_temperature_calib.py）；
+# grp_checkpoint 未变，沿用既有标定值。
 grp_temperature: 0.3
 
 # Rollout 与推理拓扑。
@@ -37,13 +35,15 @@ envs_per_worker: 32
 env_step_threads: 4
 rollout_worker_num_cpus: 2
 rollout_worker_cpu_threads: 1
+# 推理与 learner 共用同一批 GPU（Ray num_gpus=1 自动分配，固定 2 卡）。
 inference_max_batch_size: 512
 inference_batch_wait_ms: 16.0
 inference_batch_target_rows: 0
 inference_batch_target_workers: -1
 games_per_update: 2048
 
-# PPO 主超参:Actor 用归一化 advantage,Critic 拟合 old_value + raw GAE。
+# PPO 主超参：全部沿用 V18 正式配置（actor 9e-5 / critic 8e-5 / shared
+# 7.5e-6，minibatch 2048 × 梯度累积 10，update_epochs 2，clip 0.20）。
 gamma: 1.0
 gae_lambda: 0.95
 ppo_clip: 0.20
@@ -54,35 +54,29 @@ update_batch_mode: streaming
 bucket_window_multiplier: 8
 update_validate_structure: false
 
-# Tier 2 性能开关(既定基线)。
-# torch_compile 关闭:消除 dynamo 重编译告警刷屏;代价是 update 阶段
-# ~10-25% 墙钟(无编译内核),需要时可重新开启。
-torch_compile: false
+# Tier 2 性能开关（沿用 V18 正式配置：编译 + overlap 全开）。
+torch_compile: true
 rollout_update_overlap: true
-torch_compile_reference: false
+torch_compile_reference: true
 learner_shard_transport: shm
 
-# critic 侧降温、value target 归一化。
+# critic 侧降温：0.5→0.3，直接压低 critic 分支 pre-clip 梯度，并同步降低
+# 回流 shared 公共表示的 value 梯度。
 value_coef: 0.3
 value_loss: huber
 value_target_normalization: batch_std
 value_target_std_floor: 0.01
 
-# 三点分段 entropy schedule。V19 探索保持:三锚较 V18(0.014/0.006/0.002)
-# 整体上调并延长中段(0.33→0.5),放缓前期熵下降——V18 实测 raw 熵自 SFT init
-# 0.478 一路降至 u150 0.175,前期过快收敛压缩了信念网络可见的局面多样性。
+# 三点分段 entropy schedule，loss 使用按合法动作数归一化的 entropy。
+# 沿用 V18 三锚（0.014/0.006/0.002 @0.33），不设置熵地板屏障（用户决策：
+# 删除旧 v19 的 entropy_floor/entropy_floor_coef）。
 entropy_loss_mode: normalized
-entropy_start: 0.018
-entropy_middle: 0.010
-entropy_end: 0.004
-entropy_middle_fraction: 0.5
-# 熵地板屏障:batch 均 raw 熵跌破 0.25 时以 0.02 系数施加屏障推力,高于地板
-# 梯度恒为零。V18 证据:H 0.30→0.24 的锐化段伴随最强增益(u70→u105 +974 分),
-# 跌破 0.24 后继续锐化无收益——地板取 0.25 只挡无效研磨,保留生产性锐化。
-entropy_floor: 0.25
-entropy_floor_coef: 0.02
+entropy_start: 0.014
+entropy_middle: 0.006
+entropy_end: 0.002
+entropy_middle_fraction: 0.33
 
-# 三分支独立学习率调度。
+# 三分支独立学习率调度，bootstrap 不消耗 policy schedule（V18 原值）。
 learning_rate: 0.00009
 actor_learning_rate: 0.00009
 actor_learning_rate_min: 0.0000225
@@ -97,12 +91,8 @@ adam_beta2: 0.999
 adam_epsilon: 0.00001
 weight_decay: 0.0
 
-# 稳定性:分支裁剪、critic 公共/私有 embedding 梯度隔离、old-policy KL guardrail。
-# critic_bootstrap_updates 2→4(2026-09-08):V18 证据显示 2 次 bootstrap 结束时
-# EV(λ) 仍为 -0.055(未到均值预测器),转正发生在放开策略之后;V19 critic 输入
-# 从 future wall 换成 privileged_hands 需重学,延长到 4 次让 EV 在静止目标
-# 分布上先转正再动策略。成本约 +27min(≈1% 总时长)。
-critic_bootstrap_updates: 4
+# 稳定性：分支裁剪、critic 公共/私有 embedding 梯度隔离、old-policy KL guardrail。
+critic_bootstrap_updates: 2
 max_grad_norm: 0.5
 actor_max_grad_norm: 0.5
 shared_max_grad_norm: 0.5
@@ -112,30 +102,13 @@ critic_private_embedding_grad_scale: 0.25
 target_kl: 0.01
 target_kl_check_interval: 8
 
-# SFT reference KL。
+# SFT reference KL：前段保留中等弱锚，后段不再回锚（0.002→0.0005）。
 sft_kl_coef_start: 0.0025
 sft_kl_coef_middle: 0.001
 sft_kl_coef_end: 0.0005
 sft_kl_middle_fraction: 0.5
 
-# V19 信念键（2026-09-07 模糊化 + 归一化均衡；λ 默认 1.0）。
-belief_public_grad_scale: 0.25
-belief_head_weight_hand: 1.0
-belief_head_weight_shanten: 1.0
-belief_head_weight_wait: 1.0
-belief_head_weight_danger: 1.0
-belief_head_weight_loss: 1.0
-# 信念总损失系数:SFT/PPO 同构生效(PPO learner 用它缩放 belief_loss_total)。
-belief_sft_coef: 1.0
-# 逐动作信念读出：SFT/PPO 均恒 detach 特征；读出投影只由 actor 损失训练，
-# 策略梯度不得塑形信念网络（监督单源，见梯度隔离实施方案）。
-belief_readout_enabled: true
-belief_readout_detach: true
-# 条件/加权损失（与 SFT 同构；Wait 为模糊宽度桶，无 tile BCE 子项）。
-belief_danger_pos_weight: 5.0
-belief_loss_positive_weight: 20.0
-
-# 保存与评测节奏(机制常量见 evaluation/mechanism.py)。
+# 每 5 updates 保存 checkpoint 并执行固定 1v3 评测（机制常量见 evaluation/mechanism.py）。
 checkpoint_interval_updates: 5
 update_timeout_s: 1800
 eval1v3_interval_updates: 5
@@ -147,16 +120,41 @@ opponent_mix:
 
 eval1v3_enabled: true
 eval1v3_model_b: checkpoints/train_riichi_v19/sft/best.pt
+# 评测规模沿用机制：10 进程 × 600 = 6000 半庄，并行 300。种子序列沿用
+# 20260908 重置（与历史 20260827/20260829 序列零重叠）。
 eval1v3_hanchans_per_process: 600
-eval1v3_seed_base: 10260908  # 2026-09-08 重置(原 20260829)
-# 1v3 评测设备:项目 CUDA_DEVICE 编号(2→物理GPU3,3→物理GPU4);
-# 分片子进程按 CUDA_DEVICE 重新映射,双卡各 5 进程不变。
+eval1v3_seed_base: 10260908
+# 1v3 评测设备：与训练同 GPU（CUDA_DEVICE 2→物理GPU3，3→物理GPU4）。
 eval1v3_devices: ["2", "3"]
 eval1v3_parallel_hanchans: 300
 eval1v3_output_dir: audit/reports/v19/eval
 
 progress_update_interval_updates: 10
-# 逐损失项梯度归因诊断:每 10 个 policy update 记录 policy/value/entropy/
+
+# V19 信念键（2026-09-08 四头精简设计）：
+# - belief_public_grad_scale=0：信念监督不更新公共权重（shared/backbone），
+#   只更新私有的信念网络（belief_query/backbone/四头）——残差式隔离，
+#   保证信念监督不会让策略变得更坏。
+# - shanten 头已删除；是否听牌由 wait 头类别 0（非听）精确提供。
+# - 铳点损失改分桶分类（边界 1000/5000/9000/13000/17000，共 6 类，
+#   单源常量在 model/belief_network.py），不再精确回归。
+# - 四头 λ 全 1.0：归一化后贡献均匀。
+belief_public_grad_scale: 0.0
+belief_head_weight_hand: 1.0
+belief_head_weight_wait: 1.0
+belief_head_weight_danger: 1.0
+belief_head_weight_loss_bucket: 1.0
+# 信念总损失系数：SFT/PPO 同构生效（PPO learner 用它缩放 belief_loss_total）。
+belief_sft_coef: 1.0
+# 逐动作信念读出：SFT/PPO 均恒 detach 特征；读出投影只由 actor 损失训练，
+# 策略梯度不得塑形信念网络（监督单源，见梯度隔离实施方案）。
+belief_readout_enabled: true
+belief_readout_detach: true
+# 条件/加权损失（与 SFT 同构；Wait 为模糊宽度桶，无 tile BCE 子项）。
+belief_danger_pos_weight: 5.0
+belief_loss_positive_weight: 20.0
+
+# 逐损失项梯度归因诊断：每 10 个 policy update 记录 policy/value/entropy/
 # sft_kl/belief 各项对 actor头/belief/shared/critic 的 pre-clip 梯度范数
-# (TB: PPO/梯度归因/*),回答"谁在吃梯度预算";0 关闭。
+# （TB: PPO/梯度归因/*）——本次重训用于验证「信念梯度不进公共权重」生效。
 grad_term_diagnostics_interval_updates: 10

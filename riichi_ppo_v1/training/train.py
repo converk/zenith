@@ -812,8 +812,8 @@ def run(config: dict[str, Any]) -> None:
                         "loss", "policy_loss", "value_loss", "entropy",
                         "approx_kl", "clipfrac", "grad_norm",
                         "belief/total_loss", "belief/hand_accuracy",
-                        "belief/shanten_top1", "belief/wait_top1",
-                        "belief/danger_auc", "belief/loss_mae",
+                        "belief/wait_top1", "belief/wait_tenpai_acc",
+                        "belief/danger_auc", "belief/loss_bucket_accuracy",
                     }
                 ),
                 flush=True,

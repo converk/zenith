@@ -65,10 +65,11 @@ def test_forward_runs_and_belief_tokens_stay_internal() -> None:
             legal_mask=inputs["legal_mask"],
             policy_only=True,
         )
-    # 信念输出始终存在（policy_only 也不例外）。
+    # 信念输出始终存在（policy_only 也不例外）；四头 + 桶期望 + token。
     for key in (
-        "belief_hand_logits", "belief_shanten_logits", "belief_wait_logits",
-        "belief_danger_logits", "belief_loss_pred", "belief_tokens",
+        "belief_hand_logits", "belief_wait_logits",
+        "belief_danger_logits", "belief_loss_bucket_logits",
+        "belief_loss_expected", "belief_tokens",
     ):
         assert key in output and key in policy_only
     assert output["belief_hand_logits"].shape == (2, 3, 16, 3)
@@ -135,7 +136,7 @@ def test_belief_public_grad_scale_scales_encoder_gradient() -> None:
             belief_public_grad_scale=scale,
         )
         # 只通过信念分支回传（不反传策略/价值路径），检验缩放边界。
-        loss = output["belief_loss_pred"].sum() + output["belief_hand_logits"].sum()
+        loss = output["belief_loss_expected"].sum() + output["belief_hand_logits"].sum()
         loss.backward()
         squares = [
             parameter.grad.detach().float().square().sum()
@@ -189,7 +190,7 @@ def test_belief_backbone_uses_full_shared_sequence_plus_nine_queries(monkeypatch
     assert sequence.shape[1] == int(lengths[0])
     assert lengths[0] >= 9
     assert torch.equal(sequence[0, -9:], model.belief_query)
-    # 五头输出形状与模糊化协议一致，且玩家×查询输入在内部已按查询平均。
+    # 四头输出形状与模糊化协议一致，且玩家×查询输入在内部已按查询平均。
     assert output["belief_hand_logits"].shape == (1, 3, 16, 3)
     assert output["belief_tokens"].shape == (1, 30, _tiny_config().d_model)
 
