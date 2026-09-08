@@ -692,3 +692,52 @@ wait_tile 时的 ~3.6。运行中的训练需停止后重跑或从头/resume 应
 - reward_mean=-1.1997e-09 value_loss=0.31023 entropy=0.4651 actor_grad_norm=0.76843 critic_grad_norm=0.38817 shared_grad_norm=0.19799
 - rollout_wall_s=652.58 update_wall_s=652.58 sps=2073.8 grp_calls=22336 history_pool_size=0
 - 1v3 vs SFT: first_place_rate=0.2997 top2_rate=0.5550 mean_rank=2.360 point_diff_mean=+2815.7 ci95=[2315.009722222222, 3358.3319444444446]
+
+## 2026-09-08 update=50
+
+- reward_mean=-1.2335e-09 value_loss=0.30685 entropy=0.47987 actor_grad_norm=0.82334 critic_grad_norm=0.35306 shared_grad_norm=0.21081
+- rollout_wall_s=474.9 update_wall_s=474.9 sps=2855.8 grp_calls=22285 history_pool_size=0
+- 1v3 vs SFT: first_place_rate=0.2998 top2_rate=0.5522 mean_rank=2.365 point_diff_mean=+2639.6 ci95=[2145.072777777778, 3131.128888888889]
+
+## 2026-09-08 跨代 2v2 SFT 对抗评测(V19 SFT vs V18 SFT)
+
+- 任务:V19 与 V18 两个 SFT 模型(两代不同架构)进行 6000 半庄 2v2 对抗
+  (同队两席为一组对家,按全局半庄序号奇偶轮换 {0,2}/{1,3});指标面与
+  1v3 一致(一位率/平均名次/每座相对其余三家平均点差/配对 bootstrap 95% CI/
+  动作分组率/逐小局业务指标/信念校准),另计队伍口径两席点数和之差。
+- 机制:10 个评测进程 = 5 对锁步进程对(host: V19 栈;partner: V18 独立工作
+  副本栈)× 每分片 600 半庄;随机种子基由 CLI 提供。因 GPU 0 被其他用户的
+  vllm 服务(约 36GB)占用,全部进程置于 GPU 1,分两波各 5 对执行(每波
+  10 个进程),第二波完成后自动合并。
+- 架构边界:V18/V19 的 Rust 扩展各自定义同名 pyclass,跨 .so 传对象被
+  PyO3 精确类型检查拒绝,单进程共栈不可行;采用双进程锁步,仅交换 MJAI
+  动作串。V18 侧运行时来自工作副本 /mnt/disk1/hubowen/zenith_v18(含当前
+  源码构建的 riichi/lib_riichienv 扩展);host 侧运行时来自当前 V19 源码的
+  新鲜构建 /mnt/disk1/hubowen/zenith_eval_runtime/v19_fresh(已验证与 V18
+  构建行为一致、编码与站点已安装扩展完全相同;站点安装的 _riichienv.so
+  构建于 2026-09-06 00:34,早于 RiichiEnv 最后两次提交,其 drawn_tile 标记
+  与当前源码不一致,建议训练结束后重建,见本日记录)。
+- 代码:riichi_ppo_v1/evaluation/head_to_head_2v2.py(host)、
+  _2v2_host_entry.py(入口)、v19_eval_runtime.py(运行时引导)、
+  head_to_head_2v2_shards.py(分片驱动);V18 侧为工作副本内
+  partner_2v2.py(带 sys.modules 引导)。
+- checkpoint:V19 = checkpoints/train_riichi_v19/sft/best.pt,
+  V18 = checkpoints/train_riichi_v18/sft/best.pt(两侧 sha256 记录于汇总)。
+- 输出:audit/reports/v19/eval/2v2_sft_v19_vs_v18/(分片 shards/ 与汇总
+  vs_v18_sft_2v2.json);日志 logs/v19/eval_2v2_sft_v19_vs_v18.log。
+- 种子基:769206263(随机生成,10 分片互不相交连续区间,区间长 600)。
+- 结果(6000 半庄,V19 = model_a,V18 = model_b):
+  - 一位率 0.2513 vs 0.2487;平均名次 2.5115 vs 2.4885;top2 0.5027 vs 0.4973;
+    被飞率 0.0656 vs 0.0621;最终点数均值 24840.3 vs 25136.5。
+  - 每座点差(vs 其余三家均值):-197.5 vs +197.5;V19 95% CI [-554.4, +155.1]。
+  - 队伍点差(V19 两席和 - V18 两席和):-592.4,95% CI [-1479.6, +279.1]
+    (区间跨 0,两代 SFT 在 6000 半庄下统计意义持平,V18 略优但 insignifica)。
+  - 小局面:和牌率 0.2111 vs 0.2103;放铳率 0.1181 vs 0.1155;立直率
+    0.0139 vs 0.0133;立直机会接受率 0.4110 vs 0.3796;流局听牌率
+    0.4986 vs 0.5005。
+  - V19 信念校准(2,020,659 决策):hand_accuracy 0.6705,shanten_top1
+    0.4721,wait_top1 0.8450,wait_tenpai_acc 0.8603,danger_auc 0.8880,
+    loss_mae 0.2157(与 SFT 训练期水平一致)。
+  - 吞吐:21.5 hanchan/s(单波 5 对约 4.6 分钟/600 半庄)。
+- 结论:V19 SFT 与 V18 SFT 在 2v2 对抗下基本持平;V19 未展现对 V18 的
+  显著优势,后续可结合 1v3 口径与对局细节(立直/副露倾向差异)进一步分析。
