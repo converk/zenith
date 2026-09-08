@@ -1,16 +1,18 @@
 # V19 PPO 从头重训配置（2026-09-08，用户决策：超参数沿用 V18 正式配置，
 # 除 minibatch 外全部对齐 V18；模型架构/数据/路径仍为 V19 自己的）。
 # 与旧 v19_ppo.yaml（u45 resume + 熵地板方案）的差异：
-# - 熵三点调度回到 V18（0.014/0.006/0.002 @0.33），删除熵地板屏障；
-# - iterations 200→150、critic_bootstrap_updates 4→2、torch_compile 开回；
+# - 熵三点调度沿用 u45 resume 配置（0.016/0.008/0.003 @0.4，衰减快于旧
+#   V19 0.018/0.010/0.004@0.5、慢于 V18 0.014/0.006/0.002@0.33），删除熵
+#   地板屏障；updates 保持 200；
+# - critic_bootstrap_updates 4→2、torch_compile 开回；
 # - 信念键改为四头精简设计：belief_public_grad_scale=0（信念监督不更新
 #   公共权重，只更新私有信念网络）、删除 shanten 头、铳点损失分桶分类。
 # 自包含配置，不与 training.yaml 或其他历史配置叠加。
 seed: 20260908
 device: cuda
 learner_gpus: 2
-iterations: 150
-total_updates: 150
+iterations: 200
+total_updates: 200
 model_size: v19
 layers: 5
 shared_layers: 3
@@ -68,13 +70,14 @@ value_target_normalization: batch_std
 value_target_std_floor: 0.01
 
 # 三点分段 entropy schedule，loss 使用按合法动作数归一化的 entropy。
-# 沿用 V18 三锚（0.014/0.006/0.002 @0.33），不设置熵地板屏障（用户决策：
-# 删除旧 v19 的 entropy_floor/entropy_floor_coef）。
+# 沿用 u45 resume 配置的三锚（0.016/0.008/0.003 @0.4，衰减快于旧 V19、
+# 慢于 V18），不设置熵地板屏障（用户决策：删除 entropy_floor/
+# entropy_floor_coef）。
 entropy_loss_mode: normalized
-entropy_start: 0.014
-entropy_middle: 0.006
-entropy_end: 0.002
-entropy_middle_fraction: 0.33
+entropy_start: 0.016
+entropy_middle: 0.008
+entropy_end: 0.003
+entropy_middle_fraction: 0.4
 
 # 三分支独立学习率调度，bootstrap 不消耗 policy schedule（V18 原值）。
 learning_rate: 0.00009

@@ -763,7 +763,8 @@ wait_tile 时的 ~3.6。运行中的训练需停止后重跑或从头/resume 应
   tensorboard（train+sft）、train.py 指标键、1v3 评测信念面；标签管线不变
   （shanten 标签继续生成但不再被消费），数据集无需重编码重标。
 - 配置重写（从头重训版，超参沿用 V18）：v19_sft.yaml（batch 512/log 100/
-  无 compile/验证 150k）、v19_ppo.yaml（150 updates、熵三点 V18 原值、无
+  无 compile/验证 150k）、v19_ppo.yaml（**200 updates**、熵三点沿用 u45
+  resume 配置 **0.016/0.008/0.003 @0.4**——衰减快于旧 V19、慢于 V18，无
   熵地板、critic_bootstrap 2、torch_compile 全开；init=SFT best、grp=V19
   既有、checkpoint 路径不变）；belief_public_grad_scale=0、四头 λ=1.0。
 - 站点安装的陈旧编译扩展（riichi/_riichienv，9/6 构建）已用当前源码重建

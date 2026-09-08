@@ -88,14 +88,16 @@ def test_v19_config_topology() -> None:
 
 
 def test_v19_config_exploration_plan_and_diagnostics() -> None:
-    """V19 从头重训方案（2026-09-08）:熵三锚回 V18 + 删除熵地板 + 梯度归因 + 150 updates。"""
+    """V19 从头重训方案（2026-09-08）:熵三锚沿用 u45 resume 配置
+    （0.016/0.008/0.003 @0.4，衰减快于旧 V19、慢于 V18）+ 删除熵地板
+    + 梯度归因 + 200 updates。"""
     config = _v19_config()
-    assert int(config["total_updates"]) == 150
-    assert int(config["iterations"]) == 150
-    assert float(config["entropy_start"]) == 0.014
-    assert float(config["entropy_middle"]) == 0.006
-    assert float(config["entropy_end"]) == 0.002
-    assert float(config["entropy_middle_fraction"]) == 0.33
+    assert int(config["total_updates"]) == 200
+    assert int(config["iterations"]) == 200
+    assert float(config["entropy_start"]) == 0.016
+    assert float(config["entropy_middle"]) == 0.008
+    assert float(config["entropy_end"]) == 0.003
+    assert float(config["entropy_middle_fraction"]) == 0.4
     # 熵地板屏障已删除（用户 2026-09-08 决策）。
     assert "entropy_floor" not in config
     assert "entropy_floor_coef" not in config
