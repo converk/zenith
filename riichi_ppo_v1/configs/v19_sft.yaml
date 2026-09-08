@@ -34,7 +34,7 @@ epochs: 1
 actor_only: true
 train_critic: false
 train_public_value: false
-batch_size: 2048
+batch_size: 512
 learning_rate: 0.00015
 min_learning_rate: 0.00002
 warmup_fraction: 0.02
