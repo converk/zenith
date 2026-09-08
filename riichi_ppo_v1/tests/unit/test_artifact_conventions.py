@@ -139,7 +139,7 @@ def test_sft_cadence_single_point() -> None:
         SFT_FINAL_EVAL_HANCHAN_COUNT,
     )
 
-    assert SFT_CADENCE_STEPS == 1000
+    assert SFT_CADENCE_STEPS == 3000
     assert SFT_FINAL_EVAL_HANCHAN_COUNT == 96
     cadence_keys = {
         "validation_interval_steps",

@@ -38,7 +38,7 @@ CUDA_DEVICE=0,1 /mnt/disk1/hubowen/miniconda3/envs/Mahjong-AI/bin/python -m \
 不重新生成）。预计算 manifest 必须声明 `riichi-sft-encoded-v19`、protocol 19、冻结的 V19
 contract hash、`belief_labels=true` 与 `belief_shape`；旧缓存会 fail closed。
 actor-only BC + 信念只优化 Actor 参数（含 `belief_network`），并只保存可被 V19
-精确加载的 Actor artifact。固定验证/checkpoint 节奏为每 1000 steps，最终评估为
+精确加载的 Actor artifact。固定验证/checkpoint 节奏为每 3000 steps，最终评估为
 96 半庄。
 
 ## PPO 与评测边界
