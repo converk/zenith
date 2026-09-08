@@ -44,14 +44,15 @@ shanten、max_danger、max_loss、wait_width 全局）。
 信念 backbone/查询/读出与 `belief_network`）；Critic backbone/value 参数冻结且无梯度。
 SFT 目标为 `L_BC + belief_sft_coef·Σλ_k·L_k_norm`，默认 `belief_sft_coef=1.0`。
 
-`belief_public_grad_scale=0.25`、`belief_readout_enabled=true`、
+`belief_public_grad_scale=0.0`、`belief_readout_enabled=true`、
 `belief_readout_detach=true`（信念头只由标签校准）；Loss 目标按
 `min(raw, 24000)/24000` 归一化；danger pos_weight=5.0、loss 正例加权 20。
 
 梯度隔离（监督单源，SFT 与 PPO 一致）：`token_matrix` 的输入为
-`detach(summary)`，策略梯度沿 30 个信念 token 回传止于转换矩阵；逐动作读出
-特征恒 detach；信念五头、1 层 belief backbone 与 `belief_query` 只由五头监督
-标签更新，共享层仅按 `belief_public_grad_scale=0.25` 接收监督梯度。
+`detach(summary)`，策略梯度沿 24 个信念 token（每家 8 个，零初始化 no-op
+起步）回传止于转换矩阵；逐动作读出特征恒 detach；信念四头、1 层 belief
+backbone 与 `belief_query` 只由四头监督标签更新，信念监督完全不回传公共
+权重（`belief_public_grad_scale=0`，残差式隔离）。
 
 `torch_compile: true`、`validate_structure: false` 一起开启；首次编译约 1–2 分钟
 属正常。固定验证与 checkpoint 间隔为 1000 steps（2026-09-07 用户调整为 1000），最终评估为 96 半庄，不能在实验配置里覆盖。

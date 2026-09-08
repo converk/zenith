@@ -34,8 +34,8 @@ def test_belief_head_shapes() -> None:
     assert output["belief_danger_logits"].shape == (2, 3, 34)
     assert output["belief_loss_bucket_logits"].shape == (2, 3, 34, 6)
     assert output["belief_loss_expected"].shape == (2, 3, 34)
-    # 三家 × 10 token × 256 维。
-    assert output["belief_tokens"].shape == (2, 30, 256)
+    # 三家 × 8 token × 256 维（2026-09-08 起 10/家 → 8/家）。
+    assert output["belief_tokens"].shape == (2, 24, 256)
 
 
 def test_belief_summary_width_and_composition() -> None:
@@ -72,15 +72,34 @@ def test_loss_expected_in_unit_interval() -> None:
 
 
 def test_token_matrix_shared_between_players() -> None:
-    """三家共用同一个转换矩阵：矩阵为单个 121→10×d_model 的 Linear。"""
+    """三家共用同一个转换矩阵：矩阵为单个 121→8×d_model 的 Linear。"""
     network = BeliefNetwork()
     matrix = network.token_matrix
     assert isinstance(matrix, torch.nn.Linear)
     assert matrix.in_features == 121
-    assert matrix.out_features == 10 * network.d_model
+    assert matrix.out_features == 8 * network.d_model
     # 没有按玩家拆分的多份转换矩阵。
     matrix_weights = [name for name, _ in network.named_parameters() if "token_matrix" in name]
     assert matrix_weights == ["token_matrix.weight", "token_matrix.bias"]
+
+
+def test_token_matrix_zero_init_noop_start() -> None:
+    """token_matrix 零初始化：初始 token 全零（残差式 no-op 起步）。
+
+    零初始化只影响起点、不影响梯度：策略/BC 损失沿 token 回传时，
+    dL/dW = 上游梯度 ⊗ summary（summary 非零），W 必须能从零长出。
+    """
+    torch.manual_seed(11)
+    network = BeliefNetwork()
+    player_query_hidden = torch.randn(2, 3, 3, 256)
+    output = network(player_query_hidden)
+    assert torch.count_nonzero(output["belief_tokens"]) == 0
+
+    # 模拟策略损失沿 token 回传：token 逐元素求和的非零上游梯度。
+    output["belief_tokens"].sum().backward()
+    assert network.token_matrix.weight.grad is not None
+    assert float(network.token_matrix.weight.grad.abs().sum()) > 0.0
+    assert network.token_matrix.bias.grad is not None
 
 
 def test_player_query_order_and_per_query_average() -> None:

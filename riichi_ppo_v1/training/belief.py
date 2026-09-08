@@ -310,3 +310,44 @@ def belief_metric_keys() -> tuple[str, ...]:
         "belief/loss_bucket_loss_norm",
         "belief/total_loss",
     )
+
+
+# 信念私有参数根（诊断用）：梯度开闸②的反事实测量目标。
+# token_matrix 是「信念 → 策略」接口（只由策略梯度更新），不属于私有头。
+_BELIEF_PRIVATE_ROOTS = frozenset({"belief_query", "belief_backbone", "belief_network"})
+
+
+def is_belief_private_parameter(name: str) -> bool:
+    """参数名是否属于信念私有网络（belief_query/backbone/四头，不含 token_matrix）。
+
+    与 learner 的 BELIEF_ROOTS 优化器分组语义一致，但排除 token_matrix：
+    后者是策略梯度的独占写者，不参与「开闸②冲突」的诊断。
+    """
+    root = name.split(".", 1)[0]
+    return root in _BELIEF_PRIVATE_ROOTS and "token_matrix" not in name
+
+
+def flatten_grads_cosine(
+    grads_a: list[Tensor | None],
+    grads_b: list[Tensor | None],
+) -> tuple[float, float, float] | None:
+    """两组逐参数梯度（允许 None=无图连接）展平拼接后的余弦与各自范数。
+
+    返回 ``(cosine, norm_a, norm_b)``；任一方范数为 0（无信息）或无有效
+    张量时返回 None——余弦无定义，调用方只记录范数。纯测量函数：不修改
+    autograd 状态、不触碰 ``param.grad``。
+    """
+    flat_a = [g.detach().reshape(-1).float() for g in grads_a if g is not None]
+    flat_b = [g.detach().reshape(-1).float() for g in grads_b if g is not None]
+    if not flat_a or not flat_b:
+        return None
+    vector_a = torch.cat(flat_a)
+    vector_b = torch.cat(flat_b)
+    norm_a = float(vector_a.norm())
+    norm_b = float(vector_b.norm())
+    if norm_a <= 0.0 or norm_b <= 0.0:
+        return None
+    cosine = float(
+        torch.dot(vector_a, vector_b) / (vector_a.norm() * vector_b.norm())
+    )
+    return cosine, norm_a, norm_b

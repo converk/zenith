@@ -12,8 +12,12 @@
   ``belief_loss_bucket_logits [B,3,34,6]``（铳点损失分桶，2026-09-08 起
   取代逐牌精确回归——用户决策：精确预测损失点数压力过大，按
   1000/5000/9000/13000/17000 分桶模糊化）；
-- 三家共享同一个线性转换矩阵（121 → 10×d_model），把每家的信念摘要压成
-  10 个 256 维 token，作为模型内部产物注入 Actor 尾段（不进 Rust 编码器）。
+- 三家共享同一个线性转换矩阵（121 → 8×d_model），把每家的信念摘要压成
+  8 个 256 维 token，作为模型内部产物注入 Actor 尾段（不进 Rust 编码器）。
+  2026-09-08 起每玩家 token 数 10 → 8（总量 30 → 24），且 token_matrix
+  **零初始化**（残差式 no-op 起步）：训练起点 24 个信念 token 全零，
+  策略与信念完全解耦，接口由策略/BC 梯度按需长出（与逐动作读出投影的
+  零初始化同一哲学）。
 
 2026-09-08 信念头精简（用户决策）：删除 shanten 头——是否听牌由 wait 头
 类别 0（非听）隐含提供，向听数本身对局面影响小、不值得预测。
@@ -56,8 +60,8 @@ LOSS_NORM_MAX = 24000.0
 SUMMARY_DIM = (
     HAND_GROUPS * HAND_COUNT_CLASSES + WAIT_CLASSES + DANGER_CLASSES + TILE_KINDS
 )
-# 每玩家信念 token 数（定版 10/家，不做消融）。
-DEFAULT_TOKEN_COUNT = 10
+# 每玩家信念 token 数（2026-09-08 用户决策：10/家 → 8/家，总量 30 → 24）。
+DEFAULT_TOKEN_COUNT = 8
 
 
 def loss_bucket_targets(raw_loss: Tensor) -> Tensor:
@@ -81,7 +85,7 @@ def loss_bucket_centers(device: torch.device) -> Tensor:
 
 
 class BeliefNetwork(nn.Module):
-    """V19 信念网络：player query 特征 → 四头预测 → 三家各 10 token。
+    """V19 信念网络：player query 特征 → 四头预测 → 三家各 8 token。
 
     ``forward`` 返回：
     - ``belief_hand_logits``       [B,3,16,3]：16 组计数桶 softmax logits；
@@ -93,11 +97,11 @@ class BeliefNetwork(nn.Module):
       （Σ p_k·center_k，取代旧逐牌回归的 belief_loss_pred）；
     - ``belief_summary``           [B,3,121]：三家共享同一拼接顺序的摘要
       （softmax(hand) + softmax(wait) + sigmoid(danger) + loss_expected）；
-    - ``belief_tokens``            [B,30,d]：三家 ×10 的注入 token，玩家主序
-      [rel0 的 10 token, rel1 的 10, rel2 的 10]；由共享转换矩阵生成。
+    - ``belief_tokens``            [B,24,d]：三家 ×8 的注入 token，玩家主序
+      [rel0 的 8 token, rel1 的 8, rel2 的 8]；由共享转换矩阵生成，零初始化。
 
     三个查询先在 logits 空间取平均，再交给归一化/摘要，因此输出形状与
-    v19 输入协议中的三家摘要/30 token 完全一致。所有头都是三家共享的小头
+    v19 输入协议中的三家摘要/24 token 完全一致。所有头都是三家共享的小头
     （256 → 各头输出），参数规模比旧「512 隐藏层 + 展平 3 家」方案更小。
     """
 
@@ -112,11 +116,23 @@ class BeliefNetwork(nn.Module):
         self.wait_head = nn.Linear(self.d_model, WAIT_CLASSES)
         self.danger_head = nn.Linear(self.d_model, DANGER_CLASSES)
         self.loss_bucket_head = nn.Linear(self.d_model, TILE_KINDS * LOSS_BUCKET_CLASSES)
-        # 共享转换矩阵：每家 121 维摘要 → 10×d_model token（三家共用同一矩阵）。
+        # 共享转换矩阵：每家 121 维摘要 → 8×d_model token（三家共用同一矩阵）。
+        # 零初始化（残差式 no-op 起步）：训练起点信念 token 全零，策略先学
+        # 基础策略；梯度不受影响（dL/dW = 上游梯度 ⊗ summary，非零），
+        # 接口由策略/BC 梯度按需从零长出，与 belief_readout 零初始化一致。
         self.token_matrix = nn.Linear(SUMMARY_DIM, self.token_count * self.d_model)
+        nn.init.zeros_(self.token_matrix.weight)
+        nn.init.zeros_(self.token_matrix.bias)
 
-    def forward(self, player_query_hidden: Tensor) -> dict[str, Tensor]:
-        """从 player query hidden 生成四个信念头与注入 token。"""
+    def forward(
+        self, player_query_hidden: Tensor, *, summary_detach: bool = True,
+    ) -> dict[str, Tensor]:
+        """从 player query hidden 生成四个信念头与注入 token。
+
+        ``summary_detach`` 仅供梯度诊断的反事实前向使用（测「若开闸②」
+        策略梯度与监督梯度在信念私有参数上的方向一致性）；训练路径必须
+        保持默认 True（梯度隔离契约，见 audit/reports/v19/design/）。
+        """
         if player_query_hidden.ndim != 4 or player_query_hidden.shape[1:] != (
             BELIEF_PLAYERS,
             BELIEF_QUERIES_PER_PLAYER,
@@ -164,13 +180,13 @@ class BeliefNetwork(nn.Module):
         )  # [B,3,121]
 
         # 共享转换矩阵按家应用：每家 121 维 → token_count×d，再 reshape 为
-        # [B, 3×token_count, d]（玩家主序：rel0 的 10 token、rel1、rel2）。
+        # [B, 3×token_count, d]（玩家主序：rel0 的 8 token、rel1、rel2）。
         # 梯度隔离：token_matrix 是「信念 → 策略 token」的接口，只由
         # actor/policy 梯度更新；因此输入摘要必须先 detach，策略/BC 损失
-        # 沿 30 个信念 token 回传时止步于转换矩阵，不再进入四头/backbone/
+        # 沿 24 个信念 token 回传时止步于转换矩阵，不再进入四头/backbone/
         # belief_query。信念网络（四头 + backbone + query）的梯度只来自
         # 四头监督标签（供 SFT 与 PPO 共用）。
-        summary_for_tokens = summary.detach()
+        summary_for_tokens = summary.detach() if summary_detach else summary
         summary_flat = summary_for_tokens.reshape(-1, SUMMARY_DIM)
         belief_tokens = self.token_matrix(summary_flat).view(
             batch, BELIEF_PLAYERS * self.token_count, self.d_model,

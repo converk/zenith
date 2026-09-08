@@ -53,6 +53,12 @@ SCALAR_TAGS = {
     "train/belief_danger_loss_norm": "SFT/训练/信念危险度损失·归一化 (belief_danger_loss_norm)",
     "train/belief_loss_loss_norm": "SFT/训练/信念打点损失·归一化 (belief_loss_loss_norm)",
     "train/belief_loss_weighted": "SFT/训练/信念加权损失 (belief_loss_weighted)",
+    # P1 监控/诊断：信念接口使用度 + 反事实开闸②梯度余弦。
+    "train/belief_token_matrix_weight_norm": "SFT/信念接口/token_matrix 权重范数",
+    "train/belief_token_matrix_bias_norm": "SFT/信念接口/token_matrix 偏置范数",
+    "train/grad_cos_bc_belief_private": "SFT/梯度诊断/BC×信念监督余弦·反事实(私有)",
+    "train/grad_cos_bc_norm": "SFT/梯度诊断/反事实 BC 梯度范数(私有)",
+    "train/grad_cos_belief_norm": "SFT/梯度诊断/信念监督梯度范数(私有)",
     "data/legal_actions_mean": "SFT/数据/平均合法动作数 (legal_actions_mean)",
     "data/token_length_mean": "SFT/数据/平均序列长度 (token_length_mean)",
     "data/token_length_max": "SFT/数据/最大序列长度 (token_length_max)",

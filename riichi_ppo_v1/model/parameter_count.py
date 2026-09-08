@@ -52,8 +52,8 @@ def parameter_report(model: nn.Module) -> dict[str, Any]:
 def assert_v19_parameter_contract(model: nn.Module) -> dict[str, Any]:
     report = parameter_report(model)
     # 上界 7.2M：V19 60% 方案（1 层信念 backbone FFN=512 + 9 查询 + 逐家共享
-    # 小五头 + token_matrix + 逐动作读出）；2026-09-07 模糊化后摘要 130 维，
-    # 实测约 6,684,068。
+    # 小四头 + token_matrix + 逐动作读出）；2026-09-07 模糊化、2026-09-08
+    # 四头精简（摘要 121 维）+ token 8/家（零初始化），实测约 6,639,173。
     if report["total"] > 7_200_000:
         raise RuntimeError(f"V19 parameter count exceeds 7.2M: {report['total']}")
     if report["forbidden_q_keys"]:

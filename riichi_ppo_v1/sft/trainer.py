@@ -33,6 +33,7 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.tensorboard import SummaryWriter
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
+from ..training.belief import flatten_grads_cosine, is_belief_private_parameter
 from ..model.belief_network import (
     LOSS_BUCKET_CLASSES,
     LOSS_NORM_MAX,
@@ -103,6 +104,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # 逐动作信念读出：SFT 阶段开启并 detach 特征（信念头只由标签校准）。
     "belief_readout_enabled": True,
     "belief_readout_detach": True,
+    # P1 诊断：反事实「开闸②」梯度余弦的触发节奏（rank 0、每 N 步一次；
+    # 0 关闭）。诊断为独立 eager 前向，不影响训练梯度。
+    "grad_cosine_interval_steps": 500,
     # 条件/加权损失（实施方案 §4.1，模糊化后适配）。
     "belief_danger_pos_weight": 5.0,
     "belief_loss_positive_weight": 20.0,
@@ -294,10 +298,14 @@ def _forward_actor(
     model: nn.Module,
     batch: dict[str, torch.Tensor],
     config: dict[str, Any],
+    *,
+    belief_summary_detach: bool = True,
+    belief_readout_detach_override: bool | None = None,
 ) -> dict[str, torch.Tensor]:
     # 统一走 __call__/forward 分发,使 DistributedDataParallel 也能正确触发
     # 梯度同步;统一走 forward 分发。host 预计算的容量/行表在 collate 时已
     # 放入 batch dict，此处取出透传（避免 GPU 同步；torch.compile 稳定）。
+    # 两个覆写关键字仅供反事实梯度诊断使用（默认保持训练契约不变）。
     return model(
         actor_factors=batch["actor_factors"],
         actor_numeric=batch["actor_numeric"],
@@ -309,10 +317,66 @@ def _forward_actor(
         validate_structure=bool(config.get("validate_structure", False)),
         belief_public_grad_scale=float(config.get("belief_public_grad_scale", 0.25)),
         belief_readout_enabled=bool(config.get("belief_readout_enabled", True)),
-        belief_readout_detach=bool(config.get("belief_readout_detach", True)),
+        belief_readout_detach=(
+            bool(config.get("belief_readout_detach", True))
+            if belief_readout_detach_override is None
+            else belief_readout_detach_override
+        ),
+        belief_summary_detach=belief_summary_detach,
         shared_capacity=batch.get("shared_capacity"),
         kind_row_plan=batch.get("kind_row_plan"),
     )
+
+
+def _unwrap_diagnostic_model(model: nn.Module) -> nn.Module:
+    """解 DDP/compile 包装取裸模块（诊断前向用 eager,不进 compile 缓存）。"""
+    module = model.module if isinstance(model, DistributedDataParallel) else model
+    return getattr(module, "_orig_mod", module)
+
+
+def _belief_gate_cosine_scalars(
+    model: nn.Module,
+    batch: dict[str, torch.Tensor],
+    config: dict[str, Any],
+    *,
+    device: torch.device,
+    use_bf16: bool,
+) -> dict[str, float]:
+    """P1 诊断:反事实「开闸②」的 BC/信念监督梯度方向一致性(纯测量)。
+
+    完整梯度隔离下,BC 损失与信念监督在信念私有参数上没有共同图路径,
+    LIVE 图互梯度恒为 None,余弦无定义。本函数做一次 eager 反事实前向
+    (解除 token/readout 路径 detach),测「若开闸②」BC 梯度与信念监督梯度
+    在信念私有参数(belief_query/backbone/四头,不含 token_matrix)上的余弦:
+    持续负相关 → 开闸②必然互相干扰;接近正相关 → 开闸②「安全」(但不
+    保证有益)。不触碰 ``param.grad``,由调用方 try/except 降级。
+    """
+    raw = _unwrap_diagnostic_model(model)
+    with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
+        output = _forward_actor(
+            raw, batch, config,
+            belief_summary_detach=False, belief_readout_detach_override=False,
+        )
+        policy_ce = F.cross_entropy(output["policy_logits"].float(), batch["actions"])
+        belief_total = _belief_losses(output, batch, config)["belief_loss_total"]
+    belief_parameters = [
+        parameter for name, parameter in raw.named_parameters()
+        if is_belief_private_parameter(name)
+    ]
+    bc_grads = torch.autograd.grad(
+        policy_ce, belief_parameters, allow_unused=True, retain_graph=True,
+    )
+    belief_grads = torch.autograd.grad(
+        belief_total, belief_parameters, allow_unused=True, retain_graph=True,
+    )
+    measured = flatten_grads_cosine(bc_grads, belief_grads)
+    scalars: dict[str, float] = {}
+    if measured is not None:
+        cosine, bc_norm, belief_norm = measured
+        scalars["train/grad_cos_bc_belief_private"] = cosine
+        scalars["train/grad_cos_bc_norm"] = bc_norm
+        scalars["train/grad_cos_belief_norm"] = belief_norm
+    return scalars
 
 
 def _assert_targets_legal(actions: torch.Tensor, legal_mask: torch.Tensor) -> None:
@@ -753,6 +817,8 @@ def _train_worker_impl(
     )
     started = time.perf_counter()
     metric_window = SftMetricWindow() if rank == 0 else None
+    # P1 诊断降级标记:反事实余弦失败后本进程内禁用,绝不中断训练。
+    gate_cosine_failed = False
     model.train()
     stop_training = False
     join_context = model.join if isinstance(model, DistributedDataParallel) else nullcontext
@@ -825,6 +891,17 @@ def _train_worker_impl(
                     print(f"epoch={epoch} step={global_step} loss={float(loss):.4f}", flush=True)
                 if global_step % SFT_CADENCE_STEPS == 0 and rank == 0 and metric_window is not None:
                     metrics = metric_window.scalars()
+                    # P1 监控:信念接口使用度——token_matrix 权重范数(零初始化
+                    # 起步,增长曲线直接回答「策略用了多少信念」)。
+                    diagnostic_model = _unwrap_diagnostic_model(model)
+                    metrics["train/belief_token_matrix_weight_norm"] = float(
+                        diagnostic_model.belief_network.token_matrix.weight
+                        .detach().float().norm()
+                    )
+                    metrics["train/belief_token_matrix_bias_norm"] = float(
+                        diagnostic_model.belief_network.token_matrix.bias
+                        .detach().float().norm()
+                    )
                     validation = evaluate(
                         model.module if isinstance(model, DistributedDataParallel) else model,
                         dataset, config, device,
@@ -855,6 +932,28 @@ def _train_worker_impl(
                         writer.flush()
                     metric_window = SftMetricWindow()
                     print(json.dumps(metrics, ensure_ascii=False), flush=True)
+                # P1 诊断:反事实开闸②梯度余弦(独立节奏,rank 0;step 后
+                # 快照当前权重;不触碰训练梯度;失败一次性禁用)。
+                gate_interval = int(config.get("grad_cosine_interval_steps", 0))
+                if (
+                    gate_interval > 0
+                    and rank == 0
+                    and global_step % gate_interval == 0
+                    and not gate_cosine_failed
+                ):
+                    try:
+                        gate_scalars = _belief_gate_cosine_scalars(
+                            model, batch, config, device=device, use_bf16=use_bf16,
+                        )
+                        if writer is not None:
+                            write_sft_scalars(writer, gate_scalars, global_step)
+                            writer.flush()
+                    except Exception as exc:  # noqa: BLE001 - 诊断降级
+                        gate_cosine_failed = True
+                        print(
+                            f"gate-cosine diagnostics failed and disabled: {exc!r}",
+                            flush=True,
+                        )
                 if distributed and global_step % SFT_CADENCE_STEPS == 0:
                     dist.barrier()
             if stop_training:

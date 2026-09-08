@@ -26,22 +26,24 @@
   适配、旧输入转换、双模型分支、legacy adapter、旧字段 fallback 或 state-dict
   迁移。
 - V19 输入协议为**当前局面状态快照 + 信念注入**(Shared 公共前缀 + 三家
-  Opponent Analysis + 三家 RIICHI_CARD + 模型内部 30 个信念 token + 每个合法动作
+  Opponent Analysis + 三家 RIICHI_CARD + 模型内部 24 个信念 token + 每个合法动作
   一对 Offense/Defense Query;全 token RoPE、公共双向 GQA、结构化 Actor mask;
   `d_model=256`/16Q/4KV GQA/`dense_slot_dim=32`/`dense_fusion_dim=512`/
   `context_tokens=320`、`layers=5`(shared 3 + actor 2)/`critic_layers=1`);
   信念网络四头监督与 PPO/SFT 联合训练,标签只进训练不进推理;MJAI 事件仅用于
   同步/生命周期/动作执行,不再作为模型输入。信念分支为 1 层与 Critic 同构的
   backbone（完整 shared_hidden + 每玩家 3 查询共 9 个）+ 四头逐查询平均 +
-  逐动作信念读出（SFT/PPO 恒 detach），30 个信念 token/输入契约不变。
+  逐动作信念读出（SFT/PPO 恒 detach），每玩家 8 个信念 token（2026-09-08
+  用户决策 10→8,共 24 个）/输入契约不变。
   **四头（2026-09-08 用户决策精简）：hand / wait（听牌+宽度桶,类别 0=非听,
   即是否听牌的精确信号）/ danger（逐牌,不模糊）/ loss_bucket（铳点损失分桶
   分类,边界 1000/5000/9000/13000/17000,不精确回归——4000 与 6000 同档,
   不让细粒度差异放大损失）;shanten 头已删除（向听数不值得预测,是否听牌
   由 wait 头提供）。信念网络仅由四头监督标签更新；token_matrix 仅由策略
-  梯度更新；信念监督以 belief_public_grad_scale=0 完全不回传公共权重,
-  只更新私有的信念网络（belief_query/backbone/四头,残差式隔离）,
-  SFT 与 PPO 一致。**
+  梯度更新且零初始化（残差式 no-op 起步,训练起点 24 个信念 token 全零,
+  接口由策略/BC 梯度按需长出）；信念监督以 belief_public_grad_scale=0
+  完全不回传公共权重,只更新私有的信念网络（belief_query/backbone/四头,
+  残差式隔离）,SFT 与 PPO 一致。**
 - V19 Actor 的公开信息边界与 Critic 的私有信息边界属于协议契约:任何扩大 Actor
   可见信息、改变 Critic 私有输入或恢复 Q scorer/Q-boosting 的变更,必须先以显式
   规范文档登记并同步协议文档,不得直接修改代码。

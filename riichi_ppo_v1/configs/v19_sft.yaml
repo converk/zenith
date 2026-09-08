@@ -73,5 +73,9 @@ belief_readout_enabled: true
 belief_readout_detach: true
 belief_danger_pos_weight: 5.0
 belief_loss_positive_weight: 20.0
+# P1 诊断：反事实「开闸②」梯度余弦节奏（rank 0 每 N 步一次 eager 测量前向，
+# 0 关闭）。测「若策略梯度进入信念私有头」与监督梯度的方向一致性，
+# 为是否开闸积累实证数据；纯测量，不影响训练梯度。
+grad_cosine_interval_steps: 500
 
 # 机制常量（1000 steps / 96 hanchan）仍只在 sft/contract.py 定义，禁止复制。

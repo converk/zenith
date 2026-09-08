@@ -29,7 +29,12 @@ from torch.nn.parallel import DistributedDataParallel
 from ..model import KyokuTransformerActorCritic, ModelConfig
 from ..model.checkpoint import strip_compile_prefix
 from ..model.schema import TOKEN_SCHEMA_VERSION
-from .belief import belief_losses, belief_metrics_per_sample
+from .belief import (
+    belief_losses,
+    belief_metrics_per_sample,
+    flatten_grads_cosine,
+    is_belief_private_parameter,
+)
 from .profiling import StageProfiler
 from .rollout_buffer import RolloutBuffer
 
@@ -193,6 +198,13 @@ def clip_branch_grad_norms(
             pre_clip.to(device=device) > max_norm
         ).float()
     return metrics
+
+
+def _unwrap_module(model: nn.Module) -> nn.Module:
+    """解 DDP/torch.compile 包装,取裸模块(诊断用,只读参数与前向)。"""
+    if hasattr(model, "module"):
+        model = model.module
+    return getattr(model, "_orig_mod", model)
 
 
 def loss_term_grad_norms(
@@ -781,6 +793,8 @@ class PPOLearner:
         if self.grad_term_diagnostics_interval < 0:
             raise ValueError("grad_term_diagnostics_interval_updates must be non-negative")
         self._grad_term_diagnostics_failed = False
+        # 反事实开闸②余弦诊断的独立降级标记(与前项归因互不影响)。
+        self._gate_cosine_diagnostics_failed = False
 
     def release_cache(self) -> None:
         """评测前释放缓存显存:gc + ``empty_cache`` 归还未分配的缓存块。
@@ -909,6 +923,77 @@ class PPOLearner:
             kind_row_plan=kind_row_plan,
             critic_kind_row_plan=critic_kind_row_plan,
         )
+
+    def _belief_gate_cosine_diagnostics(
+        self,
+        *,
+        batch: dict[str, torch.Tensor],
+        shared_capacity: int | None,
+        kind_row_plan: dict[int, Any] | None,
+        actions: torch.Tensor,
+        old_logprobs: torch.Tensor,
+        adv: torch.Tensor,
+        belief_term: torch.Tensor,
+    ) -> dict[str, float]:
+        """P1 诊断:反事实「开闸②」的策略/监督梯度方向一致性(纯测量)。
+
+        完整梯度隔离下,策略损失与信念监督在信念私有参数上没有任何共同
+        图路径(LIVE 图互梯度恒为 None,余弦无定义)。本方法做一次 eager
+        反事实前向(解除 ``belief_summary_detach``/``belief_readout_detach``),
+        构造「若开闸②」的假想图,测策略梯度与信念监督梯度在信念私有参数
+        (belief_query/backbone/四头,不含 token_matrix)上的余弦:持续负相关
+        → 开闸②必然互相干扰;接近正相关 → 开闸②「安全」(但不保证有益)。
+        仅在既有梯度归因节奏的首个 minibatch 触发;eager 前向不进 compile
+        缓存,不触碰 ``param.grad``,失败由调用方降级禁用。信念监督项复用
+        LIVE 图张量(其值与反事实图逐位一致:四头输出不依赖 detach 开关)。
+        """
+        model = _unwrap_module(self.model)
+        with torch.autocast(
+            device_type=self.device.type, dtype=torch.bfloat16, enabled=self.use_bf16,
+        ):
+            output = model(
+                actor_factors=batch["actor_factors"],
+                actor_numeric=batch["actor_numeric"],
+                actor_lengths=batch["actor_lengths"],
+                query_action_ids=batch["query_action_ids"],
+                query_pair_counts=batch["query_pair_counts"],
+                legal_mask=batch["legal_mask"],
+                policy_only=True,
+                belief_public_grad_scale=self.belief_public_grad_scale,
+                belief_readout_enabled=self.belief_readout_enabled,
+                belief_readout_detach=False,
+                belief_summary_detach=False,
+                validate_structure=False,
+                shared_capacity=shared_capacity,
+                kind_row_plan=kind_row_plan,
+            )
+            logits = output["policy_logits"].float()
+            logprob = F.log_softmax(logits, dim=-1).gather(1, actions[:, None]).squeeze(1)
+            ratio = (logprob - old_logprobs).exp()
+            clipped = ratio.clamp(
+                1 - float(self.hp["ppo_clip"]), 1 + float(self.hp["ppo_clip"]),
+            ) * adv
+            policy_counterfactual = -torch.minimum(ratio * adv, clipped).mean()
+        belief_parameters = [
+            parameter for name, parameter in model.named_parameters()
+            if is_belief_private_parameter(name)
+        ]
+        policy_grads = torch.autograd.grad(
+            policy_counterfactual, belief_parameters,
+            allow_unused=True, retain_graph=True,
+        )
+        belief_grads = torch.autograd.grad(
+            belief_term, belief_parameters,
+            allow_unused=True, retain_graph=True,
+        )
+        measured = flatten_grads_cosine(policy_grads, belief_grads)
+        metrics: dict[str, float] = {}
+        if measured is not None:
+            cosine, policy_norm, belief_norm = measured
+            metrics["grad_cos/policy~belief/belief_private"] = cosine
+            metrics["grad_cos/policy_norm/belief_private"] = policy_norm
+            metrics["grad_cos/belief_norm/belief_private"] = belief_norm
+        return metrics
 
     def _precompute_reference_logits(self, transitions: RolloutBuffer) -> torch.Tensor:
         """对整个 rank 分片一次性预计算冻结 SFT reference 的 policy_logits。
@@ -1520,6 +1605,31 @@ class PPOLearner:
                                         f"grad-term diagnostics failed and disabled: {exc!r}",
                                         file=sys.stderr,
                                     )
+                                # P1 诊断:反事实开闸②梯度余弦(独立 try/except,
+                                # 失败只禁用自身,不影响上方的逐项归因)。
+                                if (
+                                    "belief" in grad_terms
+                                    and not self._gate_cosine_diagnostics_failed
+                                ):
+                                    try:
+                                        grad_term_metrics.update(
+                                            self._belief_gate_cosine_diagnostics(
+                                                batch=batch,
+                                                shared_capacity=shared_capacity,
+                                                kind_row_plan=kind_row_plan,
+                                                actions=actions,
+                                                old_logprobs=old_logprobs,
+                                                adv=adv,
+                                                belief_term=grad_terms["belief"],
+                                            )
+                                        )
+                                    except Exception as exc:  # noqa: BLE001 - 诊断降级
+                                        self._gate_cosine_diagnostics_failed = True
+                                        grad_term_metrics["grad_cos/diagnostics_failed"] = 1.0
+                                        print(
+                                            f"gate-cosine diagnostics failed and disabled: {exc!r}",
+                                            file=sys.stderr,
+                                        )
                         loss_is_finite = torch.isfinite(evaluated_loss)
 
                         def loss_detail() -> str:
@@ -1806,6 +1916,16 @@ class PPOLearner:
             ),
             "system/belief_readout_detach": float(
                 1.0 if self.belief_readout_detach else 0.0
+            ),
+            # P1 监控:信念接口使用度——token_matrix 权重范数(零初始化起步,
+            # 增长曲线直接回答「策略用了多少信念」)。
+            "belief/token_matrix_weight_norm": float(
+                _unwrap_module(self.model).belief_network.token_matrix.weight
+                .detach().float().norm()
+            ),
+            "belief/token_matrix_bias_norm": float(
+                _unwrap_module(self.model).belief_network.token_matrix.bias
+                .detach().float().norm()
             ),
             "system/belief_danger_pos_weight": float(
                 self.belief_danger_pos_weight

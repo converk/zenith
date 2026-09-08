@@ -366,6 +366,7 @@ class KyokuTransformerActorCritic(nn.Module):
         belief_public_grad_scale: float = 1.0,
         belief_readout_enabled: bool = True,
         belief_readout_detach: bool = True,
+        belief_summary_detach: bool = True,
     ) -> dict[str, Tensor]:
         """policy-only 前向(冻结 SFT reference 预计算的唯一消费入口)。
 
@@ -391,6 +392,7 @@ class KyokuTransformerActorCritic(nn.Module):
             belief_public_grad_scale=belief_public_grad_scale,
             belief_readout_enabled=belief_readout_enabled,
             belief_readout_detach=belief_readout_detach,
+            belief_summary_detach=belief_summary_detach,
         )
 
     def forward(
@@ -412,6 +414,7 @@ class KyokuTransformerActorCritic(nn.Module):
         belief_public_grad_scale: float = 1.0,
         belief_readout_enabled: bool = True,
         belief_readout_detach: bool = True,
+        belief_summary_detach: bool = True,
         shared_capacity: int | None = None,
         critic_total_capacity: int | None = None,
         kind_row_plan: dict[int, Any] | None = None,
@@ -513,11 +516,15 @@ class KyokuTransformerActorCritic(nn.Module):
         player_query_hidden = player_queries.view(
             batch, BELIEF_PLAYERS, BELIEF_QUERIES_PER_PLAYER, self.config.d_model,
         )
-        belief = self.belief_network(player_query_hidden)
+        belief = self.belief_network(
+            player_query_hidden, summary_detach=belief_summary_detach,
+        )
         belief_tokens = belief["belief_tokens"]
         # 梯度隔离：token 路径输入已在 BeliefNetwork 内 detach(summary)，
         # 逐动作读出默认 detach 特征，因此策略损失不会沿这两条路径进入
-        # 信念五头 / belief_backbone / belief_query（仅监督标签更新它们）。
+        # 信念四头 / belief_backbone / belief_query（仅监督标签更新它们）。
+        # token_matrix 零初始化：训练起点信念 token 全零（残差式 no-op），
+        # 策略梯度只能把接口从零长出，不能塑形信念网络。
 
         # —— Actor 层：Shared 表示 + Analysis + Belief token + Action Query ——
         actor_input = actor_embeddings.clone()
@@ -536,26 +543,30 @@ class KyokuTransformerActorCritic(nn.Module):
                 raise ValueError("query_pair_counts out of range")
         # 信念块插入位：SEP_ACTIONS 行之后、第一对 O/D Query 之前。
         # 最后一个信念 token 距第一对 Query 恒距 1（输入分册 §6 不变式）。
+        # 信念 token 总数由 BeliefNetwork 的 token_count 派生（2026-09-08 起
+        # 8/家 × 3 家 = 24），不再硬编码 30。
+        belief_token_total = BELIEF_PLAYERS * self.belief_network.token_count
         sep_pos = actor_lengths - 2 * pair_counts - 1
-        aug_capacity = actor_capacity + 30
-        aug_lengths = actor_lengths + 30
+        aug_capacity = actor_capacity + belief_token_total
+        aug_lengths = actor_lengths + belief_token_total
         aug_actor_input = actor_input.new_zeros((batch, aug_capacity, self.config.d_model))
         src_positions = torch.arange(actor_capacity, device=device)[None, :].expand(batch, -1)
-        # 插入后：sep_pos 及之前的行位置不变，其后所有行整体后移 30（信念块占位）。
+        # 插入后：sep_pos 及之前的行位置不变，其后所有行整体后移（信念块占位）。
         dst_positions = torch.where(
-            src_positions <= sep_pos[:, None], src_positions, src_positions + 30,
+            src_positions <= sep_pos[:, None], src_positions,
+            src_positions + belief_token_total,
         )
         batch_rows = torch.arange(batch, device=device)[:, None]
         aug_actor_input[
             batch_rows.expand(batch, actor_capacity).reshape(-1),
             dst_positions.reshape(-1),
         ] = actor_input.reshape(batch * actor_capacity, self.config.d_model)
-        belief_slots = torch.arange(30, device=device)[None, :]
+        belief_slots = torch.arange(belief_token_total, device=device)[None, :]
         belief_dst = sep_pos[:, None] + 1 + belief_slots
         aug_actor_input[
-            batch_rows.expand(batch, 30).reshape(-1),
+            batch_rows.expand(batch, belief_token_total).reshape(-1),
             belief_dst.reshape(-1),
-        ] = belief_tokens.reshape(batch * 30, self.config.d_model)
+        ] = belief_tokens.reshape(batch * belief_token_total, self.config.d_model)
 
         # 增广 segment/kind：原序列行按插入映射回填，信念行填 SEGMENT_BELIEF/KIND_BELIEF。
         aug_segments = actor_factors.new_zeros((batch, aug_capacity))
@@ -568,8 +579,14 @@ class KyokuTransformerActorCritic(nn.Module):
             batch_rows.expand(batch, actor_capacity).reshape(-1),
             dst_positions.reshape(-1),
         ] = actor_factors[..., 1].reshape(-1)
-        aug_segments[batch_rows.expand(batch, 30).reshape(-1), belief_dst.reshape(-1)] = SEGMENT_BELIEF
-        aug_kinds[batch_rows.expand(batch, 30).reshape(-1), belief_dst.reshape(-1)] = KIND_BELIEF
+        aug_segments[
+            batch_rows.expand(batch, belief_token_total).reshape(-1),
+            belief_dst.reshape(-1),
+        ] = SEGMENT_BELIEF
+        aug_kinds[
+            batch_rows.expand(batch, belief_token_total).reshape(-1),
+            belief_dst.reshape(-1),
+        ] = KIND_BELIEF
         actor_mask_bool, actor_valid = _actor_structured_layout(
             aug_segments, aug_kinds, aug_lengths, aug_capacity,
         )

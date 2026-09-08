@@ -10,7 +10,7 @@ MJAI 回转见 [KyokuActionSpace.md](KyokuActionSpace.md)，精确张量/schema 
 Observation.new_events() -> Rust 状态机（仅用于同步/生命周期/动作执行，不作模型输入）
 Observation 当前字段 -> Rust/PyO3 当前局面编码器（Shared 快照 + Opponent Analysis）
 Observation.legal_actions() -> 每动作 Offense/Defense Query pair + legal mask（按 action_id 升序）
-完整 Actor 序列 + 模型内部 30 个信念 token -> Actor raw logits[action_id]
+完整 Actor 序列 + 模型内部 24 个信念 token -> Actor raw logits[action_id]
 Shared 公共表示 + 三家闭手 -> Critic value（仅训练）
 ```
 
@@ -43,7 +43,7 @@ V19 **不再把 MJAI 事件序列编码进模型输入**。事件只用于状态
 Actor 序列为当前局面快照（段/类别/字段 schema 见
 `model/encoding_protocol.py` 与 `v19_input_protocol.md`）：桌况、自身手牌与
 SELF_STATE_ANALYSIS、四家 PLAYER、三家纯打牌序列河（每河末尾恒发射 RIICHI_CARD）、
-当前副露、34 个 TILE_STATE、三个 OPPONENT_ANALYSIS、模型内部 30 个信念 token，
+当前副露、34 个 TILE_STATE、三个 OPPONENT_ANALYSIS、模型内部 24 个信念 token，
 以及按 action ID 升序的 Offense/Defense Query。**不包含**：`tiles_left`、独立当前
 供牌公共字段、MJAI 历史事件 token（无历史 generation/cache 标识）、牌山/里宝。
 所有类别分隔符与有效 token 都计入长度并应用 RoPE；超过 `context_tokens` 必须拒绝，

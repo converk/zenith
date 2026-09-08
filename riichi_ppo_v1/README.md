@@ -1,6 +1,6 @@
 # V19 SFT / V19 PPO 训练框架
 
-本包的活跃 SFT 与 PPO 协议均为 V19：**决策时刻状态快照 + 信念五头监督**（Shared
+本包的活跃 SFT 与 PPO 协议均为 V19：**决策时刻状态快照 + 信念四头监督**（Shared
 公共前缀 + 三家 Opponent Analysis + 信念 token + 每个合法动作一对 Offense/Defense
 Query，全 token RoPE、公共双向 GQA、结构化 Actor mask）。旧代次配置、产物与
 协议分支不再保留；活跃 checkpoint、SFT、评测或 bot 路径只接受 V19 契约。
@@ -18,15 +18,16 @@ python -m pytest riichi_ppo_v1/tests
 
 V19 SFT 参数拓扑为 `d_model=256`、16 Q heads、4 KV heads、`head_dim=16`、
 `ffn_dim=704`、3 Shared + 2 Actor + 1 Critic，密集槽位 `dense_slot_dim=32`、
-`dense_fusion_dim=512`，`context_tokens=320`，并含信念网络（五头 + 三家各 10 token）。
+`dense_fusion_dim=512`，`context_tokens=320`，并含信念网络（四头 + 三家各 8 token，
+`token_matrix` 零初始化）。
 模型不包含 Q scorer、candidate-Q 输出、MHA 双分支或旧协议兼容 key。
 
 ## V19 SFT-ready 路径
 
 唯一现行 SFT 自包含配置是 `configs/v19_sft.yaml`（
 `datasets/tenhou_sft_2024_2025_encoded_60pct_v19_fuzzy`，由旧精确数据集只重标
-信念标签生成，不重编码）。V19 SFT 目标为 Actor BC 与模糊化信念五头监督联合
-（`L_BC + belief_sft_coef·Σλ_k·L_k_norm`，五头按标签基线归一化均衡）：
+信念标签生成，不重编码）。V19 SFT 目标为 Actor BC 与模糊化信念四头监督联合
+（`L_BC + belief_sft_coef·Σλ_k·L_k_norm`，四头按标签基线归一化均衡）：
 
 ```bash
 CUDA_DEVICE=0,1 /mnt/disk1/hubowen/miniconda3/envs/Mahjong-AI/bin/python -m \
@@ -37,7 +38,7 @@ CUDA_DEVICE=0,1 /mnt/disk1/hubowen/miniconda3/envs/Mahjong-AI/bin/python -m \
 不重新生成）。预计算 manifest 必须声明 `riichi-sft-encoded-v19`、protocol 19、冻结的 V19
 contract hash、`belief_labels=true` 与 `belief_shape`；旧缓存会 fail closed。
 actor-only BC + 信念只优化 Actor 参数（含 `belief_network`），并只保存可被 V19
-精确加载的 Actor artifact。固定验证/checkpoint 节奏为每 3000 steps，最终评估为
+精确加载的 Actor artifact。固定验证/checkpoint 节奏为每 1000 steps，最终评估为
 96 半庄。
 
 ## PPO 与评测边界

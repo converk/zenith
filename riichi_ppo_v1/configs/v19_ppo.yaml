@@ -160,4 +160,6 @@ belief_loss_positive_weight: 20.0
 # 逐损失项梯度归因诊断：每 10 个 policy update 记录 policy/value/entropy/
 # sft_kl/belief 各项对 actor头/belief/shared/critic 的 pre-clip 梯度范数
 # （TB: PPO/梯度归因/*）——本次重训用于验证「信念梯度不进公共权重」生效。
+# P1 诊断同节奏触发：反事实「开闸②」梯度余弦（策略×信念监督在信念私有
+# 参数上，eager 反事实前向，独立降级）。纯测量，不影响训练梯度。
 grad_term_diagnostics_interval_updates: 10
