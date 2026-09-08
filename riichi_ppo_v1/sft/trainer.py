@@ -33,7 +33,11 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.tensorboard import SummaryWriter
 
 from ..model import KyokuTransformerActorCritic, ModelConfig
-from ..training.belief import flatten_grads_cosine, is_belief_private_parameter
+from ..training.belief import (
+    NORM_BASELINE_FLOOR,
+    flatten_grads_cosine,
+    is_belief_private_parameter,
+)
 from ..model.belief_network import (
     LOSS_BUCKET_CLASSES,
     LOSS_NORM_MAX,
@@ -431,8 +435,10 @@ def _belief_losses(
     Loss = 铳点损失**分桶分类 CE**（边界 1000/5000/9000/13000/17000，共
     6 类，仅在危险正例子集上加权 (1 + pos_weight·I(raw>0))——精确预测
     铳点压力过大，分桶后 4000 与 6000 同档，损失贡献不放大细粒度差异）。
-    每头原始损失除以**标签分布基线**（熵 / 最优常数 BCE），因此 λ_k=1.0
-    时四头贡献天然同量级；`belief_head_weight_*` 仍可进一步微调。
+    每头原始损失除以**标签分布基线**（熵 / 最优常数 BCE，一律过下限
+    ``NORM_BASELINE_FLOOR``；loss_bucket 基线在其损失实际所在的危险正例
+    子集上计算），因此 λ_k=1.0 时四头贡献同量级；`belief_head_weight_*`
+    仍可进一步微调。
     """
     _require_belief_outputs(output)
     hand_logits = output["belief_hand_logits"].float()
@@ -477,12 +483,19 @@ def _belief_losses(
         loss_bucket = loss_ce_none.mean()
 
     # 每头标签分布基线（保证 λ=1 时贡献均衡）。
-    hand_scale = _label_entropy(hand_labels, 3)
-    wait_scale = _label_entropy(wait_labels, 5)
+    # 归一化基线一律过下限（见 training/belief.NORM_BASELINE_FLOOR 注释）。
+    hand_scale = _label_entropy(hand_labels, 3).clamp_min(NORM_BASELINE_FLOOR)
+    wait_scale = _label_entropy(wait_labels, 5).clamp_min(NORM_BASELINE_FLOOR)
     danger_scale = _weighted_bce_constant_baseline(
         danger_labels.float().mean(), danger_pos_weight,
-    )
-    loss_scale = _label_entropy(bucket_labels, LOSS_BUCKET_CLASSES)
+    ).clamp_min(NORM_BASELINE_FLOOR)
+    # loss_bucket 损失只在危险正例子集上计算,基线必须测同一分布(全量标签
+    # 几乎全为桶 0,熵≈0);空正例批回退全量熵。
+    if bool(pos_mask.any()):
+        loss_scale = _label_entropy(bucket_labels[pos_mask], LOSS_BUCKET_CLASSES)
+    else:
+        loss_scale = _label_entropy(bucket_labels, LOSS_BUCKET_CLASSES)
+    loss_scale = loss_scale.clamp_min(NORM_BASELINE_FLOOR)
 
     normalized = {
         "hand": hand_loss / hand_scale,

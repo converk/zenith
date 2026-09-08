@@ -9,6 +9,11 @@ Wait = 听牌 + 待牌宽度桶 5 类（CE）、Danger 逐牌加权 BCE、Loss �
   过大且对局面影响小（4000 与 6000 差不多），分桶模糊化后损失贡献均匀；
 - 四头（hand/wait/danger/loss_bucket）原始损失除以标签分布基线
   （熵 / 最优常数 BCE），λ_k=1.0 时四头贡献天然同量级。
+- 2026-09-08 基线修正（实测修正）：wait/danger/loss_bucket 的模糊标签
+  99.9%+ 为阴性类，标签熵可低至 ~1e-7，直接作分母把归一化损失放大
+  6~8 个数量级（实测 loss_bucket_norm 1.4e8）。修正：①全部基线加下限
+  ``NORM_BASELINE_FLOOR``；②loss_bucket 基线改为在其损失实际所在的
+  危险正例子集上计算（分母与分子测同一分布）。
 
 与 ``sft/trainer.py`` 内的信念训练函数同构（同一套标签定义），但本模块
 面向 PPO 的逐批/逐样本聚合与评测面，并提供无 CPU 同步的纯 torch AUC
@@ -40,6 +45,13 @@ BELIEF_OUTPUT_KEYS = (
 HAND_CLASSES = 3
 WAIT_CLASSES = 5
 DANGER_CLASSES = 34
+
+
+# 归一化基线下限（2026-09-08 实测修正）：极不平衡的模糊标签（wait/danger/
+# loss_bucket 的阴性类占 99.9%+）标签熵可低至 ~1e-7，直接作分母会把归一化
+# 损失放大 6~8 个数量级、λ_k 均衡完全失效。0.05 ≈ 5% 交叉不确定度：
+# hand（熵≈1）不受影响，不平衡头贡献有限且与其余头同量级。
+NORM_BASELINE_FLOOR = 0.05
 
 
 def require_belief_outputs(output: dict[str, torch.Tensor]) -> None:
@@ -144,12 +156,19 @@ def _belief_loss_components(
     else:
         loss_bucket = loss_ce_none.mean()
 
-    hand_scale = _label_entropy(hand_labels, HAND_CLASSES)
-    wait_scale = _label_entropy(wait_labels, WAIT_CLASSES)
+    # 归一化基线一律过下限（见 NORM_BASELINE_FLOOR 注释）。
+    hand_scale = _label_entropy(hand_labels, HAND_CLASSES).clamp_min(NORM_BASELINE_FLOOR)
+    wait_scale = _label_entropy(wait_labels, WAIT_CLASSES).clamp_min(NORM_BASELINE_FLOOR)
     danger_scale = _weighted_bce_constant_baseline(
         danger_labels.float().mean(), danger_pos_weight,
-    )
-    loss_scale = _label_entropy(bucket_labels, LOSS_BUCKET_CLASSES)
+    ).clamp_min(NORM_BASELINE_FLOOR)
+    # loss_bucket 损失只在危险正例子集上计算,基线必须测同一分布(全量标签
+    # 几乎全为桶 0,熵≈0);空正例批回退全量熵。
+    if bool(pos_mask.any()):
+        loss_scale = _label_entropy(bucket_labels[pos_mask], LOSS_BUCKET_CLASSES)
+    else:
+        loss_scale = _label_entropy(bucket_labels, LOSS_BUCKET_CLASSES)
+    loss_scale = loss_scale.clamp_min(NORM_BASELINE_FLOOR)
 
     return {
         "belief/hand_loss": hand_loss,

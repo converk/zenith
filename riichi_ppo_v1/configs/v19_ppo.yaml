@@ -141,7 +141,8 @@ progress_update_interval_updates: 10
 # - shanten 头已删除；是否听牌由 wait 头类别 0（非听）精确提供。
 # - 铳点损失改分桶分类（边界 1000/5000/9000/13000/17000，共 6 类，
 #   单源常量在 model/belief_network.py），不再精确回归。
-# - 四头 λ 全 1.0：归一化后贡献均匀。
+# - 四头 λ 全 1.0：归一化后贡献同量级（基线含下限 0.05 + loss_bucket
+#   危险正例子集基线，2026-09-08 实测修正，见 training/belief.py）。
 belief_public_grad_scale: 0.0
 belief_head_weight_hand: 1.0
 belief_head_weight_wait: 1.0
