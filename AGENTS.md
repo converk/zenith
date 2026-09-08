@@ -131,7 +131,7 @@
   5 进程),每 5 updates 一次;对手模型、种子基数、设备与输出目录由版本配置
   提供,不得硬编码具体版本;输出到 `audit/reports/<版本号>/eval`,进度与失败
   记录写 `audit/reports/<版本号>/report/PROGRESS.md`。
-- SFT 的验证与 checkpoint 保存统一固定为每 3000 steps 一次,最终评估规模为
+- SFT 的验证与 checkpoint 保存统一固定为每 1000 steps 一次,最终评估规模为
   96 hanchan。
 - 跨代 2v2 SFT 对抗评测(一次性机制,2026-09-08 起用,用于不同架构代次间的
   SFT 对比):每分片为一对锁步进程(V19 host + V18 工作副本 partner,仅交换
