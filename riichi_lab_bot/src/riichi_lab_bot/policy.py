@@ -74,9 +74,18 @@ def resolve_dtype(value: str, device: torch.device) -> torch.dtype:
 
 
 @dataclass(frozen=True)
+class Candidate:
+    """一条 top-k 候选动作及其概率(仅在请求 topk > 0 时产生)。"""
+
+    action_id: int
+    prob: float
+
+
+@dataclass(frozen=True)
 class InferenceResult:
     action_id: int
     elapsed_ms: float
+    candidates: tuple[Candidate, ...] = ()
 
 
 def _checkpoint_format(payload: dict[str, Any]) -> str:
@@ -257,7 +266,9 @@ class PolicyEngine:
             torch.cuda.synchronize(self.device)
         return (time.perf_counter() - started) * 1000.0
 
-    def infer(self, prepared: PreparedDecision) -> InferenceResult:
+    def infer(
+        self, prepared: PreparedDecision, *, topk: int = 0
+    ) -> InferenceResult:
         # 每次决策的二次语义校验是安全契约:桥接装配结果在此按 checkpoint
         # 的 context_tokens 复核,任一侧漂移都 fail closed。
         assert_actor_input_semantics(
@@ -285,10 +296,29 @@ class PolicyEngine:
             enabled=self.autocast_dtype == torch.bfloat16,
         ):
             output = self.model(*inputs, policy_only=True)
-            chosen = output["policy_logits"].argmax(-1)
+            logits = output["policy_logits"][0].float()
+            # 非法动作一律屏蔽后取 argmax:与 rollout 的合法动作语义一致,
+            # 也让 top-k 概率只落在可执行动作上。
+            legal = torch.as_tensor(
+                prepared.legal_mask, device=logits.device, dtype=torch.bool
+            )
+            masked = logits.masked_fill(~legal, float("-inf"))
+            chosen = masked.argmax(-1)
+            candidates: tuple[Candidate, ...] = ()
+            if topk > 0:
+                width = min(int(topk), int(legal.sum().item()))
+                if width > 0:
+                    probs = torch.softmax(masked, dim=-1)
+                    values, indices = torch.topk(probs, width)
+                    candidates = tuple(
+                        Candidate(int(action_id), float(prob))
+                        for action_id, prob in zip(
+                            indices.tolist(), values.tolist(), strict=True
+                        )
+                    )
         action_id = int(chosen.item())
         elapsed_ms = (time.perf_counter() - started) * 1000.0
-        return InferenceResult(action_id, elapsed_ms)
+        return InferenceResult(action_id, elapsed_ms, candidates)
 
     def _tensor(self, value: np.ndarray) -> torch.Tensor:
         if value.dtype == np.float32:

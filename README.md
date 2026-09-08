@@ -1,7 +1,8 @@
 # Zenith 立直麻将训练系统
 
 Zenith 的现行输入与模型契约是 V18。仓库由 `RiichiEnv/` 原生环境、
-`riichi_ppo_v1/` SFT/PPO 框架和 `riichi_lab_bot/` 在线客户端组成。V16/V17 的
+`riichi_ppo_v1/` SFT/PPO 框架、`riichi_lab_bot/` 在线客户端和
+`akagi_bridge/` Akagi 云端推理适配服务组成。V16/V17 的
 checkpoint、数据集、配置、日志和报告仅作冷存储；活跃运行路径不会加载或迁移旧契约。
 
 ## V18 快速入口
@@ -19,6 +20,7 @@ python -m pytest riichi_ppo_v1/tests RiichiEnv/tests riichi_lab_bot/tests
 - SFT 使用方式：[V18 SFT](riichi_ppo_v1/docs/v18_sft.md)
 - 设计与验收：[V18 设计文档](audit/reports/v18/design/)
 - 可复现进度：[V18 PROGRESS](audit/reports/v18/report/PROGRESS.md)
+- Akagi 云端推理：[akagi_bridge](akagi_bridge/README.md)
 
 V18 使用**决策时刻状态快照**（Shared 公共前缀 + 三家 Opponent Analysis + 每个合法动作
 一对 Offense/Defense Query，全 token RoPE、公共双向 GQA、结构化 Actor mask）。模型为

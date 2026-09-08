@@ -1,7 +1,8 @@
 # 目录职责清单
 
 每个目录的职责用一句话说明,与仓库实际结构一致;新增代码前先核对本清单与
-AGENTS.md 的结构约定。治理范围覆盖 riichi_ppo_v1、riichi_lab_bot、RiichiEnv 三组件。
+AGENTS.md 的结构约定。治理范围覆盖 riichi_ppo_v1、riichi_lab_bot、akagi_bridge、
+RiichiEnv 四组件。
 
 ## riichi_ppo_v1(训练框架)
 
@@ -22,6 +23,13 @@ AGENTS.md 的结构约定。治理范围覆盖 riichi_ppo_v1、riichi_lab_bot、
 | --- | --- |
 | `src/riichi_lab_bot/` | RiichiLab 客户端:checkpoint 加载、单席 bridge、安全校验与 CLI |
 | `tests/` | bridge 语义、checkpoint 加载、client 与 safety 测试 |
+
+## akagi_bridge(Akagi 云端推理适配服务)
+
+| 目录 | 职责 |
+| --- | --- |
+| `src/akagi_bridge/` | Akagi `bot.api` 协议适配:mjai 事件流重建 Observation、FastAPI 端点与独立 CLI |
+| `tests/` | HTTP 契约测试与 mjai → 决策的适配层测试 |
 
 ## RiichiEnv(环境库)
 
